@@ -10,7 +10,15 @@ export const idempotent = asyncHandler(async (req, res, next) => {
   if (context.replay) { res.setHeader("X-Idempotent-Replay", "true"); return res.status(context.record.responseStatus).json({ ...context.record.responseBody, meta: { ...(context.record.responseBody?.meta ?? {}), idempotentReplay: true } }); }
   req.idempotencyRecord = context.record;
   const originalJson = res.json.bind(res);
-  res.json = (body) => { if (res.statusCode < 500) void completeIdempotency(context.record, res.statusCode, body); return originalJson(body); };
+  res.json = (body) => {
+    const statusCode = res.statusCode;
+    if (statusCode < 500) {
+      const pending = completeIdempotency(context.record, statusCode, body);
+      res.locals.idempotencyComplete = pending;
+      return pending.then(() => originalJson(body));
+    }
+    return originalJson(body);
+  };
   res.on("close", () => { if (!res.writableEnded) void abandonIdempotency(context.record); });
   next();
 });

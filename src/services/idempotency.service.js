@@ -2,7 +2,9 @@ import { IdempotencyRecord } from "../models/index.js";
 import { sha256 } from "../lib/crypto.js";
 import { AppError } from "../lib/app-error.js";
 
+const STALE_PROCESSING_MS = 60_000;
 const stable = (value) => { if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`; if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`; return JSON.stringify(value); };
+
 export async function beginIdempotency({ tenantId, actorId, endpoint, key, body }) {
   const bodyHash = sha256(stable(body ?? {}));
   try {
@@ -12,7 +14,18 @@ export async function beginIdempotency({ tenantId, actorId, endpoint, key, body 
     if (error?.code !== 11000) throw error;
     const record = await IdempotencyRecord.findOne({ tenantId, actorId, endpoint, key });
     if (!record || record.bodyHash !== bodyHash) throw new AppError("IDEMPOTENCY_KEY_REUSED", "This idempotency key was already used with a different request.", 409);
-    if (record.state === "PROCESSING") throw new AppError("REQUEST_IN_PROGRESS", "An identical request is already being processed.", 409);
+    if (record.state === "PROCESSING") {
+      const staleBefore = new Date(Date.now() - STALE_PROCESSING_MS);
+      if (record.createdAt && record.createdAt < staleBefore) {
+        const claimed = await IdempotencyRecord.findOneAndUpdate(
+          { _id: record._id, state: "PROCESSING", createdAt: { $lt: staleBefore } },
+          { $set: { createdAt: new Date(), expiresAt: new Date(Date.now() + 86_400_000) } },
+          { new: true },
+        );
+        if (claimed) return { record: claimed, replay: false };
+      }
+      throw new AppError("REQUEST_IN_PROGRESS", "An identical request is already being processed.", 409);
+    }
     return { record, replay: true };
   }
 }
