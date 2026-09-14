@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { env } from "../config/env.js";
 import { AppError } from "../lib/app-error.js";
+import { timingSafeEqual } from "../lib/crypto.js";
 
 export const phonePeProvider = {
   async createPayment({ merchantTransactionId, amountPaise, redirectUrl, callbackUrl, mobile, credentials = {} }) {
@@ -13,8 +14,16 @@ export const phonePeProvider = {
     const data = await response.json(); return { providerOrderId: merchantTransactionId, redirectUrl: data.data?.instrumentResponse?.redirectInfo?.url, status: "PENDING", raw: data };
   },
   verifyWebhook(rawBody, endpointPath, signature, saltKey = env.PHONEPE_SALT_KEY, saltIndex = env.PHONEPE_SALT_INDEX) {
-    const payload = JSON.parse(rawBody.toString()); const base64Payload = payload.response ?? rawBody.toString("base64");
+    if (!signature || !saltKey) return false;
+    const raw = Buffer.isBuffer(rawBody) ? rawBody.toString() : String(rawBody ?? "");
+    let base64Payload;
+    try {
+      const payload = JSON.parse(raw);
+      base64Payload = payload.response ?? Buffer.from(raw).toString("base64");
+    } catch {
+      return false;
+    }
     const expected = createHash("sha256").update(`${base64Payload}${endpointPath}${saltKey}`).digest("hex") + `###${saltIndex}`;
-    return expected === signature;
+    return timingSafeEqual(expected, String(signature));
   },
 };
