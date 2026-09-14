@@ -42,8 +42,8 @@ test("forgot-password returns identical 202 whether or not the mobile exists", a
 });
 
 test("password reset token works once and rejects reuse", async () => {
-  const { user } = await seedTenantUser({ mobile: "+919888877766" });
-  await otpProvider.send({ tenantCode: "TESTCO", mobile: user.mobile, purpose: "PASSWORD_RESET" });
+  const { user, tenant } = await seedTenantUser({ mobile: "+919888877766" });
+  await otpProvider.send({ tenantId: tenant._id, tenantCode: "TESTCO", mobile: user.mobile, purpose: "PASSWORD_RESET" });
   const verified = await request(app)
     .post("/api/v1/public/auth/otp/verify")
     .set("x-idempotency-key", randomUUID())

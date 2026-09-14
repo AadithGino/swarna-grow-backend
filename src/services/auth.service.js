@@ -29,27 +29,28 @@ export async function refresh(refreshToken) {
 }
 export async function logout(auth, refreshToken) { if (refreshToken) await Session.updateOne({ refreshTokenHash: sha256(refreshToken), $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
 export async function logoutAll(auth) { await Session.updateMany({ $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
-export async function requestOtp(body) { const tenant = await Tenant.findOne({ code: body.tenantCode }).lean(); if (!tenant) throw errors.notFound("Jewellery"); return otpProvider.send(body); }
+export async function requestOtp(body) { const tenant = await Tenant.findOne({ code: body.tenantCode }).lean(); if (!tenant) throw errors.notFound("Jewellery"); return otpProvider.send({ ...body, tenantId: tenant._id }); }
 export async function forgotPassword(body) {
   const response = { accepted: true, expiresIn: env.OTP_TTL_SECONDS };
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
   if (!tenant) return response;
   const user = await User.findOne({ type: UserType.TENANT_USER, tenantId: tenant._id, mobile: body.mobile }).lean();
   if (!user) return response;
-  await otpProvider.send({ tenantCode: body.tenantCode, mobile: body.mobile, purpose: "PASSWORD_RESET", deviceId: body.deviceId });
+  await otpProvider.send({ tenantId: tenant._id, tenantCode: body.tenantCode, mobile: body.mobile, purpose: "PASSWORD_RESET", deviceId: body.deviceId });
   return response;
 }
 export async function verifyCustomerOtp(body, request) {
   if (body.purpose === "PASSWORD_RESET") return verifyPasswordResetOtp(body);
-  if (!(await otpProvider.verify(body))) throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
-  const tenant = await Tenant.findOne({ code: body.tenantCode }).lean(); const customer = await Customer.findOne({ tenantId: tenant?._id, mobile: body.mobile }).lean();
+  const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
+  if (!(await otpProvider.verify({ ...body, tenantId: tenant?._id }))) throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
+  const customer = await Customer.findOne({ tenantId: tenant?._id, mobile: body.mobile }).lean();
   if (!customer) throw errors.notFound("Customer");
   const tokens = await issueSession({ id: customer._id, type: UserType.CUSTOMER, tenantId: customer.tenantId, branchId: customer.branchId, role: "CUSTOMER", permissions: [], mobileClient: true }, { deviceId: body.deviceId, platform: request.headers["x-platform"], appVersion: request.headers["x-app-version"] }, request);
   return { customer: { id: customer._id, name: customer.name, profileComplete: Boolean(customer.profileCompletedAt) }, ...tokens };
 }
 export async function verifyPasswordResetOtp(body) {
-  if (!(await otpProvider.verify({ ...body, purpose: "PASSWORD_RESET" }))) throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
+  if (!(await otpProvider.verify({ ...body, tenantId: tenant?._id, purpose: "PASSWORD_RESET" }))) throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
   const user = await User.findOne({ type: UserType.TENANT_USER, tenantId: tenant?._id, mobile: body.mobile }).lean();
   if (!user) throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
   const resetToken = randomToken(32);
