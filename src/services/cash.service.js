@@ -6,19 +6,34 @@ import { withTransaction } from "../lib/transaction.js";
 import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
 
-export async function cashBalance({ tenantId, branchId, staffId }) {
-  const scope = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...(branchId ? { branchId } : {}) };
-  const [payments] = await Payment.aggregate([{ $match: scope }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]);
-  const [handovers] = await CashHandover.aggregate([{ $match: { tenantId, staffId, status: CashHandoverStatus.ACCEPTED, ...(branchId ? { branchId } : {}) } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]);
-  const [adjustments] = await CashAdjustment.aggregate([{ $match: { tenantId, staffId, ...(branchId ? { branchId } : {}) } }, { $group: { _id: null, amountPaise: { $sum: { $cond: [{ $eq: ["$direction", CashAdjustmentDirection.CREDIT] }, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } } } }]);
-  return { collectedPaise: payments?.amountPaise ?? 0, handedOverPaise: handovers?.amountPaise ?? 0, adjustmentPaise: adjustments?.amountPaise ?? 0, cashInHandPaise: (payments?.amountPaise ?? 0) + (adjustments?.amountPaise ?? 0) - (handovers?.amountPaise ?? 0) };
+async function sumAggregate(model, pipeline, session) {
+  const query = model.aggregate(pipeline);
+  if (session) query.session(session);
+  const [row] = await query;
+  return row?.amountPaise ?? 0;
 }
+
+export async function cashBalance({ tenantId, branchId, staffId }, session) {
+  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...(branchId ? { branchId } : {}) };
+  const handoverBase = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
+  const adjustmentMatch = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
+  const cashCollectedPaise = await sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
+  const acceptedPaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.ACCEPTED } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
+  const cashPendingAcceptancePaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.PENDING } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
+  const adjustmentPaise = await sumAggregate(CashAdjustment, [{ $match: adjustmentMatch }, { $group: { _id: null, amountPaise: { $sum: { $cond: [{ $eq: ["$direction", CashAdjustmentDirection.CREDIT] }, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } } } }], session);
+  const cashInHandPaise = cashCollectedPaise + adjustmentPaise - acceptedPaise - cashPendingAcceptancePaise;
+  return { cashCollectedPaise, cashInHandPaise, cashPendingAcceptancePaise, collectedPaise: cashCollectedPaise, handedOverPaise: acceptedPaise, adjustmentPaise };
+}
+
 export async function createHandover(req, initiator) {
   return withTransaction(async (session) => {
     const staffId = initiator === HandoverInitiator.STAFF ? req.auth.id : req.body.staffId; const branchId = req.scope.branchId ?? req.body.branchId;
-    const balance = await cashBalance({ tenantId: req.auth.tenantId, branchId, staffId }); if (req.body.amountPaise > balance.cashInHandPaise) throw errors.business("CASH_HANDOVER_AMOUNT_EXCEEDS_BALANCE", "The handover exceeds this staff member's cash-in-hand balance.", balance);
+    const balance = await cashBalance({ tenantId: req.auth.tenantId, branchId, staffId }, session);
+    if (req.body.amountPaise > balance.cashInHandPaise) throw errors.business("CASH_HANDOVER_AMOUNT_EXCEEDS_BALANCE", "The handover exceeds this staff member's cash-in-hand balance.", balance);
     const row = (await CashHandover.create([{ _id: createId("handover"), tenantId: req.auth.tenantId, branchId, staffId, amountPaise: req.body.amountPaise, remarks: req.body.remarks, initiator, submittedAt: new Date() }], { session }))[0];
-    const auditEventId = await writeAudit({ req, action: "CASH_HANDOVER_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId, balance };
+    const afterBalance = await cashBalance({ tenantId: req.auth.tenantId, branchId, staffId }, session);
+    const auditEventId = await writeAudit({ req, action: "CASH_HANDOVER_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session });
+    return { ...row.toObject(), auditEventId, balance: afterBalance };
   });
 }
 export async function settleHandover(req, action) {
