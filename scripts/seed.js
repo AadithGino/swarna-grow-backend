@@ -1,11 +1,11 @@
 import argon2 from "argon2";
 import { connectDatabase, disconnectDatabase } from "../src/config/database.js";
-import { env } from "../src/config/env.js";
+import { env, SECRET_DEFAULTS } from "../src/config/env.js";
 import { BillingCycle, PlanTier, UserStatus, UserType } from "../src/constants/enums.js";
 import { SubscriptionPlan, User } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 
-if (env.NODE_ENV === "production" && env.SEED_PLATFORM_PASSWORD === "ChangeMeNow!123") throw new Error("Set a non-default SEED_PLATFORM_PASSWORD before seeding production.");
+if (env.NODE_ENV === "production" && env.SEED_PLATFORM_PASSWORD === SECRET_DEFAULTS.SEED_PLATFORM_PASSWORD) throw new Error("Set a non-default SEED_PLATFORM_PASSWORD before seeding production.");
 
 await connectDatabase();
 try {
