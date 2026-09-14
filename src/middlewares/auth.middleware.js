@@ -3,6 +3,7 @@ import { asyncHandler } from "../lib/async-handler.js";
 import { errors } from "../lib/app-error.js";
 import { Customer, Tenant, User } from "../models/index.js";
 import { TenantStatus, UserStatus } from "../constants/enums.js";
+import { ROLE_SCOPE } from "../constants/permissions.js";
 
 export const authenticate = asyncHandler(async (req, _res, next) => {
   const [scheme, token] = (req.headers.authorization ?? "").split(" ");
@@ -25,6 +26,12 @@ export function tenantScope(req, _res, next) {
   if (!req.auth?.tenantId) throw errors.forbidden();
   const actingBranch = req.headers["x-acting-branch-id"];
   if (actingBranch && req.auth.role !== "TENANT_OWNER") throw errors.forbidden("Only a tenant owner can select an acting branch.");
-  req.scope = { tenantId: req.auth.tenantId, ...(req.auth.branchId || actingBranch ? { branchId: req.auth.branchId || actingBranch } : {}) };
+  const roleScope = ROLE_SCOPE[req.auth.role] ?? "BRANCH";
+  const branchId = actingBranch || req.auth.branchId || null;
+  req.scope = { tenantId: req.auth.tenantId };
+  if (roleScope === "BRANCH") {
+    if (!branchId) throw errors.forbidden("Branch scope is required for this role.");
+    req.scope.branchId = branchId;
+  } else if (branchId) req.scope.branchId = branchId;
   next();
 }

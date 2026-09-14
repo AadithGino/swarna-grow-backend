@@ -1,5 +1,6 @@
-import { Alert, AuditEvent, Branch, CashHandover, GoldRate, Message, Redemption, TemplateDefinition, Tenant, User } from "../models/index.js";
+import { Alert, AuditEvent, Branch, CashHandover, GoldRate, Grievance, Message, Redemption, TemplateDefinition, Tenant, User } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
+import { errors } from "../lib/app-error.js";
 import * as tenant from "../services/tenant.service.js";
 import * as cash from "../services/cash.service.js";
 import * as redemption from "../services/redemption.service.js";
@@ -48,7 +49,11 @@ export const createGrievance = async (req, res) => sendSuccess(res, await grieva
 export const grievanceMessage = async (req, res) => sendSuccess(res, await grievance.addGrievanceMessage(req), {}, 201);
 export const mutateGrievance = (action) => async (req, res) => sendSuccess(res, await grievance.mutateGrievance(req, action));
 export const reopenGrievance = async (req, res) => sendSuccess(res, await grievance.reopenGrievance(req));
-export const grievanceAudit = async (req, res) => sendSuccess(res, await AuditEvent.find({ tenantId: req.auth.tenantId, entityType: "GRIEVANCE", entityId: req.params.grievanceId }).sort({ occurredAt: -1 }).lean());
+export const grievanceAudit = async (req, res) => {
+  const row = await Grievance.findOne({ _id: req.params.grievanceId, ...req.scope }).lean();
+  if (!row) throw errors.notFound("Grievance");
+  sendSuccess(res, await AuditEvent.find({ tenantId: req.auth.tenantId, entityType: "GRIEVANCE", entityId: row._id }).sort({ occurredAt: -1 }).lean());
+};
 export const messages = async (req, res) => sendList(res, await messaging.listMessages(req));
 export const resendMessage = async (req, res) => sendSuccess(res, await messaging.resendMessage(req), {}, 202);
 export const templates = async (_req, res) => sendSuccess(res, await TemplateDefinition.find({ active: true }).lean());

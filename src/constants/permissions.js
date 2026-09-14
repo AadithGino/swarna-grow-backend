@@ -1,5 +1,5 @@
 export const Permission = Object.freeze({
-  CUSTOMER_READ: "customer.read", CUSTOMER_WRITE: "customer.write", CUSTOMER_KYC: "customer.kyc",
+  CUSTOMER_READ: "customer.read", CUSTOMER_WRITE: "customer.write", CUSTOMER_KYC: "customer.kyc", CUSTOMER_BLOCK: "customer.block",
   PLAN_READ: "plan.read", PLAN_WRITE: "plan.write", SCHEME_READ: "scheme.read", SCHEME_WRITE: "scheme.write",
   PAYMENT_READ: "payment.read", PAYMENT_RECORD: "payment.record", PAYMENT_REVERSE: "payment.reverse",
   CASH_READ: "cash.read", CASH_HANDOVER: "cash.handover", CASH_HANDOVER_ACCEPT: "cash.handover.accept",
@@ -11,9 +11,18 @@ export const Permission = Object.freeze({
   AUDIT_READ: "audit.read",
 });
 
+const allPermissions = Object.values(Permission);
+
+export const ROLE_SCOPE = Object.freeze({
+  TENANT_OWNER: "TENANT",
+  TENANT_ADMIN: "TENANT",
+  BRANCH_MANAGER: "BRANCH",
+  BRANCH_STAFF: "BRANCH",
+});
+
 export const ROLE_PERMISSIONS = Object.freeze({
   TENANT_OWNER: ["*"],
-  TENANT_ADMIN: ["*"],
-  BRANCH_MANAGER: Object.values(Permission).filter((permission) => ![Permission.SETTINGS_WRITE, Permission.BRANCH_WRITE].includes(permission)),
+  TENANT_ADMIN: allPermissions,
+  BRANCH_MANAGER: allPermissions.filter((permission) => ![Permission.SETTINGS_WRITE, Permission.BRANCH_WRITE, Permission.CUSTOMER_BLOCK].includes(permission)),
   BRANCH_STAFF: [Permission.CUSTOMER_READ, Permission.CUSTOMER_WRITE, Permission.PLAN_READ, Permission.SCHEME_READ, Permission.SCHEME_WRITE, Permission.PAYMENT_READ, Permission.PAYMENT_RECORD, Permission.CASH_READ, Permission.CASH_HANDOVER, Permission.GRIEVANCE_READ, Permission.GRIEVANCE_REPLY],
 });

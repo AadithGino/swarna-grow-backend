@@ -6,13 +6,39 @@ const routeFiles = {
   "staff.routes.js": "/staff", "app.routes.js": "/app", "app-auth.routes.js": "/app/auth", "auth.routes.js": "/auth", "public.routes.js": "/public", "platform.routes.js": "/platform", "webhook.routes.js": "/webhooks",
 };
 const actual = new Set();
+const guardedAdminFiles = new Set(["admin-config.routes.js", "admin-analytics.routes.js", "admin-operations.routes.js", "admin-schemes.routes.js", "admin-customers.routes.js"]);
+const unguarded = [];
+
 for (const [file, prefix] of Object.entries(routeFiles)) {
   const source = fs.readFileSync(new URL(`../src/routes/${file}`, import.meta.url), "utf8");
-  for (const match of source.matchAll(/\.\s*(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/gi)) actual.add(`${match[1].toUpperCase()} ${(prefix + match[2]).replace(/\/$/, "")}`);
+  for (const match of source.matchAll(/\.\s*(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]([^;]*)\)/gi)) {
+    const method = match[1].toUpperCase();
+    const path = `${(prefix + match[2]).replace(/\/$/, "")}`;
+    actual.add(`${method} ${path}`);
+    if (!guardedAdminFiles.has(file)) continue;
+    const args = match[3] ?? "";
+    const hasGuard = /requirePermission\s*\(|guarded\s*\(/.test(args) || /PUBLIC/.test(args);
+    if (!hasGuard) unguarded.push(`${method} ${path} (${file})`);
+  }
 }
+
+const indexSource = fs.readFileSync(new URL("../src/routes/index.js", import.meta.url), "utf8");
+const adminMountOk = /apiRouter\.use\(\s*["'`]\/admin/.test(indexSource) && /authenticate/.test(indexSource) && /requireSubject\(\s*["'`]TENANT_USER["'`]/.test(indexSource);
+
 const appSource = fs.readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
 for (const match of appSource.matchAll(/app\.\s*(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/gi)) actual.add(`${match[1].toUpperCase()} ${match[2].replace(/\/$/, "")}`);
-const missing = [...expected].filter((route) => !actual.has(route)).sort();
-if (missing.length) { process.stderr.write(`Missing ${missing.length} contract routes:\n${missing.join("\n")}\n`); process.exitCode = 1; }
-else process.stdout.write(`Route coverage passed for ${expected.size} applicable contract routes.\n`);
 
+const missing = [...expected].filter((route) => !actual.has(route)).sort();
+if (!adminMountOk) {
+  process.stderr.write("Admin mount is missing authenticate + requireSubject(\"TENANT_USER\").\n");
+  process.exit(1);
+}
+if (unguarded.length) {
+  process.stderr.write(`Unguarded admin routes (${unguarded.length}):\n${unguarded.join("\n")}\n`);
+  process.exit(1);
+}
+if (missing.length) {
+  process.stderr.write(`Missing ${missing.length} contract routes:\n${missing.join("\n")}\n`);
+  process.exit(1);
+}
+process.stdout.write(`Route coverage passed for ${expected.size} applicable contract routes.\n`);
