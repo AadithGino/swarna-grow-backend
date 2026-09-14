@@ -1,0 +1,23 @@
+import { Router } from "express";
+import * as controller from "../controllers/customer.controller.js";
+import { asyncHandler } from "../lib/async-handler.js";
+import { requirePermission } from "../middlewares/auth.middleware.js";
+import { idempotent } from "../middlewares/idempotency.middleware.js";
+import { validate } from "../middlewares/validation.middleware.js";
+import { customerBody, nomineeBody } from "../validators/common.validators.js";
+import { Permission } from "../constants/permissions.js";
+import { sendSuccess } from "../lib/response.js";
+import { AuditEvent } from "../models/index.js";
+
+export const adminCustomerRouter = Router();
+adminCustomerRouter.get("/analytics", asyncHandler(controller.analytics)); adminCustomerRouter.get("/check-mobile", asyncHandler(controller.checkMobile));
+adminCustomerRouter.get("/", requirePermission(Permission.CUSTOMER_READ), asyncHandler(controller.list)); adminCustomerRouter.post("/", requirePermission(Permission.CUSTOMER_WRITE), validate({ body: customerBody }), idempotent, asyncHandler(controller.create));
+adminCustomerRouter.get("/:customerId", asyncHandler(controller.detail)); adminCustomerRouter.get("/:customerId/schemes", asyncHandler(controller.relations("schemes"))); adminCustomerRouter.get("/:customerId/payments", asyncHandler(controller.relations("payments"))); adminCustomerRouter.get("/:customerId/messages", asyncHandler(controller.relations("messages")));
+adminCustomerRouter.patch("/:customerId", requirePermission(Permission.CUSTOMER_WRITE), idempotent, asyncHandler(controller.update));
+adminCustomerRouter.patch("/:customerId/whatsapp-opt", requirePermission(Permission.CUSTOMER_WRITE), idempotent, asyncHandler(controller.whatsappOpt));
+adminCustomerRouter.post("/:customerId/notes", requirePermission(Permission.CUSTOMER_WRITE), idempotent, asyncHandler(controller.note));
+adminCustomerRouter.get("/:customerId/audit-events", asyncHandler(async (req, res) => sendSuccess(res, await AuditEvent.find({ tenantId: req.auth.tenantId, entityType: "CUSTOMER", entityId: req.params.customerId }).sort({ occurredAt: -1 }).lean())));
+adminCustomerRouter.put("/:customerId/kyc", idempotent, asyncHandler(controller.kyc(false))); adminCustomerRouter.post("/:customerId/kyc/verify", idempotent, asyncHandler(controller.kyc(true)));
+adminCustomerRouter.post("/:customerId/block", idempotent, asyncHandler(controller.block(true))); adminCustomerRouter.post("/:customerId/unblock", idempotent, asyncHandler(controller.block(false)));
+adminCustomerRouter.put("/:customerId/nominee", validate({ body: nomineeBody }), idempotent, asyncHandler(controller.nominee(false))); adminCustomerRouter.get("/:customerId/nominee", asyncHandler(controller.nomineeDetail)); adminCustomerRouter.delete("/:customerId/nominee", asyncHandler(controller.nominee(true)));
+adminCustomerRouter.get("/:customerId/statement", asyncHandler(controller.statement)); adminCustomerRouter.post("/:customerId/statement/share-whatsapp", idempotent, asyncHandler(async (req, res) => sendSuccess(res, { queued: true, customerId: req.params.customerId }, {}, 202)));

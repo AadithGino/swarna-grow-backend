@@ -1,0 +1,50 @@
+{
+  "name": "swarnagrow-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-tenant gold savings platform API implementing the SwarnaGrow v1.2 contract",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "worker": "node src/workers/index.js",
+    "scheduler": "node src/schedulers/index.js",
+    "check": "node scripts/check-syntax.js && node scripts/check-route-coverage.js && npm run lint",
+    "lint": "eslint src tests scripts",
+    "test": "node --test --test-reporter=spec",
+    "test:coverage": "node --test --experimental-test-coverage",
+    "seed": "node scripts/seed.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.883.0",
+    "@aws-sdk/s3-request-presigner": "^3.883.0",
+    "argon2": "^0.44.0",
+    "bullmq": "^5.58.5",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.18",
+    "decimal.js": "^10.6.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.7.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.18.0",
+    "pdfkit": "^0.17.2",
+    "pino": "^9.9.4",
+    "pino-http": "^10.5.0",
+    "sharp": "^0.35.4",
+    "ulid": "^3.0.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.35.0",
+    "mongodb-memory-server": "^10.2.0",
+    "supertest": "^7.1.4"
+  }
+}

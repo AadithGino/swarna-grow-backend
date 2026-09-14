@@ -1,0 +1,34 @@
+import { AuditEntityType, CashAdjustmentDirection, CashHandoverStatus, HandoverInitiator, PaymentMode, PaymentStatus } from "../constants/enums.js";
+import { CashAdjustment, CashHandover, Payment } from "../models/index.js";
+import { createId } from "../lib/ids.js";
+import { errors, AppError } from "../lib/app-error.js";
+import { withTransaction } from "../lib/transaction.js";
+import { writeAudit } from "./audit.service.js";
+import { paginate } from "../lib/pagination.js";
+
+export async function cashBalance({ tenantId, branchId, staffId }) {
+  const scope = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...(branchId ? { branchId } : {}) };
+  const [payments] = await Payment.aggregate([{ $match: scope }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]);
+  const [handovers] = await CashHandover.aggregate([{ $match: { tenantId, staffId, status: CashHandoverStatus.ACCEPTED, ...(branchId ? { branchId } : {}) } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]);
+  const [adjustments] = await CashAdjustment.aggregate([{ $match: { tenantId, staffId, ...(branchId ? { branchId } : {}) } }, { $group: { _id: null, amountPaise: { $sum: { $cond: [{ $eq: ["$direction", CashAdjustmentDirection.CREDIT] }, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } } } }]);
+  return { collectedPaise: payments?.amountPaise ?? 0, handedOverPaise: handovers?.amountPaise ?? 0, adjustmentPaise: adjustments?.amountPaise ?? 0, cashInHandPaise: (payments?.amountPaise ?? 0) + (adjustments?.amountPaise ?? 0) - (handovers?.amountPaise ?? 0) };
+}
+export async function createHandover(req, initiator) {
+  return withTransaction(async (session) => {
+    const staffId = initiator === HandoverInitiator.STAFF ? req.auth.id : req.body.staffId; const branchId = req.scope.branchId ?? req.body.branchId;
+    const balance = await cashBalance({ tenantId: req.auth.tenantId, branchId, staffId }); if (req.body.amountPaise > balance.cashInHandPaise) throw errors.business("CASH_HANDOVER_AMOUNT_EXCEEDS_BALANCE", "The handover exceeds this staff member's cash-in-hand balance.", balance);
+    const row = (await CashHandover.create([{ _id: createId("handover"), tenantId: req.auth.tenantId, branchId, staffId, amountPaise: req.body.amountPaise, remarks: req.body.remarks, initiator, submittedAt: new Date() }], { session }))[0];
+    const auditEventId = await writeAudit({ req, action: "CASH_HANDOVER_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId, balance };
+  });
+}
+export async function settleHandover(req, action) {
+  return withTransaction(async (session) => {
+    const row = await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).session(session); if (!row) throw errors.notFound("Cash handover"); if (row.status !== CashHandoverStatus.PENDING && action !== "resolve-discrepancy") throw new AppError("CASH_HANDOVER_ALREADY_SETTLED", "This handover is already settled.", 409);
+    const map = { accept: CashHandoverStatus.ACCEPTED, reject: CashHandoverStatus.REJECTED, "resolve-discrepancy": req.body.accepted ? CashHandoverStatus.ACCEPTED : CashHandoverStatus.REJECTED };
+    row.status = map[action]; row.settledAt = new Date(); row.settledBy = req.auth.id; row.reason = req.body.reason; row.discrepancyPaise = req.body.discrepancyPaise ?? 0; row.version += 1; await row.save({ session });
+    const auditEventId = await writeAudit({ req, action: `CASH_HANDOVER_${row.status}`, entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId };
+  });
+}
+export async function cancelHandover(req) { return withTransaction(async (session) => { const row = await CashHandover.findOne({ _id: req.params.handoverId, tenantId: req.auth.tenantId, staffId: req.auth.id }).session(session); if (!row) throw errors.notFound("Cash handover"); if (row.status !== CashHandoverStatus.PENDING) throw new AppError("CASH_HANDOVER_ALREADY_SETTLED", "This handover cannot be cancelled.", 409); row.status = CashHandoverStatus.REJECTED; row.reason = "Cancelled by staff"; row.version += 1; await row.save({ session }); const auditEventId = await writeAudit({ req, action: "CASH_HANDOVER_CANCELLED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId }; }); }
+export async function listHandovers(req, staffOnly = false) { const scope = { ...req.scope, ...(staffOnly ? { staffId: req.auth.id } : {}) }; const filters = req.query.status ? { status: req.query.status } : {}; return paginate(CashHandover, { scope, filters, cursor: req.query.cursor, limit: req.query.limit, sort: "createdAt:desc" }); }
+export async function createCashAdjustment(req) { return withTransaction(async (session) => { const row = (await CashAdjustment.create([{ _id: createId("cashAdjustment"), tenantId: req.auth.tenantId, branchId: req.scope.branchId ?? req.body.branchId, staffId: req.body.staffId, direction: req.body.direction, amountPaise: req.body.amountPaise, reason: req.body.reason, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "CASH_ADJUSTMENT_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId }; }); }
