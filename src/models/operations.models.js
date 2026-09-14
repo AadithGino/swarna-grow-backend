@@ -7,7 +7,7 @@ goldRateSchema.index({ tenantId: 1, branchId: 1, effectiveDate: 1 }, { unique: t
 
 const handoverSchema = new mongoose.Schema({
   _id: stringId("csh"), tenantId: tenantField, branchId: branchField, staffId: { type: String, required: true, index: true }, amountPaise: integerField({ required: true, min: 1 }),
-  initiator: enumField(HandoverInitiator, { required: true }), status: enumField(CashHandoverStatus, { default: CashHandoverStatus.PENDING }), submittedAt: Date, settledAt: Date, settledBy: String, discrepancyPaise: integerField(), reason: String, remarks: String, version: versionField,
+  initiator: enumField(HandoverInitiator, { required: true }), status: enumField(CashHandoverStatus, { default: CashHandoverStatus.PENDING }), submittedAt: Date, settledAt: Date, settledBy: String, acceptedAmountPaise: integerField(), discrepancyPaise: integerField(), discrepancyDirection: String, reason: String, remarks: String, version: versionField,
 }, baseOptions);
 handoverSchema.index({ tenantId: 1, branchId: 1, status: 1, createdAt: -1 });
 
