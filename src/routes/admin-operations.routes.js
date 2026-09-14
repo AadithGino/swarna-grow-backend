@@ -18,7 +18,11 @@ adminOperationsRouter.get("/cash/staff-balances", ...guarded(Permission.CASH_REA
 adminOperationsRouter.get("/cash/staff-balances/:staffId", ...guarded(Permission.CASH_READ, asyncHandler(async (req, res) => sendSuccess(res, { staffId: req.params.staffId }))));
 adminOperationsRouter.post("/cash/handovers", ...guarded(Permission.CASH_HANDOVER, validate({ body: handoverBody }), idempotent, asyncHandler(controller.createHandover(HandoverInitiator.ADMIN))));
 adminOperationsRouter.get("/cash/handovers", ...guarded(Permission.CASH_READ, asyncHandler(controller.handovers(false))));
-adminOperationsRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.CASH_READ, asyncHandler(async (req, res) => sendSuccess(res, await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).lean()))));
+adminOperationsRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.CASH_READ, asyncHandler(async (req, res) => {
+  const row = await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).lean();
+  if (!row) throw errors.notFound("Cash handover");
+  return sendSuccess(res, row);
+})));
 adminOperationsRouter.post("/cash/handovers/:handoverId/accept", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("accept"))));
 adminOperationsRouter.post("/cash/handovers/:handoverId/reject", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("reject"))));
 adminOperationsRouter.post("/cash/handovers/:handoverId/resolve-discrepancy", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("resolve-discrepancy"))));

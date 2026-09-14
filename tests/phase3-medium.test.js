@@ -7,6 +7,10 @@ import { beginIdempotency, completeIdempotency } from "../src/services/idempoten
 import { IdempotencyRecord } from "../src/models/index.js";
 import { resetTestDb, startTestDb, stopTestDb } from "./helpers/db.js";
 
+test.before(async () => { await startTestDb(); });
+test.after(async () => { await stopTestDb(); });
+test.beforeEach(async () => { await resetTestDb(); });
+
 test("sanitize preserves arrays instead of converting them to objects", () => {
   const result = sanitize({ tags: ["a", "b"], nested: [{ id: 1 }, { id: 2 }], password: "secret" });
   assert.deepEqual(result.tags, ["a", "b"]);
@@ -23,10 +27,7 @@ test("phonepe verifyWebhook rejects malformed JSON without throwing and uses tim
   assert.equal(phonePeProvider.verifyWebhook(raw, "/callback", expected.slice(0, -1) + "0", "salt", "1"), false);
 });
 
-test("stale PROCESSING idempotency records can be reclaimed after 60 seconds", async (t) => {
-  await startTestDb();
-  t.after(async () => { await stopTestDb(); });
-  await resetTestDb();
+test("stale PROCESSING idempotency records can be reclaimed after 60 seconds", async () => {
   const key = `idem-${Date.now()}`;
   const first = await beginIdempotency({ tenantId: "tnt_1", actorId: "user_1", endpoint: "POST /x", key, body: { a: 1 } });
   assert.equal(first.replay, false);
