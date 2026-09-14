@@ -4,7 +4,7 @@ import * as payment from "../controllers/payment.controller.js";
 import { Branch } from "../models/index.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
-import { otpRateLimit, publicRateLimit } from "../middlewares/security.middleware.js";
+import { otpRateLimit, publicRateLimit, tenantResolveRateLimit } from "../middlewares/security.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { otpRequestBody, otpVerifyBody, publicSetPasswordBody } from "../validators/common.validators.js";
 import { sendSuccess } from "../lib/response.js";
@@ -15,7 +15,7 @@ publicRouter.get("/auth/password-policy", (_req, res) => sendSuccess(res, { minL
 publicRouter.post("/auth/otp/request", otpRateLimit, validate({ body: otpRequestBody }), idempotent, asyncHandler(auth.requestOtp));
 publicRouter.post("/auth/otp/verify", otpRateLimit, validate({ body: otpVerifyBody }), idempotent, asyncHandler(auth.verifyOtp));
 publicRouter.post("/auth/set-password", validate({ body: publicSetPasswordBody }), asyncHandler(auth.setPassword));
-publicRouter.get("/tenants/resolve", asyncHandler(auth.resolveTenant));
+publicRouter.get("/tenants/resolve", tenantResolveRateLimit, asyncHandler(auth.resolveTenant));
 publicRouter.get("/tenants/:tenantId/branches", asyncHandler(async (req, res) => sendSuccess(res, await Branch.find({ tenantId: req.params.tenantId, active: true }).select("_id code name address mobile").lean())));
 publicRouter.post("/signup/start", idempotent, asyncHandler(auth.signupStart));
 publicRouter.post("/signup/verify-otp", idempotent, asyncHandler(auth.signupVerify));

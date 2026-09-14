@@ -11,12 +11,37 @@ import { randomToken, sha256 } from "../lib/crypto.js";
 
 const toSubject = (record, type, mobileClient = false) => ({ id: record._id, type, tenantId: record.tenantId, branchId: record.branchId, role: record.role, permissions: [...new Set([...(ROLE_PERMISSIONS[record.role] ?? []), ...(record.permissions ?? []), ...(record.permissionOverrides ?? [])])], mobileClient });
 export async function login({ body, request, platform = false }) {
-  const query = platform ? { type: UserType.PLATFORM_USER, mobile: body.mobile } : { type: UserType.TENANT_USER, mobile: body.mobile };
-  if (body.tenantCode) { const tenant = await Tenant.findOne({ code: body.tenantCode }).lean(); if (!tenant) throw errors.unauthenticated("Mobile number or password is incorrect."); query.tenantId = tenant._id; }
+  if (platform) {
+    const user = await User.findOne({ type: UserType.PLATFORM_USER, mobile: body.mobile }).select("+passwordHash");
+    if (!user?.passwordHash || !(await argon2.verify(user.passwordHash, body.password))) throw errors.unauthenticated("Mobile number or password is incorrect.");
+    const subject = toSubject(user.toObject(), UserType.PLATFORM_USER, body.platform !== "web");
+    subject.type = UserType.PLATFORM_USER; delete subject.tenantId;
+    const tokens = await issueSession(subject, body, request); await User.updateOne({ _id: user._id }, { $set: { lastSeenAt: new Date() } });
+    return { user: { id: user._id, name: user.name, role: user.role, tenantId: user.tenantId, branchId: user.branchId, permissions: subject.permissions, mustSetPassword: user.mustSetPassword }, ...tokens };
+  }
+  const query = { type: UserType.TENANT_USER, mobile: body.mobile };
+  if (body.tenantCode) {
+    const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
+    if (!tenant) throw errors.unauthenticated("Mobile number or password is incorrect.");
+    query.tenantId = tenant._id;
+  } else {
+    const matches = await User.find(query).select("tenantId").lean();
+    const tenantIds = [...new Set(matches.map((row) => row.tenantId).filter(Boolean))];
+    if (tenantIds.length > 1) {
+      const tenants = await Tenant.find({ _id: { $in: tenantIds } }).select("code name branding").lean();
+      throw new AppError("TENANT_SELECTION_REQUIRED", "Select a jewellery to continue.", 409, {
+        tenants: tenants.map((tenant) => ({
+          tenantCode: tenant.code,
+          displayName: tenant.branding?.displayName ?? tenant.name,
+          logoUrl: tenant.branding?.logoUploadId ?? null,
+        })),
+      });
+    }
+    if (tenantIds.length === 1) query.tenantId = tenantIds[0];
+  }
   const user = await User.findOne(query).select("+passwordHash");
   if (!user?.passwordHash || !(await argon2.verify(user.passwordHash, body.password))) throw errors.unauthenticated("Mobile number or password is incorrect.");
   const subject = toSubject(user.toObject(), UserType.TENANT_USER, body.platform !== "web");
-  if (platform) { subject.type = UserType.PLATFORM_USER; delete subject.tenantId; }
   const tokens = await issueSession(subject, body, request); await User.updateOne({ _id: user._id }, { $set: { lastSeenAt: new Date() } });
   return { user: { id: user._id, name: user.name, role: user.role, tenantId: user.tenantId, branchId: user.branchId, permissions: subject.permissions, mustSetPassword: user.mustSetPassword }, ...tokens };
 }

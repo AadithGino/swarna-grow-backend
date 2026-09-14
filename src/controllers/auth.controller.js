@@ -1,4 +1,5 @@
 import { sendSuccess } from "../lib/response.js";
+import { errors } from "../lib/app-error.js";
 import * as auth from "../services/auth.service.js";
 import { Customer, Session, Signup, SubscriptionPlan, Tenant, User } from "../models/index.js";
 
@@ -19,6 +20,16 @@ export const selectSignupPlan = async (req, res) => { const signup = await Signu
 export const signupPayment = async (req, res) => { const signup = await Signup.findOneAndUpdate({ _id: req.params.signupId, status: "PLAN_SELECTED" }, { $set: { status: "PAYMENT_PENDING", paymentReference: `signup_${Date.now()}` } }, { new: true }); sendSuccess(res, { signupId: signup?._id, status: signup?.status, paymentUrl: `/mock-signup-pay/${signup?._id}` }); };
 export const signupStatus = async (req, res) => sendSuccess(res, await Signup.findById(req.params.signupId).select("status tenantCode selectedPlanTier expiresAt").lean());
 export const checkAvailability = async (req, res) => sendSuccess(res, { available: !(await Tenant.exists({ $or: [...(req.query.mobile ? [{ mobile: req.query.mobile }] : []), ...(req.query.tenantCode ? [{ code: req.query.tenantCode }] : [])] })) });
-export const resolveTenant = async (req, res) => { const tenant = await Tenant.findOne(req.query.tenantCode ? { code: req.query.tenantCode } : { mobile: req.query.mobile }).select("_id code name branding status").lean(); sendSuccess(res, tenant); };
+export const resolveTenant = async (req, res) => {
+  let tenant = null;
+  if (req.query.tenantCode) {
+    tenant = await Tenant.findOne({ code: String(req.query.tenantCode).trim().toUpperCase() }).select("_id code name branding status").lean();
+  } else if (req.query.mobile) {
+    const customer = await Customer.findOne({ mobile: req.query.mobile }).select("tenantId").lean();
+    if (customer?.tenantId) tenant = await Tenant.findById(customer.tenantId).select("_id code name branding status").lean();
+  }
+  if (!tenant) throw errors.notFound("Jewellery");
+  sendSuccess(res, tenant);
+};
 export const setPassword = async (req, res) => sendSuccess(res, await auth.setPassword({ auth: req.auth, resetToken: req.body.resetToken, password: req.body.password }));
 export const changePassword = async (req, res) => sendSuccess(res, await auth.changePassword(req.auth, req.body));
