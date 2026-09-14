@@ -9,7 +9,7 @@ import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { AuditEvent, Payment, PaymentIntent, Scheme } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
-import { enrolBody, paymentBody, planBody, redemptionBody } from "../validators/common.validators.js";
+import { enrolBody, paymentBody, paymentLinkBody, planBody, redemptionBody } from "../validators/common.validators.js";
 import { guarded } from "../lib/route.js";
 import { errors } from "../lib/app-error.js";
 
@@ -59,7 +59,7 @@ adminSchemeRouter.get("/payments/:paymentId/passbook-image", ...guarded(Permissi
 adminSchemeRouter.post("/payments/:paymentId/passbook-image/regenerate", ...guarded(Permission.PAYMENT_READ, idempotent, asyncHandler(payment.passbookImage)));
 adminSchemeRouter.post("/payments/:paymentId/share-whatsapp", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(payment.share)));
 adminSchemeRouter.post("/payments/:paymentId/reverse", ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(payment.reverse)));
-adminSchemeRouter.post("/payment-links", ...guarded(Permission.PAYMENT_RECORD, idempotent, asyncHandler(payment.createLink)));
+adminSchemeRouter.post("/payment-links", ...guarded(Permission.PAYMENT_RECORD, validate({ body: paymentLinkBody }), idempotent, asyncHandler(payment.createLink)));
 adminSchemeRouter.get("/payment-links", ...guarded(Permission.PAYMENT_READ, asyncHandler(payment.listLinks)));
 adminSchemeRouter.post("/payment-links/:linkId/cancel", ...guarded(Permission.PAYMENT_RECORD, idempotent, asyncHandler(payment.cancelLink)));
 adminSchemeRouter.post("/payment-links/:linkId/resend", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(payment.resendLink)));

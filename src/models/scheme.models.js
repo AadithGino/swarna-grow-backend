@@ -23,7 +23,7 @@ const schemeSchema = new mongoose.Schema({
   _id: stringId("sch"), tenantId: tenantField, branchId: branchField, customerId: { type: String, required: true, index: true }, planId: { type: String, required: true, index: true }, enrollmentNumber: { type: String, required: true },
   planSnapshot: { type: mongoose.Schema.Types.Mixed, required: true }, valueBasis: enumField(ValueBasis, { required: true }), paymentPattern: enumField(PaymentPattern, { required: true }), status: enumField(SchemeStatus, { default: SchemeStatus.ACTIVE }),
   startDate: { type: String, required: true }, maturityDate: { type: String, required: true }, installmentAmountPaise: integerField(), installments: { type: [installmentSchema], default: [] }, cycles: { type: [cycleSchema], default: [] },
-  flexiblePhase: enumField(FlexiblePhase), lockedAveragePaise: integerField(), lockedAt: Date, positionVersion: versionField, version: versionField, createdBy: String,
+  flexiblePhase: enumField(FlexiblePhase), lockedAveragePaise: integerField(), lockedAt: Date, positionVersion: integerField({ default: 0, min: 0 }), version: versionField, createdBy: String,
 }, baseOptions);
 schemeSchema.index({ tenantId: 1, enrollmentNumber: 1 }, { unique: true }); schemeSchema.index({ tenantId: 1, branchId: 1, status: 1, maturityDate: 1 });
 
