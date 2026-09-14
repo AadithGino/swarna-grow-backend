@@ -1,0 +1,21 @@
+import { Router } from "express";
+import * as controller from "../controllers/auth.controller.js";
+import { asyncHandler } from "../lib/async-handler.js";
+import { authenticate } from "../middlewares/auth.middleware.js";
+import { idempotent } from "../middlewares/idempotency.middleware.js";
+import { loginRateLimit } from "../middlewares/security.middleware.js";
+import { validate } from "../middlewares/validation.middleware.js";
+import { forgotPasswordBody, loginBody, setPasswordBody } from "../validators/common.validators.js";
+
+export const authRouter = Router();
+authRouter.post("/login", loginRateLimit, validate({ body: loginBody }), asyncHandler(controller.login(false)));
+authRouter.post("/refresh", asyncHandler(controller.refresh));
+authRouter.post("/forgot-password", idempotent, validate({ body: forgotPasswordBody }), asyncHandler(controller.forgotPassword));
+authRouter.use(authenticate);
+authRouter.post("/set-password", validate({ body: setPasswordBody }), asyncHandler(controller.setPassword));
+authRouter.get("/me", asyncHandler(controller.me));
+authRouter.get("/devices", asyncHandler(controller.devices));
+authRouter.delete("/devices/:deviceId", asyncHandler(controller.revokeDevice));
+authRouter.post("/logout", asyncHandler(controller.logout));
+authRouter.post("/logout-all", asyncHandler(controller.logoutAll));
+authRouter.post("/change-password", asyncHandler(controller.changePassword));
