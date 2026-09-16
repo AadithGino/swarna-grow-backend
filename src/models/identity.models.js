@@ -10,20 +10,53 @@ const subscriptionSchema = new mongoose.Schema({
 }, { _id: false });
 const integrationSecretsSchema = new mongoose.Schema({ phonepe: { merchantId: String, saltKey: String, saltIndex: String, verifiedAt: Date }, whatsapp: { phoneNumberId: String, businessAccountId: String, accessToken: String, appSecret: String, verifyToken: String, verifiedAt: Date } }, { _id: false });
 
+const tenantAddressSchema = new mongoose.Schema(
+  { line1: String, city: String, state: String, pincode: String },
+  { _id: false },
+);
+
+const tenantOperationsSchema = new mongoose.Schema(
+  {
+    multiSchemePerCustomer: { type: Boolean, default: true },
+    kycMandatory: { type: Boolean, default: false },
+    kycAllowedTypes: { type: [String], default: ["AADHAAR", "PAN"] },
+    customerSelfEnrolEnabled: { type: Boolean, default: true },
+    customerSelfRegistrationEnabled: { type: Boolean, default: true },
+    receiptPrefix: { type: String, default: "" },
+    receiptNumberFormat: { type: String, default: "{prefix}/{branchCode}/{year}/{seq:6}" },
+    passbookNumberFormat: { type: String, default: "{branchCode}/{year}/{seq:5}" },
+    schemeNumberFormat: { type: String, default: "{branchCode}/{planCode}/{year}/{seq:5}" },
+    goldPurity: { type: String, default: "22K" },
+    weightRoundingMode: { type: String, default: "HALF_UP" },
+    paymentReversalWindowHours: { type: Number, default: 48 },
+    redemptionApprovalRequired: { type: Boolean, default: true },
+    termsAndConditions: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
 const tenantSchema = new mongoose.Schema({
   _id: stringId("tnt"), code: { type: String, required: true, uppercase: true, trim: true }, name: { type: String, required: true, trim: true },
   status: enumField(TenantStatus, { default: TenantStatus.PENDING_SETUP }), mobile: { type: String, required: true }, email: String, gstin: String,
+  displayName: String, supportNumber: String,
+  address: { type: tenantAddressSchema, default: undefined },
   branding: { logoUploadId: String, primaryColor: String, accentColor: String, displayName: String },
   settings: { timezone: { type: String, default: "Asia/Kolkata" }, currency: { type: String, default: "INR" }, requireKycForEnrolment: { type: Boolean, default: false }, requireKycForRedemption: { type: Boolean, default: true }, oneActiveSchemePerCustomer: { type: Boolean, default: false }, customerAppMaintenance: { type: Boolean, default: false } },
+  operations: { type: tenantOperationsSchema, default: () => ({}) },
   subscription: { type: subscriptionSchema, default: () => ({}) }, featureFlags: { type: Map, of: Boolean, default: {} },
   integrationSecrets: { type: integrationSecretsSchema, select: false },
   version: versionField,
 }, baseOptions);
 tenantSchema.index({ code: 1 }, { unique: true }); tenantSchema.index({ mobile: 1 }, { unique: true });
 
+const branchAddressSchema = new mongoose.Schema(
+  { line1: String, city: String, pincode: String },
+  { _id: false },
+);
+
 const branchSchema = new mongoose.Schema({
   _id: stringId("brn"), tenantId: tenantField, code: { type: String, required: true, uppercase: true }, name: { type: String, required: true },
-  mobile: String, email: String, address: String, isHeadOffice: { type: Boolean, default: false }, active: { type: Boolean, default: true }, version: versionField,
+  mobile: String, email: String, address: { type: branchAddressSchema, default: undefined }, contactNumber: String, isHeadOffice: { type: Boolean, default: false }, active: { type: Boolean, default: true }, version: versionField,
 }, baseOptions);
 branchSchema.index({ tenantId: 1, code: 1 }, { unique: true });
 

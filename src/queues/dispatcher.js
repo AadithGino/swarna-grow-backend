@@ -12,9 +12,34 @@ async function dispatch() {
     ]);
     const outboxQueue = getQueue("outbox"); const messageQueue = getQueue("messages"); const webhookQueue = getQueue("webhooks");
     if (!outboxQueue || !messageQueue || !webhookQueue) return;
-    await Promise.all(outbox.map((row) => outboxQueue.add(row.topic, { outboxEventId: row._id }, { jobId: row._id, attempts: 5, backoff: { type: "exponential", delay: 2000 } })));
-    await Promise.all(messages.map((row) => messageQueue.add(row.type, { messageId: row._id }, { jobId: row._id, attempts: 5, backoff: { type: "exponential", delay: 5000 } })));
-    await Promise.all(webhooks.map((row) => webhookQueue.add(row.provider, { webhookEventId: row._id }, { jobId: row._id, attempts: 5, backoff: { type: "exponential", delay: 5000 } })));
+    const jobId = (id) => String(id);
+    await Promise.all(
+      outbox.map((row) =>
+        outboxQueue.add(row.topic, { outboxEventId: jobId(row._id) }, {
+          jobId: jobId(row._id),
+          attempts: 5,
+          backoff: { type: "exponential", delay: 2000 },
+        }),
+      ),
+    );
+    await Promise.all(
+      messages.map((row) =>
+        messageQueue.add(row.type, { messageId: jobId(row._id) }, {
+          jobId: jobId(row._id),
+          attempts: 5,
+          backoff: { type: "exponential", delay: 5000 },
+        }),
+      ),
+    );
+    await Promise.all(
+      webhooks.map((row) =>
+        webhookQueue.add(row.provider, { webhookEventId: jobId(row._id) }, {
+          jobId: jobId(row._id),
+          attempts: 5,
+          backoff: { type: "exponential", delay: 5000 },
+        }),
+      ),
+    );
   } catch (error) { logger.error({ err: error }, "Outbox dispatch failed"); }
 }
 export function startDispatcher() { if (!timer) { timer = setInterval(() => void dispatch(), 2000); timer.unref(); void dispatch(); } }

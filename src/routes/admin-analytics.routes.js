@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as controller from "../controllers/analytics.controller.js";
+import * as searchController from "../controllers/search.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
@@ -9,6 +10,10 @@ import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
 
 export const adminAnalyticsRouter = Router();
+adminAnalyticsRouter.get(
+  "/search",
+  ...guarded(Permission.CUSTOMER_READ, asyncHandler(searchController.global)),
+);
 adminAnalyticsRouter.get("/dashboard", ...guarded(Permission.REPORT_READ, asyncHandler(controller.dashboard)));
 adminAnalyticsRouter.get("/dashboard/summary", ...guarded(Permission.REPORT_READ, asyncHandler(controller.dashboard)));
 adminAnalyticsRouter.get("/dashboard/charts/:chartKey", ...guarded(Permission.REPORT_READ, asyncHandler(controller.chart)));
@@ -22,10 +27,12 @@ adminAnalyticsRouter.get("/defaulters", ...guarded(Permission.REPORT_READ, async
 adminAnalyticsRouter.get("/maturities", ...guarded(Permission.REPORT_READ, asyncHandler(controller.dueList("maturities"))));
 adminAnalyticsRouter.get("/maturities/calendar", ...guarded(Permission.REPORT_READ, asyncHandler(controller.maturityCalendar)));
 adminAnalyticsRouter.get("/flexible-locks", ...guarded(Permission.REPORT_READ, asyncHandler(controller.dueList("flexible-locks"))));
+adminAnalyticsRouter.get("/nav-badges", ...guarded(Permission.REPORT_READ, asyncHandler(controller.navBadges)));
 adminAnalyticsRouter.get("/dues/count", ...guarded(Permission.REPORT_READ, asyncHandler(async (req, res) => sendSuccess(res, { count: await (await import("../models/index.js")).Scheme.countDocuments({ ...req.scope, paymentPattern: "FIXED", "installments.status": { $in: ["DUE", "PARTIALLY_PAID"] } }) }))));
 adminAnalyticsRouter.post("/dues/bulk-send-links", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(async (req, res) => sendSuccess(res, { accepted: req.body.schemeIds?.length ?? 0 }, {}, 202))));
 adminAnalyticsRouter.post("/overdues/bulk-send-reminders", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(async (req, res) => sendSuccess(res, { accepted: req.body.schemeIds?.length ?? 0, flexibleSchemesExcluded: true }, {}, 202))));
 adminAnalyticsRouter.post("/exports", ...guarded(Permission.REPORT_EXPORT, validate({ body: exportBody }), idempotent, asyncHandler(controller.createExport)));
 adminAnalyticsRouter.get("/exports", ...guarded(Permission.REPORT_EXPORT, asyncHandler(async (req, res) => sendSuccess(res, await (await import("../models/index.js")).ExportJob.find(req.scope).sort({ createdAt: -1 }).lean()))));
+adminAnalyticsRouter.get("/exports/:exportId/file", ...guarded(Permission.REPORT_EXPORT, asyncHandler(controller.downloadExportFile)));
 adminAnalyticsRouter.get("/exports/:exportId", ...guarded(Permission.REPORT_EXPORT, asyncHandler(controller.getExport)));
 adminAnalyticsRouter.get("/audit-events", ...guarded(Permission.AUDIT_READ, asyncHandler(controller.auditEvents)));

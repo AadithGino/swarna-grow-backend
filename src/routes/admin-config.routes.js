@@ -10,20 +10,37 @@ import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
 
 export const adminConfigRouter = Router();
-adminConfigRouter.get("/settings/profile", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.profile)));
-adminConfigRouter.get("/settings/branding", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.profile)));
-adminConfigRouter.get("/settings/operations", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.profile)));
-adminConfigRouter.patch("/settings/profile", ...guarded(Permission.SETTINGS_WRITE, asyncHandler(controller.updateSettings("profile"))));
-adminConfigRouter.patch("/settings/branding", ...guarded(Permission.SETTINGS_WRITE, asyncHandler(controller.updateSettings("branding"))));
-adminConfigRouter.patch("/settings/operations", ...guarded(Permission.SETTINGS_WRITE, asyncHandler(controller.updateSettings("settings"))));
+adminConfigRouter.get("/settings/profile", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.settingsProfile)));
+adminConfigRouter.get("/settings/branding", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.settingsBranding)));
+adminConfigRouter.get("/settings/operations", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.settingsOperations)));
+adminConfigRouter.patch("/settings/profile", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.patchSettingsProfile)));
+adminConfigRouter.patch("/settings/branding", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.patchSettingsBranding)));
+adminConfigRouter.patch("/settings/operations", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.patchSettingsOperations)));
 adminConfigRouter.get("/branches", ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branches)));
 adminConfigRouter.post("/branches", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.createBranch)));
+adminConfigRouter.get(
+  "/branches/:branchId/performance/summary",
+  ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branchPerformanceSummary)),
+);
+adminConfigRouter.get(
+  "/branches/:branchId/performance/:section",
+  ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branchPerformanceSection)),
+);
 adminConfigRouter.get("/branches/:branchId", ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branchDetail)));
 adminConfigRouter.patch("/branches/:branchId", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.updateBranch)));
 adminConfigRouter.post("/branches/:branchId/deactivate", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.setBranchActive(false))));
 adminConfigRouter.post("/branches/:branchId/activate", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.setBranchActive(true))));
+adminConfigRouter.get("/access/summary", ...guarded(Permission.STAFF_READ, asyncHandler(controller.accessSummary)));
 adminConfigRouter.get("/staff", ...guarded(Permission.STAFF_READ, asyncHandler(controller.staff)));
 adminConfigRouter.post("/staff", ...guarded(Permission.STAFF_WRITE, idempotent, asyncHandler(controller.createStaff)));
+adminConfigRouter.get(
+  "/staff/:staffId/performance/summary",
+  ...guarded(Permission.STAFF_READ, asyncHandler(controller.staffPerformanceSummary)),
+);
+adminConfigRouter.get(
+  "/staff/:staffId/performance/:section",
+  ...guarded(Permission.STAFF_READ, asyncHandler(controller.staffPerformanceSection)),
+);
 adminConfigRouter.get("/staff/:staffId", ...guarded(Permission.STAFF_READ, asyncHandler(controller.staffDetail)));
 adminConfigRouter.patch("/staff/:staffId", ...guarded(Permission.STAFF_WRITE, idempotent, asyncHandler(controller.updateStaff)));
 adminConfigRouter.post("/staff/:staffId/deactivate", ...guarded(Permission.STAFF_WRITE, idempotent, asyncHandler(controller.deactivateStaff)));
@@ -36,8 +53,12 @@ adminConfigRouter.get("/gold-rate/history", ...guarded(Permission.GOLD_RATE_READ
 adminConfigRouter.get("/subscription", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.subscription)));
 adminConfigRouter.get("/subscription/available-plans", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.availablePlans)));
 adminConfigRouter.post("/subscription/upgrade-request", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.upgradeRequest)));
-adminConfigRouter.get("/subscription/usage", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.subscription)));
-adminConfigRouter.get("/subscription/invoices", ...guarded(Permission.SETTINGS_READ, asyncHandler(async (req, res) => sendSuccess(res, await (await import("../models/index.js")).Invoice.find({ tenantId: req.auth.tenantId }).sort({ createdAt: -1 }).lean()))));
+adminConfigRouter.get("/subscription/usage", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.subscriptionUsage)));
+adminConfigRouter.get("/subscription/invoices", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.subscriptionInvoices)));
+adminConfigRouter.get(
+  "/subscription/invoices/:invoiceId/pdf",
+  ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.subscriptionInvoicePdf)),
+);
 adminConfigRouter.get("/alerts", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.alerts)));
 adminConfigRouter.post("/alerts/:alertId/dismiss", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.dismissAlert)));
 adminConfigRouter.post("/uploads/presign", ...guarded(Permission.SETTINGS_WRITE, validate({ body: uploadBody }), idempotent, asyncHandler(async (req, res) => sendSuccess(res, await presignUpload(req), {}, 201))));

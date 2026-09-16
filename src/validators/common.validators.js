@@ -24,15 +24,287 @@ const amountRules = z.object({ amountMode: enumSchema(E.AmountMode), fixedAmount
 const scheduleRules = z.object({ dueDateRule: enumSchema(E.DueDateRule), dueDayOfMonth: z.number().int().min(1).max(31).nullable().optional(), graceDays: z.number().int().min(0).max(90).default(0), firstInstallmentModeDefault: enumSchema(E.FirstInstallmentMode), firstInstallmentModeEditable: z.boolean().default(false) });
 const paymentRules = z.object({ partialPaymentAllowed: z.boolean().default(false), advancePaymentAllowed: z.boolean().default(false), maxAdvanceInstallments: z.number().int().min(0).max(120).default(0), minPaymentPaise: nullablePaise, maxPaymentPerTransactionPaise: nullablePaise });
 const flexibleRules = z.object({ phaseMode: enumSchema(E.PhaseMode), capMode: enumSchema(E.CapMode), carryForwardMode: enumSchema(E.CarryForwardMode), flexiblePhaseCycles: z.number().int().positive(), cappedPhaseCycles: z.number().int().positive(), averagingDivisor: z.number().int().positive(), frequencyMode: enumSchema(E.FlexibleFrequencyMode), flexiblePhase: z.object({ minimumPaymentPaise: positivePaise, maximumPaymentPaise: positivePaise, paymentIncrementPaise: positivePaise, minTotalPaise: paise, maxPaymentsPerCycle: z.number().int().positive().nullable().optional(), paymentsRequiredPerCycle: z.literal(0) }), capComputation: z.object({ formula: enumSchema(E.CapFormula), roundingMode: enumSchema(E.CapRoundingMode), roundToNearestPaise: positivePaise, minCycleCapPaise: positivePaise, maxCycleCapPaise: positivePaise, onZeroFlexiblePhaseTotal: enumSchema(E.ZeroFlexibleTotalAction), onBelowMinimumTotal: enumSchema(E.BelowMinimumTotalAction) }), cappedPhase: z.object({ minimumPaymentPaise: positivePaise, paymentIncrementPaise: positivePaise, allowFinalRemainderBelowMinimum: z.boolean(), allowFutureCyclePayment: z.boolean(), maxAdvanceCycles: z.number().int().min(0) }), extensionMode: z.literal("EXTEND_FLEXIBLE_PHASE").optional() });
-const benefit = z.object({ type: enumSchema(E.BenefitType), bonusBasis: enumSchema(E.BonusBasis).nullable().optional(), bonusValue: nullablePaise, maxBonusPaise: nullablePaise, textBenefit: z.string().max(4000).nullable().optional(), eligibility: z.object({ requireAllInstallmentsPaid: z.boolean(), maxAllowedDefaults: z.number().int().min(0), minMonthsCompleted: z.number().int().min(0) }), displayLabel: z.string().max(160) });
-const redemptionRules = z.object({ prematureClosureAllowed: z.boolean(), lockInMonths: z.number().int().min(0), prematurePenalty: z.object({ mode: enumSchema(E.PrematurePenaltyMode), value: nullablePaise, flatPaise: nullablePaise, benefitTreatment: enumSchema(E.BenefitTreatment) }), allowedModes: z.array(enumSchema(E.RedemptionMode)).min(1), redeemAtAnyBranch: z.boolean() });
+const benefitEligibility = z.object({
+  requireAllInstallmentsPaid: z.boolean(),
+  maxAllowedDefaults: z.number().int().min(0),
+  minMonthsCompleted: z.number().int().min(0),
+});
+const benefit = z
+  .object({
+    type: enumSchema(E.BenefitType),
+    bonusBasis: enumSchema(E.BonusBasis).nullable().optional(),
+    bonusValue: z.number().int().nonnegative().nullable().optional(),
+    maxBonusPaise: nullablePaise,
+    textBenefit: z.string().max(4000).nullable().optional(),
+    eligibility: benefitEligibility,
+    displayLabel: z.string().max(160),
+  })
+  .superRefine((value, context) => {
+    if (value.type !== E.BenefitType.FIXED_BONUS_AMOUNT) return;
+    if (value.bonusBasis === E.BonusBasis.FLAT) {
+      if (value.bonusValue == null || value.bonusValue < 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["bonusValue"],
+          message: "Flat bonus requires bonusValue in paise (positive integer).",
+        });
+      }
+      return;
+    }
+    if (value.bonusBasis === E.BonusBasis.PERCENT_OF_PAID) {
+      if (value.bonusValue == null || value.bonusValue > 100) {
+        context.addIssue({
+          code: "custom",
+          path: ["bonusValue"],
+          message: "Percent bonus must be an integer from 0 to 100.",
+        });
+      }
+    }
+  });
+const prematurePenalty = z
+  .object({
+    mode: enumSchema(E.PrematurePenaltyMode),
+    value: z.number().int().nonnegative().nullable().optional(),
+    flatPaise: nullablePaise,
+    benefitTreatment: enumSchema(E.BenefitTreatment),
+  })
+  .superRefine((value, context) => {
+    if (value.mode === E.PrematurePenaltyMode.PERCENT_OF_PAID) {
+      if (value.value != null && value.value > 100) {
+        context.addIssue({
+          code: "custom",
+          path: ["value"],
+          message: "Penalty percent must be from 0 to 100.",
+        });
+      }
+      return;
+    }
+    if (value.mode === E.PrematurePenaltyMode.FLAT) {
+      const flat = value.flatPaise ?? value.value;
+      if (flat == null || flat < 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["flatPaise"],
+          message: "Flat penalty requires flatPaise (positive integer).",
+        });
+      }
+    }
+  });
+const redemptionRules = z.object({
+  prematureClosureAllowed: z.boolean(),
+  lockInMonths: z.number().int().min(0),
+  prematurePenalty,
+  allowedModes: z.array(enumSchema(E.RedemptionMode)).min(1),
+  redeemAtAnyBranch: z.boolean(),
+});
 const availability = z.object({ allBranches: z.boolean(), branchIds: z.array(z.string()).default([]), enrolmentOpenFrom: z.string().nullable().optional(), enrolmentOpenTo: z.string().nullable().optional(), maxEnrolments: z.number().int().positive().nullable().optional(), visibleInCustomerApp: z.boolean(), customerSelfEnrolAllowed: z.boolean() });
 const goldRules = z.object({ rateSource: enumSchema(E.GoldRateSource), weightRoundingMode: enumSchema(E.WeightRoundingMode), weightPrecisionMg: z.number().int().positive(), blockPaymentIfRateNotSet: z.boolean() });
-export const planBody = z.object({ name: z.string().min(2).max(120), code: z.string().regex(/^[A-Z0-9_-]{2,20}$/), displayName: z.string().max(120).optional(), description: z.string().max(2000).optional(), termsText: z.string().max(10000).optional(), valueBasis: enumSchema(E.ValueBasis), paymentPattern: enumSchema(E.PaymentPattern), durationMonths: z.number().int().min(1).max(120), installmentCount: z.number().int().min(1).max(120), amountRules, scheduleRules, paymentRules, flexibleRules: flexibleRules.nullable().optional(), goldRules: goldRules.nullable().optional(), benefit: benefit.optional(), redemptionRules, availability, status: enumSchema(E.SchemePlanStatus).default(E.SchemePlanStatus.DRAFT) }).superRefine((value, context) => { if (value.paymentPattern === E.PaymentPattern.FLEXIBLE && !value.flexibleRules) context.addIssue({ code: "custom", path: ["flexibleRules"], message: "Flexible plans require flexibleRules." }); if (value.paymentPattern === E.PaymentPattern.FIXED && value.flexibleRules) context.addIssue({ code: "custom", path: ["flexibleRules"], message: "Fixed plans must not define flexibleRules." }); if (value.valueBasis === E.ValueBasis.GOLD_WEIGHT && !value.goldRules) context.addIssue({ code: "custom", path: ["goldRules"], message: "Gold-weight plans require goldRules." }); });
+
+function refinePlanCrossFields(value, context, { requireComplete = true } = {}) {
+  const pattern = value.paymentPattern;
+  if (pattern === E.PaymentPattern.FLEXIBLE) {
+    if (value.flexibleRules === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["flexibleRules"],
+        message: "Flexible plans require flexibleRules.",
+      });
+    } else if (requireComplete && !value.flexibleRules) {
+      context.addIssue({
+        code: "custom",
+        path: ["flexibleRules"],
+        message: "Flexible plans require flexibleRules.",
+      });
+    }
+  }
+  if (pattern === E.PaymentPattern.FIXED && value.flexibleRules) {
+    context.addIssue({
+      code: "custom",
+      path: ["flexibleRules"],
+      message: "Fixed plans must not define flexibleRules.",
+    });
+  }
+  const basis = value.valueBasis;
+  if (basis === E.ValueBasis.GOLD_WEIGHT) {
+    if (value.goldRules === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["goldRules"],
+        message: "Gold-weight plans require goldRules.",
+      });
+    } else if (requireComplete && !value.goldRules) {
+      context.addIssue({
+        code: "custom",
+        path: ["goldRules"],
+        message: "Gold-weight plans require goldRules.",
+      });
+    }
+  }
+  if (
+    pattern === E.PaymentPattern.FLEXIBLE
+    && value.benefit?.type === E.BenefitType.ONE_FREE_INSTALLMENT
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["benefit", "type"],
+      message: "Flexible plans cannot use one free installment. Use fixed bonus or text-only benefit.",
+    });
+  }
+  if (
+    value.scheduleRules?.dueDateRule === E.DueDateRule.FIXED_DAY_OF_MONTH
+    && (value.scheduleRules.dueDayOfMonth == null
+      || value.scheduleRules.dueDayOfMonth < 1
+      || value.scheduleRules.dueDayOfMonth > 31)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["scheduleRules", "dueDayOfMonth"],
+      message: "Fixed-day schedules require dueDayOfMonth between 1 and 31.",
+    });
+  }
+}
+
+const planFields = {
+  name: z.string().min(2).max(120),
+  code: z.string().regex(/^[A-Z0-9_-]{2,20}$/),
+  displayName: z.string().max(120).optional(),
+  description: z.string().max(2000).optional(),
+  termsText: z.string().max(10000).optional(),
+  valueBasis: enumSchema(E.ValueBasis),
+  paymentPattern: enumSchema(E.PaymentPattern),
+  durationMonths: z.number().int().min(1).max(120),
+  installmentCount: z.number().int().min(1).max(120),
+  amountRules,
+  scheduleRules,
+  paymentRules,
+  flexibleRules: flexibleRules.nullable().optional(),
+  goldRules: goldRules.nullable().optional(),
+  benefit: benefit.optional(),
+  redemptionRules,
+  availability,
+  status: enumSchema(E.SchemePlanStatus).default(E.SchemePlanStatus.DRAFT),
+};
+
+export const planBody = z
+  .object(planFields)
+  .superRefine((value, context) => refinePlanCrossFields(value, context, { requireComplete: true }));
+
+const benefitPatch = z
+  .object({
+    type: enumSchema(E.BenefitType).optional(),
+    bonusBasis: enumSchema(E.BonusBasis).nullable().optional(),
+    bonusValue: z.number().int().nonnegative().nullable().optional(),
+    maxBonusPaise: nullablePaise,
+    textBenefit: z.string().max(4000).nullable().optional(),
+    eligibility: benefitEligibility.partial().optional(),
+    displayLabel: z.string().max(160).optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.type !== E.BenefitType.FIXED_BONUS_AMOUNT) return;
+    if (value.bonusBasis === E.BonusBasis.FLAT) {
+      if (value.bonusValue == null || value.bonusValue < 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["bonusValue"],
+          message: "Flat bonus requires bonusValue in paise (positive integer).",
+        });
+      }
+      return;
+    }
+    if (value.bonusBasis === E.BonusBasis.PERCENT_OF_PAID) {
+      if (value.bonusValue != null && value.bonusValue > 100) {
+        context.addIssue({
+          code: "custom",
+          path: ["bonusValue"],
+          message: "Percent bonus must be an integer from 0 to 100.",
+        });
+      }
+    }
+  });
+
+export const planPatchBody = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    name: planFields.name.optional(),
+    displayName: planFields.displayName,
+    description: planFields.description,
+    termsText: planFields.termsText,
+    valueBasis: planFields.valueBasis.optional(),
+    paymentPattern: planFields.paymentPattern.optional(),
+    durationMonths: planFields.durationMonths.optional(),
+    installmentCount: planFields.installmentCount.optional(),
+    amountRules: amountRules.optional(),
+    scheduleRules: scheduleRules.optional(),
+    paymentRules: paymentRules.optional(),
+    flexibleRules: flexibleRules.nullable().optional(),
+    goldRules: goldRules.nullable().optional(),
+    benefit: benefitPatch.optional(),
+    redemptionRules: redemptionRules.optional(),
+    availability: availability.partial().optional(),
+    status: planFields.status.optional(),
+  })
+  .superRefine((value, context) =>
+    refinePlanCrossFields(value, context, { requireComplete: false }),
+  );
+
+const previewScheduleExtras = {
+  planId: z.string().min(4).max(80).optional(),
+  installmentAmountPaise: positivePaise,
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  firstInstallmentMode: enumSchema(E.FirstInstallmentMode).optional(),
+};
+
+function normalizePreviewDraftBody(value) {
+  const name = String(value.name ?? "").trim();
+  const code = String(value.code ?? "")
+    .trim()
+    .toUpperCase();
+  return {
+    ...value,
+    name: name.length >= 2 ? name : "Preview plan",
+    code: /^[A-Z0-9_-]{2,20}$/.test(code) ? code : "DRAFT",
+  };
+}
+
+export const previewScheduleBody = z
+  .object(previewScheduleExtras)
+  .passthrough()
+  .superRefine((value, context) => {
+    if (value.planId) return;
+    const parsed = planBody.safeParse(normalizePreviewDraftBody(value));
+    if (parsed.success) return;
+    for (const issue of parsed.error.issues) {
+      context.addIssue(issue);
+    }
+  });
 export const enrolBody = z.object({ customerId: z.string(), planId: z.string(), branchId: z.string().optional(), installmentAmountPaise: positivePaise.optional(), firstInstallmentMode: enumSchema(E.FirstInstallmentMode), firstInstallmentAction: enumSchema(E.FirstInstallmentAction).optional(), payment: z.record(z.string(), z.unknown()).optional() });
-export const paymentBody = z.object({ schemeId: z.string(), amountPaise: positivePaise, mode: enumSchema(E.ManualPaymentMode), targetCycle: z.string().regex(/^\d{4}-\d{2}$/).optional(), expectedVersion: z.number().int().positive().optional(), expectedPositionVersion: z.number().int().nonnegative().optional(), positionVersion: z.number().int().nonnegative().optional(), reference: z.string().max(160).optional(), remarks: z.string().max(500).optional() });
-export const paymentIntentBody = z.object({ amountPaise: positivePaise, targetCycle: z.string().regex(/^\d{4}-\d{2}$/).optional(), expectedPositionVersion: z.number().int().nonnegative().optional(), positionVersion: z.number().int().nonnegative().optional(), redirectUrl: z.string().url().optional(), mobile: mobile.optional() });
-export const paymentLinkBody = z.object({ schemeId: z.string(), amountPaise: positivePaise, targetCycle: z.string().regex(/^\d{4}-\d{2}$/).optional(), expectedPositionVersion: z.number().int().nonnegative().optional(), positionVersion: z.number().int().nonnegative().optional(), expiresInMinutes: z.number().int().positive().optional() });
+export const paymentBody = z.object({
+  schemeId: z.string(),
+  amountPaise: positivePaise,
+  mode: enumSchema(E.ManualPaymentMode),
+  targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
+  expectedVersion: z.number().int().positive().nullish(),
+  expectedPositionVersion: z.number().int().nonnegative().nullish(),
+  positionVersion: z.number().int().nonnegative().nullish(),
+  reference: z.string().max(160).nullish(),
+  remarks: z.string().max(500).nullish(),
+});
+export const paymentIntentBody = z.object({
+  amountPaise: positivePaise,
+  targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
+  expectedPositionVersion: z.number().int().nonnegative().nullish(),
+  positionVersion: z.number().int().nonnegative().nullish(),
+  redirectUrl: z.string().url().nullish(),
+  mobile: mobile.nullish(),
+});
+export const paymentLinkBody = z.object({
+  schemeId: z.string(),
+  amountPaise: positivePaise,
+  targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
+  expectedPositionVersion: z.number().int().nonnegative().nullish(),
+  positionVersion: z.number().int().nonnegative().nullish(),
+  expiresInMinutes: z.number().int().positive().nullish(),
+});
 export const customerPatchBody = customerBody.partial().extend({ expectedVersion: z.number().int().positive().optional() });
 export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(4000) });
 export const whatsappOptBody = z.object({ optedIn: z.boolean() });

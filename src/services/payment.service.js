@@ -1,5 +1,5 @@
-import { AuditEntityType, LedgerEntryType, LinkStatus, ManualPaymentMode, PaymentIntentStatus, PaymentMode, PaymentSource, PaymentStatus, ValueBasis } from "../constants/enums.js";
-import { LedgerEntry, OutboxEvent, Payment, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
+import { AuditEntityType, LedgerEntryType, LinkStatus, ManualPaymentMode, PAYMENT_MODE_LABELS, PAYMENT_MODE_ORDER, PaymentIntentStatus, PaymentMode, PaymentSource, PaymentStatus, ValueBasis } from "../constants/enums.js";
+import { Customer, LedgerEntry, OutboxEvent, Payment, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { randomToken, sha256, unseal } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
@@ -13,6 +13,127 @@ import { currentGoldRate } from "./tenant.service.js";
 import { paginate } from "../lib/pagination.js";
 import { phonePeProvider } from "../integrations/phonepe.provider.js";
 import { nextSequence } from "./sequence.service.js";
+import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
+import { moneyRef } from "../lib/money.js";
+import { branchDto, loadBranchMap, loadUserMap, userDto } from "../lib/relation-maps.js";
+
+function fillPaymentModes(modeRows) {
+  const includeLegacy = modeRows.some((row) => row._id === PaymentMode.LEGACY_ONLINE);
+  const order = PAYMENT_MODE_ORDER.filter(
+    (mode) => mode !== PaymentMode.LEGACY_ONLINE || includeLegacy,
+  );
+  return order.map((mode) => {
+    const row = modeRows.find((item) => item._id === mode);
+    return {
+      mode,
+      label: PAYMENT_MODE_LABELS[mode] ?? mode,
+      count: row?.count ?? 0,
+      amount: moneyRef(row?.amountPaise ?? 0),
+    };
+  });
+}
+
+async function paymentListSummary(req, filters, query) {
+  const match = { ...effectiveScope(req), ...filters };
+  const modeMatch = { ...match };
+  if (!filters.status) modeMatch.status = PaymentStatus.SUCCESS;
+
+  const [totals, byStatus, byModeAgg] = await Promise.all([
+    Payment.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          totalAmountPaise: { $sum: "$amountPaise" },
+        },
+      },
+    ]),
+    Payment.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          amountPaise: { $sum: "$amountPaise" },
+        },
+      },
+    ]),
+    Payment.aggregate([
+      { $match: modeMatch },
+      {
+        $group: {
+          _id: "$mode",
+          count: { $sum: 1 },
+          amountPaise: { $sum: "$amountPaise" },
+        },
+      },
+    ]),
+  ]);
+
+  const statusRow = (status) =>
+    byStatus.find((row) => row._id === status) ?? {
+      count: 0,
+      amountPaise: 0,
+    };
+  const success = statusRow(PaymentStatus.SUCCESS);
+  const pending = statusRow(PaymentStatus.PENDING);
+  const failed = statusRow(PaymentStatus.FAILED);
+  const reversed = statusRow(PaymentStatus.REVERSED);
+  const byMode = fillPaymentModes(byModeAgg);
+
+  const summary = {
+    count: totals[0]?.count ?? 0,
+    successfulCount: success.count,
+    pendingCount: pending.count,
+    failedCount: failed.count,
+    reversedCount: reversed.count,
+    totalAmount: moneyRef(totals[0]?.totalAmountPaise ?? 0),
+    successfulAmount: moneyRef(success.amountPaise),
+    reversedAmount: moneyRef(reversed.amountPaise),
+    averageSuccessfulPayment:
+      success.count > 0
+        ? moneyRef(Math.round(success.amountPaise / success.count))
+        : moneyRef(0),
+    byMode,
+    byStatus: [
+      PaymentStatus.SUCCESS,
+      PaymentStatus.PENDING,
+      PaymentStatus.FAILED,
+      PaymentStatus.REVERSED,
+    ].map((status) => {
+      const row = statusRow(status);
+      return {
+        status,
+        count: row.count,
+        amount: moneyRef(row.amountPaise),
+      };
+    }),
+  };
+
+  const includeCharts =
+    query.includeCharts === "true" || query.includeCharts === true;
+  if (includeCharts) {
+    const modeSeries = byMode
+      .filter((row) => row.count > 0)
+      .map((row) => ({
+        x: row.label,
+        y: row.amount.amountPaise,
+        yDisplay: row.amount.amountDisplay,
+        modeKey: row.mode,
+      }));
+    summary.charts = {
+      modeDistribution: {
+        chartType: "donut",
+        title: "Filtered payments by mode",
+        yAxis: { type: "currency", label: "Amount" },
+        series: [{ key: "PAYMENT_MODE", name: "Amount", data: modeSeries }],
+      },
+    };
+  }
+
+  return summary;
+}
 
 const sourceFor = (req) => req.baseUrl.includes("/staff") ? PaymentSource.STAFF_APP : req.baseUrl.includes("/app") ? PaymentSource.CUSTOMER_APP : PaymentSource.PORTAL;
 
@@ -28,7 +149,18 @@ function checkAmount(quote, amountPaise) {
   }
   if (amountPaise < quote.minPayablePaise) throw errors.business("AMOUNT_BELOW_MINIMUM", "The payment is below the allowed amount.", quote);
   if (amountPaise > quote.maxPayablePaise) throw errors.business("AMOUNT_ABOVE_MAXIMUM", "The payment exceeds the allowed amount.", quote);
-  if (quote.paymentIncrementPaise > 1 && amountPaise % quote.paymentIncrementPaise !== 0 && !(quote.allowFinalRemainderBelowMinimum && amountPaise === quote.maxPayablePaise)) throw errors.business("AMOUNT_NOT_MULTIPLE", `The payment must be a multiple of ${quote.paymentIncrementPaise} paise.`, quote);
+  if (
+    quote.model !== "FLEXIBLE" &&
+    quote.paymentIncrementPaise > 1 &&
+    amountPaise % quote.paymentIncrementPaise !== 0 &&
+    !(quote.allowFinalRemainderBelowMinimum && amountPaise === quote.maxPayablePaise)
+  ) {
+    throw errors.business(
+      "AMOUNT_NOT_MULTIPLE",
+      `The payment must be a multiple of ${quote.paymentIncrementPaise} paise.`,
+      quote,
+    );
+  }
 }
 
 function readExpectedPositionVersion(body = {}) {
@@ -80,19 +212,99 @@ export async function recordPayment(req, override = {}) {
     if (override.existingPaymentId) {
       payment = await Payment.findOne({ _id: override.existingPaymentId, tenantId: scheme.tenantId, status: { $in: override.lateSuccess ? [PaymentStatus.PENDING, PaymentStatus.FAILED] : [PaymentStatus.PENDING] } }).session(session);
       if (!payment) throw new AppError("PAYMENT_ALREADY_RECORDED", "This gateway attempt is no longer pending.", 409);
-      payment.receiptNumber = await nextReceipt(scheme.tenantId, session); payment.status = quote ? PaymentStatus.SUCCESS : PaymentStatus.UNALLOCATED_PENDING_REVIEW; payment.allocatedAmountPaise = quote ? req.body.amountPaise : 0; payment.weightMg = weightMg; payment.ratePerGramPaise = rate?.ratePerGramPaise ?? 0; payment.targetCycle = req.body.targetCycle; payment.providerTransactionId = override.providerTransactionId; payment.providerPayload = override.providerPayload; payment.paidAt = override.paidAt ?? new Date(); payment.isLateSuccess = Boolean(override.lateSuccess); payment.lateSuccessDetectedVia = override.lateSuccessDetectedVia; payment.gatewayCompletedAt = override.gatewayCompletedAt; payment.delayMinutes = override.lateSuccess ? Math.max(0, Math.floor(((override.paidAt ?? new Date()) - payment.createdAt) / 60_000)) : 0; payment.requiresReview = !quote; payment.reviewReason = !quote ? "NO_PAYABLE_POSITION_AVAILABLE" : undefined; await payment.save({ session });
-    } else payment = (await Payment.create([{ _id: createId("payment"), tenantId: scheme.tenantId, branchId: scheme.branchId, schemeId: scheme._id, customerId: scheme.customerId, receiptNumber: await nextReceipt(scheme.tenantId, session), amountPaise: req.body.amountPaise, allocatedAmountPaise: req.body.amountPaise, weightMg, ratePerGramPaise: rate?.ratePerGramPaise ?? 0, mode: override.gateway ? PaymentMode.ONLINE_GATEWAY : req.body.mode, status: PaymentStatus.SUCCESS, source: override.source ?? sourceFor(req), reference: req.body.reference, remarks: req.body.remarks, collectedBy: req.auth.id, targetCycle: req.body.targetCycle, providerTransactionId: override.providerTransactionId, providerPayload: override.providerPayload, paidAt: override.paidAt ?? new Date() }], { session }))[0];
+      payment.receiptNumber = await nextReceipt(scheme.tenantId, session); payment.status = quote ? PaymentStatus.SUCCESS : PaymentStatus.UNALLOCATED_PENDING_REVIEW; payment.allocatedAmountPaise = quote ? req.body.amountPaise : 0; payment.weightMg = weightMg; payment.ratePerGramPaise = rate?.ratePerGramPaise ?? 0; payment.targetCycle = req.body.targetCycle; if (override.providerTransactionId) payment.providerTransactionId = override.providerTransactionId; payment.providerPayload = override.providerPayload; payment.paidAt = override.paidAt ?? new Date(); payment.isLateSuccess = Boolean(override.lateSuccess); payment.lateSuccessDetectedVia = override.lateSuccessDetectedVia; payment.gatewayCompletedAt = override.gatewayCompletedAt; payment.delayMinutes = override.lateSuccess ? Math.max(0, Math.floor(((override.paidAt ?? new Date()) - payment.createdAt) / 60_000)) : 0; payment.requiresReview = !quote; payment.reviewReason = !quote ? "NO_PAYABLE_POSITION_AVAILABLE" : undefined; await payment.save({ session });
+    } else {
+      const paymentDoc = {
+        _id: createId("payment"),
+        tenantId: scheme.tenantId,
+        branchId: scheme.branchId,
+        schemeId: scheme._id,
+        customerId: scheme.customerId,
+        receiptNumber: await nextReceipt(scheme.tenantId, session),
+        amountPaise: req.body.amountPaise,
+        allocatedAmountPaise: req.body.amountPaise,
+        weightMg,
+        ratePerGramPaise: rate?.ratePerGramPaise ?? 0,
+        mode: override.gateway ? PaymentMode.ONLINE_GATEWAY : req.body.mode,
+        status: PaymentStatus.SUCCESS,
+        source: override.source ?? sourceFor(req),
+        reference: req.body.reference ?? undefined,
+        remarks: req.body.remarks ?? undefined,
+        collectedBy: req.auth.id,
+        targetCycle: req.body.targetCycle ?? undefined,
+        providerPayload: override.providerPayload,
+        paidAt: override.paidAt ?? new Date(),
+      };
+      if (override.providerTransactionId) paymentDoc.providerTransactionId = override.providerTransactionId;
+      payment = (await Payment.create([paymentDoc], { session }))[0];
+    }
     const type = !quote ? LedgerEntryType.UNALLOCATED_PAYMENT : scheme.paymentPattern === "FLEXIBLE" && scheme.flexiblePhase === "FLEXIBLE" ? LedgerEntryType.FREE_WINDOW_PAYMENT : LedgerEntryType.INSTALLMENT_PAYMENT;
     const sequence = await nextSequence(scheme.tenantId, `ledger:${scheme._id}`, session);
     await LedgerEntry.create([{ _id: createId("ledger"), tenantId: scheme.tenantId, branchId: scheme.branchId, schemeId: scheme._id, customerId: scheme.customerId, paymentId: payment._id, type, sequence, amountPaise: payment.amountPaise, weightMg, ratePerGramPaise: rate?.ratePerGramPaise ?? 0, cycle: req.body.targetCycle, actorType: override.actorType ?? "USER", actorId: req.auth.id, description: "Scheme contribution" }], { session });
     if (quote && scheme.paymentPattern === "FIXED") { let remaining = payment.amountPaise; for (const installment of scheme.installments) { if (remaining <= 0 || ["PAID", "WAIVED"].includes(installment.status)) continue; const allocation = Math.min(installment.amountPaise - installment.paidPaise, remaining); installment.paidPaise += allocation; remaining -= allocation; installment.status = installment.paidPaise === installment.amountPaise ? "PAID" : "PARTIALLY_PAID"; } }
     else if (quote) { const cycleKey = req.body.targetCycle ?? new Date().toISOString().slice(0, 7); const cycle = scheme.cycles.find((row) => row.cycle === cycleKey); if (cycle) { cycle.paidPaise += payment.amountPaise; cycle.remainingPaise = Math.max(0, cycle.capPaise - cycle.paidPaise); cycle.status = cycle.remainingPaise === 0 && cycle.capPaise > 0 ? "PAID" : "PARTIALLY_PAID"; } scheme.positionVersion += 1; }
     scheme.version += 1; await scheme.save({ session });
-    await OutboxEvent.create([{ tenantId: scheme.tenantId, topic: "payment.succeeded", key: payment._id, payload: { paymentId: payment._id, customerId: scheme.customerId, schemeId: scheme._id } }], { session });
+    await OutboxEvent.create([{ tenantId: scheme.tenantId, topic: "payment.succeeded", key: payment._id, payload: { paymentId: payment._id, customerId: scheme.customerId, schemeId: scheme._id, branchId: payment.branchId ?? scheme.branchId } }], { session });
     const auditEventId = await writeAudit({ req, action: "PAYMENT_RECORDED", entityType: AuditEntityType.PAYMENT, entityId: payment._id, after: payment.toObject(), actorType: override.actorType, session }); return { ...payment.toObject(), auditEventId, schemeVersion: scheme.version, positionVersion: scheme.positionVersion };
   });
 }
-export async function listPayments(req) { const filters = {}; for (const key of ["status", "mode", "source", "schemeId", "customerId", "collectedBy"]) if (req.query[key]) filters[key] = req.query[key]; return paginate(Payment, { scope: req.scope, filters, cursor: req.query.cursor, limit: req.query.limit, sort: req.query.sort ?? "paidAt:desc" }); }
+export async function listPayments(req) {
+  const filters = {};
+  for (const key of ["status", "mode", "source", "schemeId", "customerId", "collectedBy"]) if (req.query[key]) filters[key] = req.query[key];
+  if (req.query.isLateSuccess === "true" || req.query.isLateSuccess === true) filters.isLateSuccess = true;
+  Object.assign(filters, dateMatch("paidAt", req.query));
+  const scope = effectiveScope(req);
+
+  const pattern = searchRegex(req.query.q);
+  if (pattern) {
+    const matchedCustomers = await Customer.find({
+      tenantId: req.auth.tenantId,
+      ...(scope.branchId ? { branchId: scope.branchId } : {}),
+      $or: [{ name: pattern }, { mobile: pattern }, { customerNumber: pattern }],
+    }).select("_id").lean();
+    filters.$or = [
+      { receiptNumber: pattern },
+      { customerId: { $in: matchedCustomers.map((row) => row._id) } },
+    ];
+  }
+
+  const result = await paginate(Payment, { scope, filters, cursor: req.query.cursor, limit: req.query.limit, sort: req.query.sort ?? "paidAt:desc" });
+  const includeSummary =
+    req.query.includeSummary === "true" || req.query.includeSummary === true;
+  if (includeSummary) {
+    result.meta = {
+      ...result.meta,
+      summary: await paymentListSummary(req, filters, req.query),
+    };
+  }
+  if (!result.data.length) return result;
+  const customerIds = [...new Set(result.data.map((row) => row.customerId).filter(Boolean))];
+  const schemeIds = [...new Set(result.data.map((row) => row.schemeId).filter(Boolean))];
+  const branchIds = [...new Set(result.data.map((row) => row.branchId).filter(Boolean))];
+  const staffIds = [...new Set(result.data.map((row) => row.collectedBy).filter(Boolean))];
+  const [customers, schemes, branchMap, staffMap] = await Promise.all([
+    Customer.find({ _id: { $in: customerIds } }).select("_id name").lean(),
+    Scheme.find({ _id: { $in: schemeIds } }).select("_id enrollmentNumber").lean(),
+    loadBranchMap(req.auth.tenantId, branchIds),
+    loadUserMap(staffIds),
+  ]);
+  const customerMap = new Map(customers.map((row) => [row._id, row]));
+  const schemeMap = new Map(schemes.map((row) => [row._id, row]));
+  result.data = result.data.map((row) => {
+    const customer = customerMap.get(row.customerId);
+    const scheme = schemeMap.get(row.schemeId);
+    const collector = staffMap.get(row.collectedBy);
+    return {
+      ...row,
+      amount: { amountPaise: row.amountPaise },
+      customer: customer ? { _id: customer._id, id: customer._id, name: customer.name } : undefined,
+      scheme: scheme ? { _id: scheme._id, id: scheme._id, enrollmentNumber: scheme.enrollmentNumber } : undefined,
+      branch: branchDto(branchMap.get(row.branchId)),
+      collectedBy: userDto(collector) ?? row.collectedBy,
+    };
+  });
+  return result;
+}
 export async function reversePayment(req) { return withTransaction(async (session) => { const payment = await Payment.findOne({ _id: req.params.paymentId, ...req.scope }).session(session); if (!payment) throw errors.notFound("Payment"); if (payment.status !== PaymentStatus.SUCCESS) throw errors.business("REVERSAL_NOT_ALLOWED", "Only successful payments can be reversed."); const scheme = await Scheme.findById(payment.schemeId).session(session); const sequence = await nextSequence(payment.tenantId, `ledger:${payment.schemeId}`, session); await LedgerEntry.create([{ _id: createId("ledger"), tenantId: payment.tenantId, branchId: payment.branchId, schemeId: payment.schemeId, customerId: payment.customerId, paymentId: payment._id, type: LedgerEntryType.REVERSAL, sequence, amountPaise: payment.amountPaise, weightMg: payment.weightMg, ratePerGramPaise: payment.ratePerGramPaise, cycle: payment.targetCycle, actorType: "USER", actorId: req.auth.id, reversalOf: payment._id, description: req.body.reason }], { session }); payment.status = PaymentStatus.REVERSED; payment.reversedAt = new Date(); payment.reversedBy = req.auth.id; payment.reversalReason = req.body.reason; await payment.save({ session }); const entries = await LedgerEntry.find({ tenantId: payment.tenantId, schemeId: payment.schemeId }).sort({ sequence: 1 }).session(session).lean(); rebuildSchemeProjection(scheme, entries); scheme.version += 1; await scheme.save({ session }); const auditEventId = await writeAudit({ req, action: "PAYMENT_REVERSED", entityType: AuditEntityType.PAYMENT, entityId: payment._id, after: payment.toObject(), session }); return { id: payment._id, status: payment.status, auditEventId }; }); }
 export async function createPaymentLink(req) { const token = randomToken(32); const expiresAt = new Date(Date.now() + Number(req.body.expiresInMinutes ?? 1440) * 60_000); return withTransaction(async (session) => { const scheme = await Scheme.findOne({ _id: req.body.schemeId, ...req.scope }).session(session); if (!scheme) throw errors.notFound("Scheme"); const quote = await payableRange(req, scheme.toObject()); const targetCycle = req.body.targetCycle ?? quote.targetCycle; let intent; let positionVersion = quote.positionVersion; if (scheme.paymentPattern === "FLEXIBLE") { assertExpectedPositionVersion(scheme, quote, req.body); await assertMaxPaymentsPerCycle({ scheme, targetCycle, session }); const reservations = await PaymentIntent.aggregate([{ $match: { tenantId: scheme.tenantId, schemeId: scheme._id, targetCycle, status: PaymentIntentStatus.PENDING, reservationExpiresAt: { $gt: new Date() } } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]).session(session); const available = { ...quote, maxPayablePaise: Math.max(0, quote.maxPayablePaise - (reservations[0]?.amountPaise ?? 0)) }; checkAmount(available, req.body.amountPaise); scheme.positionVersion += 1; scheme.version += 1; positionVersion = scheme.positionVersion; await scheme.save({ session }); intent = (await PaymentIntent.create([{ _id: createId("paymentIntent"), tenantId: scheme.tenantId, branchId: scheme.branchId, schemeId: scheme._id, customerId: scheme.customerId, targetCycle, amountPaise: req.body.amountPaise, positionVersion, reservationExpiresAt: expiresAt }], { session }))[0]; } else checkAmount(quote, req.body.amountPaise); const link = (await PaymentLink.create([{ _id: createId("paymentLink"), tenantId: scheme.tenantId, branchId: scheme.branchId, schemeId: scheme._id, customerId: scheme.customerId, tokenHash: sha256(token), amountPaise: req.body.amountPaise, targetCycle, paymentIntentId: intent?._id, positionVersion, expiresAt, createdBy: req.auth.id }], { session }))[0]; return { id: link._id, token, url: `/pay/${token}`, status: link.status, expiresAt: link.expiresAt, paymentIntentId: intent?._id, positionVersion }; }); }
 export async function getPublicLink(token, markOpened = true) { const link = await PaymentLink.findOne({ tokenHash: sha256(token) }); if (!link || link.expiresAt < new Date()) throw new AppError("PAYMENT_LINK_EXPIRED", "This payment link has expired.", 410); if (markOpened && link.status === LinkStatus.CREATED) { link.status = LinkStatus.OPENED; link.openedAt = new Date(); await link.save(); } return link; }

@@ -1,10 +1,13 @@
-import { AuditEntityType, CashAdjustmentDirection, CashHandoverStatus, HandoverInitiator, PaymentMode, PaymentStatus } from "../constants/enums.js";
-import { CashAdjustment, CashHandover, Payment } from "../models/index.js";
+import { AuditEntityType, CashAdjustmentDirection, CashHandoverStatus, HandoverInitiator, PaymentMode, PaymentStatus, TenantRole, UserStatus, UserType } from "../constants/enums.js";
+import { Branch, CashAdjustment, CashHandover, Customer, Payment, User } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
+import { moneyRef } from "../lib/money.js";
+import { now } from "../lib/date.js";
+import { dateMatch } from "../lib/query-filters.js";
 
 async function sumAggregate(model, pipeline, session) {
   const query = model.aggregate(pipeline);
@@ -27,13 +30,249 @@ export async function cashBalance({ tenantId, branchId, staffId }, session) {
   return { cashCollectedPaise, cashInHandPaise, cashPendingAcceptancePaise, collectedPaise: cashCollectedPaise, handedOverPaise, adjustmentPaise };
 }
 
+const CASH_STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER];
+const dayStart = () => now().startOf("day").toDate();
+
+function cashScope(req) {
+  const tenantId = req.auth.tenantId;
+  const branchId = req.query.branchId || req.scope.branchId || null;
+  return { tenantId, branchId };
+}
+
+async function listCashStaff(req) {
+  const { tenantId, branchId } = cashScope(req);
+  return User.find({
+    tenantId, type: UserType.TENANT_USER, role: { $in: CASH_STAFF_ROLES }, status: UserStatus.ACTIVE,
+    ...(branchId ? { branchId } : {}),
+  }).select("_id name mobile role branchId status").sort({ name: 1 }).lean();
+}
+
+async function branchMap(tenantId, branchIds) {
+  const ids = [...new Set(branchIds.filter(Boolean))];
+  if (!ids.length) return new Map();
+  const rows = await Branch.find({ tenantId, _id: { $in: ids } }).select("_id name code").lean();
+  return new Map(rows.map((row) => [row._id, row]));
+}
+
+async function staffCashExtras({ tenantId, branchId, staffId }) {
+  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...(branchId ? { branchId } : {}), paidAt: { $gte: dayStart() } };
+  const handoverMatch = { tenantId, staffId, ...(branchId ? { branchId } : {}), status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY, CashHandoverStatus.REJECTED] } };
+  const [collectedToday, lastHandover] = await Promise.all([
+    sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]),
+    CashHandover.findOne(handoverMatch).sort({ settledAt: -1, submittedAt: -1 }).select("settledAt submittedAt").lean(),
+  ]);
+  return { cashCollectedTodayPaise: collectedToday, lastHandoverAt: lastHandover?.settledAt ?? lastHandover?.submittedAt ?? null };
+}
+
+function riskFlag(cashInHandPaise, lastHandoverAt) {
+  if (cashInHandPaise >= 5000000) return "HIGH_BALANCE";
+  if (cashInHandPaise > 0 && lastHandoverAt) {
+    const days = Math.floor((Date.now() - new Date(lastHandoverAt).getTime()) / 86_400_000);
+    if (days > 2) return "HOLDING_TOO_LONG";
+  } else if (cashInHandPaise > 0 && !lastHandoverAt) {
+    return "HOLDING_TOO_LONG";
+  }
+  return null;
+}
+
+export async function adminCashOverview(req) {
+  const { tenantId, branchId } = cashScope(req);
+  const handoverScope = { tenantId, ...(branchId ? { branchId } : {}) };
+  const [pending, acceptedAmountPaise, pendingAcceptancePaise, discrepancyTotalPaise, staff] = await Promise.all([
+    CashHandover.countDocuments({ ...handoverScope, status: CashHandoverStatus.PENDING }),
+    sumAggregate(CashHandover, [{ $match: { ...handoverScope, status: CashHandoverStatus.ACCEPTED } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]),
+    sumAggregate(CashHandover, [{ $match: { ...handoverScope, status: CashHandoverStatus.PENDING } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]),
+    sumAggregate(CashHandover, [{ $match: { ...handoverScope, status: CashHandoverStatus.DISCREPANCY } }, { $group: { _id: null, amountPaise: { $sum: { $ifNull: ["$discrepancyPaise", 0] } } } }]),
+    listCashStaff(req),
+  ]);
+  const balances = await Promise.all(staff.map(async (row) => {
+    const balance = await cashBalance({ tenantId, branchId: branchId ?? row.branchId, staffId: row._id });
+    return { staff: row, balance };
+  }));
+  const totalCashInHandPaise = balances.reduce((sum, row) => sum + row.balance.cashInHandPaise, 0);
+  const holding = balances
+    .filter((row) => row.balance.cashInHandPaise > 0)
+    .sort((a, b) => b.balance.cashInHandPaise - a.balance.cashInHandPaise)
+    .slice(0, 12);
+  return {
+    pending,
+    acceptedAmountPaise,
+    totals: {
+      totalCashInHand: moneyRef(totalCashInHandPaise),
+      pendingAcceptance: moneyRef(pendingAcceptancePaise),
+      pendingHandoverCount: pending,
+      discrepancyTotal: moneyRef(discrepancyTotalPaise),
+      staffHoldingCash: holding.length,
+    },
+    chart: {
+      chartType: "horizontalBar",
+      title: "Cash in hand by staff",
+      yAxis: { type: "currency", label: "Amount" },
+      series: [{
+        key: "CASH_IN_HAND",
+        name: "Cash in hand",
+        data: holding.map((row) => ({ x: row.staff.name, y: row.balance.cashInHandPaise, yDisplay: moneyRef(row.balance.cashInHandPaise).amountDisplay })),
+      }],
+    },
+  };
+}
+
+export async function adminStaffBalances(req) {
+  const { tenantId, branchId } = cashScope(req);
+  const staff = await listCashStaff(req);
+  const branches = await branchMap(tenantId, staff.map((row) => row.branchId));
+  let items = await Promise.all(staff.map(async (row) => {
+    const scopeBranch = branchId ?? row.branchId;
+    const [balance, extras] = await Promise.all([
+      cashBalance({ tenantId, branchId: scopeBranch, staffId: row._id }),
+      staffCashExtras({ tenantId, branchId: scopeBranch, staffId: row._id }),
+    ]);
+    const branch = branches.get(row.branchId);
+    const flag = riskFlag(balance.cashInHandPaise, extras.lastHandoverAt);
+    return {
+      staff: { _id: row._id, id: row._id, name: row.name, mobile: row.mobile, role: row.role },
+      branchId: row.branchId,
+      branch: branch ? { id: branch._id, _id: branch._id, name: branch.name, code: branch.code } : null,
+      cashInHand: moneyRef(balance.cashInHandPaise),
+      cashPendingAcceptance: moneyRef(balance.cashPendingAcceptancePaise),
+      cashCollectedToday: moneyRef(extras.cashCollectedTodayPaise),
+      lastHandoverAt: extras.lastHandoverAt,
+      status: row.status,
+      riskFlag: flag,
+      actions: { canMarkSubmitted: balance.cashInHandPaise > 0, canViewCollections: true },
+    };
+  }));
+  if (req.query.hasBalance === "true") items = items.filter((row) => row.cashInHand.amountPaise > 0);
+  if ((req.query.sort ?? "").startsWith("cashInHand")) {
+    const desc = (req.query.sort ?? "").endsWith("desc");
+    items.sort((a, b) => desc ? b.cashInHand.amountPaise - a.cashInHand.amountPaise : a.cashInHand.amountPaise - b.cashInHand.amountPaise);
+  }
+  const totalCashInHandPaise = items.reduce((sum, row) => sum + row.cashInHand.amountPaise, 0);
+  return { data: items, meta: { nextCursor: null, hasMore: false, limit: items.length, summary: { staffCount: items.length, totalCashInHand: moneyRef(totalCashInHandPaise) } } };
+}
+
+export async function adminStaffBalanceDetail(req) {
+  const { tenantId, branchId } = cashScope(req);
+  const staff = await User.findOne({
+    _id: req.params.staffId, tenantId, type: UserType.TENANT_USER, role: { $in: CASH_STAFF_ROLES },
+  }).select("_id name mobile role branchId status").lean();
+  if (!staff) throw errors.notFound("Staff");
+  const scopeBranch = branchId ?? staff.branchId;
+  const [balance, extras, paymentRows, branch] = await Promise.all([
+    cashBalance({ tenantId, branchId: scopeBranch, staffId: staff._id }),
+    staffCashExtras({ tenantId, branchId: scopeBranch, staffId: staff._id }),
+    Payment.find({
+      tenantId, collectedBy: staff._id, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS,
+      ...(scopeBranch ? { branchId: scopeBranch } : {}),
+    }).sort({ paidAt: -1 }).limit(100).lean(),
+    staff.branchId ? Branch.findOne({ _id: staff.branchId, tenantId }).select("_id name code").lean() : null,
+  ]);
+  const customerIds = [...new Set(paymentRows.map((row) => row.customerId).filter(Boolean))];
+  const customers = customerIds.length
+    ? await Customer.find({ _id: { $in: customerIds } }).select("_id name").lean()
+    : [];
+  const customerMap = new Map(customers.map((row) => [row._id, row.name]));
+  const collections = paymentRows.map((row) => ({
+    ...row,
+    customer: row.customerId ? { id: row.customerId, name: customerMap.get(row.customerId) ?? row.customerId } : undefined,
+  }));
+  return {
+    staff: { _id: staff._id, id: staff._id, name: staff.name, mobile: staff.mobile, role: staff.role },
+    branchId: staff.branchId,
+    branch: branch ? { id: branch._id, _id: branch._id, name: branch.name, code: branch.code } : null,
+    ...balance,
+    cashInHand: moneyRef(balance.cashInHandPaise),
+    cashPendingAcceptance: moneyRef(balance.cashPendingAcceptancePaise),
+    cashCollectedToday: moneyRef(extras.cashCollectedTodayPaise),
+    lastHandoverAt: extras.lastHandoverAt,
+    status: staff.status,
+    riskFlag: riskFlag(balance.cashInHandPaise, extras.lastHandoverAt),
+    collections,
+    receiptCount: paymentRows.length,
+  };
+}
+
+export async function adminCashReport(req) {
+  const { tenantId, branchId } = cashScope(req);
+  const staff = await listCashStaff(req);
+  const dateFilter = dateMatch("createdAt", req.query);
+  const groups = await Promise.all(staff.map(async (row) => {
+    const scopeBranch = branchId ?? row.branchId;
+    const handoverMatch = { tenantId, staffId: row._id, ...(scopeBranch ? { branchId: scopeBranch } : {}), ...dateFilter };
+    const [balance, handoverCount, discrepancies] = await Promise.all([
+      cashBalance({ tenantId, branchId: scopeBranch, staffId: row._id }),
+      CashHandover.countDocuments({ ...handoverMatch, status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY] } }),
+      CashHandover.countDocuments({ ...handoverMatch, status: CashHandoverStatus.DISCREPANCY }),
+    ]);
+    return {
+      key: row._id,
+      label: row.name,
+      cashCollected: moneyRef(balance.cashCollectedPaise),
+      handedOver: moneyRef(balance.handedOverPaise),
+      inHand: moneyRef(balance.cashInHandPaise),
+      handoverCount,
+      discrepancies,
+    };
+  }));
+  const handoverScope = { tenantId, ...(branchId ? { branchId } : {}), ...dateFilter };
+  const [discrepancyTotalPaise, handoverCount] = await Promise.all([
+    sumAggregate(CashHandover, [{ $match: { ...handoverScope, status: CashHandoverStatus.DISCREPANCY } }, { $group: { _id: null, amountPaise: { $sum: { $ifNull: ["$discrepancyPaise", 0] } } } }]),
+    CashHandover.countDocuments({ ...handoverScope, status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY] } }),
+  ]);
+  const totals = {
+    cashCollected: moneyRef(groups.reduce((sum, row) => sum + row.cashCollected.amountPaise, 0)),
+    handedOver: moneyRef(groups.reduce((sum, row) => sum + row.handedOver.amountPaise, 0)),
+    currentlyInHand: moneyRef(groups.reduce((sum, row) => sum + row.inHand.amountPaise, 0)),
+    discrepancyTotal: moneyRef(discrepancyTotalPaise),
+    handoverCount,
+  };
+  return { totals, groups, groupBy: req.query.groupBy ?? "STAFF" };
+}
+
+async function resolveHandoverContext(req, initiator, session) {
+  const tenantId = req.auth.tenantId;
+  const staffId = initiator === HandoverInitiator.STAFF ? req.auth.id : req.body.staffId;
+  if (!staffId) {
+    throw errors.validation([{ field: "staffId", message: "Staff is required for this handover." }]);
+  }
+  let branchId = req.scope.branchId ?? req.body.branchId ?? null;
+  if (!branchId) {
+    const staff = await User.findOne({
+      _id: staffId,
+      tenantId,
+      type: UserType.TENANT_USER,
+    })
+      .select("branchId")
+      .session(session)
+      .lean();
+    if (!staff) throw errors.notFound("Staff");
+    branchId = staff.branchId ?? null;
+  }
+  return { tenantId, staffId, branchId };
+}
+
 export async function createHandover(req, initiator) {
   return withTransaction(async (session) => {
-    const staffId = initiator === HandoverInitiator.STAFF ? req.auth.id : req.body.staffId; const branchId = req.scope.branchId ?? req.body.branchId;
-    const balance = await cashBalance({ tenantId: req.auth.tenantId, branchId, staffId }, session);
-    if (req.body.amountPaise > balance.cashInHandPaise) throw errors.business("CASH_HANDOVER_AMOUNT_EXCEEDS_BALANCE", "The handover exceeds this staff member's cash-in-hand balance.", balance);
-    const row = (await CashHandover.create([{ _id: createId("handover"), tenantId: req.auth.tenantId, branchId, staffId, amountPaise: req.body.amountPaise, remarks: req.body.remarks, initiator, submittedAt: new Date() }], { session }))[0];
-    const afterBalance = await cashBalance({ tenantId: req.auth.tenantId, branchId, staffId }, session);
+    const { tenantId, staffId, branchId } = await resolveHandoverContext(req, initiator, session);
+    const balance = await cashBalance({ tenantId, branchId, staffId }, session);
+    if (req.body.amountPaise > balance.cashInHandPaise) {
+      throw errors.business(
+        "CASH_HANDOVER_AMOUNT_EXCEEDS_BALANCE",
+        "The handover exceeds this staff member's cash-in-hand balance.",
+        balance,
+      );
+    }
+    const row = (await CashHandover.create([{
+      _id: createId("handover"),
+      tenantId,
+      branchId,
+      staffId,
+      amountPaise: req.body.amountPaise,
+      remarks: req.body.remarks,
+      initiator,
+      submittedAt: new Date(),
+    }], { session }))[0];
+    const afterBalance = await cashBalance({ tenantId, branchId, staffId }, session);
     const auditEventId = await writeAudit({ req, action: "CASH_HANDOVER_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session });
     return { ...row.toObject(), auditEventId, balance: afterBalance };
   });
@@ -90,5 +329,12 @@ export async function cancelHandover(req) {
     return { ...row.toObject(), auditEventId };
   });
 }
-export async function listHandovers(req, staffOnly = false) { const scope = { ...req.scope, ...(staffOnly ? { staffId: req.auth.id } : {}) }; const filters = req.query.status ? { status: req.query.status } : {}; return paginate(CashHandover, { scope, filters, cursor: req.query.cursor, limit: req.query.limit, sort: "createdAt:desc" }); }
+export async function listHandovers(req, staffOnly = false) {
+  const scope = { ...req.scope, ...(staffOnly ? { staffId: req.auth.id } : {}) };
+  const filters = {};
+  if (req.query.status) filters.status = req.query.status;
+  if (req.query.staffId && !staffOnly) filters.staffId = req.query.staffId;
+  Object.assign(filters, dateMatch("createdAt", req.query));
+  return paginate(CashHandover, { scope, filters, cursor: req.query.cursor, limit: req.query.limit, sort: "createdAt:desc" });
+}
 export async function createCashAdjustment(req) { return withTransaction(async (session) => { const row = (await CashAdjustment.create([{ _id: createId("cashAdjustment"), tenantId: req.auth.tenantId, branchId: req.scope.branchId ?? req.body.branchId, staffId: req.body.staffId, direction: req.body.direction, amountPaise: req.body.amountPaise, reason: req.body.reason, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "CASH_ADJUSTMENT_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId }; }); }

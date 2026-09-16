@@ -10,3 +10,8 @@ export function moneyToWeightMg(amountPaise, ratePerGramPaise, rounding = Decima
   if (ratePerGramPaise <= 0) throw new RangeError("ratePerGramPaise must be positive");
   return new Decimal(amountPaise).mul(1000).div(ratePerGramPaise).toDecimalPlaces(0, rounding).toNumber();
 }
+export function weightMgToMoneyPaise(weightMg, ratePerGramPaise, rounding = Decimal.ROUND_HALF_UP) {
+  assertInteger(weightMg, "weightMg"); assertInteger(ratePerGramPaise, "ratePerGramPaise");
+  if (ratePerGramPaise <= 0) throw new RangeError("ratePerGramPaise must be positive");
+  return new Decimal(weightMg).mul(ratePerGramPaise).div(1000).toDecimalPlaces(0, rounding).toNumber();
+}

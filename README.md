@@ -46,11 +46,14 @@ npm run seed
 npm run dev
 ```
 
-In separate processes:
+`npm run dev` starts the HTTP API (with reload on file changes) **and** the BullMQ worker in one terminal, so exports, messages, and webhooks process while you develop.
+
+Optional split processes (production-like):
 
 ```bash
-npm run worker
-npm run scheduler
+npm run dev:api    # API only, with watch
+npm run worker     # worker only
+npm run scheduler  # register repeatable jobs, then exit
 ```
 
 The scheduler command registers repeatable jobs and exits. The API starts the outbox dispatcher whenever Redis is available.

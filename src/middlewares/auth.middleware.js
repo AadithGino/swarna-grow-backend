@@ -27,7 +27,14 @@ export function tenantScope(req, _res, next) {
   const actingBranch = req.headers["x-acting-branch-id"];
   if (actingBranch && req.auth.role !== "TENANT_OWNER") throw errors.forbidden("Only a tenant owner can select an acting branch.");
   const roleScope = ROLE_SCOPE[req.auth.role] ?? "BRANCH";
-  const branchId = actingBranch || req.auth.branchId || null;
+  let branchId = actingBranch || req.auth.branchId || null;
+  if (!branchId && roleScope === "TENANT") {
+    const queryBranch =
+      req.query?.branchId != null && String(req.query.branchId).trim()
+        ? String(req.query.branchId).trim()
+        : null;
+    if (queryBranch) branchId = queryBranch;
+  }
   req.scope = { tenantId: req.auth.tenantId };
   if (roleScope === "BRANCH") {
     if (!branchId) throw errors.forbidden("Branch scope is required for this role.");

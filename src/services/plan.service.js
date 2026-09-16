@@ -1,19 +1,571 @@
-import { AuditEntityType, SchemePlanStatus } from "../constants/enums.js";
-import { Scheme, SchemePlan } from "../models/index.js";
+import { AuditEntityType, PaymentPattern, PaymentStatus, SchemePlanStatus } from "../constants/enums.js";
+import { Payment, Scheme, SchemePlan } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
+import { effectiveScope, searchRegex } from "../lib/query-filters.js";
+import { addMonthsClamped, monthKey, today } from "../lib/date.js";
+import { moneyRef, weightRef } from "../lib/money.js";
 import { buildSchedulePreview } from "./schedule.service.js";
+
+const ACTIVE_SCHEME_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED"];
+
+function schemeListScope(req) {
+  return effectiveScope(req);
+}
+
+function projectedInstallmentPaiseExpr() {
+  return {
+    $ifNull: [
+      "$installmentAmountPaise",
+      { $ifNull: ["$lockedAveragePaise", 0] },
+    ],
+  };
+}
+
+async function planListAggregates(req, planIds) {
+  const schemeScope = {
+    ...schemeListScope(req),
+    status: { $in: ACTIVE_SCHEME_STATUSES },
+  };
+  const projectedSum = { $sum: projectedInstallmentPaiseExpr() };
+
+  const aggregations = [
+    Scheme.aggregate([
+      { $match: schemeScope },
+      {
+        $group: {
+          _id: null,
+          activeEnrollments: { $sum: 1 },
+          projectedMonthlyPaise: projectedSum,
+        },
+      },
+    ]),
+    SchemePlan.aggregate([
+      { $match: { tenantId: req.auth.tenantId } },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]),
+  ];
+  if (planIds.length) {
+    aggregations.push(
+      Scheme.aggregate([
+        { $match: { ...schemeScope, planId: { $in: planIds } } },
+        {
+          $group: {
+            _id: "$planId",
+            activeSchemes: { $sum: 1 },
+            collectedThisMonth: projectedSum,
+          },
+        },
+      ]),
+    );
+  }
+
+  const [tenantRows, planStatusRows, enrollmentByPlanRows = []] =
+    await Promise.all(aggregations);
+
+  const byPlanId = new Map(
+    enrollmentByPlanRows.map((row) => [
+      row._id,
+      {
+        activeSchemes: row.activeSchemes,
+        collectedThisMonth: row.collectedThisMonth,
+      },
+    ]),
+  );
+
+  const statusCounts = Object.fromEntries(
+    planStatusRows.map((row) => [row._id, row.count]),
+  );
+  const tenantTotals = tenantRows[0] ?? {
+    activeEnrollments: 0,
+    projectedMonthlyPaise: 0,
+  };
+
+  return { byPlanId, statusCounts, tenantTotals };
+}
+
+async function findPlanRaw(req) {
+  const plan = await SchemePlan.findOne({
+    _id: req.params.planId,
+    tenantId: req.auth.tenantId,
+  }).lean();
+  if (!plan) throw errors.notFound("Scheme plan");
+  return plan;
+}
+
+function buildAmountSummary(plan) {
+  const rules = plan.amountRules ?? {};
+  const mode = rules.amountMode;
+  const minPaise = rules.minInstallmentPaise;
+  const maxPaise = rules.maxInstallmentPaise;
+  const multiplePaise = rules.multipleOfPaise;
+  let label = "—";
+  if (plan.paymentPattern === PaymentPattern.FLEXIBLE) {
+    const flex = plan.flexibleRules ?? {};
+    const free = flex.flexiblePhaseCycles ?? 6;
+    const capped = flex.cappedPhaseCycles ?? 5;
+    const div = flex.averagingDivisor ?? free;
+    label = `Free phase ${free} cycles · capped phase ${capped} cycles (avg ÷ ${div}).`;
+    const flexPhase = flex.flexiblePhase ?? {};
+    if (flexPhase.minimumPaymentPaise != null && flexPhase.maximumPaymentPaise != null) {
+      label += ` Pay ${moneyRef(flexPhase.minimumPaymentPaise).amountDisplay} – ${moneyRef(flexPhase.maximumPaymentPaise).amountDisplay} per payment in the free window.`;
+    }
+  } else if (mode === "CUSTOMER_CHOSEN" && minPaise != null && maxPaise != null) {
+    label = `Customers can choose ${moneyRef(minPaise).amountDisplay} – ${moneyRef(maxPaise).amountDisplay}, in multiples of ${moneyRef(multiplePaise ?? 100).amountDisplay}.`;
+  } else if (mode === "JEWELLER_FIXED" && rules.fixedAmountPaise != null) {
+    label = `Fixed ${moneyRef(rules.fixedAmountPaise).amountDisplay} per installment.`;
+  } else if (mode === "JEWELLER_SLABS" && rules.slabsPaise?.length) {
+    const slabs = rules.slabsPaise.map((p) => moneyRef(p).amountDisplay).join(" · ");
+    label = `Slabs ${slabs} per installment.`;
+  }
+  return {
+    amountMode: mode,
+    min: minPaise != null ? moneyRef(minPaise) : null,
+    max: maxPaise != null ? moneyRef(maxPaise) : null,
+    multipleOf: multiplePaise != null ? moneyRef(multiplePaise) : null,
+    label,
+  };
+}
+
+async function planEnrolmentCounts(tenantId, planId) {
+  const base = { tenantId, planId };
+  const [active, locked, defaulted, matured, redeemed, closedPremature, total] =
+    await Promise.all([
+      Scheme.countDocuments({ ...base, status: "ACTIVE" }),
+      Scheme.countDocuments({ ...base, status: "LOCKED" }),
+      Scheme.countDocuments({ ...base, status: "DEFAULTED" }),
+      Scheme.countDocuments({ ...base, status: "MATURED" }),
+      Scheme.countDocuments({ ...base, status: "REDEEMED" }),
+      Scheme.countDocuments({ ...base, status: "CLOSED_PREMATURE" }),
+      Scheme.countDocuments(base),
+    ]);
+  const activeSchemes = active + locked + defaulted;
+  return {
+    active,
+    locked,
+    defaulted,
+    activeSchemes,
+    matured,
+    redeemed,
+    closedPremature,
+    total,
+  };
+}
+
+async function planProjectedMonthlyPaise(tenantId, planId) {
+  const rows = await Scheme.aggregate([
+    {
+      $match: {
+        tenantId,
+        planId,
+        status: { $in: ACTIVE_SCHEME_STATUSES },
+      },
+    },
+    { $group: { _id: null, total: { $sum: projectedInstallmentPaiseExpr() } } },
+  ]);
+  return rows[0]?.total ?? 0;
+}
+
+async function planCollectedPaise(tenantId, planId) {
+  const schemeIds = await Scheme.find({ tenantId, planId }).select("_id").lean();
+  if (!schemeIds.length) return 0;
+  const rows = await Payment.aggregate([
+    {
+      $match: {
+        tenantId,
+        schemeId: { $in: schemeIds.map((row) => row._id) },
+        status: PaymentStatus.SUCCESS,
+      },
+    },
+    { $group: { _id: null, total: { $sum: "$amountPaise" } } },
+  ]);
+  return rows[0]?.total ?? 0;
+}
+
+function defaultTermsText(plan) {
+  if (String(plan.termsText ?? "").trim()) return plan.termsText;
+  const name = plan.displayName ?? plan.name ?? "this plan";
+  if (plan.paymentPattern === PaymentPattern.FLEXIBLE) {
+    return `Terms for ${name}:\n1. Free-phase and capped-phase rules apply as shown at enrolment.\n2. Benefit and redemption follow the plan configuration in the app and store policy.\n3. Contact your branch for clarifications before enrolling.`;
+  }
+  return `Terms for ${name}:\n1. Pay instalments by the due dates shown in your passbook.\n2. Benefits apply only when eligibility rules are met.\n3. Contact your branch for clarifications before enrolling.`;
+}
+
+async function presentPlanDetail(tenantId, plan) {
+  const counts = await planEnrolmentCounts(tenantId, plan._id);
+  const projectedPaise = await planProjectedMonthlyPaise(tenantId, plan._id);
+  return {
+    ...plan,
+    id: plan._id,
+    termsText: defaultTermsText(plan),
+    amountSummary: buildAmountSummary(plan),
+    stats: {
+      activeSchemes: counts.activeSchemes,
+      totalEnrolments: counts.total,
+      collectedThisMonth: moneyRef(projectedPaise),
+    },
+    editLocked: counts.activeSchemes > 0,
+  };
+}
+
+function formatMonthBucket(ym) {
+  const [year, month] = String(ym).split("-");
+  if (!year || !month) return ym;
+  const d = new Date(Number(year), Number(month) - 1, 1);
+  return d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
+}
+
+function countChartPoint(x, y) {
+  return { x, y, yDisplay: String(y) };
+}
+
+async function buildPlanStatsPayload(tenantId, plan) {
+  const counts = await planEnrolmentCounts(tenantId, plan._id);
+  const [collectedPaise, trendRows] = await Promise.all([
+    planCollectedPaise(tenantId, plan._id),
+    Scheme.aggregate([
+      { $match: { tenantId, planId: plan._id } },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m", date: "$createdAt", timezone: "Asia/Kolkata" },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $limit: 12 },
+    ]),
+  ]);
+  let benefitLiabilityPaise = 0;
+  if (plan.benefit?.type === "ONE_FREE_INSTALLMENT") {
+    benefitLiabilityPaise =
+      counts.activeSchemes *
+      (plan.amountRules?.fixedAmountPaise ??
+        plan.amountRules?.minInstallmentPaise ??
+        0);
+  } else if (plan.benefit?.type === "FIXED_BONUS_AMOUNT") {
+    if (plan.benefit.bonusBasis === "PERCENT_OF_PAID") {
+      benefitLiabilityPaise = Math.floor(
+        (collectedPaise * (plan.benefit.bonusValue ?? 0)) / 100,
+      );
+      if (plan.benefit.maxBonusPaise != null) {
+        benefitLiabilityPaise = Math.min(
+          benefitLiabilityPaise,
+          plan.benefit.maxBonusPaise * Math.max(counts.activeSchemes, 1),
+        );
+      }
+    } else {
+      benefitLiabilityPaise =
+        (plan.benefit.bonusValue ?? 0) * counts.activeSchemes;
+    }
+  }
+  const trendData =
+    trendRows.length > 0
+      ? trendRows.map((row) =>
+          countChartPoint(formatMonthBucket(row._id), row.count),
+        )
+      : counts.total > 0
+        ? [countChartPoint(formatMonthBucket(monthKey()), counts.total)]
+        : [];
+  const statusData = [
+    { x: "Active", y: counts.activeSchemes },
+    { x: "Matured", y: counts.matured },
+    { x: "Redeemed", y: counts.redeemed },
+    { x: "Closed early", y: counts.closedPremature },
+    { x: "Defaulted", y: counts.defaulted },
+  ]
+    .filter((row) => row.y > 0)
+    .map((row) => countChartPoint(row.x, row.y));
+  return {
+    enrolments: {
+      total: counts.total,
+      active: counts.activeSchemes,
+      locked: counts.locked,
+      matured: counts.matured,
+      redeemed: counts.redeemed,
+      closedPremature: counts.closedPremature,
+      defaulted: counts.defaulted,
+    },
+    financials: {
+      totalCollected: moneyRef(collectedPaise),
+      outstandingExpected: moneyRef(0),
+      goldLiability:
+        plan.valueBasis === "GOLD_WEIGHT"
+          ? weightRef(0)
+          : weightRef(0),
+      benefitLiability: moneyRef(benefitLiabilityPaise),
+    },
+    charts: {
+      enrolmentTrend: {
+        chartType: "bar",
+        title: "New enrolments by month",
+        yAxis: { type: "count", label: "Enrolments" },
+        series: [
+          {
+            key: "enrolments",
+            name: "Enrolments",
+            data: trendData,
+          },
+        ],
+      },
+      statusDistribution: {
+        chartType: "donut",
+        title: "Enrolment status",
+        yAxis: { type: "count", label: "Schemes" },
+        series: [
+          {
+            key: "status",
+            name: "Schemes",
+            data: statusData,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function previewDueOnMonth(iso, months, dueDay) {
+  const due = addMonthsClamped(iso, months);
+  return due.date(Math.min(dueDay, due.daysInMonth())).format("YYYY-MM-DD");
+}
+
+function computeIllustrativeFlexibleCap(installmentAmountPaise, flexRules) {
+  const free = flexRules.flexiblePhaseCycles ?? 6;
+  const div = flexRules.averagingDivisor ?? free;
+  const illustrativeFreeTotalPaise = installmentAmountPaise * free;
+  const capRules = flexRules.capComputation ?? {};
+  const nearest = Math.max(1, capRules.roundToNearestPaise ?? 100);
+  let capPaise = Math.ceil(illustrativeFreeTotalPaise / div / nearest) * nearest;
+  const minTotal = flexRules.flexiblePhase?.minTotalPaise;
+  if (
+    minTotal != null &&
+    illustrativeFreeTotalPaise < minTotal &&
+    capRules.onBelowMinimumTotal === "USE_MINIMUM"
+  ) {
+    capPaise = capRules.minCycleCapPaise ?? capPaise;
+  }
+  const minCap = capRules.minCycleCapPaise ?? 0;
+  const maxCap = capRules.maxCycleCapPaise ?? capPaise;
+  capPaise = Math.min(maxCap, Math.max(minCap, capPaise));
+  return { illustrativeFreeTotalPaise, capPaise };
+}
+
+/** Enrolment preview for flexible-then-capped plans (not fixed × installment count). */
+export function buildFlexibleEnrolPreview(
+  plan,
+  installmentAmountPaise,
+  startDate,
+  firstInstallmentMode,
+) {
+  const flex = plan.flexibleRules ?? {};
+  const freeMonths = flex.flexiblePhaseCycles ?? 6;
+  const cappedCycles = flex.cappedPhaseCycles ?? 5;
+  const firstInstallmentRequired = firstInstallmentMode === "COLLECT_NOW";
+  const layout = buildFlexiblePreviewSummary(plan, startDate);
+  const { illustrativeFreeTotalPaise, capPaise } = computeIllustrativeFlexibleCap(
+    installmentAmountPaise,
+    flex,
+  );
+  const cappedTotalPaise = capPaise * cappedCycles;
+  const cycleRows = buildSchedulePreview({
+    startDate,
+    durationMonths: plan.durationMonths,
+    installmentCount: plan.durationMonths,
+    scheduleRules: plan.scheduleRules ?? {},
+    firstInstallmentMode,
+  });
+  const schedulePreview = [];
+  for (let i = 0; i < freeMonths && i < cycleRows.length; i += 1) {
+    schedulePreview.push({
+      installmentNumber: i + 1,
+      dueDate: cycleRows[i].dueDate,
+      amount: moneyRef(installmentAmountPaise),
+      note:
+        i === 0 && firstInstallmentRequired
+          ? "Optional · may collect at enrolment"
+          : "Free window (optional)",
+    });
+  }
+  for (let i = 0; i < cappedCycles && freeMonths + i < cycleRows.length; i += 1) {
+    schedulePreview.push({
+      installmentNumber: freeMonths + i + 1,
+      dueDate: cycleRows[freeMonths + i].dueDate,
+      amount: moneyRef(capPaise),
+      note: "Capped cycle (illustrative)",
+    });
+  }
+  const benefit = plan.benefit ?? {};
+  return {
+    paymentPattern: "FLEXIBLE",
+    referencePaymentAmount: moneyRef(installmentAmountPaise),
+    installmentAmount: moneyRef(installmentAmountPaise),
+    phaseSummary: `${freeMonths} free months · ${cappedCycles} capped cycles`,
+    illustrativeCapPerCycle: moneyRef(capPaise),
+    totalPayable: moneyRef(illustrativeFreeTotalPaise + cappedTotalPaise),
+    totalPayableNote:
+      "Illustrative maximum if the reference amount is paid each free month. Actual cap is based on total free-phase contributions.",
+    firstDueDate: cycleRows[0]?.dueDate ?? startDate,
+    maturityDate: layout.maturityDate,
+    benefit: benefit.displayLabel || benefit.type
+      ? { type: benefit.type, displayLabel: benefit.displayLabel ?? benefit.type }
+      : undefined,
+    schedulePreview: schedulePreview.slice(0, 12),
+  };
+}
+
+function buildFlexiblePreviewSummary(body, startDate) {
+  const flex = body.flexibleRules ?? {};
+  const flexPhase = flex.flexiblePhase ?? {};
+  const scheduleRules = body.scheduleRules ?? {};
+  const dueDay = scheduleRules.dueDayOfMonth ?? 10;
+  const freeMonths = flex.flexiblePhaseCycles ?? 6;
+  const cappedCycles = flex.cappedPhaseCycles ?? 5;
+  const benefit = body.benefit ?? {};
+  return {
+    freeWindow: {
+      months: freeMonths,
+      from: startDate,
+      to: previewDueOnMonth(startDate, freeMonths, dueDay),
+      minPerPayment: moneyRef(Number(flexPhase.minimumPaymentPaise ?? 0)),
+      maxPerPayment: moneyRef(Number(flexPhase.maximumPaymentPaise ?? 0)),
+    },
+    cappedPhase: {
+      cycles: cappedCycles,
+      from: previewDueOnMonth(startDate, freeMonths, dueDay),
+      to: previewDueOnMonth(startDate, freeMonths + cappedCycles, dueDay),
+      note: `Each of these ${cappedCycles} cycles is capped at the average of your first ${freeMonths} cycles' payments.`,
+    },
+    maturityDate: previewDueOnMonth(startDate, freeMonths + cappedCycles, dueDay),
+    benefit: {
+      type: benefit.type,
+      displayLabel: benefit.displayLabel,
+    },
+  };
+}
+
+function buildFixedPreviewResponse(body) {
+  const startDate = body.startDate ?? today();
+  const amountRules = body.amountRules ?? {};
+  const installmentAmountPaise = Number(
+    body.installmentAmountPaise
+      ?? amountRules.fixedAmountPaise
+      ?? amountRules.minInstallmentPaise
+      ?? 0,
+  );
+  const count = Number(body.installmentCount ?? body.durationMonths ?? 0);
+  const scheduleRules = body.scheduleRules ?? {};
+  const firstInstallmentMode =
+    body.firstInstallmentMode
+    ?? scheduleRules.firstInstallmentModeDefault
+    ?? "START_NEXT_CYCLE";
+  const benefit = body.benefit ?? {};
+  const rows = buildSchedulePreview({
+    startDate,
+    installmentAmountPaise,
+    durationMonths: body.durationMonths,
+    installmentCount: count,
+    scheduleRules,
+    firstInstallmentMode,
+  });
+  const schedule = rows.map((row, index) => ({
+    installmentNumber: row.number,
+    dueDate: row.dueDate,
+    amount: moneyRef(row.amountPaise),
+    note:
+      index === 0 && firstInstallmentMode === "COLLECT_NOW"
+        ? "Collected at enrolment"
+        : null,
+  }));
+  const totalPaise = installmentAmountPaise * count;
+  const benefitPaise =
+    benefit.type === "ONE_FREE_INSTALLMENT" ? installmentAmountPaise : 0;
+  return {
+    summary: {
+      installmentCount: count,
+      installmentAmount: moneyRef(installmentAmountPaise),
+      totalPayable: moneyRef(totalPaise),
+      firstDueDate: schedule[0]?.dueDate,
+      maturityDate: schedule[schedule.length - 1]?.dueDate,
+      benefit: {
+        type: benefit.type,
+        displayLabel: benefit.displayLabel,
+        ...(benefitPaise ? { estimatedValue: moneyRef(benefitPaise) } : {}),
+      },
+      estimatedMaturityValue: moneyRef(totalPaise + benefitPaise),
+      estimatedGoldAtCurrentRate: null,
+    },
+    schedule,
+  };
+}
 
 export async function listPlans(req, consumer = "admin") {
   const filters = consumer === "admin" ? {} : { status: SchemePlanStatus.ACTIVE };
   if (consumer === "app") { filters["availability.visibleInCustomerApp"] = true; filters["availability.customerSelfEnrolAllowed"] = true; }
-  if (req.scope?.branchId) filters.$or = [{ "availability.allBranches": true }, { "availability.branchIds": req.scope.branchId }];
-  return paginate(SchemePlan, { scope: { tenantId: req.auth.tenantId }, filters, cursor: req.query.cursor, limit: req.query.limit, sort: req.query.sort ?? "createdAt:desc" });
+  if (consumer === "admin") {
+    if (req.query.status) filters.status = req.query.status;
+    if (req.query.valueBasis) filters.valueBasis = req.query.valueBasis;
+    if (req.query.paymentPattern) filters.paymentPattern = req.query.paymentPattern;
+    const pattern = searchRegex(req.query.q);
+    if (pattern) filters.$or = [{ name: pattern }, { code: pattern }];
+  }
+  if (req.scope?.branchId) {
+    const branchOr = [{ "availability.allBranches": true }, { "availability.branchIds": req.scope.branchId }];
+    if (filters.$or) {
+      filters.$and = [{ $or: filters.$or }, { $or: branchOr }];
+      delete filters.$or;
+    } else {
+      filters.$or = branchOr;
+    }
+  }
+  const result = await paginate(SchemePlan, {
+    scope: { tenantId: req.auth.tenantId },
+    filters,
+    cursor: req.query.cursor,
+    limit: req.query.limit,
+    sort: req.query.sort ?? "createdAt:desc",
+  });
+
+  if (consumer !== "admin") return result;
+
+  const planIds = result.data.map((plan) => plan._id);
+  const { byPlanId, statusCounts, tenantTotals } = await planListAggregates(
+    req,
+    planIds,
+  );
+
+  const data = result.data.map((plan) => {
+    const stats = byPlanId.get(plan._id) ?? {
+      activeSchemes: 0,
+      collectedThisMonth: 0,
+    };
+    return {
+      ...plan,
+      stats,
+      editLocked: stats.activeSchemes > 0,
+    };
+  });
+
+  return {
+    data,
+    meta: {
+      ...result.meta,
+      summary: {
+        activePlans: statusCounts.ACTIVE ?? 0,
+        draftPlans: statusCounts.DRAFT ?? 0,
+        activeEnrollments: tenantTotals.activeEnrollments,
+        projectedMonthlyPaise: tenantTotals.projectedMonthlyPaise,
+      },
+    },
+  };
 }
-export async function getPlan(req) { const plan = await SchemePlan.findOne({ _id: req.params.planId, tenantId: req.auth.tenantId }).lean(); if (!plan) throw errors.notFound("Scheme plan"); return plan; }
+export async function getPlan(req) {
+  const plan = await findPlanRaw(req);
+  return presentPlanDetail(req.auth.tenantId, plan);
+}
 function rejectUnsupportedPlan(body) { if (body.flexibleRules?.extensionMode === "EXTEND_FLEXIBLE_PHASE") throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "Flexible-phase extension is not supported and cannot be saved."); }
 export async function createPlan(req) { rejectUnsupportedPlan(req.body); return withTransaction(async (session) => { const plan = (await SchemePlan.create([{ _id: createId("plan"), tenantId: req.auth.tenantId, ...req.body, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "PLAN_CREATED", entityType: AuditEntityType.PLAN, entityId: plan._id, after: plan.toObject(), session }); return { ...plan.toObject(), auditEventId }; }); }
 export async function updatePlan(req) {
@@ -29,6 +581,77 @@ export async function updatePlan(req) {
   });
 }
 export async function setPlanStatus(req, status) { return withTransaction(async (session) => { const plan = await SchemePlan.findOneAndUpdate({ _id: req.params.planId, tenantId: req.auth.tenantId }, { $set: { status }, $inc: { version: 1 } }, { new: true, session }); if (!plan) throw errors.notFound("Scheme plan"); const auditEventId = await writeAudit({ req, action: status === SchemePlanStatus.ACTIVE ? "PLAN_ACTIVATED" : "PLAN_DEACTIVATED", entityType: AuditEntityType.PLAN, entityId: plan._id, after: plan.toObject(), session }); return { id: plan._id, status, version: plan.version, auditEventId }; }); }
-export async function duplicatePlan(req) { const source = await getPlan(req); delete source._id; delete source.createdAt; delete source.updatedAt; source.code = `${source.code}_COPY_${Date.now().toString().slice(-4)}`; source.name = `${source.name} Copy`; source.status = SchemePlanStatus.DRAFT; source.version = 1; req.body = source; return createPlan(req); }
-export async function planStats(req) { const plan = await getPlan(req); const [active, completed, total] = await Promise.all([Scheme.countDocuments({ tenantId: req.auth.tenantId, planId: plan._id, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } }), Scheme.countDocuments({ tenantId: req.auth.tenantId, planId: plan._id, status: { $in: ["REDEEMED", "CLOSED_PREMATURE"] } }), Scheme.countDocuments({ tenantId: req.auth.tenantId, planId: plan._id })]); return { planId: plan._id, active, completed, total }; }
-export const previewSchedule = (body) => buildSchedulePreview(body);
+function duplicatePlanCode(code) {
+  const root = String(code ?? "PLAN")
+    .replace(/_COPY_[A-Z0-9]+$/i, "")
+    .replace(/-[A-Z0-9]{4,}$/i, "")
+    .replace(/[^A-Z0-9_-]/gi, "")
+    .slice(0, 11)
+    .toUpperCase();
+  const suffix = Date.now().toString(36).slice(-4).toUpperCase();
+  const candidate = `${root}-${suffix}`;
+  return candidate.length <= 20
+    ? candidate
+    : `${root.slice(0, Math.max(2, 20 - suffix.length - 1))}-${suffix}`.slice(
+        0,
+        20,
+      );
+}
+
+function pickPlanDuplicateBody(source) {
+  return {
+    name: `${source.name} Copy`.slice(0, 120),
+    code: duplicatePlanCode(source.code),
+    displayName: source.displayName,
+    description: source.description,
+    termsText: source.termsText,
+    valueBasis: source.valueBasis,
+    paymentPattern: source.paymentPattern,
+    durationMonths: source.durationMonths,
+    installmentCount: source.installmentCount,
+    amountRules: source.amountRules,
+    scheduleRules: source.scheduleRules,
+    paymentRules: source.paymentRules,
+    flexibleRules: source.flexibleRules ?? null,
+    goldRules: source.goldRules ?? null,
+    benefit: source.benefit,
+    redemptionRules: source.redemptionRules,
+    availability: source.availability,
+    status: SchemePlanStatus.DRAFT,
+  };
+}
+
+export async function duplicatePlan(req) {
+  const source = await findPlanRaw(req);
+  req.body = pickPlanDuplicateBody(source);
+  const created = await createPlan(req);
+  return { id: created._id, ...created };
+}
+export async function planStats(req) {
+  const plan = await findPlanRaw(req);
+  return buildPlanStatsPayload(req.auth.tenantId, plan);
+}
+export async function previewSchedule(body, tenantId) {
+  let merged = { ...body };
+  if (body.planId && tenantId) {
+    const saved = await SchemePlan.findOne({ _id: body.planId, tenantId }).lean();
+    if (saved) {
+      merged = {
+        ...saved,
+        ...body,
+        scheduleRules: { ...saved.scheduleRules, ...body.scheduleRules },
+        amountRules: { ...saved.amountRules, ...body.amountRules },
+        flexibleRules: body.flexibleRules ?? saved.flexibleRules,
+        benefit: body.benefit ?? saved.benefit,
+      };
+    }
+  }
+  const startDate = merged.startDate ?? today();
+  if (merged.paymentPattern === PaymentPattern.FLEXIBLE) {
+    return {
+      summary: buildFlexiblePreviewSummary(merged, startDate),
+      schedule: [],
+    };
+  }
+  return buildFixedPreviewResponse({ ...merged, startDate });
+}

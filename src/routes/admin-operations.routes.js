@@ -2,21 +2,22 @@ import { Router } from "express";
 import * as controller from "../controllers/operations.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import { HandoverInitiator } from "../constants/enums.js";
-import { sendSuccess } from "../lib/response.js";
+import { sendList, sendSuccess } from "../lib/response.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { handoverBody, messageBody } from "../validators/common.validators.js";
-import { AuditEvent, CashHandover, Customer, Message, WebhookEvent } from "../models/index.js";
+import { CashHandover, Customer, Message, WebhookEvent } from "../models/index.js";
 import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
 import { errors } from "../lib/app-error.js";
+import * as audit from "../services/audit.service.js";
 
 export const adminOperationsRouter = Router();
 adminOperationsRouter.get("/cash/overview", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashOverview)));
-adminOperationsRouter.get("/cash/staff-balances", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashOverview)));
-adminOperationsRouter.get("/cash/staff-balances/:staffId", ...guarded(Permission.CASH_READ, asyncHandler(async (req, res) => sendSuccess(res, { staffId: req.params.staffId }))));
-adminOperationsRouter.post("/cash/handovers", ...guarded(Permission.CASH_HANDOVER, validate({ body: handoverBody }), idempotent, asyncHandler(controller.createHandover(HandoverInitiator.ADMIN))));
+adminOperationsRouter.get("/cash/staff-balances", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashStaffBalances)));
+adminOperationsRouter.get("/cash/staff-balances/:staffId", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashStaffBalanceDetail)));
+adminOperationsRouter.post("/cash/handovers", ...guarded(Permission.CASH_HANDOVER_ACCEPT, validate({ body: handoverBody }), idempotent, asyncHandler(controller.createHandover(HandoverInitiator.ADMIN))));
 adminOperationsRouter.get("/cash/handovers", ...guarded(Permission.CASH_READ, asyncHandler(controller.handovers(false))));
 adminOperationsRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.CASH_READ, asyncHandler(async (req, res) => {
   const row = await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).lean();
@@ -26,11 +27,11 @@ adminOperationsRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.C
 adminOperationsRouter.post("/cash/handovers/:handoverId/accept", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("accept"))));
 adminOperationsRouter.post("/cash/handovers/:handoverId/reject", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("reject"))));
 adminOperationsRouter.post("/cash/handovers/:handoverId/resolve-discrepancy", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("resolve-discrepancy"))));
-adminOperationsRouter.get("/cash/report", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashOverview)));
+adminOperationsRouter.get("/cash/report", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashReport)));
 adminOperationsRouter.get("/cash/handovers/:handoverId/audit-events", ...guarded(Permission.AUDIT_READ, asyncHandler(async (req, res) => {
   const handover = await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).lean();
   if (!handover) throw errors.notFound("Cash handover");
-  return sendSuccess(res, await AuditEvent.find({ tenantId: req.auth.tenantId, entityType: "CASH_HANDOVER", entityId: handover._id }).sort({ occurredAt: -1 }).lean());
+  return sendList(res, await audit.listEntityAudit(req, "CASH_HANDOVER", handover._id));
 })));
 adminOperationsRouter.post("/cash/adjustments", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.cashAdjustment)));
 adminOperationsRouter.get("/messaging/templates", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.templates)));

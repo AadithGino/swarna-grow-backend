@@ -9,7 +9,18 @@ const paymentSchema = new mongoose.Schema({
   reference: String, remarks: String, collectedBy: String, providerTransactionId: String, providerPayload: mongoose.Schema.Types.Mixed, paidAt: { type: Date, default: Date.now }, reversedAt: Date, reversedBy: String, reversalReason: String,
   targetCycle: String, isLateSuccess: { type: Boolean, default: false }, lateSuccessDetectedVia: enumField(LateSuccessDetection), gatewayCompletedAt: Date, delayMinutes: integerField(), requiresReview: { type: Boolean, default: false }, reviewReason: String,
 }, baseOptions);
-paymentSchema.index({ tenantId: 1, receiptNumber: 1 }, { unique: true }); paymentSchema.index({ tenantId: 1, providerTransactionId: 1 }, { unique: true, sparse: true }); paymentSchema.index({ tenantId: 1, branchId: 1, paidAt: -1 });
+paymentSchema.index({ tenantId: 1, receiptNumber: 1 }, { unique: true });
+// Sparse still indexes explicit nulls; only index real provider txn ids.
+paymentSchema.index(
+  { tenantId: 1, providerTransactionId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      providerTransactionId: { $type: "string", $gt: "" },
+    },
+  },
+);
+paymentSchema.index({ tenantId: 1, branchId: 1, paidAt: -1 });
 
 const paymentLinkSchema = new mongoose.Schema({
   _id: stringId("plk"), tenantId: tenantField, branchId: branchField, schemeId: String, customerId: String, tokenHash: { type: String, required: true, unique: true }, amountPaise: integerField({ required: true, min: 1 }),

@@ -9,15 +9,17 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
-    "worker": "node src/workers/index.js",
-    "scheduler": "node src/schedulers/index.js",
+    "dev": "node --env-file=.env scripts/dev.js",
+    "dev:api": "node --env-file=.env --watch src/server.js",
+    "start": "node --env-file=.env src/server.js",
+    "worker": "node --env-file=.env src/workers/index.js",
+    "scheduler": "node --env-file=.env src/schedulers/index.js",
     "check": "node scripts/check-syntax.js && node scripts/check-route-coverage.js && npm run lint",
     "lint": "eslint src tests scripts",
     "test": "node --test --test-concurrency=1 --test-reporter=spec",
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage",
-    "seed": "node scripts/seed.js"
+    "seed": "node --env-file=.env scripts/seed.js",
+    "seed:demo": "node --env-file=.env scripts/seed-demo.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.883.0",
