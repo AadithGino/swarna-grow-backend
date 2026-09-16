@@ -1,6 +1,6 @@
 import { AppError } from "../../lib/app-error.js";
 import { moneyRef, weightRef } from "../../lib/money.js";
-import { dateMatch, resolveDatePreset } from "../../lib/query-filters.js";
+import { dateMatch, resolveQueryDateRange } from "../../lib/query-filters.js";
 import { Branch, Scheme } from "../../models/index.js";
 
 export { dateMatch };
@@ -10,7 +10,10 @@ export const EXPORT_FORMATS = Object.freeze(["CSV", "XLSX", "PDF"]);
 const MONTH_MS = 366 * 24 * 60 * 60 * 1000;
 
 export function resolveReportPeriod(query = {}) {
-  return resolveDatePreset(query.period ?? "THIS_MONTH", query);
+  return resolveQueryDateRange({
+    ...query,
+    period: query.period ?? "THIS_MONTH",
+  });
 }
 
 export function assertReportRange(query = {}) {

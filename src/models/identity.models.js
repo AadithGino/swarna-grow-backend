@@ -1,14 +1,21 @@
 import mongoose from "mongoose";
-import { PlanTier, SignupStatus, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
+import { PlanTier, SignupStatus, SubscriptionStatus, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
 import { baseOptions, branchField, enumField, stringId, tenantField, versionField } from "./schema-helpers.js";
 
 const subscriptionSchema = new mongoose.Schema({
   tier: enumField(PlanTier, { default: PlanTier.STARTER }), status: enumField(SubscriptionStatus, { default: SubscriptionStatus.TRIAL }),
+  planId: String, billingCycle: String,
   startsAt: Date, renewsAt: Date, trialEndsAt: Date, graceEndsAt: Date,
   limits: { activeCustomers: Number, branches: Number, staff: Number, schemePlans: Number, whatsappMessages: Number },
+  limitOverrides: mongoose.Schema.Types.Mixed,
+  featureOverrides: mongoose.Schema.Types.Mixed,
   features: { type: [String], default: [] },
+  extensionReason: String, cancelReason: String,
 }, { _id: false });
-const integrationSecretsSchema = new mongoose.Schema({ phonepe: { merchantId: String, saltKey: String, saltIndex: String, verifiedAt: Date }, whatsapp: { phoneNumberId: String, businessAccountId: String, accessToken: String, appSecret: String, verifyToken: String, verifiedAt: Date } }, { _id: false });
+const integrationSecretsSchema = new mongoose.Schema({
+  phonepe: { provider: String, merchantId: String, saltKey: String, saltIndex: Number, environment: String, callbackUrlOverride: String, verifiedAt: Date, verificationStatus: String },
+  whatsapp: { provider: String, phoneNumberId: String, businessAccountId: String, accessToken: String, appSecret: String, verifyToken: String, environment: String, callbackUrlOverride: String, verifiedAt: Date, verificationStatus: String },
+}, { _id: false });
 
 const tenantAddressSchema = new mongoose.Schema(
   { line1: String, city: String, state: String, pincode: String },
@@ -45,6 +52,7 @@ const tenantSchema = new mongoose.Schema({
   operations: { type: tenantOperationsSchema, default: () => ({}) },
   subscription: { type: subscriptionSchema, default: () => ({}) }, featureFlags: { type: Map, of: Boolean, default: {} },
   integrationSecrets: { type: integrationSecretsSchema, select: false },
+  goLiveAt: Date,
   version: versionField,
 }, baseOptions);
 tenantSchema.index({ code: 1 }, { unique: true }); tenantSchema.index({ mobile: 1 }, { unique: true });
@@ -62,7 +70,9 @@ branchSchema.index({ tenantId: 1, code: 1 }, { unique: true });
 
 const userSchema = new mongoose.Schema({
   _id: stringId("usr"), type: enumField(UserType, { required: true }), tenantId: { type: String, default: null, index: true }, branchId: branchField,
-  role: enumField(TenantRole), name: { type: String, required: true }, mobile: { type: String, required: true }, email: String,
+  role: { type: String, required: true }, name: { type: String, required: true },
+  mobile: { type: String, required: function requiredMobile() { return this.type !== UserType.PLATFORM_USER; } },
+  email: String,
   passwordHash: { type: String, select: false }, status: enumField(UserStatus, { default: UserStatus.ACTIVE }), permissions: { type: [String], default: [] }, permissionOverrides: { type: [String], default: [] },
   mustSetPassword: { type: Boolean, default: false }, mfaEnabled: { type: Boolean, default: false }, fcmTokens: { type: [{ tokenHash: String, deviceId: String, platform: String, updatedAt: Date }], select: false, default: [] }, lastSeenAt: Date, version: versionField,
 }, baseOptions);
@@ -76,13 +86,19 @@ const sessionSchema = new mongoose.Schema({
 sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const signupSchema = new mongoose.Schema({
-  _id: stringId("sgn"), mobile: { type: String, required: true }, businessName: String, tenantCode: { type: String, uppercase: true }, otpHash: String,
-  otpExpiresAt: Date, otpVerifiedAt: Date, selectedPlanTier: enumField(PlanTier), paymentReference: String, status: enumField(SignupStatus, { default: SignupStatus.OTP_PENDING }), expiresAt: Date,
+  _id: stringId("sgn"), mobile: { type: String, required: true }, businessName: String, ownerName: String, email: String, city: String,
+  tenantCode: { type: String, uppercase: true }, otpHash: String, otpExpiresAt: Date, otpVerifiedAt: Date,
+  selectedPlanTier: enumField(PlanTier), subscriptionPlanId: String, billingCycle: String,
+  signupTokenHash: { type: String, select: false }, signupTokenExpiresAt: Date,
+  paymentSessionId: String, paymentRedirectUrl: String, paymentReference: String, paymentInitiatedAt: Date,
+  provisionedTenantId: String, ownerSetupTokenId: String, ownerSetupTokenPlain: { type: String, select: false },
+  status: enumField(SignupStatus, { default: SignupStatus.OTP_PENDING }), expiresAt: Date,
 }, baseOptions);
 signupSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const passwordResetTokenSchema = new mongoose.Schema({
-  _id: stringId("prt"), userId: { type: String, required: true, index: true }, tenantId: { type: String, required: true, index: true },
+  _id: stringId("prt"), userId: { type: String, required: true, index: true }, tenantId: { type: String, index: true },
+  purpose: { type: String, default: "PASSWORD_RESET" },
   tokenHash: { type: String, required: true, unique: true }, expiresAt: { type: Date, required: true }, consumedAt: Date,
 }, baseOptions);
 passwordResetTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

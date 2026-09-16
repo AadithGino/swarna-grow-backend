@@ -2,6 +2,7 @@ import { Customer, Payment, Redemption, Scheme } from "../models/index.js";
 import { fuzzyMongoFilter } from "../lib/query-filters.js";
 
 const MIN_QUERY_LEN = 2;
+const MAX_QUERY_LEN = 120;
 const DEFAULT_LIMIT = 6;
 const MAX_LIMIT = 10;
 
@@ -61,7 +62,7 @@ function mapRedemption(row, customerName, enrollmentNo) {
 }
 
 export async function globalSearch(req) {
-  const query = String(req.query.q ?? "").trim();
+  const query = String(req.query.q ?? "").trim().slice(0, MAX_QUERY_LEN);
   const limit = Math.min(
     Math.max(Number(req.query.limit) || DEFAULT_LIMIT, 1),
     MAX_LIMIT,

@@ -1,7 +1,8 @@
 import { sendSuccess } from "../lib/response.js";
 import { errors } from "../lib/app-error.js";
 import * as auth from "../services/auth.service.js";
-import { Customer, Session, Signup, SubscriptionPlan, Tenant, User } from "../models/index.js";
+import { Customer, Session, Tenant, User } from "../models/index.js";
+import * as signup from "../services/signup.service.js";
 
 export const login = (platform = false) => async (req, res) => sendSuccess(res, await auth.login({ body: req.body, request: req, platform }));
 export const refresh = async (req, res) => sendSuccess(res, await auth.refresh(req.body.refreshToken));
@@ -13,13 +14,13 @@ export const revokeDevice = async (req, res) => { await Session.updateMany({ $or
 export const requestOtp = async (req, res) => sendSuccess(res, await auth.requestOtp(req.body), {}, 202);
 export const forgotPassword = async (req, res) => sendSuccess(res, await auth.forgotPassword(req.body), {}, 202);
 export const verifyOtp = async (req, res) => sendSuccess(res, await auth.verifyCustomerOtp(req.body, req));
-export const signupStart = async (req, res) => sendSuccess(res, await auth.startSignup(req.body), {}, 201);
-export const signupVerify = async (req, res) => sendSuccess(res, await auth.verifySignupOtp(req.body.signupId, req.body.otp));
-export const signupPlans = async (_req, res) => sendSuccess(res, await SubscriptionPlan.find({ active: true }).sort({ pricePaise: 1 }).lean());
-export const selectSignupPlan = async (req, res) => { const signup = await Signup.findOneAndUpdate({ _id: req.params.signupId, status: "OTP_VERIFIED" }, { $set: { selectedPlanTier: req.body.planTier, status: "PLAN_SELECTED" } }, { new: true }); sendSuccess(res, signup); };
-export const signupPayment = async (req, res) => { const signup = await Signup.findOneAndUpdate({ _id: req.params.signupId, status: "PLAN_SELECTED" }, { $set: { status: "PAYMENT_PENDING", paymentReference: `signup_${Date.now()}` } }, { new: true }); sendSuccess(res, { signupId: signup?._id, status: signup?.status, paymentUrl: `/mock-signup-pay/${signup?._id}` }); };
-export const signupStatus = async (req, res) => sendSuccess(res, await Signup.findById(req.params.signupId).select("status tenantCode selectedPlanTier expiresAt").lean());
-export const checkAvailability = async (req, res) => sendSuccess(res, { available: !(await Tenant.exists({ $or: [...(req.query.mobile ? [{ mobile: req.query.mobile }] : []), ...(req.query.tenantCode ? [{ code: req.query.tenantCode }] : [])] })) });
+export const signupStart = async (req, res) => sendSuccess(res, await signup.startSignup(req.body), {}, 201);
+export const signupVerify = async (req, res) => sendSuccess(res, await signup.verifySignupOtp(req.body.signupId, req.body.otp));
+export const signupPlans = async (_req, res) => sendSuccess(res, await signup.listPublicSignupPlans());
+export const selectSignupPlan = async (req, res) => sendSuccess(res, await signup.selectSignupPlan(req.params.signupId, req.body));
+export const signupPayment = async (req, res) => sendSuccess(res, await signup.initiateSignupPayment(req.params.signupId, req.body));
+export const signupStatus = async (req, res) => sendSuccess(res, await signup.getSignupStatus(req.params.signupId));
+export const checkAvailability = async (req, res) => sendSuccess(res, await signup.checkSignupAvailability(req.query));
 export const resolveTenant = async (req, res) => {
   let tenant = null;
   if (req.query.tenantCode) {
@@ -31,5 +32,12 @@ export const resolveTenant = async (req, res) => {
   if (!tenant) throw errors.notFound("Jewellery");
   sendSuccess(res, tenant);
 };
-export const setPassword = async (req, res) => sendSuccess(res, await auth.setPassword({ auth: req.auth, resetToken: req.body.resetToken, password: req.body.password }));
+export const setPassword = async (req, res) => sendSuccess(res, await auth.setPassword({
+  auth: req.auth,
+  resetToken: req.body.resetToken,
+  token: req.body.token,
+  password: req.body.password,
+  confirmPassword: req.body.confirmPassword,
+  request: req,
+}));
 export const changePassword = async (req, res) => sendSuccess(res, await auth.changePassword(req.auth, req.body));

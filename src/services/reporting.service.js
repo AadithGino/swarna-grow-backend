@@ -21,7 +21,11 @@ import { AppError } from "../lib/app-error.js";
 import { listAuditEvents } from "./audit.service.js";
 import { collectionSummary } from "./collection-summary.js";
 import { buildAdminReport } from "./report-builders/index.js";
-import { dateMatch, effectiveScope, resolveDatePreset } from "../lib/query-filters.js";
+import {
+  dateMatch,
+  effectiveScope,
+  resolveQueryDateRange,
+} from "../lib/query-filters.js";
 import { Branch } from "../models/index.js";
 import { redemptionPeriodSummary } from "./redemption-period-summary.js";
 import { moneyRef } from "../lib/money.js";
@@ -84,7 +88,7 @@ export async function dashboard(req) {
   const scope = effectiveScope(req);
   const period = String(req.query.period ?? "THIS_MONTH");
   const periodLabels = { TODAY: "Today", THIS_WEEK: "This week", THIS_MONTH: "This month", LAST_MONTH: "Last month" };
-  const periodRange = resolveDatePreset(period, req.query);
+  const periodRange = resolveQueryDateRange(req.query);
   const [todayPayments, activeCustomers, activeSchemes, overdue, maturities, handovers, grievances, openRedemptions, redemptions] = await Promise.all([
     Payment.aggregate([{ $match: { ...scope, status: "SUCCESS", paidAt: { $gte: start } } }, { $group: { _id: "$mode", amountPaise: { $sum: "$amountPaise" }, count: { $sum: 1 } } }]),
     Customer.countDocuments({ ...scope, status: "ACTIVE" }), Scheme.countDocuments({ ...scope, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } }),
@@ -107,16 +111,26 @@ export async function dashboard(req) {
       label: await scopeDisplayLabel(scope),
       branchId: scope.branchId ?? null,
     },
-    period: { key: period, label: periodLabels[period] ?? "This month", from: req.query.from, to: req.query.to },
+    period: {
+      key: period,
+      label: periodLabels[period] ?? "This month",
+      from: periodRange.from ?? req.query.from,
+      to: periodRange.to ?? req.query.to,
+    },
   };
 }
+function chartDateRange(req) {
+  return resolveQueryDateRange(req.query);
+}
+
 async function collectionTrendChart(req, scope) {
+  const range = chartDateRange(req);
   const buckets = await Payment.aggregate([
     {
       $match: {
         ...scope,
         status: "SUCCESS",
-        ...dateMatch("paidAt", req.query),
+        ...dateMatch("paidAt", range),
       },
     },
     {
@@ -167,11 +181,50 @@ async function collectionTrendChart(req, scope) {
 
 export async function chart(req, key) {
   const scope = effectiveScope(req);
+  const range = chartDateRange(req);
   if (key === "collection-trend") return collectionTrendChart(req, scope);
-  if (key === "scheme-status-distribution") return Scheme.aggregate([{ $match: scope }, { $group: { _id: "$status", value: { $sum: 1 } } }, { $project: { _id: 0, key: "$_id", label: "$_id", value: 1 } }]);
-  if (key === "gold-accrual-trend") return LedgerEntry.aggregate([{ $match: { ...scope, weightMg: { $gt: 0 } } }, { $group: { _id: { $dateToString: { format: "%Y-%m", date: "$effectiveAt", timezone: "Asia/Kolkata" } }, value: { $sum: "$weightMg" } } }, { $sort: { _id: 1 } }, { $project: { _id: 0, key: "$_id", label: "$_id", value: 1 } }]);
+  if (key === "scheme-status-distribution") {
+    return Scheme.aggregate([
+      {
+        $match: {
+          ...scope,
+          status: {
+            $in: [
+              "ACTIVE",
+              "LOCKED",
+              "DEFAULTED",
+              "MATURED",
+              "REDEEMED",
+              "CLOSED_PREMATURE",
+            ],
+          },
+        },
+      },
+      { $group: { _id: "$status", value: { $sum: 1 } } },
+      { $project: { _id: 0, key: "$_id", label: "$_id", value: 1 } },
+    ]);
+  }
+  if (key === "gold-accrual-trend") {
+    return LedgerEntry.aggregate([
+      { $match: { ...scope, weightMg: { $gt: 0 }, ...dateMatch("effectiveAt", range) } },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: "%Y-%m",
+              date: "$effectiveAt",
+              timezone: "Asia/Kolkata",
+            },
+          },
+          value: { $sum: "$weightMg" },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { _id: 0, key: "$_id", label: "$_id", value: 1 } },
+    ]);
+  }
   const group = key === "collection-by-branch" ? "$branchId" : key === "collection-by-mode" ? "$mode" : { $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" } };
-  return Payment.aggregate([{ $match: { ...scope, status: "SUCCESS", ...dateMatch("paidAt", req.query) } }, { $group: { _id: group, value: { $sum: "$amountPaise" }, count: { $sum: 1 } } }, { $sort: { _id: 1 } }, { $project: { _id: 0, key: "$_id", label: "$_id", value: 1, count: 1 } }]);
+  return Payment.aggregate([{ $match: { ...scope, status: "SUCCESS", ...dateMatch("paidAt", range) } }, { $group: { _id: group, value: { $sum: "$amountPaise" }, count: { $sum: 1 } } }, { $sort: { _id: 1 } }, { $project: { _id: 0, key: "$_id", label: "$_id", value: 1, count: 1 } }]);
 }
 export async function report(req, reportKey) {
   const built = await buildAdminReport(req, reportKey);

@@ -4,11 +4,14 @@ import * as controller from "../controllers/platform.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { authenticate, requireSubject } from "../middlewares/auth.middleware.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
-import { AuditEvent, ErrorLog, WebhookEvent } from "../models/index.js";
+import { WebhookEvent } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
+import { validate } from "../middlewares/validation.middleware.js";
+import { platformLoginBody } from "../validators/common.validators.js";
+import { loginRateLimit } from "../middlewares/security.middleware.js";
 
 export const platformRouter = Router();
-platformRouter.post("/auth/login", asyncHandler(auth.login(true)));
+platformRouter.post("/auth/login", loginRateLimit, validate({ body: platformLoginBody }), asyncHandler(auth.login(true)));
 platformRouter.post("/auth/refresh", asyncHandler(auth.refresh));
 platformRouter.use(authenticate, requireSubject("PLATFORM_USER"));
 platformRouter.post("/auth/logout", asyncHandler(auth.logout));
@@ -32,5 +35,10 @@ platformRouter.get("/tenants/:tenantId/flags", asyncHandler(controller.flags(fal
 platformRouter.get("/template-definitions", asyncHandler(controller.templates));
 platformRouter.get("/dashboard/summary", asyncHandler(controller.summary));
 platformRouter.get("/dashboard/charts/:chartKey", asyncHandler(controller.chart));
-platformRouter.get("/audit-logs", asyncHandler(async (_req, res) => sendSuccess(res, await AuditEvent.find({}).sort({ occurredAt: -1 }).limit(100).lean())));
-platformRouter.get("/webhook-failures", asyncHandler(controller.webhookFailures)); platformRouter.post("/webhook-failures/:id/retry", idempotent, asyncHandler(async (req, res) => { const row = await WebhookEvent.findByIdAndUpdate(req.params.id, { $set: { status: "QUEUED", error: null } }, { new: true }); return sendSuccess(res, { id: row?._id, queued: Boolean(row) }, {}, 202); })); platformRouter.get("/error-logs", asyncHandler(async (req, res) => sendSuccess(res, await ErrorLog.find(req.query.tenantId ? { tenantId: req.query.tenantId } : {}).sort({ occurredAt: -1 }).limit(500).lean())));
+platformRouter.get("/audit-logs", asyncHandler(controller.auditLogs));
+platformRouter.get("/webhook-failures", asyncHandler(controller.webhookFailures));
+platformRouter.post("/webhook-failures/:id/retry", idempotent, asyncHandler(async (req, res) => {
+  const row = await WebhookEvent.findByIdAndUpdate(req.params.id, { $set: { status: "QUEUED", error: null } }, { new: true });
+  return sendSuccess(res, { id: row?._id, queued: Boolean(row) }, {}, 202);
+}));
+platformRouter.get("/error-logs", asyncHandler(controller.errorLogs));

@@ -35,7 +35,9 @@ export function parseEnv(source = process.env) {
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
     S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""), FCM_PROJECT_ID: z.string().default(""),
     EXPORT_BASE_URL: z.string().url().default("http://localhost:4000"),
-    SEED_PLATFORM_MOBILE: z.string().default("+919999999999"), SEED_PLATFORM_PASSWORD: z.string().min(12).default(SECRET_DEFAULTS.SEED_PLATFORM_PASSWORD),
+    SEED_PLATFORM_MOBILE: z.string().default("+919999999999"),
+    SEED_PLATFORM_EMAIL: z.string().email().default("ops@platform.com"),
+    SEED_PLATFORM_PASSWORD: z.string().min(12).default(SECRET_DEFAULTS.SEED_PLATFORM_PASSWORD),
   }).superRefine((_value, context) => {
     const nodeEnv = source.NODE_ENV ?? "development";
     if (nodeEnv !== "production") return;

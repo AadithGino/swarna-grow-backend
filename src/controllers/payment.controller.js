@@ -22,4 +22,5 @@ export const passbookImage = async (req, res) => { const payment = await Payment
 export const share = async (req, res) => sendSuccess(res, await messaging.sharePayment(req), {}, 202);
 export const listLinks = async (req, res) => sendSuccess(res, await PaymentLink.find(req.scope).sort({ createdAt: -1 }).limit(200).lean());
 export const cancelLink = async (req, res) => sendSuccess(res, await payments.cancelPaymentLink(req));
-export const resendLink = async (req, res) => { const row = await PaymentLink.findOne({ _id: req.params.linkId, ...req.scope }).lean(); if (!row) throw errors.notFound("Payment link"); if (!["CREATED", "SENT", "OPENED"].includes(row.status)) throw errors.business("PAYMENT_LINK_NOT_SENDABLE", "This payment link cannot be resent."); sendSuccess(res, { id: row._id, queued: true }, {}, 202); };
+export const resendLink = async (req, res) =>
+  sendSuccess(res, await payments.resendPaymentLink(req), {}, 202);

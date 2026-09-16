@@ -7,6 +7,8 @@ import { withTransaction } from "../lib/transaction.js";
 import { effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { writeAudit } from "./audit.service.js";
 import { nextSequence } from "./sequence.service.js";
+import { canonicalMobile, mobileLookupVariants } from "../lib/mobile.js";
+import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
 
 const STATUS_LABELS = { ACTIVE: "Active", BLOCKED: "Blocked", INACTIVE: "Inactive" };
 
@@ -218,11 +220,111 @@ export async function listCustomers(req) {
   });
   return result;
 }
+function customerMobileConflictError() {
+  return new AppError(
+    "CUSTOMER_MOBILE_EXISTS",
+    "This mobile number is already registered for a customer in this jewellery.",
+    409,
+    [
+      {
+        field: "body.mobile",
+        message:
+          "This mobile number is already registered for a customer in this jewellery.",
+      },
+    ],
+  );
+}
+
+function buildCustomerWritePayload(body, { branchId }) {
+  const mobile = canonicalMobile(body.mobile);
+  const payload = {
+    name: body.name,
+    mobile,
+    branchId,
+  };
+  if (body.email != null && String(body.email).trim()) {
+    payload.email = String(body.email).trim();
+  }
+  if (body.dateOfBirth != null && String(body.dateOfBirth).trim()) {
+    payload.dateOfBirth = String(body.dateOfBirth).trim();
+  }
+  if (body.address != null && String(body.address).trim()) {
+    payload.address = String(body.address).trim();
+  }
+  if (body.passbookNumber != null && String(body.passbookNumber).trim()) {
+    payload.passbookNumber = String(body.passbookNumber).trim();
+  }
+  return payload;
+}
+
+async function assertCustomerMobileAvailable(
+  tenantId,
+  mobile,
+  { session, excludeCustomerId } = {},
+) {
+  const variants = mobileLookupVariants(mobile);
+  if (!variants.length) return;
+  const filter = { tenantId, mobile: { $in: variants } };
+  if (excludeCustomerId) filter._id = { $ne: excludeCustomerId };
+  const existing = await Customer.findOne(filter)
+    .session(session ?? null)
+    .select("_id name customerNumber mobile")
+    .lean();
+  if (!existing) return;
+  throw customerMobileConflictError();
+}
+
 export async function createCustomer(req) {
+  const branchId = req.scope.branchId ?? req.body.branchId;
+  const writePayload = buildCustomerWritePayload(req.body, { branchId });
+
+  await assertCustomerMobileAvailable(req.auth.tenantId, writePayload.mobile);
+
   return withTransaction(async (session) => {
+    await assertCustomerMobileAvailable(req.auth.tenantId, writePayload.mobile, {
+      session,
+    });
     const number = await nextSequence(req.auth.tenantId, "customer", session);
-    const customer = (await Customer.create([{ _id: createId("customer"), tenantId: req.auth.tenantId, branchId: req.scope.branchId ?? req.body.branchId, customerNumber: `CUS-${String(number).padStart(6, "0")}`, ...req.body, createdBy: req.auth.id }], { session }))[0];
-    const auditEventId = await writeAudit({ req, action: "CUSTOMER_CREATED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, after: customer.toObject(), session }); return { ...customer.toObject(), auditEventId };
+    let customer;
+    try {
+      customer = (
+        await Customer.create(
+          [
+            {
+              _id: createId("customer"),
+              tenantId: req.auth.tenantId,
+              customerNumber: `CUS-${String(number).padStart(6, "0")}`,
+              ...writePayload,
+              createdBy: req.auth.id,
+            },
+          ],
+          { session },
+        )
+      )[0];
+    } catch (error) {
+      if (error?.code === 11000) {
+        const variants = mobileLookupVariants(writePayload.mobile);
+        const dupMobile = await Customer.findOne({
+          tenantId: req.auth.tenantId,
+          mobile: { $in: variants },
+        })
+          .session(session)
+          .select("_id")
+          .lean();
+        if (dupMobile) throw customerMobileConflictError();
+        throw appErrorFromDuplicateKey(error);
+      }
+      throw error;
+    }
+    const auditEventId = await writeAudit({
+      req,
+      action: "CUSTOMER_CREATED",
+      entityType: AuditEntityType.CUSTOMER,
+      entityId: customer._id,
+      after: customer.toObject(),
+      session,
+    });
+    return { ...customer.toObject(), auditEventId };
   });
 }
 export async function getCustomer(req) { const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).lean(); if (!customer) throw errors.notFound("Customer"); return customer; }
@@ -299,7 +401,48 @@ export async function setNominee(req, remove = false) {
   });
 }
 export async function blockCustomer(req, blocked = true) { return withTransaction(async (session) => { const customer = await Customer.findOneAndUpdate({ _id: req.params.customerId, ...req.scope }, { $set: { status: blocked ? CustomerStatus.BLOCKED : CustomerStatus.ACTIVE }, $inc: { version: 1 } }, { new: true, session }); if (!customer) throw errors.notFound("Customer"); const auditEventId = await writeAudit({ req, action: blocked ? "CUSTOMER_BLOCKED" : "CUSTOMER_UNBLOCKED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, after: customer.toObject(), session }); return { id: customer._id, status: customer.status, auditEventId }; }); }
-export async function updateCustomer(req) { return withTransaction(async (session) => { const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session); if (!customer) throw errors.notFound("Customer"); if (req.body.expectedVersion != null && Number(req.body.expectedVersion) !== customer.version) throw new AppError("VERSION_CONFLICT", "This customer changed. Refresh and try again.", 409); const before = customer.toObject(); for (const key of ["name", "email", "dateOfBirth", "address", "branchId", "passbookNumber"]) if (req.body[key] !== undefined) customer[key] = req.body[key]; customer.version += 1; await customer.save({ session }); const auditEventId = await writeAudit({ req, action: "CUSTOMER_UPDATED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, before, after: customer.toObject(), session }); return { ...customer.toObject(), auditEventId }; }); }
+export async function updateCustomer(req) {
+  return withTransaction(async (session) => {
+    const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session);
+    if (!customer) throw errors.notFound("Customer");
+    if (req.body.expectedVersion != null && Number(req.body.expectedVersion) !== customer.version) {
+      throw new AppError("VERSION_CONFLICT", "This customer changed. Refresh and try again.", 409);
+    }
+    const before = customer.toObject();
+    if (req.body.mobile !== undefined) {
+      const nextMobile = canonicalMobile(req.body.mobile);
+      if (nextMobile !== customer.mobile) {
+        await assertCustomerMobileAvailable(req.auth.tenantId, nextMobile, {
+          session,
+          excludeCustomerId: customer._id,
+        });
+        customer.mobile = nextMobile;
+      }
+    }
+    for (const key of ["name", "email", "dateOfBirth", "address", "branchId"]) {
+      if (req.body[key] !== undefined) customer[key] = req.body[key];
+    }
+    if (req.body.passbookNumber !== undefined) {
+      const trimmed = String(req.body.passbookNumber ?? "").trim();
+      customer.passbookNumber = trimmed || undefined;
+    }
+    if (req.body.email !== undefined && !String(req.body.email).trim()) {
+      customer.email = undefined;
+    }
+    customer.version += 1;
+    await customer.save({ session });
+    const auditEventId = await writeAudit({
+      req,
+      action: "CUSTOMER_UPDATED",
+      entityType: AuditEntityType.CUSTOMER,
+      entityId: customer._id,
+      before,
+      after: customer.toObject(),
+      session,
+    });
+    return { ...customer.toObject(), auditEventId };
+  });
+}
 export async function setWhatsappOpt(req) { const optedOut = req.body.optedIn === false; const customer = await Customer.findOneAndUpdate({ _id: req.params.customerId, ...req.scope }, { $set: { whatsappOptedOutAt: optedOut ? new Date() : null }, $inc: { version: 1 } }, { new: true }); if (!customer) throw errors.notFound("Customer"); return { customerId: customer._id, optedIn: !customer.whatsappOptedOutAt, version: customer.version }; }
 export async function addNote(req) { const customer = await getCustomer(req); const auditEventId = await writeAudit({ req, action: "CUSTOMER_NOTE_ADDED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, metadata: { note: req.body.note } }); return { customerId: customer._id, auditEventId }; }
 export async function listCustomerRelations(req, relation) {

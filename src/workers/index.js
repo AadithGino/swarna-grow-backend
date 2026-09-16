@@ -2,9 +2,11 @@ import { Worker } from "bullmq";
 import { connectDatabase, disconnectDatabase } from "../config/database.js";
 import { connectRedis, disconnectRedis, getRedis } from "../config/redis.js";
 import { logger } from "../config/logger.js";
+import { startWorkerHeartbeat } from "../lib/worker-heartbeat.js";
 import { processExport, processMaintenance, processMessage, processOutbox, processWebhook } from "./processors.js";
 
 await connectDatabase(); const ready = await connectRedis(); if (!ready) throw new Error("Redis is required for workers");
+startWorkerHeartbeat();
 const connection = getRedis();
 const workerOpts = { connection, prefix: "swarnagrow" };
 const workers = [

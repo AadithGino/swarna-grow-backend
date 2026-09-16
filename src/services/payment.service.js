@@ -337,4 +337,64 @@ export async function createPaymentIntent(req) {
 }
 export async function cancelPaymentIntent(req) { return withTransaction(async (session) => { const intent = await PaymentIntent.findOne({ _id: req.params.intentId, tenantId: req.auth.tenantId, customerId: req.auth.id }).session(session); if (!intent) throw errors.notFound("Payment intent"); if (intent.status !== PaymentIntentStatus.PENDING) throw new AppError("PAYMENT_INTENT_NOT_PENDING", "Only a pending payment intent can be cancelled.", 409); const scheme = await Scheme.findById(intent.schemeId).session(session); const expected = readExpectedPositionVersion(req.body); if (expected != null && expected !== scheme.positionVersion) throw new AppError("PAYMENT_POSITION_CHANGED", "The payable position changed. Request a fresh quote.", 409); intent.status = PaymentIntentStatus.CANCELLED; intent.version += 1; await intent.save({ session }); await Payment.updateOne({ _id: intent.paymentId, status: PaymentStatus.PENDING }, { $set: { status: PaymentStatus.FAILED, providerPayload: { cancellationReason: "CUSTOMER_CANCELLED" } } }, { session }); scheme.positionVersion += 1; scheme.version += 1; await scheme.save({ session }); return { ...intent.toObject(), positionVersion: scheme.positionVersion }; }); }
 export async function cancelPaymentLink(req) { return withTransaction(async (session) => { const link = await PaymentLink.findOne({ _id: req.params.linkId, ...req.scope, status: { $in: [LinkStatus.CREATED, LinkStatus.SENT, LinkStatus.OPENED] } }).session(session); if (!link) throw errors.business("PAYMENT_LINK_NOT_CANCELLABLE", "This payment link cannot be cancelled."); link.status = LinkStatus.CANCELLED; await link.save({ session }); if (link.paymentIntentId) { const intent = await PaymentIntent.findOneAndUpdate({ _id: link.paymentIntentId, status: PaymentIntentStatus.PENDING }, { $set: { status: PaymentIntentStatus.CANCELLED }, $inc: { version: 1 } }, { new: true, session }); if (intent) await Scheme.updateOne({ _id: link.schemeId }, { $inc: { positionVersion: 1, version: 1 } }, { session }); } if (link.paymentId) await Payment.updateOne({ _id: link.paymentId, status: PaymentStatus.PENDING }, { $set: { status: PaymentStatus.FAILED, providerPayload: { cancellationReason: "LINK_CANCELLED" } } }, { session }); return link.toObject(); }); }
+
+export async function resendPaymentLink(req) {
+  const link = await PaymentLink.findOne({
+    _id: req.params.linkId,
+    ...req.scope,
+  }).lean();
+  if (!link) throw errors.notFound("Payment link");
+  if (!["CREATED", "SENT", "OPENED"].includes(link.status)) {
+    throw errors.business(
+      "PAYMENT_LINK_NOT_SENDABLE",
+      "This payment link cannot be resent.",
+    );
+  }
+  const customer = await Customer.findOne({
+    _id: link.customerId,
+    tenantId: link.tenantId,
+  })
+    .select("mobile whatsappOptedOutAt")
+    .lean();
+  if (!customer) throw errors.notFound("Customer");
+  if (customer.whatsappOptedOutAt) {
+    throw errors.business(
+      "WHATSAPP_OPTED_OUT",
+      "The customer has opted out of WhatsApp messages.",
+    );
+  }
+  const created = await createPaymentLink({
+    ...req,
+    body: {
+      schemeId: link.schemeId,
+      amountPaise: link.amountPaise,
+      targetCycle: link.targetCycle,
+    },
+  });
+  const today = new Date().toLocaleDateString("en-CA", {
+    timeZone: "Asia/Kolkata",
+  });
+  const { queueMessage } = await import("./messaging.service.js");
+  const scheme = await Scheme.findById(link.schemeId)
+    .select("enrollmentNumber branchId")
+    .lean();
+  await queueMessage(req, {
+    branchId: link.branchId ?? scheme?.branchId,
+    customerId: link.customerId,
+    schemeId: link.schemeId,
+    type: "PAYMENT_DUE",
+    templateKey: "PAYMENT_DUE",
+    templateParams: {
+      mobile: customer.mobile,
+      reminderDate: today,
+      enrollmentNumber: scheme?.enrollmentNumber,
+      paymentLinkToken: created.token,
+    },
+  });
+  await PaymentLink.updateOne(
+    { _id: link._id },
+    { $set: { status: LinkStatus.SENT } },
+  );
+  return { id: link._id, queued: true };
+}
 export async function persistWebhook({ tenantId, provider, providerEventId, signature, rawBody, payload }) { try { return await WebhookEvent.create({ _id: createId("webhook"), tenantId, provider, providerEventId, signature, rawBody, payload }); } catch (error) { if (error.code === 11000) return null; throw error; } }

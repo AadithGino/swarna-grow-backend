@@ -1,5 +1,6 @@
 import { z } from "zod";
 import * as E from "../constants/enums.js";
+import { canonicalMobile } from "../lib/mobile.js";
 
 export const idParam = (name) => z.object({ [name]: z.string().min(4).max(80) });
 export const cursorQuery = z.object({ cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).default(20), sort: z.string().optional(), q: z.string().trim().max(120).optional() }).passthrough();
@@ -10,14 +11,55 @@ export const paise = z.number().int().safe().nonnegative();
 export const positivePaise = z.number().int().safe().positive();
 
 export const loginBody = z.object({ tenantCode: z.string().trim().toUpperCase().optional(), mobile, password: z.string().min(8), deviceId: z.string().min(4), platform: z.enum(["web", "android", "ios"]).default("web"), appVersion: z.string().optional() });
+export const platformLoginBody = z.object({ email: z.string().email(), password: z.string().min(8), deviceId: z.string().min(4).optional(), platform: z.enum(["web", "android", "ios"]).default("web").optional() });
+export const signupStartBody = z.object({
+  businessName: z.string().trim().min(2).max(160),
+  ownerName: z.string().trim().min(2).max(120),
+  mobile,
+  email: z.string().email(),
+  city: z.string().trim().min(2).max(80),
+});
+export const signupVerifyBody = z.object({ signupId: z.string().min(4), otp: z.string().regex(/^\d{4,8}$/) });
+export const signupSelectPlanBody = z.object({ subscriptionPlanId: z.string().min(4), billingCycle: enumSchema(E.BillingCycle).default(E.BillingCycle.MONTHLY) });
+export const signupPaymentBody = z.object({ redirectUrl: z.string().url() });
 export const otpRequestBody = z.object({ tenantCode: z.string().trim().toUpperCase(), mobile, purpose: z.enum(["LOGIN", "SIGNUP", "PASSWORD_RESET"]).default("LOGIN"), deviceId: z.string().min(4) });
 export const otpVerifyBody = otpRequestBody.extend({ otp: z.string().regex(/^\d{4,8}$/) });
 export const forgotPasswordBody = z.object({ tenantCode: z.string().trim().toUpperCase(), mobile, deviceId: z.string().min(4).optional() });
 export const setPasswordBody = z.object({ resetToken: z.string().min(32).optional(), password: z.string().min(8).max(128) });
-export const publicSetPasswordBody = setPasswordBody.superRefine((value, context) => {
-  if (!value.resetToken) context.addIssue({ code: "custom", path: ["resetToken"], message: "resetToken is required." });
+export const publicSetPasswordBody = z.object({
+  token: z.string().min(8).optional(),
+  resetToken: z.string().min(32).optional(),
+  password: z.string().min(8).max(128),
+  confirmPassword: z.string().min(8).max(128).optional(),
+}).superRefine((value, context) => {
+  if (!value.token && !value.resetToken) {
+    context.addIssue({ code: "custom", path: ["token"], message: "token or resetToken is required." });
+    return;
+  }
+  if (value.token) {
+    if (!value.confirmPassword) context.addIssue({ code: "custom", path: ["confirmPassword"], message: "confirmPassword is required." });
+    else if (value.password !== value.confirmPassword) context.addIssue({ code: "custom", path: ["confirmPassword"], message: "Password and confirm password must match." });
+  }
 });
-export const customerBody = z.object({ branchId: z.string().optional(), name: z.string().trim().min(2).max(120), mobile, email: z.string().email().optional(), dateOfBirth: z.string().optional(), address: z.string().max(1000).optional(), passbookNumber: z.string().max(80).optional() });
+const mobileField = z.preprocess(
+  (value) => (value == null || value === "" ? value : canonicalMobile(value)),
+  mobile,
+);
+export const customerBody = z.object({
+  branchId: z.string().optional(),
+  name: z.string().trim().min(2).max(120),
+  mobile: mobileField,
+  email: z
+    .union([z.string().email(), z.literal("")])
+    .optional()
+    .transform((value) => (value === "" ? undefined : value)),
+  dateOfBirth: z.string().optional(),
+  address: z.string().max(1000).optional(),
+  passbookNumber: z
+    .union([z.string().max(80), z.literal("")])
+    .optional()
+    .transform((value) => (value === "" ? undefined : value)),
+});
 export const nomineeBody = z.object({ name: z.string().min(2).max(120), relationship: enumSchema(E.NomineeRelationship), mobile: mobile.optional(), dateOfBirth: z.string().optional(), address: z.string().max(1000).optional(), expectedVersion: z.number().int().positive() });
 const nullablePaise = z.number().int().safe().nonnegative().nullable().optional();
 const amountRules = z.object({ amountMode: enumSchema(E.AmountMode), fixedAmountPaise: nullablePaise, slabsPaise: z.array(positivePaise).default([]), minInstallmentPaise: nullablePaise, maxInstallmentPaise: nullablePaise, multipleOfPaise: nullablePaise });

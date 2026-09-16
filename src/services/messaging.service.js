@@ -253,6 +253,26 @@ export async function resendMessage(req) {
   });
 }
 
+export async function bulkResendMessages(req) {
+  const messageIds = [
+    ...new Set((req.body.messageIds ?? []).map(String).filter(Boolean)),
+  ];
+  let queued = 0;
+  const skipped = [];
+  for (const messageId of messageIds) {
+    try {
+      await resendMessage({ ...req, params: { ...req.params, messageId } });
+      queued += 1;
+    } catch (err) {
+      skipped.push({
+        messageId,
+        reason: err?.code ?? "FAILED",
+      });
+    }
+  }
+  return { queued, accepted: queued, skipped };
+}
+
 export async function getMessageForAdmin(req) {
   const row = await Message.findOne({
     _id: req.params.messageId ?? req.params.id,

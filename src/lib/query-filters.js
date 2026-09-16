@@ -133,6 +133,19 @@ export function resolveDatePreset(preset, query = {}) {
   return { from: query.from, to: query.to };
 }
 
+/**
+ * Effective list/chart/report range: explicit from+to win; else period/preset.
+ */
+export function resolveQueryDateRange(query = {}) {
+  const from = query.from != null ? String(query.from).trim() : "";
+  const to = query.to != null ? String(query.to).trim() : "";
+  if (from && to) {
+    return { from, to };
+  }
+  const preset = query.period ?? query.preset ?? "THIS_MONTH";
+  return resolveDatePreset(preset, query);
+}
+
 /** Maturity list: schemes maturing in range (not only status MATURED). */
 export function maturityListFilter(query = {}) {
   const dates = resolveDatePreset(query.preset, query);

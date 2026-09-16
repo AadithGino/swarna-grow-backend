@@ -12,6 +12,7 @@ import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
 import { errors } from "../lib/app-error.js";
 import * as audit from "../services/audit.service.js";
+import * as messaging from "../services/messaging.service.js";
 
 export const adminOperationsRouter = Router();
 adminOperationsRouter.get("/cash/overview", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashOverview)));
@@ -40,7 +41,16 @@ adminOperationsRouter.get("/messaging/summary", ...guarded(Permission.MESSAGE_RE
 adminOperationsRouter.get("/messaging/messages", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.messages)));
 adminOperationsRouter.get("/messaging/messages/:messageId", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.messageDetail)));
 adminOperationsRouter.post("/messaging/messages/:messageId/resend", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(controller.resendMessage)));
-adminOperationsRouter.post("/messaging/messages/bulk-resend", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(async (req, res) => sendSuccess(res, { queued: req.body.messageIds?.length ?? 0 }, {}, 202))));
+adminOperationsRouter.post(
+  "/messaging/messages/bulk-resend",
+  ...guarded(
+    Permission.MESSAGE_SEND,
+    idempotent,
+    asyncHandler(async (req, res) =>
+      sendSuccess(res, await messaging.bulkResendMessages(req), {}, 202),
+    ),
+  ),
+);
 adminOperationsRouter.get("/messaging/opt-outs", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, await Customer.find({ ...req.scope, whatsappOptedOutAt: { $ne: null } }).select("_id customerNumber name mobile whatsappOptedOutAt").lean()))));
 adminOperationsRouter.get("/messaging/quota", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, { used: await Message.countDocuments(req.scope), limit: req.tenant.subscription?.limits?.whatsappMessages ?? null }))));
 adminOperationsRouter.get("/messaging/dead-letter", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, await WebhookEvent.find({ ...req.scope, status: "DEAD_LETTER" }).lean()))));

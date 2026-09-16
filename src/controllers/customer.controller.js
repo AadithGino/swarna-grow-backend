@@ -2,6 +2,7 @@ import PDFDocument from "pdfkit";
 import { Customer, Message, Payment, Scheme } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import * as customers from "../services/customer.service.js";
+import { mobileLookupVariants } from "../lib/mobile.js";
 
 export const list = async (req, res) => sendList(res, await customers.listCustomers(req));
 export const create = async (req, res) => sendSuccess(res, await customers.createCustomer(req), {}, 201);
@@ -14,7 +15,18 @@ export const nomineeDetail = async (req, res) => sendSuccess(res, (await custome
 export const block = (blocked = true) => async (req, res) => sendSuccess(res, await customers.blockCustomer(req, blocked));
 export const whatsappOpt = async (req, res) => sendSuccess(res, await customers.setWhatsappOpt(req));
 export const note = async (req, res) => sendSuccess(res, await customers.addNote(req), {}, 201);
-export const checkMobile = async (req, res) => sendSuccess(res, { exists: Boolean(await Customer.exists({ tenantId: req.auth.tenantId, mobile: req.query.mobile })), mobile: req.query.mobile });
+export const checkMobile = async (req, res) => {
+  const variants = mobileLookupVariants(req.query.mobile);
+  const exists = variants.length
+    ? Boolean(
+        await Customer.exists({
+          tenantId: req.auth.tenantId,
+          mobile: { $in: variants },
+        }),
+      )
+    : false;
+  sendSuccess(res, { exists, mobile: req.query.mobile });
+};
 export const analytics = async (req, res) => sendSuccess(res, await customers.customerAnalytics(req));
 export const statement = async (req, res) => { const customer = await customers.customer360(req); const payments = await Payment.find({ tenantId: req.auth.tenantId, customerId: customer._id }).sort({ paidAt: 1 }).lean(); const doc = new PDFDocument({ margin: 48 }); res.setHeader("Content-Type", "application/pdf"); res.setHeader("Content-Disposition", `attachment; filename="${customer.customerNumber}-statement.pdf"`); doc.pipe(res); doc.fontSize(20).text(req.tenant.name).fontSize(14).text("Customer statement").moveDown(); doc.text(`${customer.name} · ${customer.customerNumber}`).moveDown(); for (const payment of payments) doc.fontSize(10).text(`${payment.paidAt.toISOString().slice(0, 10)}   ${payment.receiptNumber}   ${(payment.amountPaise / 100).toFixed(2)}   ${payment.mode}   ${payment.status}`); doc.end(); };
 export const appProfile = async (req, res) => sendSuccess(res, await Customer.findOne({ _id: req.auth.id, tenantId: req.auth.tenantId }).select("-fcmTokens").lean());

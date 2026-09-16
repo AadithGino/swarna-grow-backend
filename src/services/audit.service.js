@@ -2,7 +2,12 @@ import { AuditEvent, Customer, Payment, Redemption, Scheme, User } from "../mode
 import { AuditActorType, AuditEntityType } from "../constants/enums.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
-import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
+import {
+  dateMatch,
+  effectiveScope,
+  escaped,
+  searchRegex,
+} from "../lib/query-filters.js";
 import { branchDto, loadBranchMap } from "../lib/relation-maps.js";
 
 const SECRET_KEYS = /password|otp|token|secret|salt|card|authorization/i;
@@ -312,8 +317,12 @@ function auditListScope(req) {
 export async function listAuditEvents(req) {
   const scope = auditListScope(req);
   const filters = {};
-  for (const key of ["entityType", "entityId", "actorId", "action"]) {
+  for (const key of ["entityType", "entityId", "actorId"]) {
     if (req.query[key]) filters[key] = req.query[key];
+  }
+  const actionQ = String(req.query.action ?? "").trim();
+  if (actionQ) {
+    filters.action = new RegExp(escaped(actionQ), "i");
   }
   // Accept `type` as an alias used by the admin UI filter.
   if (!filters.entityType && req.query.type) filters.entityType = req.query.type;

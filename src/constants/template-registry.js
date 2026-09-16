@@ -1,0 +1,159 @@
+import { MessageTemplateKey, MessageType } from "./enums.js";
+
+const jewellerVar = { index: 6, key: "jewellerName", sample: "Sree Gold" };
+
+/** Platform-managed WhatsApp template variable contract (not tenant-specific). */
+export const PLATFORM_TEMPLATE_DEFINITIONS = Object.freeze([
+  {
+    messageType: MessageType.OTP,
+    label: "Login OTP",
+    required: true,
+    hasMediaHeader: false,
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "otpCode", sample: "482913" },
+      { index: 2, key: "validMinutes", sample: "5" },
+      jewellerVar,
+    ],
+    suggestedBody: "{{1}} is your OTP for {{3}}. Valid for {{2}} minutes. Do not share.",
+  },
+  {
+    messageType: MessageType.SCHEME_JOINED,
+    label: "Scheme enrolment confirmation",
+    required: true,
+    hasMediaHeader: false,
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "schemeName", sample: "Swarna Plus 11" },
+      { index: 3, key: "schemeNumber", sample: "MGR/DH11/2026/00318" },
+      { index: 4, key: "installmentDisplay", sample: "₹5,000 / month" },
+      { index: 5, key: "maturityDateDisplay", sample: "20 Sep 2027" },
+      jewellerVar,
+    ],
+    suggestedBody: "Hi {{1}}, you joined {{2}} ({{3}}). Installment: {{4}}. Maturity: {{5}}. — {{6}}",
+  },
+  {
+    messageType: MessageType.PAYMENT_DUE,
+    label: "Payment due reminder",
+    required: true,
+    installmentScope: "FIXED_MANDATORY_INSTALLMENTS_ONLY",
+    scopeNote: "Not sent for optional flexible-window contributions; only scheduled mandatory installments.",
+    hasMediaHeader: false,
+    hasUrlButton: true,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "schemeName", sample: "Swarna Plus 11" },
+      { index: 3, key: "installmentNumber", sample: "4" },
+      { index: 4, key: "amountDisplay", sample: "₹5,000" },
+      { index: 5, key: "dueDateDisplay", sample: "20 Sep 2026" },
+      jewellerVar,
+    ],
+    buttonUrlVariable: { index: 1, key: "paymentLinkToken", sample: "pl_8f2a4c60" },
+    suggestedBody: "Hi {{1}}, your installment {{3}} of {{4}} for {{2}} is due on {{5}}. Pay securely using the button below. — {{6}}",
+  },
+  {
+    messageType: MessageType.PAYMENT_OVERDUE,
+    label: "Overdue payment reminder",
+    required: true,
+    installmentScope: "FIXED_MANDATORY_INSTALLMENTS_ONLY",
+    scopeNote: "Not sent for optional flexible-window contributions; only overdue mandatory installments.",
+    hasMediaHeader: false,
+    hasUrlButton: true,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "schemeName", sample: "Swarna Plus 11" },
+      { index: 3, key: "installmentNumber", sample: "4" },
+      { index: 4, key: "amountDisplay", sample: "₹5,000" },
+      { index: 5, key: "daysOverdue", sample: "3" },
+      jewellerVar,
+    ],
+    buttonUrlVariable: { index: 1, key: "paymentLinkToken", sample: "pl_8f2a4c60" },
+    suggestedBody: "Hi {{1}}, installment {{3}} of {{4}} for {{2}} is {{5}} days overdue. Pay now using the button below. — {{6}}",
+  },
+  {
+    messageType: MessageType.PAYMENT_SUCCESS,
+    label: "Payment success with passbook",
+    required: true,
+    hasMediaHeader: true,
+    mediaHeaderType: "IMAGE",
+    mediaHeaderNote: "Passbook image is attached as the header media. Register the template with an IMAGE header.",
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "amountDisplay", sample: "₹5,000" },
+      { index: 3, key: "schemeName", sample: "Swarna Plus 11" },
+      { index: 4, key: "receiptNumber", sample: "SG/MGR/2026/001284" },
+      { index: 5, key: "paidInstallments", sample: "4 of 11" },
+      jewellerVar,
+    ],
+    suggestedBody: "Hi {{1}}, we received {{2}} for {{3}}. Receipt {{4}}. Progress: {{5}}. — {{6}}",
+  },
+  {
+    messageType: MessageTemplateKey.PAYMENT_SUCCESS_TEXT_FALLBACK,
+    label: "Payment success (text fallback)",
+    required: false,
+    hasMediaHeader: false,
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "amountDisplay", sample: "₹5,000" },
+      { index: 3, key: "schemeName", sample: "Swarna Plus 11" },
+      { index: 4, key: "receiptNumber", sample: "SG/MGR/2026/001284" },
+      { index: 5, key: "paidInstallments", sample: "4 of 11" },
+      jewellerVar,
+    ],
+    suggestedBody: "Hi {{1}}, payment of {{2}} for {{3}} is confirmed. Receipt {{4}}. Progress: {{5}}. — {{6}}",
+  },
+  {
+    messageType: MessageType.FLEXI_LOCK_APPLIED,
+    label: "Flexible lock applied",
+    required: true,
+    hasMediaHeader: false,
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "schemeName", sample: "Swarna Flexi 24" },
+      { index: 3, key: "lockDateDisplay", sample: "20 Sep 2026" },
+      { index: 4, key: "capAmountDisplay", sample: "₹12,000" },
+      jewellerVar,
+    ],
+    suggestedBody: "Hi {{1}}, your flexible phase for {{2}} is now locked until {{3}}. Cycle cap: {{4}}. — {{5}}",
+  },
+  {
+    messageType: MessageType.SCHEME_MATURED,
+    label: "Scheme matured",
+    required: true,
+    hasMediaHeader: false,
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "schemeName", sample: "Swarna Plus 11" },
+      { index: 3, key: "maturityValueDisplay", sample: "₹55,000" },
+      { index: 4, key: "benefitDisplay", sample: "1 free installment" },
+      jewellerVar,
+    ],
+    suggestedBody: "Congratulations {{1}}! {{2}} has matured. Value: {{3}}. Benefit: {{4}}. Visit {{5}} to redeem.",
+  },
+  {
+    messageType: MessageType.SCHEME_CLOSED,
+    label: "Scheme closure confirmation",
+    required: true,
+    hasMediaHeader: false,
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "schemeName", sample: "Swarna Plus 11" },
+      { index: 3, key: "closureTypeDisplay", sample: "Maturity redemption" },
+      { index: 4, key: "settlementDisplay", sample: "₹55,000" },
+      jewellerVar,
+    ],
+    suggestedBody: "Hi {{1}}, {{2}} is closed ({{3}}). Settlement: {{4}}. Thank you for saving with {{5}}.",
+  },
+]);
+
+export const REQUIRED_TEMPLATE_TYPES = PLATFORM_TEMPLATE_DEFINITIONS.filter((row) => row.required).map((row) => row.messageType);
+
+export function getTemplateDefinition(messageType) {
+  return PLATFORM_TEMPLATE_DEFINITIONS.find((row) => row.messageType === messageType) ?? null;
+}
