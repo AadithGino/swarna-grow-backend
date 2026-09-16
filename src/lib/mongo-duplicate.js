@@ -51,16 +51,15 @@ export function appErrorFromDuplicateKey(error) {
     });
   }
 
-  // Sparse passbook index + explicit null collides — usually masked mobile dup or bad legacy data.
   if (
     !details.length &&
     indexName.includes("passbookNumber") &&
     keyValue.passbookNumber == null
   ) {
     details.push({
-      field: "body.mobile",
+      field: "body.passbookNumber",
       message:
-        "This mobile number is already registered for a customer in this jewellery.",
+        "Passbook numbering is misconfigured for this jewellery. Contact support or try again after an admin fix.",
     });
   }
 

@@ -15,10 +15,17 @@ export async function connectDatabase() {
     autoIndex: env.NODE_ENV !== "production",
   });
   try {
-    const { GoldRate } = await import("../models/index.js");
+    const { Customer, GoldRate } = await import("../models/index.js");
     await GoldRate.syncIndexes();
+    const customerIndexes = await Customer.collection.indexes();
+    const passbookIndex = customerIndexes.find((index) => index.name === "tenantId_1_passbookNumber_1");
+    if (passbookIndex?.sparse && !passbookIndex.partialFilterExpression) {
+      await Customer.collection.dropIndex("tenantId_1_passbookNumber_1");
+      logger.warn("Dropped legacy sparse passbook index (null collisions blocked customer signup)");
+    }
+    await Customer.syncIndexes();
   } catch (error) {
-    logger.warn({ err: error }, "GoldRate index sync skipped");
+    logger.warn({ err: error }, "Customer/GoldRate index sync skipped");
   }
   logger.info("MongoDB connected");
 }

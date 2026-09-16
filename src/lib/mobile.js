@@ -38,3 +38,15 @@ export function mobileLookupVariants(mobile) {
 
   return [...variants].filter(Boolean);
 }
+
+export function maskMobile(mobile) {
+  const digits = String(mobile ?? "").replace(/\D/g, "");
+  if (digits.length < 4) return "****";
+  return `******${digits.slice(-4)}`;
+}
+
+/** Last 10 digits for matching legacy stored mobiles in a tenant. */
+export function mobileTenDigitSuffix(mobile) {
+  const digits = String(mobile ?? "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : null;
+}

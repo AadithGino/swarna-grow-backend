@@ -208,6 +208,20 @@ function defaultInstallmentAmountPaise(plan, requested) {
 }
 
 export async function validateEnrolment(req) {
+  if (req.auth?.type === "CUSTOMER") {
+    if (req.tenant?.operations?.customerSelfEnrolEnabled === false) {
+      throw errors.business(
+        "SELF_ENROL_DISABLED",
+        "Self-enrolment is not available. Contact your branch to join a scheme.",
+      );
+    }
+    req.body.customerId = req.auth.id;
+    delete req.body.branchId;
+    delete req.body.firstInstallmentMode;
+    if (req.body.firstInstallmentAction || req.body.payment) {
+      throw errors.business("MANUAL_PAYMENT_NOT_ALLOWED", "Customers cannot record manual payments during enrolment.");
+    }
+  }
   const [customer, plan] = await Promise.all([Customer.findOne({ _id: req.body.customerId, ...req.scope }).lean(), SchemePlan.findOne({ _id: req.body.planId, tenantId: req.auth.tenantId }).lean()]);
   if (!customer) throw errors.notFound("Customer"); if (!plan) throw errors.notFound("Scheme plan");
   if (plan.status !== SchemePlanStatus.ACTIVE) throw errors.business("PLAN_ENROLMENT_CLOSED", "This plan is not accepting enrolments.");
@@ -343,6 +357,7 @@ export async function getScheme(req) {
     branch: branch ? { _id: branch._id, id: branch._id, name: branch.name, code: branch.code } : undefined,
     totals: ledgerTotals(ledger),
     passbook,
+    payments,
     displayMode: scheme.paymentPattern === "FIXED" ? "FIXED" : scheme.flexiblePhase === "FLEXIBLE" ? "FLEXIBLE_FREE_WINDOW" : "FLEXIBLE_LOCK_WINDOW",
     uiStatus: presentation.uiStatus,
     actions: presentation.actions,
@@ -387,6 +402,11 @@ export async function listSchemes(req) {
   const filters = {};
   if (req.query.status) filters.status = req.query.status;
   if (req.query.group === "PAST") filters.status = { $in: [SchemeStatus.REDEEMED, SchemeStatus.CLOSED_PREMATURE] };
+  else if (req.auth.type === "CUSTOMER" && !req.query.status) {
+    filters.status = {
+      $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED, SchemeStatus.MATURED],
+    };
+  }
   if (req.query.customerId) filters.customerId = req.query.customerId;
   if (req.query.planId) filters.planId = req.query.planId;
   if (req.query.paymentPattern) filters.paymentPattern = req.query.paymentPattern;
@@ -437,7 +457,10 @@ export async function listSchemes(req) {
     const branch = effectiveBranchId ? branchMap.get(effectiveBranchId) : null;
     const installments = scheme.installments ?? [];
     const paidInstallments = installments.filter((row) => ["PAID", "WAIVED"].includes(row.status)).length;
-    const amountPaidPaise = installments.reduce((sum, row) => sum + (row.paidPaise ?? 0), 0);
+    const amountPaidPaise =
+      scheme.paymentPattern === PaymentPattern.FIXED
+        ? installments.reduce((sum, row) => sum + (row.paidPaise ?? 0), 0)
+        : (scheme.cycles ?? []).reduce((sum, row) => sum + (row.paidPaise ?? 0), 0);
     const nextDueRow = installments.find((row) => ["DUE", "PARTIALLY_PAID", "OVERDUE", "PENDING"].includes(row.status));
     return {
       ...scheme,
@@ -462,6 +485,32 @@ export async function listSchemes(req) {
   return result;
 }
 export function ledgerTotals(entries) { const credits = new Set(["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "BENEFIT_CREDIT"]); const debits = new Set(["REVERSAL", "CLOSURE_PENALTY", "REDEMPTION_DEBIT"]); return entries.reduce((totals, entry) => { const direction = credits.has(entry.type) ? 1 : debits.has(entry.type) ? -1 : 0; return { amountPaidPaise: totals.amountPaidPaise + direction * entry.amountPaise, goldWeightMg: totals.goldWeightMg + direction * entry.weightMg }; }, { amountPaidPaise: 0, goldWeightMg: 0 }); }
+/** Attach ledger-backed totals for customer scheme cards (list/home). */
+export async function attachLedgerTotals(tenantId, schemeRows) {
+  if (!schemeRows?.length) return schemeRows ?? [];
+  const schemeIds = schemeRows.map((row) => row._id);
+  const entries = await LedgerEntry.find({ tenantId, schemeId: { $in: schemeIds } })
+    .sort({ sequence: 1 })
+    .lean();
+  const bySchemeId = new Map();
+  for (const entry of entries) {
+    const bucket = bySchemeId.get(entry.schemeId) ?? [];
+    bucket.push(entry);
+    bySchemeId.set(entry.schemeId, bucket);
+  }
+  return schemeRows.map((scheme) => {
+    const ledger = ledgerTotals(bySchemeId.get(scheme._id) ?? []);
+    return {
+      ...scheme,
+      totals: {
+        ...(scheme.totals ?? {}),
+        amountPaidPaise: ledger.amountPaidPaise,
+        goldWeightMg: ledger.goldWeightMg,
+        totalPaid: { amountPaise: ledger.amountPaidPaise },
+      },
+    };
+  });
+}
 export function rebuildSchemeProjection(scheme, entries) { const businessEntries = entries.filter((entry) => ["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "REVERSAL"].includes(entry.type)); if (scheme.paymentPattern === PaymentPattern.FIXED) { let remaining = businessEntries.reduce((sum, entry) => sum + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise), 0); const current = today(); for (const row of scheme.installments) { row.paidPaise = Math.max(0, Math.min(row.amountPaise, remaining)); remaining = Math.max(0, remaining - row.paidPaise); row.status = row.paidPaise >= row.amountPaise ? "PAID" : row.graceEndsAt < current ? "OVERDUE" : row.paidPaise > 0 ? "PARTIALLY_PAID" : row.dueDate <= current ? "DUE" : "PENDING"; } } else { const amounts = new Map(); for (const entry of businessEntries) if (entry.cycle) amounts.set(entry.cycle, (amounts.get(entry.cycle) ?? 0) + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise)); for (const row of scheme.cycles) { row.paidPaise = Math.max(0, amounts.get(row.cycle) ?? 0); const closed = row.status === "EXPIRED" || row.expiresAt < today(); row.remainingPaise = closed ? 0 : Math.max(0, row.capPaise - row.paidPaise); row.status = closed ? "EXPIRED" : row.capPaise > 0 && row.paidPaise >= row.capPaise ? "PAID" : row.paidPaise > 0 ? "PARTIALLY_PAID" : "UPCOMING"; } scheme.positionVersion += 1; } return scheme; }
 export async function recomputeScheme(req) { return withTransaction(async (session) => { const scheme = await Scheme.findOne({ _id: req.params.schemeId, ...req.scope }).session(session); if (!scheme) throw errors.notFound("Scheme"); const entries = await LedgerEntry.find({ tenantId: scheme.tenantId, schemeId: scheme._id }).sort({ sequence: 1 }).session(session).lean(); rebuildSchemeProjection(scheme, entries); scheme.version += 1; await scheme.save({ session }); const auditEventId = await writeAudit({ req, action: "SCHEME_PROJECTION_RECOMPUTED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId }; }); }
 export async function getLedger(req) { const scheme = await getScheme(req); return paginate(LedgerEntry, { scope: { tenantId: scheme.tenantId, schemeId: scheme._id }, filters: {}, cursor: req.query.cursor, limit: req.query.limit, sort: "sequence:asc" }); }
@@ -490,7 +539,31 @@ export async function payableRange(req, schemeInput) {
     }
     if (monthDistance > rules.maxAdvanceCycles) throw errors.business("ADVANCE_CYCLE_LIMIT_EXCEEDED", "The selected future cycle is outside the allowed advance window.");
   }
-  const remaining = cycle.capPaise - cycle.paidPaise; const finalRemainder = remaining > 0 && remaining < rules.minimumPaymentPaise && rules.allowFinalRemainderBelowMinimum;
-  return { model: "FLEXIBLE", phase: "CAPPED", contributionIsOptional: true, targetCycle, minPayablePaise: finalRemainder ? remaining : rules.minimumPaymentPaise, maxPayablePaise: Math.max(0, remaining), paymentIncrementPaise: 1, allowFinalRemainderBelowMinimum: rules.allowFinalRemainderBelowMinimum, unusedAllowanceCarriesForward: false, positionVersion: scheme.positionVersion ?? 0, payable: remaining > 0, capPaise: cycle.capPaise, paidPaise: cycle.paidPaise, remainingPaise: Math.max(0, remaining) };
+  const remaining = cycle.capPaise - cycle.paidPaise;
+  const finalRemainder = remaining > 0 && remaining < rules.minimumPaymentPaise && rules.allowFinalRemainderBelowMinimum;
+  const remainingPaise = Math.max(0, remaining);
+  let nextCycleAction = null;
+  if (remainingPaise <= 0) nextCycleAction = "WAIT_NEXT_CYCLE";
+  else if (monthDistance > 0) nextCycleAction = "PAY_FUTURE_CYCLE";
+  else if (monthDistance === 0) nextCycleAction = "PAY_CURRENT_CYCLE";
+  return {
+    model: "FLEXIBLE",
+    phase: "CAPPED",
+    contributionIsOptional: true,
+    targetCycle,
+    minPayablePaise: finalRemainder ? remaining : rules.minimumPaymentPaise,
+    maxPayablePaise: remainingPaise,
+    suggestedPaise: remainingPaise,
+    paymentIncrementPaise: rules.paymentIncrementPaise ?? 1,
+    allowFinalRemainderBelowMinimum: rules.allowFinalRemainderBelowMinimum,
+    unusedAllowanceCarriesForward: false,
+    positionVersion: scheme.positionVersion ?? 0,
+    payable: remainingPaise > 0,
+    capPaise: cycle.capPaise,
+    paidPaise: cycle.paidPaise,
+    remainingPaise,
+    maxReason: remainingPaise <= 0 ? "CYCLE_CAP_REACHED" : null,
+    nextCycleAction,
+  };
 }
 export async function applyFlexibleLock(req) { return withTransaction(async (session) => { const scheme = await Scheme.findOne({ _id: req.params.schemeId, ...req.scope }).session(session); if (!scheme) throw errors.notFound("Scheme"); if (scheme.flexiblePhase !== FlexiblePhase.FLEXIBLE) throw new AppError("LOCK_ALREADY_APPLIED", "The flexible lock has already been applied.", 409); const entries = await LedgerEntry.find({ tenantId: scheme.tenantId, schemeId: scheme._id, type: "FREE_WINDOW_PAYMENT" }).session(session).lean(); const rules = scheme.planSnapshot.flexibleRules; const total = entries.reduce((sum, row) => sum + row.amountPaise, 0); if (total === 0 && rules.capComputation.onZeroFlexiblePhaseTotal === "CLOSE_SCHEME") { scheme.status = SchemeStatus.CLOSED_PREMATURE; scheme.version += 1; await scheme.save({ session }); return { ...scheme.toObject(), closeReason: "ZERO_FLEXIBLE_PHASE_TOTAL" }; } const nearest = rules.capComputation.roundToNearestPaise; let cap = Math.ceil((total / rules.averagingDivisor) / nearest) * nearest; if (total < rules.flexiblePhase.minTotalPaise && rules.capComputation.onBelowMinimumTotal === "USE_MINIMUM") cap = rules.capComputation.minCycleCapPaise; cap = Math.min(rules.capComputation.maxCycleCapPaise, Math.max(rules.capComputation.minCycleCapPaise, cap)); scheme.lockedAveragePaise = cap; scheme.flexiblePhase = FlexiblePhase.CAPPED; scheme.status = SchemeStatus.LOCKED; scheme.lockedAt = new Date(); scheme.positionVersion += 1; scheme.version += 1; scheme.cycles.slice(rules.flexiblePhaseCycles).forEach((cycle) => { cycle.capPaise = cap; cycle.remainingPaise = cap; }); await scheme.save({ session }); const auditEventId = await writeAudit({ req, action: "FLEXIBLE_LOCK_APPLIED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId }; }); }

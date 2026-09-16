@@ -1,4 +1,5 @@
-node_modules/
+node_modules
+.mock-storage/
 .env
 .env.*
 !.env.example

@@ -13,6 +13,7 @@ import { errorHandler, notFoundHandler } from "./middlewares/error.middleware.js
 import { traceMiddleware } from "./middlewares/trace.middleware.js";
 import { sendSuccess } from "./lib/response.js";
 import { workerProcessReady } from "./lib/worker-heartbeat.js";
+import { mockStorageRouter } from "./routes/mock-storage.routes.js";
 
 export function createApp() {
   const app = express(); app.disable("x-powered-by"); app.set("trust proxy", env.TRUST_PROXY);
@@ -33,6 +34,11 @@ export function createApp() {
     });
   });
   app.use(`${env.API_PREFIX}/webhooks`, express.raw({ type: "application/json", limit: "2mb" }), (req, _res, next) => { req.rawBody = Buffer.from(req.body); next(); }, webhookRouter);
+  app.use(
+    "/mock-storage",
+    express.raw({ type: () => true, limit: "10mb" }),
+    mockStorageRouter,
+  );
   app.use(express.json({ limit: "1mb" })); app.use(express.urlencoded({ extended: false, limit: "64kb" }));
   app.use(env.API_PREFIX, apiRouter); app.use(notFoundHandler); app.use(errorHandler); return app;
 }

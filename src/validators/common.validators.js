@@ -23,7 +23,65 @@ export const signupVerifyBody = z.object({ signupId: z.string().min(4), otp: z.s
 export const signupSelectPlanBody = z.object({ subscriptionPlanId: z.string().min(4), billingCycle: enumSchema(E.BillingCycle).default(E.BillingCycle.MONTHLY) });
 export const signupPaymentBody = z.object({ redirectUrl: z.string().url() });
 export const otpRequestBody = z.object({ tenantCode: z.string().trim().toUpperCase(), mobile, purpose: z.enum(["LOGIN", "SIGNUP", "PASSWORD_RESET"]).default("LOGIN"), deviceId: z.string().min(4) });
-export const otpVerifyBody = otpRequestBody.extend({ otp: z.string().regex(/^\d{4,8}$/) });
+export const otpVerifyBody = otpRequestBody.extend({
+  otp: z.string().regex(/^\d{4,8}$/),
+  otpId: z.string().uuid(),
+  deviceInfo: z.object({
+    deviceId: z.string().min(4),
+    platform: z.enum(["android", "ios", "web"]).optional(),
+    appVersion: z.string().max(32).optional(),
+    osVersion: z.string().max(32).optional(),
+    deviceModel: z.string().max(64).optional(),
+  }).optional(),
+});
+export const appEnrolBody = z.object({
+  planId: z.string(),
+  installmentAmountPaise: positivePaise.optional(),
+  payNow: z.boolean().optional(),
+  redirectUrl: z.string().url().optional(),
+});
+export const appProfileCompleteBody = z.object({
+  name: z.string().min(2).max(120),
+  email: z.string().email().optional(),
+  dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  address: z.union([
+    z.string().min(3).max(500),
+    z.object({
+      line1: z.string().min(1).max(200),
+      line2: z.string().max(200).optional(),
+      city: z.string().max(80).optional(),
+      state: z.string().max(80).optional(),
+      pincode: z.string().max(12).optional(),
+    }),
+  ]).optional(),
+});
+export const customerGrievanceMessageBody = z.object({
+  body: z.string().min(1).max(4000),
+  attachmentUploadIds: z.array(z.string()).max(5).default([]),
+  expectedVersion: z.number().int().positive(),
+});
+export const grievanceReopenBody = z.object({
+  reason: z.string().trim().min(3).max(500),
+  expectedVersion: z.number().int().positive(),
+});
+export const customerRedemptionRequestBody = z.object({
+  preferredMode: enumSchema(E.RedemptionMode),
+  preferredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  remarks: z.string().max(500).optional(),
+  expectedVersion: z.number().int().positive(),
+});
+export const cancelPaymentIntentBody = z.object({
+  expectedPositionVersion: z.number().int().nonnegative(),
+});
+export const fcmRegisterBody = z.object({
+  fcmToken: z.string().min(20),
+  deviceId: z.string().min(4),
+  platform: z.enum(["android", "ios"]),
+  appVersion: z.string().max(32).optional(),
+  osVersion: z.string().max(32).optional(),
+  deviceModel: z.string().max(64).optional(),
+});
+export const fcmDeleteBody = z.object({ deviceId: z.string().min(4) });
 export const forgotPasswordBody = z.object({ tenantCode: z.string().trim().toUpperCase(), mobile, deviceId: z.string().min(4).optional() });
 export const setPasswordBody = z.object({ resetToken: z.string().min(32).optional(), password: z.string().min(8).max(128) });
 export const publicSetPasswordBody = z.object({
@@ -61,6 +119,7 @@ export const customerBody = z.object({
     .transform((value) => (value === "" ? undefined : value)),
 });
 export const nomineeBody = z.object({ name: z.string().min(2).max(120), relationship: enumSchema(E.NomineeRelationship), mobile: mobile.optional(), dateOfBirth: z.string().optional(), address: z.string().max(1000).optional(), expectedVersion: z.number().int().positive() });
+export const nomineeVersionBody = z.object({ expectedVersion: z.number().int().positive() });
 const nullablePaise = z.number().int().safe().nonnegative().nullable().optional();
 const amountRules = z.object({ amountMode: enumSchema(E.AmountMode), fixedAmountPaise: nullablePaise, slabsPaise: z.array(positivePaise).default([]), minInstallmentPaise: nullablePaise, maxInstallmentPaise: nullablePaise, multipleOfPaise: nullablePaise });
 const scheduleRules = z.object({ dueDateRule: enumSchema(E.DueDateRule), dueDayOfMonth: z.number().int().min(1).max(31).nullable().optional(), graceDays: z.number().int().min(0).max(90).default(0), firstInstallmentModeDefault: enumSchema(E.FirstInstallmentMode), firstInstallmentModeEditable: z.boolean().default(false) });
@@ -357,5 +416,10 @@ export const grievanceBody = z.object({ category: enumSchema(E.GrievanceCategory
 export const messageBody = z.object({ body: z.string().min(1).max(4000), messageType: enumSchema(E.GrievanceMessageType).default(E.GrievanceMessageType.PUBLIC_REPLY), attachmentUploadIds: z.array(z.string()).max(5).default([]), expectedVersion: z.number().int().positive().optional() });
 export const handoverBody = z.object({ amountPaise: positivePaise, remarks: z.string().max(500).optional(), staffId: z.string().optional(), branchId: z.string().optional() });
 export const redemptionBody = z.object({ mode: enumSchema(E.RedemptionMode), modeDetails: z.record(z.string(), z.unknown()).optional(), expectedVersion: z.number().int().positive() });
+export const fixedSchemePayBody = z.object({
+  amountPaise: positivePaise,
+  redirectUrl: z.string().url().optional(),
+  mobile: mobile.optional(),
+});
 export const uploadBody = z.object({ purpose: enumSchema(E.UploadPurpose), fileName: z.string().min(1).max(255), contentType: z.string(), sizeBytes: z.number().int().positive() });
 export const exportBody = z.object({ type: enumSchema(E.ExportType), filters: z.record(z.string(), z.unknown()).default({}), format: z.enum(["CSV", "XLSX", "PDF"]).default("CSV") });

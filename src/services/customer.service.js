@@ -9,6 +9,7 @@ import { writeAudit } from "./audit.service.js";
 import { nextSequence } from "./sequence.service.js";
 import { canonicalMobile, mobileLookupVariants } from "../lib/mobile.js";
 import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
+import { enrichCustomerKycRecord } from "../lib/customer-kyc-enrichment.js";
 
 const STATUS_LABELS = { ACTIVE: "Active", BLOCKED: "Blocked", INACTIVE: "Inactive" };
 
@@ -366,8 +367,12 @@ export async function customer360(req) {
       }
     }
   }
+  const kyc = customer.kyc
+    ? await enrichCustomerKycRecord(customer)
+    : customer.kyc;
   return {
     ...customer,
+    kyc,
     branch: branch
       ? { _id: branch._id, id: branch._id, name: branch.name, code: branch.code }
       : null,
@@ -388,15 +393,37 @@ export async function updateKyc(req, verify = false) {
     const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session); if (!customer) throw errors.notFound("Customer");
     const before = customer.toObject();
     if (verify) { if (customer.kyc?.status !== KycStatus.SUBMITTED) throw new AppError("KYC_NOT_SUBMITTED", "KYC must be submitted before verification.", 422); customer.kyc.status = req.body.status ?? KycStatus.VERIFIED; customer.kyc.verifiedAt = new Date(); customer.kyc.verifiedBy = req.auth.id; customer.kyc.rejectionReason = req.body.rejectionReason; }
-    else customer.kyc = { ...req.body, status: KycStatus.SUBMITTED, submittedAt: new Date() };
-    customer.version += 1; await customer.save({ session }); const auditEventId = await writeAudit({ req, action: verify ? "CUSTOMER_KYC_REVIEWED" : "CUSTOMER_KYC_SUBMITTED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, before, after: customer.toObject(), session }); return { ...customer.toObject(), auditEventId };
+    else {
+      if (customer.kyc?.status === KycStatus.VERIFIED) {
+        throw new AppError("KYC_ALREADY_VERIFIED", "Verified KYC cannot be replaced. Contact your branch for corrections.", 409);
+      }
+      customer.kyc = { ...req.body, status: KycStatus.SUBMITTED, submittedAt: new Date() };
+    }
+    customer.version += 1; await customer.save({ session }); const auditEventId = await writeAudit({ req, action: verify ? "CUSTOMER_KYC_REVIEWED" : "CUSTOMER_KYC_SUBMITTED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, before, after: customer.toObject(), session });
+    const saved = customer.toObject();
+    const kyc = saved.kyc ? await enrichCustomerKycRecord(saved) : saved.kyc;
+    return { ...saved, kyc, auditEventId };
   });
 }
 export async function setNominee(req, remove = false) {
   return withTransaction(async (session) => {
     const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session); if (!customer) throw errors.notFound("Customer");
     if (Number(req.body.expectedVersion ?? req.query.expectedVersion) !== customer.version) throw new AppError("VERSION_CONFLICT", "This customer changed. Refresh and try again.", 409);
-    const before = customer.toObject(); customer.nominee = remove ? null : req.body; customer.version += 1; await customer.save({ session });
+    const before = customer.toObject();
+    if (remove) {
+      customer.nominee = null;
+    } else {
+      const { expectedVersion: _v, notes, name, relationship, mobile, dateOfBirth, address } = req.body;
+      customer.nominee = {
+        name,
+        relationship,
+        ...(mobile ? { mobile: canonicalMobile(mobile) } : {}),
+        ...(dateOfBirth ? { dateOfBirth } : {}),
+        ...((address ?? notes) ? { address: String(address ?? notes).trim() } : {}),
+      };
+    }
+    customer.version += 1;
+    await customer.save({ session });
     const auditEventId = await writeAudit({ req, action: remove ? "CUSTOMER_NOMINEE_REMOVED" : "CUSTOMER_NOMINEE_UPDATED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, before, after: customer.toObject(), session }); return { nominee: customer.nominee, version: customer.version, auditEventId };
   });
 }

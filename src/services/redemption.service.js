@@ -361,6 +361,56 @@ export async function settlementPreview(req, closureType) {
     settlementPaise,
   };
 }
+export async function requestCustomerRedemption(req) {
+  const scheme = await Scheme.findOne({
+    _id: req.params.schemeId,
+    tenantId: req.auth.tenantId,
+    customerId: req.auth.id,
+  }).lean();
+  if (!scheme) throw errors.notFound("Scheme");
+  if (req.body.expectedVersion !== scheme.version) {
+    throw new AppError("VERSION_CONFLICT", "This scheme changed. Refresh and try again.", 409);
+  }
+  const existingOpen = await Redemption.findOne({
+    tenantId: req.auth.tenantId,
+    schemeId: scheme._id,
+    status: { $in: OPEN_REDEMPTION_STATUSES },
+  }).lean();
+  if (existingOpen) {
+    throw errors.business(
+      "REDEMPTION_ALREADY_OPEN",
+      "A redemption request is already in progress for this scheme.",
+    );
+  }
+  const row = await Redemption.create({
+    _id: createId("redemption"),
+    tenantId: scheme.tenantId,
+    branchId: scheme.branchId,
+    schemeId: scheme._id,
+    customerId: scheme.customerId,
+    closureType: ClosureType.MATURITY_REDEMPTION,
+    mode: req.body.preferredMode,
+    modeDetails: {
+      preferredDate: req.body.preferredDate,
+      remarks: req.body.remarks,
+    },
+    status: RedemptionStatus.REQUESTED,
+    principalPaise: 0,
+    benefitPaise: 0,
+    penaltyPaise: 0,
+    settlementPaise: 0,
+    requestedBy: req.auth.id,
+    requestedAt: new Date(),
+  });
+  return {
+    id: row._id,
+    status: row.status,
+    preferredMode: req.body.preferredMode,
+    preferredDate: req.body.preferredDate ?? null,
+    remarks: req.body.remarks ?? null,
+  };
+}
+
 export async function initiateRedemption(
   req,
   closureType,

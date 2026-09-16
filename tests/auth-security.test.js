@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { PasswordResetToken } from "../src/models/index.js";
+import { Customer, PasswordResetToken } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import { sha256 } from "../src/lib/crypto.js";
 import { otpProvider } from "../src/integrations/otp.provider.js";
@@ -43,11 +43,23 @@ test("forgot-password returns identical 202 whether or not the mobile exists", a
 
 test("password reset token works once and rejects reuse", async () => {
   const { user, tenant } = await seedTenantUser({ mobile: "+919888877766" });
-  await otpProvider.send({ tenantId: tenant._id, tenantCode: "TESTCO", mobile: user.mobile, purpose: "PASSWORD_RESET" });
+  const sent = await otpProvider.send({
+    tenantId: tenant._id,
+    tenantCode: "TESTCO",
+    mobile: user.mobile,
+    purpose: "PASSWORD_RESET",
+  });
   const verified = await request(app)
     .post("/api/v1/public/auth/otp/verify")
     .set("x-idempotency-key", randomUUID())
-    .send({ tenantCode: "TESTCO", mobile: user.mobile, purpose: "PASSWORD_RESET", deviceId: "device-1", otp: "123456" })
+    .send({
+      tenantCode: "TESTCO",
+      mobile: user.mobile,
+      purpose: "PASSWORD_RESET",
+      deviceId: "device-1",
+      otp: "123456",
+      otpId: sent.otpId,
+    })
     .expect(200);
   const resetToken = verified.body.data.resetToken;
   assert.ok(resetToken?.length >= 32);
@@ -63,6 +75,65 @@ test("password reset token works once and rejects reuse", async () => {
     .send({ resetToken, password: "Another!Pass12" })
     .expect(401);
   assert.equal(second.body.error.code, "UNAUTHENTICATED");
+});
+
+test("SIGNUP OTP verify signs in when mobile is already registered", async () => {
+  const { tenant, branch } = await seedTenantUser({});
+  const mobile = "+919847012345";
+  await Customer.create({
+    _id: createId("customer"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerNumber: "C9001",
+    name: "Existing",
+    mobile,
+    status: "ACTIVE",
+  });
+  const requested = await request(app)
+    .post("/api/v1/public/auth/otp/request")
+    .set("x-idempotency-key", randomUUID())
+    .send({ tenantCode: "TESTCO", mobile, purpose: "SIGNUP", deviceId: "customer-web" })
+    .expect(202);
+  assert.equal(requested.body.data.isRegistered, true);
+  const verified = await request(app)
+    .post("/api/v1/public/auth/otp/verify")
+    .set("x-idempotency-key", randomUUID())
+    .send({
+      tenantCode: "TESTCO",
+      mobile,
+      purpose: "SIGNUP",
+      deviceId: "customer-web",
+      otp: "123456",
+      otpId: requested.body.data.otpId,
+    })
+    .expect(200);
+  assert.equal(verified.body.data.isNewCustomer, false);
+  assert.ok(verified.body.data.accessToken);
+});
+
+test("customer SIGNUP OTP verify creates session", async () => {
+  await seedTenantUser({});
+  const mobile = `+9199${String(Date.now()).slice(-8)}`;
+  const requested = await request(app)
+    .post("/api/v1/public/auth/otp/request")
+    .set("x-idempotency-key", randomUUID())
+    .send({ tenantCode: "TESTCO", mobile, purpose: "SIGNUP", deviceId: "customer-web" })
+    .expect(202);
+  const verified = await request(app)
+    .post("/api/v1/public/auth/otp/verify")
+    .set("x-idempotency-key", randomUUID())
+    .send({
+      tenantCode: "TESTCO",
+      mobile,
+      purpose: "SIGNUP",
+      deviceId: "customer-web",
+      otp: "123456",
+      otpId: requested.body.data.otpId,
+    })
+    .expect(200);
+  assert.equal(verified.body.data.isNewCustomer, true);
+  assert.ok(verified.body.data.accessToken);
+  assert.equal(verified.body.data.profileComplete, false);
 });
 
 test("expired password reset token returns 401", async () => {

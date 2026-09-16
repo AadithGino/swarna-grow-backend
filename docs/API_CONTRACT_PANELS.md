@@ -6,7 +6,7 @@ Split from the full SwarnaGrow v1.2 contract for frontend teams.
 |---|---|---:|---|
 | Super Admin (Platform) | [API_CONTRACT_SUPER_ADMIN.md](./API_CONTRACT_SUPER_ADMIN.md) | 51 | `PLATFORM_USER` |
 | Admin (Tenant portal + Staff app) | [API_CONTRACT_ADMIN.md](./API_CONTRACT_ADMIN.md) | 188 | `TENANT_USER` |
-| Customer Web / App | [API_CONTRACT_CUSTOMER.md](./API_CONTRACT_CUSTOMER.md) | 45 | `CUSTOMER` (+ public OTP/pay) |
+| Customer Web / App | [API_CONTRACT_CUSTOMER.md](./API_CONTRACT_CUSTOMER.md) | 59 | `CUSTOMER` (+ public OTP/pay/signup) |
 | Full combined | [API_CONTRACT.md](./API_CONTRACT.md) | 279 | all |
 
 ## Quick mapping

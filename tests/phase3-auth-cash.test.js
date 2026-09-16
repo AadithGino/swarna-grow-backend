@@ -42,7 +42,8 @@ test("tenant resolve by mobile looks up customers and returns 404 when missing",
   const { tenant } = await seedTenantUser({ mobile: "+919811122200" });
   await Customer.create({ _id: createId("customer"), tenantId: tenant._id, branchId: createId("branch"), customerNumber: "C1", name: "Cust", mobile: "+919833344455" });
   const found = await request(app).get("/api/v1/public/tenants/resolve").query({ mobile: "+919833344455" }).expect(200);
-  assert.equal(found.body.data.code, "TESTCO");
+  assert.equal(found.body.data.tenantCode, "TESTCO");
+  assert.equal(found.body.data.tenants[0].tenantCode, "TESTCO");
   const missing = await request(app).get("/api/v1/public/tenants/resolve").query({ mobile: "+919800000000" }).expect(404);
   assert.equal(missing.body.error.code, "RESOURCE_NOT_FOUND");
   const jewellerMobile = await request(app).get("/api/v1/public/tenants/resolve").query({ mobile: tenant.mobile }).expect(404);

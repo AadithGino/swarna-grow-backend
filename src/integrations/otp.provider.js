@@ -1,8 +1,10 @@
-import { createHash, randomInt } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { getRedis, redisReady } from "../config/redis.js";
 import { AppError } from "../lib/app-error.js";
+import { maskMobile, mobileLookupVariants, canonicalMobile } from "../lib/mobile.js";
+import { Customer } from "../models/index.js";
 
 const memory = new Map();
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -10,7 +12,8 @@ const RESEND_COOLDOWN_SECONDS = 30;
 const MAX_ATTEMPTS = 5;
 
 function otpKey({ tenantId, tenantCode, mobile, purpose }) {
-  return `otp:${tenantId ?? tenantCode}:${mobile}:${purpose}`;
+  const normalizedMobile = canonicalMobile(mobile);
+  return `otp:${tenantId ?? tenantCode}:${normalizedMobile}:${purpose}`;
 }
 
 async function readRecord(key) {
@@ -46,8 +49,23 @@ export function assertOtpProviderReady(source = env) {
 }
 
 function generateOtp() {
-  if (env.NODE_ENV === "test") return "123456";
+  if (env.NODE_ENV === "test" || env.NODE_ENV === "development") return "123456";
   return String(randomInt(100000, 999999));
+}
+
+async function validateOtp({ tenantId, tenantCode, mobile, purpose, otp, otpId }) {
+  const key = otpKey({ tenantId, tenantCode, mobile, purpose });
+  const record = await readRecord(key);
+  if (!record || record.attempts >= MAX_ATTEMPTS) return false;
+  if (otpId && record.otpId && record.otpId !== otpId) return false;
+  const otpValue = String(otp ?? "").trim();
+  if (record.hash !== hash(otpValue)) {
+    record.attempts += 1;
+    const ttl = Math.max(1, Math.ceil(((record.expiresAt ?? Date.now()) - Date.now()) / 1000));
+    await writeRecord(key, record, ttl);
+    return false;
+  }
+  return true;
 }
 
 export const otpProvider = {
@@ -59,23 +77,49 @@ export const otpProvider = {
     }
     const otp = generateOtp();
     const ttl = env.OTP_TTL_SECONDS;
-    await writeRecord(key, { hash: hash(otp), attempts: 0, sentAt: Date.now() }, ttl);
+    const otpId = randomUUID();
+    await writeRecord(key, { hash: hash(otp), attempts: 0, sentAt: Date.now(), otpId }, ttl);
+    const isRegistered = tenantId
+      ? Boolean(
+          await Customer.exists({
+            tenantId,
+            mobile: { $in: mobileLookupVariants(canonicalMobile(mobile)) },
+          }),
+        )
+      : false;
     if (env.PROVIDER_MODE === "mock" || env.OTP_PROVIDER === "mock") {
       if (env.NODE_ENV !== "production") logger.info({ tenantId, tenantCode, mobile, purpose, otp }, "Mock OTP queued");
       else logger.info({ tenantId, tenantCode, mobile, purpose }, "Mock OTP queued");
-      return { requestId: `otp_${Date.now()}`, expiresIn: ttl };
+      return {
+        otpId,
+        channel: "SMS",
+        maskedMobile: maskMobile(mobile),
+        resendAvailableInSeconds: RESEND_COOLDOWN_SECONDS,
+        attemptsAllowed: MAX_ATTEMPTS,
+        isRegistered,
+        expiresInSeconds: ttl,
+      };
     }
     throw new Error("MSG91 live adapter requires project-specific template configuration");
   },
-  async verify({ tenantId, tenantCode, mobile, purpose, otp }) {
-    const key = otpKey({ tenantId, tenantCode, mobile, purpose });
-    const record = await readRecord(key);
-    if (!record || record.attempts >= MAX_ATTEMPTS) return false;
-    record.attempts += 1;
-    const ttl = Math.max(1, Math.ceil((record.expiresAt - Date.now()) / 1000));
-    const valid = record.hash === hash(otp);
-    if (valid) { await deleteRecord(key); return true; }
-    await writeRecord(key, record, ttl);
-    return false;
+  validate: validateOtp,
+  async consume({ tenantId, tenantCode, mobile, purpose }) {
+    await deleteRecord(otpKey({ tenantId, tenantCode, mobile, purpose }));
+  },
+  async verify({ tenantId, tenantCode, mobile, purpose, otp, otpId }) {
+    const ok = await validateOtp({ tenantId, tenantCode, mobile, purpose, otp, otpId });
+    if (!ok) return false;
+    await deleteRecord(otpKey({ tenantId, tenantCode, mobile, purpose }));
+    return true;
+  },
+  /** When verify fails, detect OTP issued for the other customer auth purpose (LOGIN vs SIGNUP). */
+  async findMatchingPurpose({ tenantId, tenantCode, mobile, purpose, otpId }) {
+    if (!otpId) return null;
+    for (const alt of ["LOGIN", "SIGNUP"]) {
+      if (alt === purpose) continue;
+      const record = await readRecord(otpKey({ tenantId, tenantCode, mobile, purpose: alt }));
+      if (record?.otpId === otpId) return alt;
+    }
+    return null;
   },
 };

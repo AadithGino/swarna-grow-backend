@@ -6,7 +6,15 @@ import * as signup from "../services/signup.service.js";
 
 export const login = (platform = false) => async (req, res) => sendSuccess(res, await auth.login({ body: req.body, request: req, platform }));
 export const refresh = async (req, res) => sendSuccess(res, await auth.refresh(req.body.refreshToken));
-export const me = async (req, res) => { const model = req.auth.type === "CUSTOMER" ? Customer : User; const record = await model.findById(req.auth.id).select(req.auth.type === "CUSTOMER" ? "-fcmTokens" : "-passwordHash").lean(); sendSuccess(res, record); };
+export const me = async (req, res) => {
+  if (req.auth.type === "CUSTOMER") {
+    const { getAppProfile } = await import("../services/customer-app.service.js");
+    const tenant = await Tenant.findById(req.auth.tenantId).lean();
+    return sendSuccess(res, await getAppProfile(req.auth, tenant));
+  }
+  const record = await User.findById(req.auth.id).select("-passwordHash").lean();
+  sendSuccess(res, record);
+};
 export const logout = async (req, res) => { await auth.logout(req.auth, req.body.refreshToken); sendSuccess(res, { loggedOut: true }); };
 export const logoutAll = async (req, res) => { await auth.logoutAll(req.auth); sendSuccess(res, { loggedOut: true }); };
 export const devices = async (req, res) => sendSuccess(res, await Session.find({ $or: [{ userId: req.auth.id }, { customerId: req.auth.id }], revokedAt: null }).select("deviceId platform appVersion lastUsedAt createdAt expiresAt").lean());
@@ -22,15 +30,8 @@ export const signupPayment = async (req, res) => sendSuccess(res, await signup.i
 export const signupStatus = async (req, res) => sendSuccess(res, await signup.getSignupStatus(req.params.signupId));
 export const checkAvailability = async (req, res) => sendSuccess(res, await signup.checkSignupAvailability(req.query));
 export const resolveTenant = async (req, res) => {
-  let tenant = null;
-  if (req.query.tenantCode) {
-    tenant = await Tenant.findOne({ code: String(req.query.tenantCode).trim().toUpperCase() }).select("_id code name branding status").lean();
-  } else if (req.query.mobile) {
-    const customer = await Customer.findOne({ mobile: req.query.mobile }).select("tenantId").lean();
-    if (customer?.tenantId) tenant = await Tenant.findById(customer.tenantId).select("_id code name branding status").lean();
-  }
-  if (!tenant) throw errors.notFound("Jewellery");
-  sendSuccess(res, tenant);
+  const { resolveTenants } = await import("../services/customer-app.service.js");
+  sendSuccess(res, await resolveTenants(req.query));
 };
 export const setPassword = async (req, res) => sendSuccess(res, await auth.setPassword({
   auth: req.auth,

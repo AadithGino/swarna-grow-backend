@@ -20,6 +20,9 @@ export function errorHandler(error, req, res, _next) {
   if (normalized.statusCode >= 500 && databaseReady()) void ErrorLog.create({ _id: createId("error"), tenantId: req.auth?.tenantId ?? null, actorId: req.auth?.id, method: req.method, path: req.originalUrl, code: normalized.code, message: error.message, statusCode: normalized.statusCode, traceId: req.traceId, stack: env.NODE_ENV === "production" ? undefined : error.stack }).catch((writeError) => logger.error({ err: writeError }, "Failed to persist error log"));
   let details = normalized.details;
   if (details && typeof details === "object" && !Array.isArray(details)) {
+    if (Array.isArray(details.tenants) || details.paymentState || details.blockingIntentIds) {
+      // Structured app errors (tenant pickers, payment quotes, etc.)
+    } else {
     const rows = [];
     if (details.mobile != null && details.mobile !== "") {
       rows.push({
@@ -36,6 +39,7 @@ export function errorHandler(error, req, res, _next) {
       });
     }
     details = rows.length ? rows : undefined;
+    }
   }
   res.status(normalized.statusCode).json({
     success: false,

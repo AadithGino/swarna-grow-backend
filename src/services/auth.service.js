@@ -1,7 +1,16 @@
 import argon2 from "argon2";
-import { Customer, PasswordResetToken, Session, Tenant, User } from "../models/index.js";
-import { errors, AppError } from "../lib/app-error.js";
+import { Branch, Customer, PasswordResetToken, Session, Tenant, User } from "../models/index.js";
 import { createId } from "../lib/ids.js";
+import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
+import { canonicalMobile, mobileLookupVariants, mobileTenDigitSuffix } from "../lib/mobile.js";
+import {
+  isCustomerProfileComplete,
+  tenantBrandingDto,
+  tenantPortalCapabilitiesDto,
+} from "../lib/customer-app-dto.js";
+import { nextSequence } from "./sequence.service.js";
+import { CustomerStatus } from "../constants/enums.js";
+import { errors, AppError } from "../lib/app-error.js";
 import { issueSession, rotateSession } from "./token.service.js";
 import { otpProvider } from "../integrations/otp.provider.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
@@ -81,7 +90,27 @@ export async function refresh(refreshToken) {
 }
 export async function logout(auth, refreshToken) { if (refreshToken) await Session.updateOne({ refreshTokenHash: sha256(refreshToken), $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
 export async function logoutAll(auth) { await Session.updateMany({ $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
-export async function requestOtp(body) { const tenant = await Tenant.findOne({ code: body.tenantCode }).lean(); if (!tenant) throw errors.notFound("Jewellery"); return otpProvider.send({ ...body, tenantId: tenant._id }); }
+export async function requestOtp(body) {
+  const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
+  if (!tenant) throw errors.notFound("Jewellery");
+  if (
+    body.purpose === "SIGNUP" &&
+    tenant.operations?.customerSelfRegistrationEnabled === false
+  ) {
+    throw new AppError(
+      "SELF_REGISTRATION_DISABLED",
+      "Online registration is not available for this jeweller. Contact your branch.",
+      403,
+    );
+  }
+  const mobile = canonicalMobile(body.mobile);
+  const isRegistered = Boolean(await findCustomerByTenantMobile(tenant._id, mobile));
+  if (body.purpose === "LOGIN" && !isRegistered) {
+    throw new AppError("CUSTOMER_NOT_REGISTERED", "No account found for this mobile. Sign up to continue.", 404);
+  }
+  const sent = await otpProvider.send({ ...body, mobile, tenantId: tenant._id });
+  return { ...sent, isRegistered };
+}
 export async function forgotPassword(body) {
   const response = { accepted: true, expiresIn: env.OTP_TTL_SECONDS };
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
@@ -91,14 +120,143 @@ export async function forgotPassword(body) {
   await otpProvider.send({ tenantId: tenant._id, tenantCode: body.tenantCode, mobile: body.mobile, purpose: "PASSWORD_RESET", deviceId: body.deviceId });
   return response;
 }
+function tenantCapabilities(tenant) {
+  return tenantPortalCapabilitiesDto(tenant);
+}
+
+async function findCustomerByTenantMobile(tenantId, mobile) {
+  const canonical = canonicalMobile(mobile);
+  const variants = mobileLookupVariants(canonical);
+  let customer = await Customer.findOne({ tenantId, mobile: { $in: variants } }).lean();
+  if (customer) return customer;
+  const suffix = mobileTenDigitSuffix(canonical);
+  if (!suffix) return null;
+  return Customer.findOne({ tenantId, mobile: { $regex: `${suffix}$` } }).lean();
+}
+
+async function ensureCustomerAfterOtp(tenant, mobile, purpose) {
+  let customer = await findCustomerByTenantMobile(tenant._id, mobile);
+  let isNewCustomer = false;
+  if (!customer) {
+    if (purpose !== "SIGNUP") throw errors.notFound("Customer");
+    const branch =
+      (await Branch.findOne({ tenantId: tenant._id, isHeadOffice: true, active: true }).lean()) ??
+      (await Branch.findOne({ tenantId: tenant._id, active: true }).lean());
+    if (!branch) throw errors.business("BRANCH_NOT_CONFIGURED", "No branch is available for registration.");
+    const number = await nextSequence(tenant._id, "customer");
+    const canonical = canonicalMobile(mobile);
+    try {
+      customer = (
+        await Customer.create({
+          _id: createId("customer"),
+          tenantId: tenant._id,
+          branchId: branch._id,
+          customerNumber: `C${String(number).padStart(4, "0")}`,
+          name: "Customer",
+          mobile: canonical,
+          status: CustomerStatus.ACTIVE,
+        })
+      ).toObject();
+      isNewCustomer = true;
+    } catch (error) {
+      if (error?.code === 11000) {
+        customer = await findCustomerByTenantMobile(tenant._id, mobile);
+        if (customer) return { customer, isNewCustomer: false };
+        const indexName = String(error.message ?? "");
+        if (indexName.includes("passbookNumber")) {
+          throw new AppError(
+            "CUSTOMER_PASSBOOK_INDEX",
+            "New customer registration is temporarily blocked by passbook settings. Please contact your jeweller.",
+            409,
+          );
+        }
+        throw appErrorFromDuplicateKey(error);
+      }
+      throw error;
+    }
+  }
+  return { customer, isNewCustomer };
+}
+
 export async function verifyCustomerOtp(body, request) {
   if (body.purpose === "PASSWORD_RESET") return verifyPasswordResetOtp(body);
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
-  if (!(await otpProvider.verify({ ...body, tenantId: tenant?._id }))) throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
-  const customer = await Customer.findOne({ tenantId: tenant?._id, mobile: body.mobile }).lean();
-  if (!customer) throw errors.notFound("Customer");
-  const tokens = await issueSession({ id: customer._id, type: UserType.CUSTOMER, tenantId: customer.tenantId, branchId: customer.branchId, role: "CUSTOMER", permissions: [], mobileClient: true }, { deviceId: body.deviceId, platform: request.headers["x-platform"], appVersion: request.headers["x-app-version"] }, request);
-  return { customer: { id: customer._id, name: customer.name, profileComplete: Boolean(customer.profileCompletedAt) }, ...tokens };
+  if (!tenant) throw errors.notFound("Jewellery");
+  if (
+    body.purpose === "SIGNUP" &&
+    tenant.operations?.customerSelfRegistrationEnabled === false
+  ) {
+    throw new AppError(
+      "SELF_REGISTRATION_DISABLED",
+      "Online registration is not available for this jeweller. Contact your branch.",
+      403,
+    );
+  }
+  const device = body.deviceInfo ?? {
+    deviceId: body.deviceId,
+    platform: body.deviceInfo?.platform ?? request.headers["x-platform"] ?? "android",
+    appVersion: body.deviceInfo?.appVersion ?? request.headers["x-app-version"],
+    osVersion: body.deviceInfo?.osVersion,
+    deviceModel: body.deviceInfo?.deviceModel,
+  };
+  const mobile = canonicalMobile(body.mobile);
+  const otpContext = { tenantId: tenant._id, tenantCode: body.tenantCode, mobile, purpose: body.purpose };
+  const verified = await otpProvider.validate({ ...otpContext, otp: body.otp, otpId: body.otpId });
+  if (!verified) {
+    const issuedFor = await otpProvider.findMatchingPurpose({
+      ...otpContext,
+      otpId: body.otpId,
+    });
+    if (issuedFor === "LOGIN") {
+      throw new AppError(
+        "OTP_PURPOSE_MISMATCH",
+        "This OTP was sent for sign in. Switch to Sign in or request a new OTP on Create account.",
+        401,
+      );
+    }
+    if (issuedFor === "SIGNUP") {
+      throw new AppError(
+        "OTP_PURPOSE_MISMATCH",
+        "This OTP was sent to create an account. Switch to Create account or request a new OTP on Sign in.",
+        401,
+      );
+    }
+    throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
+  }
+  const { customer, isNewCustomer } = await ensureCustomerAfterOtp(tenant, body.mobile, body.purpose);
+  const branch = customer.branchId
+    ? await Branch.findOne({ _id: customer.branchId }).select("_id name code passbookPrefix").lean()
+    : null;
+  const tokens = await issueSession(
+    {
+      id: customer._id,
+      type: UserType.CUSTOMER,
+      tenantId: customer.tenantId,
+      branchId: customer.branchId,
+      role: "CUSTOMER",
+      permissions: [],
+      mobileClient: true,
+    },
+    device,
+    request,
+  );
+  await otpProvider.consume(otpContext);
+  return {
+    isNewCustomer,
+    profileComplete: isCustomerProfileComplete(customer),
+    customer: {
+      id: customer._id,
+      name: customer.name,
+      mobile: customer.mobile,
+      branchId: customer.branchId,
+      passbookNumber: customer.passbookNumber ?? null,
+      branch: branch ? { id: branch._id, name: branch.name, code: branch.code } : null,
+      profileComplete: isCustomerProfileComplete(customer),
+    },
+    tenant: tenantBrandingDto(tenant),
+    tenantCapabilities: tenantCapabilities(tenant),
+    ...sessionPayload(tokens),
+  };
 }
 export async function verifyPasswordResetOtp(body) {
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();

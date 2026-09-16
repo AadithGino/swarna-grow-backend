@@ -213,6 +213,10 @@ export const createGrievance = async (req, res) =>
   sendSuccess(res, await grievance.createGrievance(req), {}, 201);
 export const grievanceMessage = async (req, res) =>
   sendSuccess(res, await grievance.addGrievanceMessage(req), {}, 201);
+export const customerGrievanceMessage = async (req, res) =>
+  sendSuccess(res, await grievance.addGrievanceMessage(req), {}, 201);
+export const requestCustomerRedemption = async (req, res) =>
+  sendSuccess(res, await redemption.requestCustomerRedemption(req), {}, 201);
 export const mutateGrievance = (action) => async (req, res) =>
   sendSuccess(res, await grievance.mutateGrievance(req, action));
 export const reopenGrievance = async (req, res) =>

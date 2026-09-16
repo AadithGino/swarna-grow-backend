@@ -16,7 +16,7 @@
     "scheduler": "node --env-file=.env src/schedulers/index.js",
     "check": "node scripts/check-syntax.js && node scripts/check-route-coverage.js && npm run lint",
     "lint": "eslint src tests scripts",
-    "test": "node --test --test-concurrency=1 --test-reporter=spec",
+    "test": "NODE_ENV=test node --test --test-concurrency=1 --test-reporter=spec",
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage",
     "seed": "node --env-file=.env scripts/seed.js",
     "seed:demo": "node --env-file=.env scripts/seed-demo.js"

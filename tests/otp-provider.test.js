@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertOtpProviderReady, otpProvider } from "../src/integrations/otp.provider.js";
+import { startTestDb, stopTestDb } from "./helpers/db.js";
+
+test.before(async () => {
+  await startTestDb();
+});
+test.after(async () => {
+  await stopTestDb();
+});
 
 test("assertOtpProviderReady fails loudly for live mode without a live provider", () => {
   assert.throws(() => assertOtpProviderReady({ PROVIDER_MODE: "live", OTP_PROVIDER: "msg91" }), /Live OTP delivery is not configured/);
