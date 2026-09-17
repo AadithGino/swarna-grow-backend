@@ -9,9 +9,31 @@ const enumSchema = (enumeration) => z.enum(Object.values(enumeration));
 export const mobile = z.string().regex(/^\+?[1-9]\d{9,14}$/);
 export const paise = z.number().int().safe().nonnegative();
 export const positivePaise = z.number().int().safe().positive();
+const passwordPolicyMessage =
+  "Password must be at least 8 characters and include uppercase, lowercase, a number, and a symbol.";
+export const passwordPolicySchema = z
+  .string()
+  .min(8)
+  .max(128)
+  .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/, passwordPolicyMessage);
 
 export const loginBody = z.object({ tenantCode: z.string().trim().toUpperCase().optional(), mobile, password: z.string().min(8), deviceId: z.string().min(4), platform: z.enum(["web", "android", "ios"]).default("web"), appVersion: z.string().optional() });
 export const platformLoginBody = z.object({ email: z.string().email(), password: z.string().min(8), deviceId: z.string().min(4).optional(), platform: z.enum(["web", "android", "ios"]).default("web").optional() });
+const platformAppPlatformPatch = z.object({
+  minimumVersion: z.string().trim().min(1).max(32).optional(),
+  latestVersion: z.string().trim().min(1).max(32).optional(),
+  forceUpdate: z.boolean().optional(),
+  storeUrl: z.string().url().nullable().optional(),
+});
+export const platformAppConfigBody = z.object({
+  android: platformAppPlatformPatch.optional(),
+  ios: platformAppPlatformPatch.optional(),
+  maintenance: z.object({
+    enabled: z.boolean().optional(),
+    title: z.string().trim().max(120).nullable().optional(),
+    message: z.string().trim().max(500).nullable().optional(),
+  }).optional(),
+});
 export const signupStartBody = z.object({
   businessName: z.string().trim().min(2).max(160),
   ownerName: z.string().trim().min(2).max(120),
@@ -43,7 +65,6 @@ export const appEnrolBody = z.object({
 export const appProfileCompleteBody = z.object({
   name: z.string().min(2).max(120),
   email: z.string().email().optional(),
-  dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   address: z.union([
     z.string().min(3).max(500),
     z.object({
@@ -73,7 +94,7 @@ export const customerRedemptionRequestBody = z.object({
 export const cancelPaymentIntentBody = z.object({
   expectedPositionVersion: z.number().int().nonnegative(),
 });
-export const fcmRegisterBody = z.object({
+export const fcmTokenBody = z.object({
   fcmToken: z.string().min(20),
   deviceId: z.string().min(4),
   platform: z.enum(["android", "ios"]),
@@ -81,14 +102,25 @@ export const fcmRegisterBody = z.object({
   osVersion: z.string().max(32).optional(),
   deviceModel: z.string().max(64).optional(),
 });
+export const fcmRegisterBody = fcmTokenBody;
 export const fcmDeleteBody = z.object({ deviceId: z.string().min(4) });
 export const forgotPasswordBody = z.object({ tenantCode: z.string().trim().toUpperCase(), mobile, deviceId: z.string().min(4).optional() });
-export const setPasswordBody = z.object({ resetToken: z.string().min(32).optional(), password: z.string().min(8).max(128) });
+export const setPasswordBody = z.object({ resetToken: z.string().min(32).optional(), password: passwordPolicySchema });
+export const customerPasswordLoginBody = z.object({
+  tenantCode: z.string().trim().toUpperCase(),
+  mobile,
+  password: passwordPolicySchema,
+  deviceId: z.string().min(4).optional(),
+});
+export const customerSetPasswordBody = z.object({
+  password: passwordPolicySchema,
+  mustChangeOnNextLogin: z.boolean().optional(),
+});
 export const publicSetPasswordBody = z.object({
   token: z.string().min(8).optional(),
   resetToken: z.string().min(32).optional(),
-  password: z.string().min(8).max(128),
-  confirmPassword: z.string().min(8).max(128).optional(),
+  password: passwordPolicySchema,
+  confirmPassword: passwordPolicySchema.optional(),
 }).superRefine((value, context) => {
   if (!value.token && !value.resetToken) {
     context.addIssue({ code: "custom", path: ["token"], message: "token or resetToken is required." });
@@ -111,14 +143,13 @@ export const customerBody = z.object({
     .union([z.string().email(), z.literal("")])
     .optional()
     .transform((value) => (value === "" ? undefined : value)),
-  dateOfBirth: z.string().optional(),
   address: z.string().max(1000).optional(),
   passbookNumber: z
     .union([z.string().max(80), z.literal("")])
     .optional()
     .transform((value) => (value === "" ? undefined : value)),
 });
-export const nomineeBody = z.object({ name: z.string().min(2).max(120), relationship: enumSchema(E.NomineeRelationship), mobile: mobile.optional(), dateOfBirth: z.string().optional(), address: z.string().max(1000).optional(), expectedVersion: z.number().int().positive() });
+export const nomineeBody = z.object({ name: z.string().min(2).max(120), relationship: enumSchema(E.NomineeRelationship), mobile: mobile.optional(), address: z.string().max(1000).optional(), expectedVersion: z.number().int().positive() });
 export const nomineeVersionBody = z.object({ expectedVersion: z.number().int().positive() });
 const nullablePaise = z.number().int().safe().nonnegative().nullable().optional();
 const amountRules = z.object({ amountMode: enumSchema(E.AmountMode), fixedAmountPaise: nullablePaise, slabsPaise: z.array(positivePaise).default([]), minInstallmentPaise: nullablePaise, maxInstallmentPaise: nullablePaise, multipleOfPaise: nullablePaise });
@@ -405,7 +436,7 @@ export const paymentLinkBody = z.object({
   targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
   expectedPositionVersion: z.number().int().nonnegative().nullish(),
   positionVersion: z.number().int().nonnegative().nullish(),
-  expiresInMinutes: z.number().int().positive().nullish(),
+  expiresInMinutes: z.number().int().positive().max(43_200).nullish(),
 });
 export const customerPatchBody = customerBody.partial().extend({ expectedVersion: z.number().int().positive().optional() });
 export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(4000) });
@@ -421,6 +452,10 @@ export const fixedSchemePayBody = z.object({
   amountPaise: positivePaise,
   redirectUrl: z.string().url().optional(),
   mobile: mobile.optional(),
+});
+export const publicPaymentInitiateBody = z.object({
+  redirectUrl: z.string().url(),
+  mobile,
 });
 export const uploadBody = z.object({ purpose: enumSchema(E.UploadPurpose), fileName: z.string().min(1).max(255), contentType: z.string(), sizeBytes: z.number().int().positive() });
 export const exportBody = z.object({ type: enumSchema(E.ExportType), filters: z.record(z.string(), z.unknown()).default({}), format: z.enum(["CSV", "XLSX", "PDF"]).default("CSV") });

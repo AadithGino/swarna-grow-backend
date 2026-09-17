@@ -1,13 +1,8 @@
 import {
   Alert,
-  Branch,
-  GoldRate,
   Grievance,
-  Message,
   Redemption,
   TemplateDefinition,
-  Tenant,
-  User,
 } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import { errors } from "../lib/app-error.js";

@@ -1,4 +1,5 @@
 import {
+  Counter,
   Customer,
   Message,
   OutboxEvent,
@@ -15,6 +16,7 @@ import { errors } from "../lib/app-error.js";
 import dayjs from "dayjs";
 import { env } from "../config/env.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
+import { moneyRef } from "../lib/money.js";
 
 export async function messageBranchScope(req) {
   const scope = { tenantId: req.auth.tenantId };
@@ -153,6 +155,36 @@ export async function getMessagingSummaryForAdmin(req) {
 
 export async function queueMessage(req, payload) {
   return withTransaction(async (session) => {
+    const tenant = await Tenant.findById(req.auth.tenantId)
+      .select("subscription")
+      .session(session)
+      .lean();
+    const limit = Number(tenant?.subscription?.limits?.whatsappMessages ?? 0);
+    if (limit > 0) {
+      const period = dayjs().format("YYYY-MM");
+      const counterId = `whatsapp:${req.auth.tenantId}:${period}`;
+      let claimed = await Counter.findOneAndUpdate(
+        { _id: counterId, value: { $lt: limit } },
+        { $inc: { value: 1 } },
+        { new: true, session },
+      );
+      if (!claimed) {
+        const existing = await Counter.findById(counterId).session(session).lean();
+        if (!existing) {
+          claimed = await Counter.findOneAndUpdate(
+            { _id: counterId },
+            { $setOnInsert: { value: 1 } },
+            { new: true, upsert: true, session },
+          );
+        }
+      }
+      if (!claimed || claimed.value > limit) {
+        throw errors.business(
+          "QUOTA_EXCEEDED",
+          "WhatsApp quota exceeded for this month.",
+        );
+      }
+    }
     const branchId =
       payload.branchId ?? req.scope?.branchId ?? req.auth.branchId ?? null;
     const message = (
@@ -165,7 +197,6 @@ export async function queueMessage(req, payload) {
             status: MessageStatus.QUEUED,
             channel: "WHATSAPP",
             ...payload,
-            branchId: payload.branchId ?? branchId,
           },
         ],
         { session },
@@ -282,4 +313,53 @@ export async function getMessageForAdmin(req) {
   return row;
 }
 export async function updateDelivery(providerMessageId, status, details = {}) { return Message.findOneAndUpdate({ providerMessageId }, { $set: { status, ...(status === "DELIVERED" ? { deliveredAt: new Date() } : {}), ...(status === "READ" ? { readAt: new Date() } : {}), ...(status === "FAILED" ? { failedAt: new Date(), failureCode: details.code, failureMessage: details.message } : {}) } }, { new: true }); }
-export async function sharePayment(req) { const payment = await Payment.findOne({ _id: req.params.paymentId, ...req.scope }).lean(); if (!payment) throw errors.notFound("Payment"); const customer = await Customer.findOne({ _id: payment.customerId, tenantId: payment.tenantId }).select("mobile whatsappOptedOutAt").lean(); if (!customer || customer.whatsappOptedOutAt) throw errors.business("WHATSAPP_OPTED_OUT", "The customer has opted out of WhatsApp messages."); return queueMessage(req, { branchId: payment.branchId, customerId: payment.customerId, schemeId: payment.schemeId, type: "PAYMENT_SUCCESS", channel: "WHATSAPP", templateKey: "PAYMENT_SUCCESS_MEDIA", templateParams: { mobile: customer.mobile, paymentId: payment._id, passbookImageUrl: null, textComponents: [] } }); }
+export async function sharePayment(req) {
+  const payment = await Payment.findOne({ _id: req.params.paymentId, ...req.scope }).lean();
+  if (!payment) throw errors.notFound("Payment");
+  const customer = await Customer.findOne({ _id: payment.customerId, tenantId: payment.tenantId }).select("mobile whatsappOptedOutAt").lean();
+  if (!customer || customer.whatsappOptedOutAt) throw errors.business("WHATSAPP_OPTED_OUT", "The customer has opted out of WhatsApp messages.");
+  return queueMessage(req, {
+    branchId: payment.branchId,
+    customerId: payment.customerId,
+    schemeId: payment.schemeId,
+    type: "PAYMENT_SUCCESS",
+    channel: "WHATSAPP",
+    templateKey: "PAYMENT_SUCCESS_MEDIA",
+    templateParams: { mobile: customer.mobile, paymentId: payment._id, passbookImageUrl: null, textComponents: [] },
+  });
+}
+
+export async function shareCustomerStatement(req) {
+  const customer = await Customer.findOne({
+    _id: req.params.customerId,
+    tenantId: req.auth.tenantId,
+    ...(req.scope?.branchId ? { branchId: req.scope.branchId } : {}),
+  }).lean();
+  if (!customer) throw errors.notFound("Customer");
+  if (customer.whatsappOptedOutAt) {
+    throw errors.business("WHATSAPP_OPTED_OUT", "The customer has opted out of WhatsApp messages.");
+  }
+  const payments = await Payment.find({
+    tenantId: req.auth.tenantId,
+    customerId: customer._id,
+    status: "SUCCESS",
+  })
+    .sort({ paidAt: -1 })
+    .limit(100)
+    .lean();
+  const totalPaise = payments.reduce((sum, row) => sum + (row.amountPaise ?? 0), 0);
+  return queueMessage(req, {
+    branchId: customer.branchId,
+    customerId: customer._id,
+    type: "CUSTOMER_STATEMENT",
+    channel: "WHATSAPP",
+    templateKey: "CUSTOMER_STATEMENT",
+    templateParams: {
+      mobile: customer.mobile,
+      customerName: customer.name,
+      customerNumber: customer.customerNumber,
+      paymentCount: payments.length,
+      totalDisplay: moneyRef(totalPaise).amountDisplay,
+    },
+  });
+}

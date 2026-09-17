@@ -1,6 +1,5 @@
-import { Customer, Message, Scheme, Tenant } from "../models/index.js";
+import { Customer, Message, Scheme } from "../models/index.js";
 import { createId } from "../lib/ids.js";
-import { errors } from "../lib/app-error.js";
 import { effectiveScope } from "../lib/query-filters.js";
 import {
   installmentRemainingPaise,
@@ -8,29 +7,9 @@ import {
 } from "./admin-summary.service.js";
 import { queueMessage } from "./messaging.service.js";
 import * as payments from "./payment.service.js";
-import dayjs from "dayjs";
 
 function istTodayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-}
-
-async function assertQuota(req) {
-  const monthStart = dayjs().startOf("month").toDate();
-  const tenant = await Tenant.findById(req.auth.tenantId)
-    .select("subscription")
-    .lean();
-  const limit = Number(tenant?.subscription?.limits?.whatsappMessages ?? 0);
-  if (!limit) return;
-  const used = await Message.countDocuments({
-    tenantId: req.auth.tenantId,
-    createdAt: { $gte: monthStart },
-  });
-  if (used >= limit) {
-    throw errors.business(
-      "QUOTA_EXCEEDED",
-      "WhatsApp quota exceeded for this month.",
-    );
-  }
 }
 
 async function queueWorkboardReminder(req, scheme, boardKind) {
@@ -82,8 +61,6 @@ async function queueWorkboardReminder(req, scheme, boardKind) {
   if (exists) {
     return { skipped: { schemeId: scheme._id, reason: "ALREADY_SENT" } };
   }
-
-  await assertQuota(req);
 
   const remaining = installmentRemainingPaise(inst);
   const link = await payments.createPaymentLink({

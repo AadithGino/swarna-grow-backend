@@ -18,10 +18,13 @@ async function sumAggregate(model, pipeline, session) {
   return row?.amountPaise ?? 0;
 }
 
-export async function cashBalance({ tenantId, branchId, staffId }, session) {
+export async function cashBalance({ tenantId, branchId, staffId, paidAtRange, handoverSettledRange, adjustmentRange }, session) {
   const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...cashPaymentBranchMatch(branchId, staffId) };
+  if (paidAtRange) paymentMatch.paidAt = paidAtRange;
   const handoverBase = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
+  if (handoverSettledRange) handoverBase.settledAt = handoverSettledRange;
   const adjustmentMatch = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
+  if (adjustmentRange) adjustmentMatch.createdAt = adjustmentRange;
   const cashCollectedPaise = await sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
   const acceptedPaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.ACCEPTED } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
   const discrepancyAcceptedPaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.DISCREPANCY } }, { $group: { _id: null, amountPaise: { $sum: { $ifNull: ["$acceptedAmountPaise", { $subtract: ["$amountPaise", { $ifNull: ["$discrepancyPaise", 0] }] }] } } } }], session);
@@ -194,15 +197,30 @@ export async function adminStaffBalanceDetail(req) {
   };
 }
 
+function reportDateRanges(query) {
+  const paidAtRange = dateMatch("paidAt", query).paidAt;
+  const handoverSettledRange = dateMatch("settledAt", query).settledAt;
+  const adjustmentRange = dateMatch("createdAt", query).createdAt;
+  return { paidAtRange, handoverSettledRange, adjustmentRange };
+}
+
 export async function adminCashReport(req) {
   const { tenantId, branchId } = cashScope(req);
   const staff = await listCashStaff(req);
-  const dateFilter = dateMatch("createdAt", req.query);
+  const dateFilter = dateMatch("settledAt", req.query);
+  const ranges = reportDateRanges(req.query);
   const groups = await Promise.all(staff.map(async (row) => {
     const scopeBranch = branchId ?? row.branchId;
     const handoverMatch = { tenantId, staffId: row._id, ...(scopeBranch ? { branchId: scopeBranch } : {}), ...dateFilter };
     const [balance, handoverCount, discrepancies] = await Promise.all([
-      cashBalance({ tenantId, branchId: scopeBranch, staffId: row._id }),
+      cashBalance({
+        tenantId,
+        branchId: scopeBranch,
+        staffId: row._id,
+        paidAtRange: ranges.paidAtRange,
+        handoverSettledRange: ranges.handoverSettledRange,
+        adjustmentRange: ranges.adjustmentRange,
+      }),
       CashHandover.countDocuments({ ...handoverMatch, status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY] } }),
       CashHandover.countDocuments({ ...handoverMatch, status: CashHandoverStatus.DISCREPANCY }),
     ]);
@@ -312,6 +330,22 @@ export async function settleHandover(req, action) {
     row.settledBy = req.auth.id;
     row.reason = req.body.reason;
     if (req.body.discrepancyPaise != null && row.status === CashHandoverStatus.DISCREPANCY) row.discrepancyPaise = req.body.discrepancyPaise;
+    if (row.status === CashHandoverStatus.ACCEPTED) {
+      const acceptedAmountPaise = row.acceptedAmountPaise ?? row.amountPaise;
+      const diffPaise = row.amountPaise - acceptedAmountPaise;
+      if (diffPaise !== 0) {
+        await CashAdjustment.create([{
+          _id: createId("cad"),
+          tenantId: row.tenantId,
+          branchId: row.branchId,
+          staffId: row.staffId,
+          direction: diffPaise > 0 ? CashAdjustmentDirection.DEBIT : CashAdjustmentDirection.CREDIT,
+          amountPaise: Math.abs(diffPaise),
+          reason: diffPaise > 0 ? "Cash handover shortfall" : "Cash handover overage",
+          createdBy: req.auth.id,
+        }], { session });
+      }
+    }
     row.version += 1;
     await row.save({ session });
     const auditEventId = await writeAudit({ req, action: `CASH_HANDOVER_${row.status}`, entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session });

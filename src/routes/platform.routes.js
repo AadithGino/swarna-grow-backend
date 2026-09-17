@@ -7,7 +7,7 @@ import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { WebhookEvent } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
 import { validate } from "../middlewares/validation.middleware.js";
-import { platformLoginBody } from "../validators/common.validators.js";
+import { platformAppConfigBody, platformLoginBody } from "../validators/common.validators.js";
 import { loginRateLimit } from "../middlewares/security.middleware.js";
 
 export const platformRouter = Router();
@@ -33,6 +33,8 @@ platformRouter.post("/tenants/:tenantId/invoices", idempotent, asyncHandler(cont
 platformRouter.get("/tenants/:tenantId/invoices", asyncHandler(controller.invoices)); platformRouter.post("/invoices/:invoiceId/mark-paid", idempotent, asyncHandler(controller.markInvoicePaid));
 platformRouter.get("/tenants/:tenantId/flags", asyncHandler(controller.flags(false))); platformRouter.put("/tenants/:tenantId/flags", idempotent, asyncHandler(controller.flags(true)));
 platformRouter.get("/template-definitions", asyncHandler(controller.templates));
+platformRouter.get("/app-config", asyncHandler(controller.appConfig(false)));
+platformRouter.put("/app-config", idempotent, validate({ body: platformAppConfigBody }), asyncHandler(controller.appConfig(true)));
 platformRouter.get("/dashboard/summary", asyncHandler(controller.summary));
 platformRouter.get("/dashboard/charts/:chartKey", asyncHandler(controller.chart));
 platformRouter.get("/audit-logs", asyncHandler(controller.auditLogs));

@@ -95,3 +95,27 @@ test("maxPaymentsPerCycle applies on recordPayment after confirmed payments", as
     (error) => error.code === "PAYMENT_COUNT_LIMIT_REACHED",
   );
 });
+
+async function seedLockedCappedScheme(options = {}) {
+  const seeded = await seedFlexibleScheme(options);
+  await Scheme.updateOne(
+    { _id: seeded.scheme._id },
+    { $set: { flexiblePhase: "CAPPED", status: "LOCKED", positionVersion: 1 } },
+  );
+  seeded.scheme = await Scheme.findById(seeded.scheme._id);
+  return seeded;
+}
+
+test("capped cycle payment rejects amounts that are not a multiple of the increment", async () => {
+  const { scheme, user } = await seedLockedCappedScheme();
+  await assert.rejects(
+    () => recordPayment(paymentReq({ scheme, user, amountPaise: 125500, expectedPositionVersion: 1 })),
+    (error) => error.code === "AMOUNT_NOT_MULTIPLE",
+  );
+});
+
+test("capped cycle final remainder below minimum still records when configured", async () => {
+  const { scheme, user } = await seedLockedCappedScheme({ paidPaise: 190000, remainingPaise: 60000 });
+  const payment = await recordPayment(paymentReq({ scheme, user, amountPaise: 60000, expectedPositionVersion: 1 }));
+  assert.equal(payment.amountPaise, 60000);
+});

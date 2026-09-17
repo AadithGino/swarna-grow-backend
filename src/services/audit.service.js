@@ -1,5 +1,6 @@
 import { AuditEvent, Customer, Payment, Redemption, Scheme, User } from "../models/index.js";
 import { AuditActorType, AuditEntityType } from "../constants/enums.js";
+import { errors } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
 import {
@@ -278,10 +279,13 @@ export async function listEntityAudit(req, entityType, entityId) {
 /** Customer 360 activity: customer events plus related scheme/payment/redemption audits. */
 export async function listCustomerAudit(req, customerId) {
   const tenantId = req.auth.tenantId;
+  const branchFilter = req.scope?.branchId ? { branchId: req.scope.branchId } : {};
+  const customer = await Customer.findOne({ _id: customerId, tenantId, ...branchFilter }).select("_id").lean();
+  if (!customer) throw errors.notFound("Customer");
   const [payments, schemes, redemptions] = await Promise.all([
-    Payment.find({ tenantId, customerId }).select("_id").lean(),
-    Scheme.find({ tenantId, customerId }).select("_id").lean(),
-    Redemption.find({ tenantId, customerId }).select("_id").lean(),
+    Payment.find({ tenantId, customerId, ...branchFilter }).select("_id").lean(),
+    Scheme.find({ tenantId, customerId, ...branchFilter }).select("_id").lean(),
+    Redemption.find({ tenantId, customerId, ...branchFilter }).select("_id").lean(),
   ]);
   const entityIds = [
     customerId,

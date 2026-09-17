@@ -1,6 +1,7 @@
 import {
   AuditEntityType,
   BillingCycle,
+  CustomerLoginMode,
   CustomerStatus,
   PlanTier,
   SchemePlanStatus,
@@ -146,9 +147,9 @@ function presentOperations(tenant) {
   const settings = tenant.settings ?? {};
   const multiSchemePerCustomer =
     ops.multiSchemePerCustomer ??
-    !Boolean(settings.oneActiveSchemePerCustomer);
+    settings.oneActiveSchemePerCustomer !== true;
   const kycMandatory =
-    ops.kycMandatory ?? Boolean(settings.requireKycForEnrolment);
+    ops.kycMandatory ?? (settings.requireKycForEnrolment === true);
   return {
     multiSchemePerCustomer,
     kycMandatory,
@@ -156,6 +157,11 @@ function presentOperations(tenant) {
     customerSelfEnrolEnabled: ops.customerSelfEnrolEnabled ?? true,
     customerSelfRegistrationEnabled:
       ops.customerSelfRegistrationEnabled ?? true,
+    customerLoginMode: ops.customerLoginMode ?? CustomerLoginMode.OTP_ONLY,
+    customerAppWriteEnabled: ops.customerAppWriteEnabled ?? true,
+    customerAppPaymentsEnabled:
+      (ops.customerAppWriteEnabled ?? true) &&
+      (ops.customerAppPaymentsEnabled ?? true),
     receiptPrefix: ops.receiptPrefix ?? "",
     receiptNumberFormat:
       ops.receiptNumberFormat ?? "{prefix}/{branchCode}/{year}/{seq:6}",
@@ -201,7 +207,7 @@ export async function getSettingsBrandingForAdmin(req) {
   const branding = tenant.branding ?? {};
   return {
     logoUrl: branding.logoUploadId
-      ? `/uploads/${branding.logoUploadId}`
+      ? (await import("./upload.service.js")).uploadViewPath(branding.logoUploadId)
       : undefined,
     primaryColor: branding.primaryColor ?? "#730321",
     secondaryColor: branding.accentColor ?? "#C9A227",
@@ -673,16 +679,30 @@ export async function patchSettingsOperations(req) {
     enforceVersion(tenant, req.body.expectedVersion);
     const patch = { ...req.body };
     delete patch.expectedVersion;
+    if (
+      patch.customerLoginMode != null &&
+      !Object.values(CustomerLoginMode).includes(patch.customerLoginMode)
+    ) {
+      throw errors.validation([
+        {
+          field: "customerLoginMode",
+          message: `customerLoginMode must be one of ${Object.values(CustomerLoginMode).join(", ")}.`,
+        },
+      ]);
+    }
 
     tenant.operations = {
       ...(tenant.operations?.toObject?.() ?? tenant.operations ?? {}),
       ...patch,
     };
+    if (patch.customerAppWriteEnabled === false) {
+      tenant.operations.customerAppPaymentsEnabled = false;
+    }
     if (patch.multiSchemePerCustomer != null) {
       tenant.settings.oneActiveSchemePerCustomer = !patch.multiSchemePerCustomer;
     }
     if (patch.kycMandatory != null) {
-      tenant.settings.requireKycForEnrolment = Boolean(patch.kycMandatory);
+      tenant.settings.requireKycForEnrolment = patch.kycMandatory === true;
     }
 
     tenant.version += 1;

@@ -1,7 +1,6 @@
 import {
   Branch,
   Customer,
-  GoldRate,
   Message,
   Payment,
   PaymentLink,
@@ -22,7 +21,6 @@ import {
   publicPayPageDto,
   tenantBrandingDto,
   tenantResolveRow,
-  withId,
 } from "../lib/customer-app-dto.js";
 import { moneyRef, weightRef, rateRef } from "../lib/money.js";
 import { monthKey, today } from "../lib/date.js";
@@ -104,7 +102,7 @@ export async function getAppProfile(auth, tenant) {
 
 export async function completeAppProfile(auth, body) {
   const allowed = {};
-  for (const key of ["name", "email", "dateOfBirth", "address"]) {
+  for (const key of ["name", "email", "address"]) {
     if (body[key] !== undefined) allowed[key] = body[key];
   }
   allowed.profileCompletedAt = new Date();
@@ -120,7 +118,7 @@ export async function completeAppProfile(auth, body) {
     ? await Branch.findById(customer.branchId).lean()
     : null;
   const profile = customerProfileDto(customer, tenant, branch);
-  if (!Boolean(tenant?.settings?.requireKycForEnrolment)) {
+  if (tenant?.settings?.requireKycForEnrolment !== true) {
     delete profile.kyc;
   }
   return profile;

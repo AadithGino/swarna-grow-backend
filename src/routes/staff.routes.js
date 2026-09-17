@@ -4,15 +4,20 @@ import * as scheme from "../controllers/scheme.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import * as operations from "../controllers/operations.controller.js";
 import * as analytics from "../controllers/analytics.controller.js";
-import { HandoverInitiator } from "../constants/enums.js";
-import { GoldRate, Message, User } from "../models/index.js";
+import { HandoverInitiator, MessageType } from "../constants/enums.js";
+import { Permission } from "../constants/permissions.js";
+import { Message, User } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import { asyncHandler } from "../lib/async-handler.js";
+import { guarded } from "../lib/route.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import {
   customerBody,
+  customerSetPasswordBody,
   enrolBody,
+  fcmDeleteBody,
+  fcmTokenBody,
   handoverBody,
   messageBody,
   nomineeBody,
@@ -22,108 +27,138 @@ import {
 import { sha256 } from "../lib/crypto.js";
 import * as audit from "../services/audit.service.js";
 
+/** Staff-facing operational reminders — not customer WhatsApp receipts or branch-wide message feed. */
+const STAFF_NOTIFICATION_TYPES = [
+  MessageType.PAYMENT_DUE,
+  MessageType.PAYMENT_OVERDUE,
+];
+
 export const staffRouter = Router();
 staffRouter.get("/home", asyncHandler(analytics.staffHome));
 staffRouter.get("/dashboard/summary", asyncHandler(analytics.staffHome));
-staffRouter.get("/customers", asyncHandler(customer.list));
-staffRouter.get("/customers/check-mobile", asyncHandler(customer.checkMobile));
+staffRouter.get("/customers", ...guarded(Permission.CUSTOMER_READ, asyncHandler(customer.list)));
+staffRouter.get("/customers/check-mobile", ...guarded(Permission.CUSTOMER_READ, asyncHandler(customer.checkMobile)));
 staffRouter.post(
   "/customers",
-  validate({ body: customerBody }),
-  idempotent,
-  asyncHandler(customer.create),
+  ...guarded(
+    Permission.CUSTOMER_WRITE,
+    validate({ body: customerBody }),
+    idempotent,
+    asyncHandler(customer.create),
+  ),
 );
-staffRouter.get("/customers/:customerId", asyncHandler(customer.detail));
+staffRouter.get("/customers/:customerId", ...guarded(Permission.CUSTOMER_READ, asyncHandler(customer.detail)));
 staffRouter.patch(
   "/customers/:customerId",
-  idempotent,
-  asyncHandler(customer.update),
+  ...guarded(Permission.CUSTOMER_WRITE, idempotent, asyncHandler(customer.update)),
+);
+staffRouter.post(
+  "/customers/:customerId/set-password",
+  ...guarded(
+    Permission.CUSTOMER_PASSWORD_WRITE,
+    validate({ body: customerSetPasswordBody }),
+    idempotent,
+    asyncHandler(customer.setPassword),
+  ),
 );
 staffRouter.put(
   "/customers/:customerId/kyc",
-  idempotent,
-  asyncHandler(customer.kyc(false)),
+  ...guarded(Permission.CUSTOMER_KYC, idempotent, asyncHandler(customer.kyc(false))),
 );
 staffRouter.get(
   "/customers/:customerId/nominee",
-  asyncHandler(customer.nomineeDetail),
+  ...guarded(Permission.CUSTOMER_READ, asyncHandler(customer.nomineeDetail)),
 );
 staffRouter.put(
   "/customers/:customerId/nominee",
-  validate({ body: nomineeBody }),
-  idempotent,
-  asyncHandler(customer.nominee(false)),
+  ...guarded(
+    Permission.CUSTOMER_WRITE,
+    validate({ body: nomineeBody }),
+    idempotent,
+    asyncHandler(customer.nominee(false)),
+  ),
 );
 staffRouter.delete(
   "/customers/:customerId/nominee",
-  idempotent,
-  asyncHandler(customer.nominee(true)),
+  ...guarded(Permission.CUSTOMER_WRITE, idempotent, asyncHandler(customer.nominee(true))),
 );
 staffRouter.get(
   "/customers/:customerId/audit-events",
-  asyncHandler(async (req, res) =>
-    sendList(res, await audit.listCustomerAudit(req, req.params.customerId)),
+  ...guarded(
+    Permission.AUDIT_READ,
+    asyncHandler(async (req, res) =>
+      sendList(res, await audit.listCustomerAudit(req, req.params.customerId)),
+    ),
   ),
 );
-staffRouter.get("/scheme-plans", asyncHandler(scheme.listPlans("staff")));
+staffRouter.get("/scheme-plans", ...guarded(Permission.PLAN_READ, asyncHandler(scheme.listPlans("staff"))));
 staffRouter.post(
   "/schemes/enrol/validate",
-  validate({ body: enrolBody }),
-  asyncHandler(scheme.validateEnrolment),
+  ...guarded(Permission.SCHEME_WRITE, validate({ body: enrolBody }), asyncHandler(scheme.validateEnrolment)),
 );
 staffRouter.post(
   "/schemes/enrol",
-  validate({ body: enrolBody }),
-  idempotent,
-  asyncHandler(scheme.enrol),
+  ...guarded(
+    Permission.SCHEME_WRITE,
+    validate({ body: enrolBody }),
+    idempotent,
+    asyncHandler(scheme.enrol),
+  ),
 );
 staffRouter.get(
   "/schemes/:schemeId/payable-range",
-  asyncHandler(scheme.payableRange),
+  ...guarded(Permission.SCHEME_READ, asyncHandler(scheme.payableRange)),
 );
-staffRouter.get("/schemes/:schemeId/passbook", asyncHandler(scheme.passbook));
-staffRouter.get("/schemes/:schemeId", asyncHandler(scheme.getScheme));
+staffRouter.get("/schemes/:schemeId/passbook", ...guarded(Permission.SCHEME_READ, asyncHandler(scheme.passbook)));
+staffRouter.get("/schemes/:schemeId", ...guarded(Permission.SCHEME_READ, asyncHandler(scheme.getScheme)));
 staffRouter.post(
   "/payments",
-  validate({ body: paymentBody }),
-  idempotent,
-  asyncHandler(payment.record),
+  ...guarded(
+    Permission.PAYMENT_RECORD,
+    validate({ body: paymentBody }),
+    idempotent,
+    asyncHandler(payment.record),
+  ),
 );
-staffRouter.get("/payments", asyncHandler(payment.list));
-staffRouter.get("/payments/:paymentId", asyncHandler(payment.get));
-staffRouter.get("/payments/:paymentId/receipt", asyncHandler(payment.receipt));
+staffRouter.get("/payments", ...guarded(Permission.PAYMENT_READ, asyncHandler(payment.list)));
+staffRouter.get("/payments/:paymentId", ...guarded(Permission.PAYMENT_READ, asyncHandler(payment.get)));
+staffRouter.get("/payments/:paymentId/receipt", ...guarded(Permission.PAYMENT_READ, asyncHandler(payment.receipt)));
 staffRouter.post(
   "/payment-links",
-  validate({ body: paymentLinkBody }),
-  idempotent,
-  asyncHandler(payment.createLink),
+  ...guarded(
+    Permission.PAYMENT_RECORD,
+    validate({ body: paymentLinkBody }),
+    idempotent,
+    asyncHandler(payment.createLink),
+  ),
 );
 staffRouter.post(
   "/payments/:paymentId/share-whatsapp",
-  idempotent,
-  asyncHandler(payment.share),
+  ...guarded(Permission.PAYMENT_RECORD, idempotent, asyncHandler(payment.share)),
 );
 staffRouter.get(
   "/collections/summary",
-  asyncHandler(analytics.collectionSummary),
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(analytics.collectionSummary)),
 );
-staffRouter.get("/cash/summary", asyncHandler(operations.cashSummary));
-staffRouter.get("/cash/collections", asyncHandler(payment.list));
+staffRouter.get("/cash/summary", ...guarded(Permission.CASH_READ, asyncHandler(operations.cashSummary)));
+staffRouter.get("/cash/collections", ...guarded(Permission.CASH_READ, asyncHandler(payment.list)));
 staffRouter.post(
   "/cash/handovers",
-  validate({ body: handoverBody }),
-  idempotent,
-  asyncHandler(operations.createHandover(HandoverInitiator.STAFF)),
+  ...guarded(
+    Permission.CASH_HANDOVER,
+    validate({ body: handoverBody }),
+    idempotent,
+    asyncHandler(operations.createHandover(HandoverInitiator.STAFF)),
+  ),
 );
-staffRouter.get("/cash/handovers", asyncHandler(operations.handovers(true)));
+staffRouter.get("/cash/handovers", ...guarded(Permission.CASH_READ, asyncHandler(operations.handovers(true))));
 staffRouter.post(
   "/cash/handovers/:handoverId/cancel",
-  idempotent,
-  asyncHandler(operations.cancelHandover),
+  ...guarded(Permission.CASH_HANDOVER, idempotent, asyncHandler(operations.cancelHandover)),
 );
-staffRouter.get("/cash/handovers/:handoverId", asyncHandler(operations.getHandoverStaff));
-staffRouter.get("/dues", asyncHandler(analytics.dueList("dues")));
-staffRouter.get("/overdues", asyncHandler(analytics.dueList("overdues")));
+staffRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.CASH_READ, asyncHandler(operations.getHandoverStaff)));
+staffRouter.get("/dues", ...guarded(Permission.REPORT_READ, asyncHandler(analytics.dueList("dues"))));
+staffRouter.get("/overdues", ...guarded(Permission.REPORT_READ, asyncHandler(analytics.dueList("overdues"))));
 staffRouter.get(
   "/notifications",
   asyncHandler(async (req, res) =>
@@ -132,6 +167,7 @@ staffRouter.get(
       await Message.find({
         tenantId: req.auth.tenantId,
         branchId: req.auth.branchId,
+        type: { $in: STAFF_NOTIFICATION_TYPES },
       })
         .sort({ createdAt: -1 })
         .limit(50)
@@ -141,36 +177,40 @@ staffRouter.get(
 );
 staffRouter.post(
   "/devices/fcm-token",
+  validate({ body: fcmTokenBody }),
   idempotent,
   asyncHandler(async (req, res) => {
+    const deviceId = req.body.deviceId ?? req.auth.deviceId;
     await User.updateOne(
       { _id: req.auth.id },
-      { $pull: { fcmTokens: { deviceId: req.auth.deviceId } } },
+      { $pull: { fcmTokens: { deviceId } } },
     );
     await User.updateOne(
       { _id: req.auth.id },
       {
         $push: {
           fcmTokens: {
-            tokenHash: sha256(req.body.token),
-            deviceId: req.auth.deviceId,
+            tokenHash: sha256(req.body.fcmToken),
+            deviceId,
             platform: req.body.platform,
             updatedAt: new Date(),
           },
         },
       },
     );
-    return sendSuccess(res, { registered: true, deviceId: req.auth.deviceId });
+    return sendSuccess(res, { registered: true, deviceId });
   }),
 );
 staffRouter.delete(
   "/devices/fcm-token",
+  validate({ body: fcmDeleteBody }),
   asyncHandler(async (req, res) => {
+    const deviceId = req.body.deviceId ?? req.auth.deviceId;
     await User.updateOne(
       { _id: req.auth.id },
-      { $pull: { fcmTokens: { deviceId: req.auth.deviceId } } },
+      { $pull: { fcmTokens: { deviceId } } },
     );
-    return sendSuccess(res, { removed: true, deviceId: req.auth.deviceId });
+    return sendSuccess(res, { removed: true, deviceId });
   }),
 );
 staffRouter.get(
@@ -187,20 +227,23 @@ staffRouter.get(
 );
 staffRouter.get(
   "/gold-rate/current",
-  asyncHandler(async (req, res) => {
+  ...guarded(Permission.GOLD_RATE_READ, asyncHandler(async (req, res) => {
     const { currentGoldRate } = await import("../services/tenant.service.js");
     const { today } = await import("../lib/date.js");
     sendSuccess(res, await currentGoldRate(req.scope, today()));
-  }),
+  })),
 );
-staffRouter.get("/grievances", asyncHandler(operations.grievances));
+staffRouter.get("/grievances", ...guarded(Permission.GRIEVANCE_READ, asyncHandler(operations.grievances)));
 staffRouter.get(
   "/grievances/:grievanceId",
-  asyncHandler(operations.grievanceDetail),
+  ...guarded(Permission.GRIEVANCE_READ, asyncHandler(operations.grievanceDetail)),
 );
 staffRouter.post(
   "/grievances/:grievanceId/messages",
-  validate({ body: messageBody }),
-  idempotent,
-  asyncHandler(operations.grievanceMessage),
+  ...guarded(
+    Permission.GRIEVANCE_REPLY,
+    validate({ body: messageBody }),
+    idempotent,
+    asyncHandler(operations.grievanceMessage),
+  ),
 );

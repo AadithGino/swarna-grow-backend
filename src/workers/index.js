@@ -19,3 +19,5 @@ const workers = [
 for (const worker of workers) worker.on("failed", (job, error) => logger.error({ err: error, jobId: job?.id, queue: worker.name }, "Background job failed"));
 async function shutdown(signal) { logger.info({ signal }, "Worker shutdown"); await Promise.all(workers.map((worker) => worker.close())); await disconnectRedis(); await disconnectDatabase(); process.exit(0); }
 process.on("SIGTERM", () => void shutdown("SIGTERM")); process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("unhandledRejection", (reason) => { logger.fatal({ err: reason }, "Unhandled promise rejection"); void shutdown("unhandledRejection"); });
+process.on("uncaughtException", (error) => { logger.fatal({ err: error }, "Uncaught exception"); void shutdown("uncaughtException"); });

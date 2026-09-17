@@ -5,6 +5,19 @@ export const assertInteger = (value, name = "value") => { if (!Number.isSafeInte
 export const moneyRef = (amountPaise = 0) => ({ amountPaise: assertInteger(amountPaise, "amountPaise"), amountDisplay: formatter.format(new Decimal(amountPaise).div(100).toNumber()) });
 export const weightRef = (weightMg = 0) => ({ weightMg: assertInteger(weightMg, "weightMg"), weightDisplay: `${new Decimal(weightMg).div(1000).toFixed(3)} g` });
 export const rateRef = (ratePerGramPaise = 0) => ({ ratePerGramPaise: assertInteger(ratePerGramPaise, "ratePerGramPaise"), ratePerGramDisplay: formatter.format(new Decimal(ratePerGramPaise).div(100).toNumber()) });
+export function decimalRoundingMode(mode) {
+  if (mode === "ROUND_DOWN") return Decimal.ROUND_DOWN;
+  if (mode === "ROUND_UP") return Decimal.ROUND_UP;
+  return Decimal.ROUND_HALF_UP;
+}
+
+export function applyWeightPrecisionMg(weightMg, precisionMg, rounding = Decimal.ROUND_DOWN) {
+  assertInteger(weightMg, "weightMg");
+  const step = Math.max(1, Number(precisionMg ?? 1));
+  if (step <= 1) return weightMg;
+  return new Decimal(weightMg).div(step).toDecimalPlaces(0, rounding).mul(step).toNumber();
+}
+
 export function moneyToWeightMg(amountPaise, ratePerGramPaise, rounding = Decimal.ROUND_HALF_UP) {
   assertInteger(amountPaise, "amountPaise"); assertInteger(ratePerGramPaise, "ratePerGramPaise");
   if (ratePerGramPaise <= 0) throw new RangeError("ratePerGramPaise must be positive");

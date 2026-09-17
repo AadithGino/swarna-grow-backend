@@ -1,7 +1,6 @@
 import { sendSuccess } from "../lib/response.js";
-import { errors } from "../lib/app-error.js";
 import * as auth from "../services/auth.service.js";
-import { Customer, Session, Tenant, User } from "../models/index.js";
+import { Session, Tenant, User } from "../models/index.js";
 import * as signup from "../services/signup.service.js";
 
 export const login = (platform = false) => async (req, res) => sendSuccess(res, await auth.login({ body: req.body, request: req, platform }));
@@ -22,6 +21,8 @@ export const revokeDevice = async (req, res) => { await Session.updateMany({ $or
 export const requestOtp = async (req, res) => sendSuccess(res, await auth.requestOtp(req.body), {}, 202);
 export const forgotPassword = async (req, res) => sendSuccess(res, await auth.forgotPassword(req.body), {}, 202);
 export const verifyOtp = async (req, res) => sendSuccess(res, await auth.verifyCustomerOtp(req.body, req));
+export const loginCustomerPassword = async (req, res) =>
+  sendSuccess(res, await auth.loginCustomerPassword(req.body, req));
 export const signupStart = async (req, res) => sendSuccess(res, await signup.startSignup(req.body), {}, 201);
 export const signupVerify = async (req, res) => sendSuccess(res, await signup.verifySignupOtp(req.body.signupId, req.body.otp));
 export const signupPlans = async (_req, res) => sendSuccess(res, await signup.listPublicSignupPlans());

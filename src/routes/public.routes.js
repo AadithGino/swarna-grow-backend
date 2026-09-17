@@ -5,6 +5,7 @@ import { Branch } from "../models/index.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import {
+  loginRateLimit,
   otpRequestRateLimit,
   otpVerifyRateLimit,
   publicRateLimit,
@@ -12,32 +13,18 @@ import {
 } from "../middlewares/security.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import {
-  otpRequestBody, otpVerifyBody, publicSetPasswordBody, signupPaymentBody, signupSelectPlanBody, signupStartBody, signupVerifyBody,
+  customerPasswordLoginBody, otpRequestBody, otpVerifyBody, publicPaymentInitiateBody, publicSetPasswordBody, signupPaymentBody, signupSelectPlanBody, signupStartBody, signupVerifyBody,
 } from "../validators/common.validators.js";
 import { sendSuccess } from "../lib/response.js";
+import { getAppConfig } from "../services/platform.service.js";
 import { requireSignupToken, requireSignupTokenForStatus } from "../middlewares/signup-auth.middleware.js";
 
 export const publicRouter = Router(); publicRouter.use(publicRateLimit);
-publicRouter.get("/app-config", (_req, res) =>
-  sendSuccess(res, {
-    android: {
-      minimumVersion: "1.0.0",
-      latestVersion: "1.0.0",
-      forceUpdate: false,
-      storeUrl: null,
-    },
-    ios: {
-      minimumVersion: "1.0.0",
-      latestVersion: "1.0.0",
-      forceUpdate: false,
-      storeUrl: null,
-    },
-    maintenance: { enabled: false, title: null, message: null },
-  }),
-);
+publicRouter.get("/app-config", asyncHandler(async (_req, res) => sendSuccess(res, await getAppConfig())));
 publicRouter.get("/auth/password-policy", (_req, res) => sendSuccess(res, { minLength: 8, requireUppercase: true, requireLowercase: true, requireNumber: true, requireSymbol: true }));
 publicRouter.post("/auth/otp/request", otpRequestRateLimit, validate({ body: otpRequestBody }), idempotent, asyncHandler(auth.requestOtp));
 publicRouter.post("/auth/otp/verify", otpVerifyRateLimit, validate({ body: otpVerifyBody }), idempotent, asyncHandler(auth.verifyOtp));
+publicRouter.post("/auth/login-password", loginRateLimit, validate({ body: customerPasswordLoginBody }), asyncHandler(auth.loginCustomerPassword));
 publicRouter.post("/auth/set-password", validate({ body: publicSetPasswordBody }), asyncHandler(auth.setPassword));
 publicRouter.get("/tenants/resolve", tenantResolveRateLimit, asyncHandler(auth.resolveTenant));
 publicRouter.get("/tenants/:tenantId/branches", asyncHandler(async (req, res) => sendSuccess(res, await Branch.find({ tenantId: req.params.tenantId, active: true }).select("_id code name address mobile").lean())));
@@ -49,5 +36,5 @@ publicRouter.post("/signup/:signupId/payment/initiate", requireSignupToken, vali
 publicRouter.get("/signup/:signupId/status", requireSignupTokenForStatus, asyncHandler(auth.signupStatus));
 publicRouter.get("/signup/check-availability", asyncHandler(auth.checkAvailability));
 publicRouter.get("/pay/:linkToken", asyncHandler(payment.publicLink));
-publicRouter.post("/pay/:linkToken/initiate", idempotent, asyncHandler(payment.initiatePublic));
+publicRouter.post("/pay/:linkToken/initiate", validate({ body: publicPaymentInitiateBody }), idempotent, asyncHandler(payment.initiatePublic));
 publicRouter.get("/pay/:linkToken/status", asyncHandler(payment.publicStatus));

@@ -10,7 +10,8 @@ import { handoverBody, messageBody } from "../validators/common.validators.js";
 import { CashHandover, Customer, Message, WebhookEvent } from "../models/index.js";
 import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
-import { errors } from "../lib/app-error.js";
+import { AppError, errors } from "../lib/app-error.js";
+import { getQueue } from "../queues/index.js";
 import * as audit from "../services/audit.service.js";
 import * as messaging from "../services/messaging.service.js";
 
@@ -54,8 +55,14 @@ adminOperationsRouter.post(
 adminOperationsRouter.get("/messaging/opt-outs", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, await Customer.find({ ...req.scope, whatsappOptedOutAt: { $ne: null } }).select("_id customerNumber name mobile whatsappOptedOutAt").lean()))));
 adminOperationsRouter.get("/messaging/quota", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, { used: await Message.countDocuments(req.scope), limit: req.tenant.subscription?.limits?.whatsappMessages ?? null }))));
 adminOperationsRouter.get("/messaging/dead-letter", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, await WebhookEvent.find({ ...req.scope, status: "DEAD_LETTER" }).lean()))));
-adminOperationsRouter.post("/messaging/dead-letter/:id/requeue", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(async (req, res) => sendSuccess(res, { id: req.params.id, queued: true }, {}, 202))));
-adminOperationsRouter.get("/messaging/inbound", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (_req, res) => sendSuccess(res, []))));
+adminOperationsRouter.post("/messaging/dead-letter/:id/requeue", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(async (req, res) => {
+  const event = await WebhookEvent.findOne({ _id: req.params.id, tenantId: req.auth.tenantId, status: "DEAD_LETTER" }).lean();
+  if (!event) throw errors.notFound("Webhook event");
+  await WebhookEvent.updateOne({ _id: event._id }, { $set: { status: "QUEUED" }, $unset: { error: "" } });
+  await getQueue("webhooks")?.add(event.provider.toLowerCase(), { webhookEventId: event._id }, { jobId: `${event._id}-requeue-${Date.now()}`, attempts: 5, backoff: { type: "exponential", delay: 5000 } });
+  sendSuccess(res, { id: event._id, queued: true }, {}, 202);
+})));
+adminOperationsRouter.get("/messaging/inbound", ...guarded(Permission.MESSAGE_READ, asyncHandler(async () => { throw new AppError("FEATURE_NOT_AVAILABLE", "Inbound messaging is not available yet.", 501); })));
 adminOperationsRouter.get("/reminders/config", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.reminderConfig)));
 adminOperationsRouter.put("/reminders/config", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.updateReminderConfig)));
 adminOperationsRouter.get("/grievances", ...guarded(Permission.GRIEVANCE_READ, asyncHandler(controller.grievances)));
@@ -67,5 +74,5 @@ adminOperationsRouter.post("/grievances/:grievanceId/messages", ...guarded(Permi
 adminOperationsRouter.post("/grievances/:grievanceId/status", ...guarded(Permission.GRIEVANCE_RESOLVE, idempotent, asyncHandler(controller.mutateGrievance("status"))));
 adminOperationsRouter.get("/payments/pending", ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => { req.query.status = "PENDING"; return payment.list(req, res); })));
 adminOperationsRouter.get("/payments/late-success", ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => sendSuccess(res, await (await import("../models/index.js")).Payment.find({ ...req.scope, isLateSuccess: true }).sort({ paidAt: -1 }).lean()))));
-adminOperationsRouter.post("/payments/:paymentId/poll-status", ...guarded(Permission.PAYMENT_READ, idempotent, asyncHandler(async (req, res) => sendSuccess(res, { paymentId: req.params.paymentId, queued: true }, {}, 202))));
-adminOperationsRouter.post("/payments/:paymentId/reconcile", ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async (req, res) => sendSuccess(res, { paymentId: req.params.paymentId, queued: true }, {}, 202))));
+adminOperationsRouter.post("/payments/:paymentId/poll-status", ...guarded(Permission.PAYMENT_READ, idempotent, asyncHandler(async () => { throw new AppError("FEATURE_NOT_AVAILABLE", "Gateway poll-status is not available yet.", 501); })));
+adminOperationsRouter.post("/payments/:paymentId/reconcile", ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async () => { throw new AppError("FEATURE_NOT_AVAILABLE", "Manual payment reconcile is not available yet.", 501); })));

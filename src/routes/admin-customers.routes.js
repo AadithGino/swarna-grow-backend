@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as controller from "../controllers/customer.controller.js";
+import * as upload from "../controllers/upload.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
@@ -8,13 +9,14 @@ import {
   customerBlockBody,
   customerNoteBody,
   customerPatchBody,
+  customerSetPasswordBody,
   kycSubmitBody,
   nomineeBody,
   whatsappOptBody,
 } from "../validators/common.validators.js";
 import { Permission } from "../constants/permissions.js";
-import { sendList, sendSuccess } from "../lib/response.js";
-import { AuditEvent, Customer } from "../models/index.js";
+import { sendList } from "../lib/response.js";
+import { Customer } from "../models/index.js";
 import { guarded } from "../lib/route.js";
 import { errors } from "../lib/app-error.js";
 import * as audit from "../services/audit.service.js";
@@ -75,6 +77,15 @@ adminCustomerRouter.patch(
     asyncHandler(controller.update),
   ),
 );
+adminCustomerRouter.post(
+  "/:customerId/set-password",
+  ...guarded(
+    Permission.CUSTOMER_PASSWORD_WRITE,
+    validate({ body: customerSetPasswordBody }),
+    idempotent,
+    asyncHandler(controller.setPassword),
+  ),
+);
 adminCustomerRouter.patch(
   "/:customerId/whatsapp-opt",
   ...guarded(
@@ -109,6 +120,10 @@ adminCustomerRouter.get(
       );
     }),
   ),
+);
+adminCustomerRouter.get(
+  "/:customerId/uploads/:uploadId",
+  ...guarded(Permission.CUSTOMER_READ, asyncHandler(upload.download)),
 );
 adminCustomerRouter.put(
   "/:customerId/kyc",
@@ -171,13 +186,6 @@ adminCustomerRouter.post(
   ...guarded(
     Permission.MESSAGE_SEND,
     idempotent,
-    asyncHandler(async (req, res) =>
-      sendSuccess(
-        res,
-        { queued: true, customerId: req.params.customerId },
-        {},
-        202,
-      ),
-    ),
+    asyncHandler(controller.shareStatement),
   ),
 );

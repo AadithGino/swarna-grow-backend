@@ -11,6 +11,10 @@ import { Upload } from "../models/index.js";
 const mockStorageRouter = Router();
 const MOCK_ROOT = path.join(process.cwd(), ".mock-storage");
 
+export function mockStorageRouteEnabled({ providerMode = env.PROVIDER_MODE, nodeEnv = env.NODE_ENV } = {}) {
+  return providerMode === "mock" && nodeEnv !== "production";
+}
+
 function decodeObjectKey(raw) {
   try {
     return decodeURIComponent(String(raw ?? ""));
@@ -49,7 +53,7 @@ async function markUploadStored(objectKey) {
 mockStorageRouter.put(
   "/:encodedKey",
   asyncHandler(async (req, res) => {
-    if (env.PROVIDER_MODE !== "mock") {
+    if (!mockStorageRouteEnabled()) {
       throw new AppError("ROUTE_NOT_FOUND", "Mock storage is not enabled.", 404);
     }
     const { normalized, filePath } = resolveMockPath(decodeObjectKey(req.params.encodedKey));
@@ -64,7 +68,7 @@ mockStorageRouter.put(
 mockStorageRouter.get(
   "/:encodedKey",
   asyncHandler(async (req, res) => {
-    if (env.PROVIDER_MODE !== "mock") {
+    if (!mockStorageRouteEnabled()) {
       throw new AppError("ROUTE_NOT_FOUND", "Mock storage is not enabled.", 404);
     }
     const { filePath } = resolveMockPath(decodeObjectKey(req.params.encodedKey));

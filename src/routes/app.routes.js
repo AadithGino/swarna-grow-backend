@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as auth from "../controllers/auth.controller.js";
 import * as appCustomer from "../controllers/customer-app.controller.js";
+import * as upload from "../controllers/upload.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import * as operations from "../controllers/operations.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
@@ -27,6 +28,7 @@ import { enrolPaymentResponse, paymentIntentAppDto, paymentLinkDto } from "../li
 import { ClosureType } from "../constants/enums.js";
 import { sha256 } from "../lib/crypto.js";
 import { AppError } from "../lib/app-error.js";
+import { assertCustomerAppWritable, assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
 import { Customer } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
 import * as schemes from "../services/scheme.service.js";
@@ -34,25 +36,43 @@ import * as payments from "../services/payment.service.js";
 import { PaymentPattern } from "../constants/enums.js";
 import { monthKey } from "../lib/date.js";
 export const appRouter = Router();
+const requireCustomerAppWrite = (req, _res, next) => {
+  try {
+    assertCustomerAppWritable(req.tenant);
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+const requireCustomerPayments = (req, _res, next) => {
+  try {
+    assertCustomerPaymentsEnabled(req.tenant);
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
 
 appRouter.get("/auth/devices", asyncHandler(auth.devices));
 appRouter.delete("/auth/devices/:deviceId", asyncHandler(auth.revokeDevice));
 
 appRouter.get("/home", asyncHandler(appCustomer.home));
 appRouter.get("/profile", asyncHandler(appCustomer.profile));
-appRouter.patch("/profile", asyncHandler(appCustomer.completeProfile));
+appRouter.patch("/profile", requireCustomerAppWrite, asyncHandler(appCustomer.completeProfile));
 appRouter.post(
   "/profile/complete",
+  requireCustomerAppWrite,
   validate({ body: appProfileCompleteBody }),
   idempotent,
   asyncHandler(appCustomer.completeProfile),
 );
 appRouter.put(
   "/profile/kyc",
+  requireCustomerAppWrite,
   validate({ body: kycSubmitBody }),
   idempotent,
   asyncHandler(async (req, res) => {
-    if (!Boolean(req.tenant?.settings?.requireKycForEnrolment)) {
+    if (req.tenant?.settings?.requireKycForEnrolment !== true) {
       throw new AppError("KYC_NOT_ENABLED", "KYC is not enabled for this jeweller.", 403);
     }
     req.params.customerId = req.auth.id;
@@ -65,18 +85,22 @@ appRouter.put(
 );
 appRouter.put(
   "/profile/nominee",
+  requireCustomerAppWrite,
   validate({ body: nomineeBody }),
   idempotent,
   asyncHandler(appCustomer.updateNominee),
 );
 appRouter.delete(
   "/profile/nominee",
+  requireCustomerAppWrite,
   validate({ body: nomineeVersionBody }),
   idempotent,
   asyncHandler(appCustomer.removeNominee),
 );
 
-appRouter.post("/uploads/presign", validate({ body: uploadBody }), idempotent, asyncHandler(appCustomer.presign));
+appRouter.post("/uploads/presign", requireCustomerAppWrite, validate({ body: uploadBody }), idempotent, asyncHandler(appCustomer.presign));
+appRouter.post("/uploads/:uploadId/complete", requireCustomerAppWrite, idempotent, asyncHandler(upload.complete));
+appRouter.get("/uploads/:uploadId", asyncHandler(upload.download));
 
 appRouter.get("/scheme-plans", asyncHandler(appCustomer.listPlans));
 appRouter.get("/scheme-plans/:planId", asyncHandler(appCustomer.getPlan));
@@ -88,6 +112,7 @@ appRouter.get("/schemes/:schemeId", asyncHandler(appCustomer.getScheme));
 
 appRouter.post(
   "/schemes/enrol",
+  requireCustomerPayments,
   validate({ body: appEnrolBody }),
   idempotent,
   asyncHandler(async (req, res) => {
@@ -140,12 +165,14 @@ appRouter.post(
 
 appRouter.post(
   "/schemes/:schemeId/pay",
+  requireCustomerPayments,
   validate({ body: fixedSchemePayBody }),
   idempotent,
   asyncHandler(appCustomer.fixedSchemePay),
 );
 appRouter.post(
   "/schemes/:schemeId/payment-intents",
+  requireCustomerPayments,
   validate({ body: paymentIntentBody }),
   idempotent,
   asyncHandler(appCustomer.createIntent),
@@ -153,6 +180,7 @@ appRouter.post(
 appRouter.get("/payment-intents/:intentId", asyncHandler(appCustomer.getIntent));
 appRouter.post(
   "/payment-intents/:intentId/cancel",
+  requireCustomerPayments,
   validate({ body: cancelPaymentIntentBody }),
   idempotent,
   asyncHandler(payment.cancelIntent),
@@ -168,6 +196,7 @@ appRouter.get("/payments/:linkId/status", asyncHandler(appCustomer.paymentLinkSt
 
 appRouter.get("/notifications", asyncHandler(appCustomer.notifications));
 appRouter.post("/notifications/:id/read", idempotent, asyncHandler(async (req, res) => {
+  assertCustomerAppWritable(req.tenant);
   const { Message } = await import("../models/index.js");
   sendSuccess(res, await Message.findOneAndUpdate(
     { _id: req.params.id, tenantId: req.auth.tenantId, customerId: req.auth.id },
@@ -176,6 +205,7 @@ appRouter.post("/notifications/:id/read", idempotent, asyncHandler(async (req, r
   ).lean());
 }));
 appRouter.post("/notifications/read-all", idempotent, asyncHandler(async (req, res) => {
+  assertCustomerAppWritable(req.tenant);
   const { Message } = await import("../models/index.js");
   const result = await Message.updateMany(
     { tenantId: req.auth.tenantId, customerId: req.auth.id, readAt: null },
@@ -186,6 +216,7 @@ appRouter.post("/notifications/read-all", idempotent, asyncHandler(async (req, r
 
 appRouter.post(
   "/devices/fcm-token",
+  requireCustomerAppWrite,
   validate({ body: fcmRegisterBody }),
   idempotent,
   asyncHandler(async (req, res) => {
@@ -216,6 +247,7 @@ appRouter.post(
 );
 appRouter.delete(
   "/devices/fcm-token",
+  requireCustomerAppWrite,
   validate({ body: fcmDeleteBody }),
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
@@ -243,17 +275,19 @@ appRouter.get("/gold-rate/history", asyncHandler(async (req, res) => {
   sendSuccess(res, await GoldRate.find({ tenantId: req.auth.tenantId }).sort({ effectiveDate: -1 }).limit(100).lean());
 }));
 
-appRouter.post("/grievances", validate({ body: grievanceBody }), idempotent, asyncHandler(operations.createGrievance));
+appRouter.post("/grievances", requireCustomerAppWrite, validate({ body: grievanceBody }), idempotent, asyncHandler(operations.createGrievance));
 appRouter.get("/grievances", asyncHandler(operations.grievances));
 appRouter.get("/grievances/:grievanceId", asyncHandler(operations.grievanceDetail));
 appRouter.post(
   "/grievances/:grievanceId/messages",
+  requireCustomerAppWrite,
   validate({ body: customerGrievanceMessageBody }),
   idempotent,
   asyncHandler(operations.customerGrievanceMessage),
 );
 appRouter.post(
   "/grievances/:grievanceId/reopen",
+  requireCustomerAppWrite,
   validate({ body: grievanceReopenBody }),
   idempotent,
   asyncHandler(operations.reopenGrievance),
@@ -261,6 +295,7 @@ appRouter.post(
 
 appRouter.post(
   "/schemes/:schemeId/redemption-request",
+  requireCustomerAppWrite,
   validate({ body: customerRedemptionRequestBody }),
   idempotent,
   asyncHandler(operations.requestCustomerRedemption),

@@ -1,5 +1,4 @@
 import {
-  AuditEvent,
   CashHandover,
   Customer,
   ExportJob,
@@ -10,13 +9,11 @@ import {
   Scheme,
 } from "../models/index.js";
 import { ExportStatus, RedemptionStatus } from "../constants/enums.js";
-import fs from "node:fs";
-import path from "node:path";
+import { storageProvider } from "../integrations/storage.provider.js";
 import { errors } from "../lib/app-error.js";
 import { PAYMENT_MODE_ORDER, PAYMENT_MODE_LABELS } from "../constants/enums.js";
 import { createId } from "../lib/ids.js";
 import { getQueue } from "../queues/index.js";
-import { paginate } from "../lib/pagination.js";
 import { AppError } from "../lib/app-error.js";
 import { listAuditEvents } from "./audit.service.js";
 import { collectionSummary } from "./collection-summary.js";
@@ -266,10 +263,10 @@ export async function downloadExportFile(req, res) {
   if (job.downloadExpiresAt && job.downloadExpiresAt < new Date()) {
     throw new AppError("EXPORT_EXPIRED", "This export download link has expired.", 410);
   }
-  const filePath = path.isAbsolute(job.objectKey)
-    ? job.objectKey
-    : path.resolve("exports", `${job._id}.csv`);
-  if (!fs.existsSync(filePath)) {
+  let body;
+  try {
+    body = await storageProvider.readObjectBody(job.objectKey);
+  } catch {
     throw new AppError("EXPORT_FILE_MISSING", "Export file is no longer available.", 404);
   }
   const format = (job.filters?.format ?? "CSV").toLowerCase();
@@ -279,6 +276,6 @@ export async function downloadExportFile(req, res) {
     "Content-Disposition",
     `attachment; filename="swarnagrow-${job.type.toLowerCase()}-${job._id}.${ext}"`,
   );
-  fs.createReadStream(filePath).pipe(res);
+  res.send(body);
 }
 export async function auditEvents(req) { return listAuditEvents(req); }

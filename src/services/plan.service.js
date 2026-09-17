@@ -1,5 +1,6 @@
 import { AuditEntityType, PaymentPattern, PaymentStatus, SchemePlanStatus } from "../constants/enums.js";
-import { Payment, Scheme, SchemePlan } from "../models/index.js";
+import { Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
+import { assertFeatureEntitled } from "../lib/tenant-limits.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -591,7 +592,30 @@ function rejectUnsupportedPlan(body) { if (body.flexibleRules?.extensionMode ===
 export async function createPlan(req) {
   rejectUnsupportedPlan(req.body);
   normalizePlanFinancialRules(req.body);
-  return withTransaction(async (session) => { const plan = (await SchemePlan.create([{ _id: createId("plan"), tenantId: req.auth.tenantId, ...req.body, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "PLAN_CREATED", entityType: AuditEntityType.PLAN, entityId: plan._id, after: plan.toObject(), session }); return { ...plan.toObject(), auditEventId }; }); }
+  const tenant = req.tenant ?? await Tenant.findById(req.auth.tenantId).lean();
+  if (req.body.paymentPattern === "FLEXIBLE") {
+    assertFeatureEntitled(tenant, "flexibleScheme", "Flexible schemes are not included in your plan.");
+  }
+  if (req.body.valueBasis === "GOLD_WEIGHT") {
+    assertFeatureEntitled(tenant, "goldWeightScheme", "Gold-weight schemes are not included in your plan.");
+  }
+  return withTransaction(async (session) => {
+    const tenantRow = await Tenant.findById(req.auth.tenantId).session(session);
+    const used = await SchemePlan.countDocuments({ tenantId: tenantRow._id, status: SchemePlanStatus.ACTIVE }).session(session);
+    const limit = tenantRow.subscription?.limits?.schemePlans;
+    if (limit && used >= limit) {
+      throw new AppError(
+        "LIMIT_SCHEME_PLANS",
+        `Your plan allows ${limit} active scheme plans.`,
+        403,
+        { limit, used, currentPlan: tenantRow.subscription.tier },
+      );
+    }
+    const plan = (await SchemePlan.create([{ _id: createId("plan"), tenantId: req.auth.tenantId, ...req.body, createdBy: req.auth.id }], { session }))[0];
+    const auditEventId = await writeAudit({ req, action: "PLAN_CREATED", entityType: AuditEntityType.PLAN, entityId: plan._id, after: plan.toObject(), session });
+    return { ...plan.toObject(), auditEventId };
+  });
+}
 export async function updatePlan(req) {
   rejectUnsupportedPlan(req.body);
   return withTransaction(async (session) => {

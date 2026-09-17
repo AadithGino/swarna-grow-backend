@@ -14,17 +14,17 @@ import { errors, AppError } from "../lib/app-error.js";
 import { issueSession, rotateSession } from "./token.service.js";
 import { otpProvider } from "../integrations/otp.provider.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
-import { PlatformRole, UserType } from "../constants/enums.js";
+import { CustomerLoginMode, PlatformRole, UserType } from "../constants/enums.js";
 import { env } from "../config/env.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { ttlToSeconds } from "../lib/jwt-ttl.js";
 
-const toSubject = (record, type, mobileClient = false) => ({ id: record._id, type, tenantId: record.tenantId, branchId: record.branchId, role: record.role, permissions: [...new Set([...(ROLE_PERMISSIONS[record.role] ?? []), ...(record.permissions ?? []), ...(record.permissionOverrides ?? [])])], mobileClient });
-function sessionPayload(tokens) {
+const toSubject = (record, type, mobileClient = false) => ({ id: record._id, type, tenantId: record.tenantId, branchId: record.branchId, role: record.role, permissions: [...new Set([...(ROLE_PERMISSIONS[record.role] ?? []), ...(record.permissions ?? []), ...(record.permissionOverrides ?? [])])], mobileClient, securityVersion: record.securityVersion ?? 0 });
+function sessionPayload(tokens, mobileClient = false) {
   return {
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
-    expiresIn: ttlToSeconds(env.JWT_WEB_TTL),
+    expiresIn: ttlToSeconds(mobileClient ? env.JWT_MOBILE_TTL : env.JWT_WEB_TTL),
     tokenType: "Bearer",
   };
 }
@@ -72,7 +72,7 @@ export async function login({ body, request, platform = false }) {
         role: user.role ?? PlatformRole.SUPER_ADMIN,
         permissions: subject.permissions,
       },
-      ...sessionPayload(tokens),
+      ...sessionPayload(tokens, false),
     };
   }
   const query = { type: UserType.TENANT_USER, mobile: body.mobile };
@@ -104,22 +104,33 @@ export async function login({ body, request, platform = false }) {
       ...user.toObject(),
       permissions: subject.permissions,
     }),
-    ...sessionPayload(tokens),
+    ...sessionPayload(tokens, body.platform !== "web"),
   };
 }
 export async function refresh(refreshToken) {
   const rotated = await rotateSession(refreshToken, async (session) => {
     const record = session.customerId ? await Customer.findById(session.customerId).lean() : await User.findById(session.userId).lean();
     if (!record) return null;
-    return session.customerId ? { id: record._id, type: UserType.CUSTOMER, tenantId: record.tenantId, branchId: record.branchId, role: "CUSTOMER", permissions: [] } : toSubject(record, record.type, session.platform !== "web");
+    return session.customerId ? { id: record._id, type: UserType.CUSTOMER, tenantId: record.tenantId, branchId: record.branchId, role: "CUSTOMER", permissions: [], securityVersion: record.securityVersion ?? 0 } : toSubject(record, record.type, session.platform !== "web");
   });
-  return { ...sessionPayload(rotated), ...rotated };
+  return { ...sessionPayload(rotated, rotated.mobileClient), ...rotated };
 }
 export async function logout(auth, refreshToken) { if (refreshToken) await Session.updateOne({ refreshTokenHash: sha256(refreshToken), $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
 export async function logoutAll(auth) { await Session.updateMany({ $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
+export async function revokeSessionsForUser(userId) { await Session.updateMany({ userId }, { $set: { revokedAt: new Date() } }); }
 export async function requestOtp(body) {
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
   if (!tenant) throw errors.notFound("Jewellery");
+  if (
+    customerLoginMode(tenant) === CustomerLoginMode.PASSWORD_ONLY &&
+    ["LOGIN", "SIGNUP"].includes(body.purpose)
+  ) {
+    throw new AppError(
+      "CUSTOMER_AUTH_MODE_PASSWORD_ONLY",
+      "This jeweller uses mobile number and password sign-in.",
+      403,
+    );
+  }
   if (
     body.purpose === "SIGNUP" &&
     tenant.operations?.customerSelfRegistrationEnabled === false
@@ -149,6 +160,10 @@ export async function forgotPassword(body) {
 }
 function tenantCapabilities(tenant) {
   return tenantPortalCapabilitiesDto(tenant);
+}
+
+function customerLoginMode(tenant) {
+  return tenant?.operations?.customerLoginMode ?? CustomerLoginMode.OTP_ONLY;
 }
 
 async function findCustomerByTenantMobile(tenantId, mobile) {
@@ -209,6 +224,16 @@ export async function verifyCustomerOtp(body, request) {
   if (body.purpose === "PASSWORD_RESET") return verifyPasswordResetOtp(body);
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
   if (!tenant) throw errors.notFound("Jewellery");
+  if (
+    customerLoginMode(tenant) === CustomerLoginMode.PASSWORD_ONLY &&
+    ["LOGIN", "SIGNUP"].includes(body.purpose)
+  ) {
+    throw new AppError(
+      "CUSTOMER_AUTH_MODE_PASSWORD_ONLY",
+      "This jeweller uses mobile number and password sign-in.",
+      403,
+    );
+  }
   if (
     body.purpose === "SIGNUP" &&
     tenant.operations?.customerSelfRegistrationEnabled === false
@@ -282,7 +307,7 @@ export async function verifyCustomerOtp(body, request) {
     },
     tenant: tenantBrandingDto(tenant),
     tenantCapabilities: tenantCapabilities(tenant),
-    ...sessionPayload(tokens),
+    ...sessionPayload(tokens, tokens.mobileClient),
   };
 }
 export async function verifyPasswordResetOtp(body) {
@@ -293,6 +318,69 @@ export async function verifyPasswordResetOtp(body) {
   const resetToken = randomToken(32);
   await PasswordResetToken.create({ _id: createId("passwordReset"), userId: user._id, tenantId: user.tenantId, tokenHash: sha256(resetToken), expiresAt: new Date(Date.now() + 30 * 60_000) });
   return { resetToken };
+}
+export async function loginCustomerPassword(body, request) {
+  const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
+  if (!tenant) throw errors.notFound("Jewellery");
+  if (customerLoginMode(tenant) !== CustomerLoginMode.PASSWORD_ONLY) {
+    throw new AppError(
+      "CUSTOMER_AUTH_MODE_OTP_ONLY",
+      "This jeweller uses OTP-based sign-in.",
+      403,
+    );
+  }
+  const customer = await findCustomerByTenantMobile(tenant._id, body.mobile);
+  if (!customer) throw errors.unauthenticated("Mobile number or password is incorrect.");
+  if (customer.status !== CustomerStatus.ACTIVE) {
+    throw errors.unauthenticated("Mobile number or password is incorrect.");
+  }
+  const customerAuth = await Customer.findById(customer._id).select("+passwordHash").lean();
+  if (!customerAuth?.passwordHash) {
+    throw new AppError(
+      "CUSTOMER_PASSWORD_NOT_SET",
+      "Set a password using the forgot-password flow before signing in with password.",
+      403,
+    );
+  }
+  if (!(await argon2.verify(customerAuth.passwordHash, body.password))) {
+    throw errors.unauthenticated("Mobile number or password is incorrect.");
+  }
+  const branch = customer.branchId
+    ? await Branch.findOne({ _id: customer.branchId }).select("_id name code").lean()
+    : null;
+  const tokens = await issueSession(
+    {
+      id: customer._id,
+      type: UserType.CUSTOMER,
+      tenantId: customer.tenantId,
+      branchId: customer.branchId,
+      role: "CUSTOMER",
+      permissions: [],
+      mobileClient: true,
+    },
+    {
+      deviceId: body.deviceId ?? "customer-web-password",
+      platform: request.headers["x-platform"] ?? "web",
+      appVersion: request.headers["x-app-version"],
+    },
+    request,
+  );
+  return {
+    isNewCustomer: false,
+    profileComplete: isCustomerProfileComplete(customer),
+    customer: {
+      id: customer._id,
+      name: customer.name,
+      mobile: customer.mobile,
+      branchId: customer.branchId,
+      passbookNumber: customer.passbookNumber ?? null,
+      branch: branch ? { id: branch._id, name: branch.name, code: branch.code } : null,
+      profileComplete: isCustomerProfileComplete(customer),
+    },
+    tenant: tenantBrandingDto(tenant),
+    tenantCapabilities: tenantCapabilities(tenant),
+    ...sessionPayload(tokens, tokens.mobileClient),
+  };
 }
 export async function setPassword({ auth, resetToken, token, password, confirmPassword, request }) {
   if (confirmPassword != null && password !== confirmPassword) throw new AppError("VALIDATION_FAILED", "Password and confirm password must match.", 422);
@@ -308,7 +396,7 @@ export async function setPassword({ auth, resetToken, token, password, confirmPa
     await record.save();
     userId = record.userId;
   }
-  const user = await User.findOneAndUpdate({ _id: userId }, { $set: { passwordHash: hash, mustSetPassword: false } }, { new: true });
+  const user = await User.findOneAndUpdate({ _id: userId }, { $set: { passwordHash: hash, mustSetPassword: false }, $inc: { securityVersion: 1 } }, { new: true });
   if (!user) throw errors.notFound("User");
   if (user.type === UserType.TENANT_USER && request && (token ?? resetToken)) {
     const subject = toSubject(user.toObject(), UserType.TENANT_USER, false);
@@ -327,5 +415,9 @@ export async function changePassword(auth, body) {
   if (!user?.passwordHash || !(await argon2.verify(user.passwordHash, body.currentPassword))) throw new AppError("CURRENT_PASSWORD_INVALID", "The current password is incorrect.", 422);
   if (body.currentPassword === body.newPassword) throw new AppError("PASSWORD_REUSED", "The new password must be different from the current password.", 422);
   user.passwordHash = await argon2.hash(body.newPassword, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
-  user.mustSetPassword = false; await user.save(); await logoutAll(auth); return { passwordChanged: true, sessionsRevoked: true };
+  user.mustSetPassword = false;
+  user.securityVersion = (user.securityVersion ?? 0) + 1;
+  await user.save();
+  await logoutAll(auth);
+  return { passwordChanged: true, sessionsRevoked: true };
 }

@@ -25,6 +25,7 @@ import { latestGoldRateOnOrBefore } from "./tenant.service.js";
 import { moneyToWeightMg, weightMgToMoneyPaise } from "../lib/money.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, today } from "../lib/date.js";
+import { assertFeatureEntitled } from "../lib/tenant-limits.js";
 
 const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.REQUESTED,
@@ -63,9 +64,42 @@ function computePenaltyPaise(penaltyRule, amountPaidPaise) {
 }
 
 function installmentsPaidCount(scheme) {
+  if (scheme.paymentPattern === "FLEXIBLE") {
+    const freeCycles = scheme.planSnapshot?.flexibleRules?.flexiblePhaseCycles ?? 0;
+    if (scheme.flexiblePhase === "FLEXIBLE") {
+      return (scheme.cycles ?? [])
+        .slice(0, freeCycles)
+        .filter((cycle) => cycle.paidPaise > 0).length;
+    }
+    return (scheme.cycles ?? []).filter(
+      (cycle) => cycle.capPaise > 0 && cycle.paidPaise >= cycle.capPaise,
+    ).length;
+  }
   return (scheme.installments ?? []).filter((row) =>
     ["PAID", "WAIVED"].includes(row.status),
   ).length;
+}
+
+function assertRedemptionModeAllowed(rules, mode) {
+  const allowed = rules?.allowedModes ?? ["CASH"];
+  if (!allowed.includes(mode)) {
+    throw errors.business(
+      "REDEMPTION_MODE_NOT_ALLOWED",
+      `Redemption mode ${mode} is not allowed for this plan.`,
+      { allowedModes: allowed },
+    );
+  }
+}
+
+function assertRedemptionBranchAllowed(scheme, req) {
+  if (scheme.planSnapshot?.redemptionRules?.redeemAtAnyBranch !== false) return;
+  const actorBranch = req.scope?.branchId ?? req.auth?.branchId;
+  if (actorBranch && scheme.branchId !== actorBranch) {
+    throw errors.business(
+      "REDEMPTION_BRANCH_MISMATCH",
+      "This plan must be redeemed at the enrolling branch.",
+    );
+  }
 }
 
 export async function settlementPreview(req, closureType) {
@@ -136,10 +170,12 @@ export async function settlementPreview(req, closureType) {
     (row) => row.status === "OVERDUE",
   ).length;
   const eligibility = benefitDef?.eligibility;
+  const minMonthsCompleted = eligibility?.minMonthsCompleted ?? 0;
   const benefitEligible =
     !isPremature &&
     benefitDef &&
     benefitDef.type !== "TEXT_ONLY" &&
+    paidCount >= minMonthsCompleted &&
     ((!eligibility?.requireAllInstallmentsPaid || requiredPaid) &&
       defaultCount <= (eligibility?.maxAllowedDefaults ?? Number.MAX_SAFE_INTEGER));
 
@@ -368,8 +404,16 @@ export async function requestCustomerRedemption(req) {
     customerId: req.auth.id,
   }).lean();
   if (!scheme) throw errors.notFound("Scheme");
+  assertRedemptionModeAllowed(scheme.planSnapshot?.redemptionRules, req.body.preferredMode);
   if (req.body.expectedVersion !== scheme.version) {
     throw new AppError("VERSION_CONFLICT", "This scheme changed. Refresh and try again.", 409);
+  }
+  const preview = await settlementPreview(req, ClosureType.MATURITY_REDEMPTION);
+  if (!preview.eligible) {
+    throw errors.business(
+      preview.blockers[0]?.code ?? "NOT_ELIGIBLE",
+      preview.blockers[0]?.message ?? "This scheme is not eligible for redemption.",
+    );
   }
   const existingOpen = await Redemption.findOne({
     tenantId: req.auth.tenantId,
@@ -393,12 +437,26 @@ export async function requestCustomerRedemption(req) {
     modeDetails: {
       preferredDate: req.body.preferredDate,
       remarks: req.body.remarks,
+      settlementSnapshot: {
+        schemeVersion: scheme.version,
+        principalPaise: preview.principalPaise,
+        benefitPaise: preview.benefitPaise,
+        benefitWeightMg: preview.benefitWeightMg,
+        benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
+        penaltyPaise: preview.penaltyPaise,
+        settlementPaise: preview.settlementPaise,
+        goldWeightMg: preview.goldWeightMg,
+        computedAt: new Date().toISOString(),
+      },
     },
     status: RedemptionStatus.REQUESTED,
-    principalPaise: 0,
-    benefitPaise: 0,
-    penaltyPaise: 0,
-    settlementPaise: 0,
+    principalPaise: preview.principalPaise,
+    benefitPaise: preview.benefitPaise,
+    benefitWeightMg: preview.benefitWeightMg,
+    benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
+    penaltyPaise: preview.penaltyPaise,
+    settlementPaise: preview.settlementPaise,
+    weightMg: (preview.goldWeightMg ?? 0) + (preview.benefitWeightMg ?? 0),
     requestedBy: req.auth.id,
     requestedAt: new Date(),
   });
@@ -408,6 +466,7 @@ export async function requestCustomerRedemption(req) {
     preferredMode: req.body.preferredMode,
     preferredDate: req.body.preferredDate ?? null,
     remarks: req.body.remarks ?? null,
+    settlementPaise: row.settlementPaise,
   };
 }
 
@@ -416,6 +475,21 @@ export async function initiateRedemption(
   closureType,
   customerRequest = false,
 ) {
+  const schemeRow = await Scheme.findOne({
+    _id: req.params.schemeId,
+    tenantId: req.auth.tenantId,
+    ...(req.auth.type === "CUSTOMER" ? { customerId: req.auth.id } : req.scope),
+  }).lean();
+  if (!schemeRow) throw errors.notFound("Scheme");
+  assertRedemptionModeAllowed(schemeRow.planSnapshot?.redemptionRules, req.body.mode);
+  assertRedemptionBranchAllowed(schemeRow, req);
+  if (closureType === ClosureType.PREMATURE_CLOSURE) {
+    assertFeatureEntitled(
+      req.tenant ?? await Tenant.findById(req.auth.tenantId).lean(),
+      "prematureRedemption",
+      "Premature closure is not included in your plan.",
+    );
+  }
   const preview = await settlementPreview(req, closureType);
   if (!preview.eligible) {
     throw errors.business(
@@ -558,6 +632,33 @@ export async function transitionRedemption(req, action) {
       row.completedBy = req.auth.id;
       row.completedAt = new Date();
       const scheme = await Scheme.findById(row.schemeId).session(session);
+      const freshPreview = await settlementPreview(
+        {
+          params: { schemeId: row.schemeId },
+          auth: req.auth,
+          scope: req.scope,
+        },
+        row.closureType,
+      );
+      if (!freshPreview.eligible) {
+        throw errors.business(
+          freshPreview.blockers[0]?.code ?? "NOT_ELIGIBLE",
+          freshPreview.blockers[0]?.message ?? "This scheme is no longer eligible for redemption.",
+        );
+      }
+      if (Number(freshPreview.settlementPaise) !== Number(row.settlementPaise)) {
+        throw errors.business(
+          "SETTLEMENT_VALUE_CHANGED",
+          "The settlement amount changed since this request was submitted. Refresh and try again.",
+        );
+      }
+      row.principalPaise = freshPreview.principalPaise;
+      row.benefitPaise = freshPreview.benefitPaise;
+      row.benefitWeightMg = freshPreview.benefitWeightMg;
+      row.benefitRatePerGramPaise = freshPreview.benefitRatePerGramPaise;
+      row.penaltyPaise = freshPreview.penaltyPaise;
+      row.settlementPaise = freshPreview.settlementPaise;
+      row.weightMg = (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0);
       const completeDate = today();
       let ledgerDebitAmountPaise = row.settlementPaise ?? 0;
       let ledgerDebitWeightMg = row.weightMg ?? 0;

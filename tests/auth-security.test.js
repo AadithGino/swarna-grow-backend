@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { Customer, PasswordResetToken } from "../src/models/index.js";
+import argon2 from "argon2";
+import { Customer, PasswordResetToken, Tenant } from "../src/models/index.js";
+import { CustomerLoginMode } from "../src/constants/enums.js";
+import { customerPasswordLoginBody } from "../src/validators/common.validators.js";
 import { createId } from "../src/lib/ids.js";
 import { sha256 } from "../src/lib/crypto.js";
 import { otpProvider } from "../src/integrations/otp.provider.js";
@@ -134,6 +137,82 @@ test("customer SIGNUP OTP verify creates session", async () => {
   assert.equal(verified.body.data.isNewCustomer, true);
   assert.ok(verified.body.data.accessToken);
   assert.equal(verified.body.data.profileComplete, false);
+});
+
+test("weak customer password is rejected by validator", async () => {
+  const parsed = customerPasswordLoginBody.safeParse({
+    tenantCode: "TESTCO",
+    mobile: "+919888877766",
+    password: "weakpass",
+    deviceId: "customer-web",
+  });
+  assert.equal(parsed.success, false);
+  const policy = await request(app).get("/api/v1/public/auth/password-policy").expect(200);
+  assert.equal(policy.body.data.requireUppercase, true);
+  assert.equal(policy.body.data.requireSymbol, true);
+});
+
+test("PASSWORD_ONLY login rejects mobile number as password when no hash exists", async () => {
+  const { tenant, branch } = await seedTenantUser({});
+  await Tenant.updateOne(
+    { _id: tenant._id },
+    { $set: { "operations.customerLoginMode": CustomerLoginMode.PASSWORD_ONLY } },
+  );
+  const mobile = "+919888800001";
+  await Customer.create({
+    _id: createId("customer"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerNumber: "C8001",
+    name: "Password Customer",
+    mobile,
+  });
+  const mobileAsPassword = await request(app)
+    .post("/api/v1/public/auth/login-password")
+    .set("x-forwarded-for", "10.0.1.1")
+    .send({ tenantCode: tenant.code, mobile, password: mobile, deviceId: "customer-web" });
+  assert.notEqual(mobileAsPassword.status, 200);
+  assert.ok(["VALIDATION_FAILED", "CUSTOMER_PASSWORD_NOT_SET"].includes(mobileAsPassword.body.error?.code));
+  const withoutHash = await request(app)
+    .post("/api/v1/public/auth/login-password")
+    .set("x-forwarded-for", "10.0.1.2")
+    .send({ tenantCode: tenant.code, mobile, password: "ValidPass!123", deviceId: "customer-web" })
+    .expect(403);
+  assert.equal(withoutHash.body.error.code, "CUSTOMER_PASSWORD_NOT_SET");
+  const stored = await Customer.findOne({ mobile }).select("+passwordHash").lean();
+  assert.ok(!stored.passwordHash);
+});
+
+test("customer login-password is rate limited after repeated failures", async () => {
+  const { tenant, branch } = await seedTenantUser({});
+  await Tenant.updateOne(
+    { _id: tenant._id },
+    { $set: { "operations.customerLoginMode": CustomerLoginMode.PASSWORD_ONLY } },
+  );
+  const mobile = "+919888800002";
+  const password = "KnownPass!123";
+  await Customer.create({
+    _id: createId("customer"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerNumber: "C8002",
+    name: "Rate Limited",
+    mobile,
+    passwordHash: await argon2.hash(password, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 }),
+  });
+  let lastStatus = 401;
+  for (let attempt = 0; attempt < 11; attempt += 1) {
+    const response = await request(app)
+      .post("/api/v1/public/auth/login-password")
+      .set("x-forwarded-for", "10.0.2.1")
+      .send({ tenantCode: tenant.code, mobile, password: "WrongPass!123", deviceId: "rate-device" });
+    lastStatus = response.status;
+  }
+  assert.equal(lastStatus, 429);
+  assert.equal((await request(app)
+    .post("/api/v1/public/auth/login-password")
+    .set("x-forwarded-for", "10.0.2.1")
+    .send({ tenantCode: tenant.code, mobile, password: "WrongPass!123", deviceId: "rate-device" })).body.error.code, "RATE_LIMITED");
 });
 
 test("expired password reset token returns 401", async () => {

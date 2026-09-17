@@ -1,5 +1,5 @@
 import { Upload } from "../models/index.js";
-import { storageProvider } from "../integrations/storage.provider.js";
+import { uploadViewPath } from "../services/upload.service.js";
 
 /** Presigned download URLs for KYC uploads on a customer record. */
 export async function buildCustomerKycDocuments(customer) {
@@ -19,16 +19,12 @@ export async function buildCustomerKycDocuments(customer) {
       _id: def.uploadId,
       tenantId: customer.tenantId,
     }).lean();
-    let viewUrl = null;
-    if (upload?.objectKey) {
-      viewUrl = await storageProvider.presignDownload(upload.objectKey);
-    }
     documents.push({
       side: def.side,
       label: def.label,
       uploadId: def.uploadId,
       fileName: upload?.fileName ?? null,
-      viewUrl,
+      viewUrl: upload ? uploadViewPath(upload._id) : null,
     });
   }
   return documents;

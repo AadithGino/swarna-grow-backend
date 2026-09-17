@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
-import { PlanTier, SignupStatus, SubscriptionStatus, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
-import { baseOptions, branchField, enumField, stringId, tenantField, versionField } from "./schema-helpers.js";
+import { CustomerLoginMode, PlanTier, SignupStatus, SubscriptionStatus, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
+import { baseOptions, branchField, enumField, integerField, stringId, tenantField, versionField } from "./schema-helpers.js";
 
 const subscriptionSchema = new mongoose.Schema({
   tier: enumField(PlanTier, { default: PlanTier.STARTER }), status: enumField(SubscriptionStatus, { default: SubscriptionStatus.TRIAL }),
@@ -29,6 +29,9 @@ const tenantOperationsSchema = new mongoose.Schema(
     kycAllowedTypes: { type: [String], default: ["AADHAAR", "PAN"] },
     customerSelfEnrolEnabled: { type: Boolean, default: true },
     customerSelfRegistrationEnabled: { type: Boolean, default: true },
+    customerLoginMode: enumField(CustomerLoginMode, { default: CustomerLoginMode.OTP_ONLY }),
+    customerAppWriteEnabled: { type: Boolean, default: true },
+    customerAppPaymentsEnabled: { type: Boolean, default: true },
     receiptPrefix: { type: String, default: "" },
     receiptNumberFormat: { type: String, default: "{prefix}/{branchCode}/{year}/{seq:6}" },
     passbookNumberFormat: { type: String, default: "{branchCode}/{year}/{seq:5}" },
@@ -74,7 +77,7 @@ const userSchema = new mongoose.Schema({
   mobile: { type: String, required: function requiredMobile() { return this.type !== UserType.PLATFORM_USER; } },
   email: String,
   passwordHash: { type: String, select: false }, status: enumField(UserStatus, { default: UserStatus.ACTIVE }), permissions: { type: [String], default: [] }, permissionOverrides: { type: [String], default: [] },
-  mustSetPassword: { type: Boolean, default: false }, mfaEnabled: { type: Boolean, default: false }, fcmTokens: { type: [{ tokenHash: String, deviceId: String, platform: String, updatedAt: Date }], select: false, default: [] }, lastSeenAt: Date, version: versionField,
+  mustSetPassword: { type: Boolean, default: false }, mfaEnabled: { type: Boolean, default: false }, fcmTokens: { type: [{ tokenHash: String, deviceId: String, platform: String, updatedAt: Date }], select: false, default: [] }, lastSeenAt: Date, securityVersion: integerField({ min: 0 }), version: versionField,
 }, baseOptions);
 userSchema.index({ tenantId: 1, mobile: 1, type: 1 }, { unique: true });
 

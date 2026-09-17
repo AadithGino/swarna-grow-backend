@@ -12,7 +12,6 @@ import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import {
-  AuditEvent,
   Payment,
   PaymentIntent,
   Redemption,

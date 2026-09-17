@@ -1,5 +1,6 @@
+import argon2 from "argon2";
 import { AuditEntityType, CustomerStatus, KycStatus } from "../constants/enums.js";
-import { Branch, Customer, LedgerEntry, Message, Payment, Scheme } from "../models/index.js";
+import { Branch, Customer, LedgerEntry, Message, Payment, Scheme, Tenant } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
 import { errors, AppError } from "../lib/app-error.js";
@@ -25,6 +26,7 @@ function schemePreviewDto(scheme) {
   };
 }
 import { writeAudit } from "./audit.service.js";
+import { ROLE_SCOPE } from "../constants/permissions.js";
 import { nextSequence } from "./sequence.service.js";
 import { canonicalMobile, mobileLookupVariants } from "../lib/mobile.js";
 import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
@@ -211,12 +213,15 @@ export async function listCustomers(req) {
   result.data = result.data.map((customer) => {
     const branch = branchMap.get(customer.branchId);
     const customerSchemes = schemesByCustomer.get(customer._id) ?? [];
-    const activeSchemes = customerSchemes
-      .filter((row) => ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status))
-      .map((row) => previewById.get(row._id) ?? schemePreviewDto(row));
+    const rawActiveSchemes = customerSchemes.filter((row) =>
+      ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status),
+    );
+    const activeSchemes = rawActiveSchemes.map(
+      (row) => previewById.get(row._id) ?? schemePreviewDto(row),
+    );
     let nextDue = null;
     let overduePaise = 0;
-    for (const scheme of activeSchemes) {
+    for (const scheme of rawActiveSchemes) {
       for (const inst of scheme.installments ?? []) {
         if (["PAID", "WAIVED"].includes(inst.status)) continue;
         const remaining = Math.max(0, Number(inst.amountPaise ?? 0) - Number(inst.paidPaise ?? 0));
@@ -286,9 +291,6 @@ function buildCustomerWritePayload(body, { branchId }) {
   if (body.email != null && String(body.email).trim()) {
     payload.email = String(body.email).trim();
   }
-  if (body.dateOfBirth != null && String(body.dateOfBirth).trim()) {
-    payload.dateOfBirth = String(body.dateOfBirth).trim();
-  }
   if (body.address != null && String(body.address).trim()) {
     payload.address = String(body.address).trim();
   }
@@ -322,6 +324,17 @@ export async function createCustomer(req) {
   await assertCustomerMobileAvailable(req.auth.tenantId, writePayload.mobile);
 
   return withTransaction(async (session) => {
+    const tenant = await Tenant.findById(req.auth.tenantId).session(session);
+    const used = await Customer.countDocuments({ tenantId: tenant._id, status: "ACTIVE" }).session(session);
+    const limit = tenant.subscription?.limits?.activeCustomers;
+    if (limit && used >= limit) {
+      throw new AppError(
+        "LIMIT_CUSTOMERS",
+        `Your plan allows ${limit} active customers.`,
+        403,
+        { limit, used, currentPlan: tenant.subscription.tier },
+      );
+    }
     await assertCustomerMobileAvailable(req.auth.tenantId, writePayload.mobile, {
       session,
     });
@@ -440,6 +453,8 @@ export async function updateKyc(req, verify = false) {
       if (customer.kyc?.status === KycStatus.VERIFIED) {
         throw new AppError("KYC_ALREADY_VERIFIED", "Verified KYC cannot be replaced. Contact your branch for corrections.", 409);
       }
+      const { validateKycUploadReferences } = await import("./upload.service.js");
+      await validateKycUploadReferences(req, req.body, session);
       customer.kyc = { ...req.body, status: KycStatus.SUBMITTED, submittedAt: new Date() };
     }
     customer.version += 1; await customer.save({ session }); const auditEventId = await writeAudit({ req, action: verify ? "CUSTOMER_KYC_REVIEWED" : "CUSTOMER_KYC_SUBMITTED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, before, after: customer.toObject(), session });
@@ -456,12 +471,11 @@ export async function setNominee(req, remove = false) {
     if (remove) {
       customer.nominee = null;
     } else {
-      const { expectedVersion: _v, notes, name, relationship, mobile, dateOfBirth, address } = req.body;
+      const { notes, name, relationship, mobile, address } = req.body;
       customer.nominee = {
         name,
         relationship,
         ...(mobile ? { mobile: canonicalMobile(mobile) } : {}),
-        ...(dateOfBirth ? { dateOfBirth } : {}),
         ...((address ?? notes) ? { address: String(address ?? notes).trim() } : {}),
       };
     }
@@ -489,7 +503,23 @@ export async function updateCustomer(req) {
         customer.mobile = nextMobile;
       }
     }
-    for (const key of ["name", "email", "dateOfBirth", "address", "branchId"]) {
+    if (req.body.branchId !== undefined && req.body.branchId !== customer.branchId) {
+      const roleScope = ROLE_SCOPE[req.auth.role] ?? "BRANCH";
+      if (roleScope === "BRANCH") {
+        throw errors.forbidden("Only a tenant owner can reassign customers to another branch.");
+      }
+      const branch = await Branch.findOne({
+        _id: req.body.branchId,
+        tenantId: req.auth.tenantId,
+      })
+        .session(session)
+        .lean();
+      if (!branch?.active) {
+        throw errors.business("BRANCH_INVALID", "The target branch is invalid or inactive.");
+      }
+      customer.branchId = req.body.branchId;
+    }
+    for (const key of ["name", "email", "address"]) {
       if (req.body[key] !== undefined) customer[key] = req.body[key];
     }
     if (req.body.passbookNumber !== undefined) {
@@ -511,6 +541,40 @@ export async function updateCustomer(req) {
       session,
     });
     return { ...customer.toObject(), auditEventId };
+  });
+}
+export async function setCustomerPassword(req) {
+  return withTransaction(async (session) => {
+    const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session);
+    if (!customer) throw errors.notFound("Customer");
+    const hash = await argon2.hash(req.body.password, {
+      type: argon2.argon2id,
+      memoryCost: 19_456,
+      timeCost: 2,
+      parallelism: 1,
+    });
+    const before = customer.toObject();
+    customer.passwordHash = hash;
+    customer.mustSetPassword = req.body.mustChangeOnNextLogin === true;
+    customer.passwordSetAt = new Date();
+    customer.securityVersion = (customer.securityVersion ?? 0) + 1;
+    customer.version += 1;
+    await customer.save({ session });
+    const auditEventId = await writeAudit({
+      req,
+      action: "CUSTOMER_PASSWORD_SET",
+      entityType: AuditEntityType.CUSTOMER,
+      entityId: customer._id,
+      before,
+      after: customer.toObject(),
+      session,
+    });
+    return {
+      customerId: customer._id,
+      passwordSet: true,
+      mustSetPassword: customer.mustSetPassword,
+      auditEventId,
+    };
   });
 }
 export async function setWhatsappOpt(req) { const optedOut = req.body.optedIn === false; const customer = await Customer.findOneAndUpdate({ _id: req.params.customerId, ...req.scope }, { $set: { whatsappOptedOutAt: optedOut ? new Date() : null }, $inc: { version: 1 } }, { new: true }); if (!customer) throw errors.notFound("Customer"); return { customerId: customer._id, optedIn: !customer.whatsappOptedOutAt, version: customer.version }; }

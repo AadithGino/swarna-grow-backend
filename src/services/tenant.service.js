@@ -13,6 +13,8 @@ import {
   UserType,
 } from "../constants/enums.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
+import { revokeSessionsForUser } from "./auth.service.js";
+import { bumpSecurityVersion } from "../lib/security-version.js";
 import {
   Branch,
   CashHandover,
@@ -1185,6 +1187,17 @@ export async function updateTenantSettings(req, section, patch) {
 }
 export async function createBranch(req) {
   return withTransaction(async (session) => {
+    const tenant = await Tenant.findById(req.auth.tenantId).session(session);
+    const used = await Branch.countDocuments({ tenantId: tenant._id, active: true }).session(session);
+    const limit = tenant.subscription?.limits?.branches;
+    if (limit && used >= limit) {
+      throw new AppError(
+        "LIMIT_BRANCHES",
+        `Your plan allows ${limit} branches.`,
+        403,
+        { limit, used, currentPlan: tenant.subscription.tier },
+      );
+    }
     const branch = (
       await Branch.create(
         [{ _id: createId("branch"), tenantId: req.auth.tenantId, ...req.body }],
@@ -1465,6 +1478,10 @@ export async function updateStaff(req) {
       "Staff record not found or changed. Refresh and try again.",
       409,
     );
+  if (["role", "permissions", "branchId"].some((key) => key in patch)) {
+    await bumpSecurityVersion({ userId: row._id });
+    await revokeSessionsForUser(row._id);
+  }
   return row.toObject();
 }
 export async function activateStaff(req) {
@@ -1489,6 +1506,8 @@ export async function transferStaff(req) {
     { new: true },
   ).select("-passwordHash");
   if (!row) throw errors.notFound("Staff");
+  await bumpSecurityVersion({ userId: row._id });
+  await revokeSessionsForUser(row._id);
   return row.toObject();
 }
 export async function resetStaffPassword(req) {
@@ -1501,10 +1520,12 @@ export async function resetStaffPassword(req) {
         passwordHash: await argon2.hash(temporaryPassword),
         mustSetPassword: true,
       },
-      $inc: { version: 1 },
+      $inc: { version: 1, securityVersion: 1 },
     },
     { new: true },
   ).select("_id mustSetPassword");
   if (!row) throw errors.notFound("Staff");
+  // Revokes refresh session; current access token remains valid until natural expiry (≤ JWT_MOBILE_TTL).
+  await revokeSessionsForUser(row._id);
   return { staffId: row._id, temporaryPassword, mustSetPassword: true };
 }

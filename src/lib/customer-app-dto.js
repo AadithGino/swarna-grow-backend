@@ -1,5 +1,5 @@
 import { PaymentPattern, ValueBasis } from "../constants/enums.js";
-import { moneyRef, rateRef, weightRef } from "./money.js";
+import { moneyRef } from "./money.js";
 import { maskMobile } from "./mobile.js";
 import { buildAmountSummary, planBenefitLabel } from "./plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "./plan-amount-normalize.js";
@@ -9,7 +9,8 @@ export function withId(doc) {
   if (!doc || typeof doc !== "object") return doc;
   const id = doc.id ?? doc._id;
   if (!id) return doc;
-  const { _id, ...rest } = doc;
+  const rest = { ...doc };
+  delete rest._id;
   return { ...rest, id: String(id) };
 }
 
@@ -20,6 +21,9 @@ export function tenantPortalCapabilitiesDto(tenant) {
       customerSelfRegistration: true,
       kycMandatory: false,
       multiScheme: true,
+      customerLoginMode: "OTP_ONLY",
+      customerAppWriteEnabled: true,
+      customerAppPaymentsEnabled: true,
     };
   }
   const ops = tenant.operations ?? {};
@@ -31,6 +35,11 @@ export function tenantPortalCapabilitiesDto(tenant) {
     customerSelfRegistration: ops.customerSelfRegistrationEnabled !== false,
     kycMandatory: Boolean(settings.requireKycForEnrolment),
     multiScheme: !oneSchemeOnly,
+    customerLoginMode: ops.customerLoginMode ?? "OTP_ONLY",
+    customerAppWriteEnabled: ops.customerAppWriteEnabled !== false,
+    customerAppPaymentsEnabled:
+      ops.customerAppWriteEnabled !== false &&
+      ops.customerAppPaymentsEnabled !== false,
   };
 }
 
@@ -96,7 +105,6 @@ export function customerProfileDto(customer, tenant, branch) {
     mobile: customer.mobile,
     mobileImmutable: true,
     email: customer.email ?? null,
-    dateOfBirth: customer.dateOfBirth ?? null,
     address: parseAddress(customer.address),
     branch: branch
       ? { id: branch._id, code: branch.code, name: branch.name }
@@ -128,7 +136,7 @@ function parseAddress(raw) {
 }
 
 function profileCompleteness(customer) {
-  const fields = ["name", "email", "dateOfBirth", "address"];
+  const fields = ["name", "email", "address"];
   const filled = fields.filter((key) => {
     const v = customer[key];
     return v != null && String(v).trim() !== "";

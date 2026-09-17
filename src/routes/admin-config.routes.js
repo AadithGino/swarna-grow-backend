@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as controller from "../controllers/operations.controller.js";
+import * as upload from "../controllers/upload.controller.js";
 import { presignUpload } from "../services/upload.service.js";
 import { sendSuccess } from "../lib/response.js";
 import { asyncHandler } from "../lib/async-handler.js";
@@ -62,3 +63,5 @@ adminConfigRouter.get(
 adminConfigRouter.get("/alerts", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.alerts)));
 adminConfigRouter.post("/alerts/:alertId/dismiss", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.dismissAlert)));
 adminConfigRouter.post("/uploads/presign", ...guarded(Permission.SETTINGS_WRITE, validate({ body: uploadBody }), idempotent, asyncHandler(async (req, res) => sendSuccess(res, await presignUpload(req), {}, 201))));
+adminConfigRouter.post("/uploads/:uploadId/complete", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(upload.complete)));
+adminConfigRouter.get("/uploads/:uploadId", ...guarded(Permission.SETTINGS_READ, asyncHandler(upload.download)));

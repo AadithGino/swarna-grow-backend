@@ -35,6 +35,7 @@ export function parseEnv(source = process.env) {
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
     S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""), FCM_PROJECT_ID: z.string().default(""),
     EXPORT_BASE_URL: z.string().url().default("http://localhost:4000"),
+    PUBLIC_BASE_URL: z.string().url().default("http://localhost:4000"),
     SEED_PLATFORM_MOBILE: z.string().default("+919999999999"),
     SEED_PLATFORM_EMAIL: z.string().email().default("ops@platform.com"),
     SEED_PLATFORM_PASSWORD: z.string().min(12).default(SECRET_DEFAULTS.SEED_PLATFORM_PASSWORD),
@@ -46,10 +47,22 @@ export function parseEnv(source = process.env) {
       const raw = source[key];
       if (raw == null || String(raw).trim() === "" || raw === SECRET_DEFAULTS[key]) offending.push(key);
     }
+    const redisRequired = source.REDIS_REQUIRED ?? "false";
+    if (redisRequired !== "true") offending.push("REDIS_REQUIRED");
+    const providerMode = source.PROVIDER_MODE ?? "mock";
+    if (providerMode !== "live") offending.push("PROVIDER_MODE");
+    const phonepeBase = source.PHONEPE_BASE_URL ?? "https://api-preprod.phonepe.com/apis/pg-sandbox";
+    if (phonepeBase === "https://api-preprod.phonepe.com/apis/pg-sandbox") offending.push("PHONEPE_BASE_URL");
+    for (const key of ["S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]) {
+      const raw = source[key];
+      if (raw == null || String(raw).trim() === "") offending.push(key);
+    }
+    const corsOrigins = source.CORS_ORIGINS ?? "http://localhost:3000,http://localhost:5173,http://localhost:5174";
+    if (corsOrigins === "http://localhost:3000,http://localhost:5173,http://localhost:5174") offending.push("CORS_ORIGINS");
     if (offending.length) {
       context.addIssue({
         code: "custom",
-        message: `Production refuses default or missing secrets: ${offending.join(", ")}`,
+        message: `Production environment misconfiguration: ${offending.join(", ")}`,
         path: offending,
       });
     }

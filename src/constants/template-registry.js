@@ -150,6 +150,21 @@ export const PLATFORM_TEMPLATE_DEFINITIONS = Object.freeze([
     ],
     suggestedBody: "Hi {{1}}, {{2}} is closed ({{3}}). Settlement: {{4}}. Thank you for saving with {{5}}.",
   },
+  {
+    messageType: MessageType.CUSTOMER_STATEMENT,
+    label: "Customer account statement",
+    required: false,
+    hasMediaHeader: false,
+    hasUrlButton: false,
+    variables: [
+      { index: 1, key: "customerName", sample: "Anjali Menon" },
+      { index: 2, key: "customerNumber", sample: "CUST-001" },
+      { index: 3, key: "paymentCount", sample: "12" },
+      { index: 4, key: "totalDisplay", sample: "₹60,000" },
+      jewellerVar,
+    ],
+    suggestedBody: "Hi {{1}}, here is your account summary ({{2}}): {{3}} payments totalling {{4}}. — {{5}}",
+  },
 ]);
 
 export const REQUIRED_TEMPLATE_TYPES = PLATFORM_TEMPLATE_DEFINITIONS.filter((row) => row.required).map((row) => row.messageType);

@@ -44,3 +44,32 @@ export const SubscriptionUpgradeRequest = mongoose.model(
   "SubscriptionUpgradeRequest",
   subscriptionUpgradeRequestSchema,
 );
+
+const appPlatformConfigSchema = new mongoose.Schema(
+  {
+    minimumVersion: { type: String, default: "1.0.0" },
+    latestVersion: { type: String, default: "1.0.0" },
+    forceUpdate: { type: Boolean, default: false },
+    storeUrl: { type: String, default: null },
+  },
+  { _id: false },
+);
+
+const platformSettingsSchema = new mongoose.Schema(
+  {
+    _id: { type: String, default: "global" },
+    appConfig: {
+      android: { type: appPlatformConfigSchema, default: () => ({}) },
+      ios: { type: appPlatformConfigSchema, default: () => ({}) },
+      maintenance: {
+        enabled: { type: Boolean, default: false },
+        title: { type: String, default: null },
+        message: { type: String, default: null },
+      },
+    },
+    version: versionField,
+  },
+  baseOptions,
+);
+
+export const PlatformSettings = mongoose.model("PlatformSettings", platformSettingsSchema);

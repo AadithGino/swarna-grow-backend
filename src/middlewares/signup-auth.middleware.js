@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { Signup } from "../models/index.js";
 import { SignupStatus } from "../constants/enums.js";
 import { AppError, errors } from "../lib/app-error.js";
@@ -18,7 +19,11 @@ function assertSignupToken(signup, rawToken) {
   if (signup.signupTokenExpiresAt.getTime() < Date.now()) {
     throw new AppError("SIGNUP_TOKEN_EXPIRED", "The signup token has expired. Restart signup.", 401);
   }
-  if (sha256(rawToken) !== signup.signupTokenHash) throw errors.unauthenticated("The signup token is invalid.");
+  const expected = Buffer.from(signup.signupTokenHash, "utf8");
+  const received = Buffer.from(sha256(rawToken), "utf8");
+  if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+    throw errors.unauthenticated("The signup token is invalid.");
+  }
 }
 
 /** Required for plan selection and payment after OTP verification. */

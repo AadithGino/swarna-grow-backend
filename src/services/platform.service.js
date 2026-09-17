@@ -1,11 +1,11 @@
 import argon2 from "argon2";
 import dayjs from "dayjs";
 import {
-  AuditEvent, Branch, Customer, ErrorLog, Invoice, Message, Scheme, SchemePlan, SubscriptionPlan, TemplateDefinition, Tenant, User, WebhookEvent,
+  AuditEvent, Branch, Customer, ErrorLog, Invoice, Message, PlatformSettings, Scheme, SchemePlan, SubscriptionPlan, TemplateDefinition, Tenant, User, WebhookEvent,
 } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import {
-  BillingCycle, InvoiceStatus, MessageStatus, PlanTier, SchemePlanStatus, SubscriptionExtensionType, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType,
+  AuditEntityType, BillingCycle, InvoiceStatus, MessageStatus, PlanTier, SchemePlanStatus, SubscriptionExtensionType, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType,
 } from "../constants/enums.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
 import { paginate } from "../lib/pagination.js";
@@ -22,6 +22,23 @@ import {
 import { limitsFromApi, limitsToApi, normalizePlanFeatures } from "../constants/plan-features.js";
 import { normalizeFeatureFlags, PLATFORM_FEATURE_FLAG_KEYS } from "../constants/platform-feature-flags.js";
 import { PLATFORM_TEMPLATE_DEFINITIONS, REQUIRED_TEMPLATE_TYPES, getTemplateDefinition } from "../constants/template-registry.js";
+import { auditPlatformMutation } from "../lib/platform-audit.js";
+
+export const DEFAULT_APP_CONFIG = Object.freeze({
+  android: {
+    minimumVersion: "1.0.0",
+    latestVersion: "1.0.0",
+    forceUpdate: false,
+    storeUrl: null,
+  },
+  ios: {
+    minimumVersion: "1.0.0",
+    latestVersion: "1.0.0",
+    forceUpdate: false,
+    storeUrl: null,
+  },
+  maintenance: { enabled: false, title: null, message: null },
+});
 
 async function tenantCountsByTier() {
   const rows = await Tenant.aggregate([{ $group: { _id: "$subscription.tier", count: { $sum: 1 } } }]);
@@ -40,7 +57,7 @@ export async function listSubscriptionPlans() {
   return mapPublicPlans(plans, { tenantCounts });
 }
 
-export async function createSubscriptionPlan(body) {
+export async function createSubscriptionPlan(body, req) {
   const patch = { ...body };
   delete patch.expectedVersion;
   delete patch.billingCycle;
@@ -50,6 +67,16 @@ export async function createSubscriptionPlan(body) {
   if (patch.features) patch.features = normalizePlanFeatures(patch.features, patch.tier);
   if (!patch._id && patch.tier) patch._id = `splan_${String(patch.tier).toLowerCase()}`;
   const row = await SubscriptionPlan.create({ _id: patch._id ?? createId("subscriptionPlan"), ...patch });
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_PLAN_CREATED",
+      entityType: AuditEntityType.PLAN,
+      entityId: row._id,
+      tenantId: "platform",
+      after: row.toObject(),
+    });
+  }
   return mapPublicSubscriptionPlan(row.toObject());
 }
 
@@ -60,8 +87,9 @@ export async function getSubscriptionPlan(id) {
   return mapPlanRow(row, tenantCounts);
 }
 
-export async function updateSubscriptionPlan(id, body) {
+export async function updateSubscriptionPlan(id, body, req) {
   if (body.expectedVersion == null) throw new AppError("VALIDATION_FAILED", "expectedVersion is required.", 422);
+  const before = await SubscriptionPlan.findById(id).lean();
   const patch = { ...body };
   delete patch.expectedVersion;
   if (patch.monthlyPricePaise != null) patch.pricePaise = patch.monthlyPricePaise;
@@ -73,12 +101,35 @@ export async function updateSubscriptionPlan(id, body) {
     { new: true },
   ).lean();
   if (!row) throw errors.conflict("VERSION_CONFLICT", "Subscription plan not found or changed. Refresh and try again.");
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_PLAN_UPDATED",
+      entityType: AuditEntityType.PLAN,
+      entityId: id,
+      tenantId: "platform",
+      before,
+      after: row,
+    });
+  }
   return mapPublicSubscriptionPlan(row);
 }
 
-export async function deprecateSubscriptionPlan(id) {
+export async function deprecateSubscriptionPlan(id, req) {
+  const before = await SubscriptionPlan.findById(id).lean();
   const row = await SubscriptionPlan.findByIdAndUpdate(id, { $set: { active: false }, $inc: { version: 1 } }, { new: true }).lean();
   if (!row) throw errors.notFound("Subscription plan");
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_PLAN_DEPRECATED",
+      entityType: AuditEntityType.PLAN,
+      entityId: id,
+      tenantId: "platform",
+      before,
+      after: row,
+    });
+  }
   return mapPublicSubscriptionPlan(row);
 }
 
@@ -206,7 +257,8 @@ export async function createTenant(req) {
   })();
   const limits = limitsFromApi(plan?.limits ?? body.subscription?.limits ?? {});
   const features = normalizePlanFeatures(plan?.features, plan?.tier ?? PlanTier.STARTER);
-  return withTransaction(async (session) => {
+  const ownerPasswordHash = await argon2.hash(temporaryPassword, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
+  const result = await withTransaction(async (session) => {
     const tenant = (await Tenant.create([{
       _id: createId("tenant"),
       code: tenantCode,
@@ -246,7 +298,7 @@ export async function createTenant(req) {
       name: body.ownerName,
       mobile: body.ownerMobile ?? body.mobile,
       email: body.ownerEmail ?? body.email,
-      passwordHash: await argon2.hash(temporaryPassword, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 }),
+      passwordHash: ownerPasswordHash,
       mustSetPassword: true,
       status: UserStatus.ACTIVE,
       permissions: ROLE_PERMISSIONS.TENANT_OWNER,
@@ -281,6 +333,15 @@ export async function createTenant(req) {
       ...(body.sendWelcomeMessage ? { welcomeMessageQueued: true } : {}),
     };
   });
+  await auditPlatformMutation({
+    req,
+    action: "PLATFORM_TENANT_CREATED",
+    entityType: AuditEntityType.TENANT,
+    entityId: result.tenant.id,
+    tenantId: result.tenant.id,
+    after: result.tenant,
+  });
+  return result;
 }
 
 export async function tenantDetail(id) {
@@ -392,7 +453,8 @@ export async function tenantDetail(id) {
   };
 }
 
-export async function tenantAction(id, action, body = {}) {
+export async function tenantAction(id, action, body = {}, req) {
+  const before = await Tenant.findById(id).select("-integrationSecrets").lean();
   if (action === "go-live") {
     const issues = [];
     const tenant = await Tenant.findById(id).select("+integrationSecrets").lean();
@@ -410,7 +472,7 @@ export async function tenantAction(id, action, body = {}) {
       throw new AppError("VALIDATION_FAILED", `Tenant cannot go live yet. ${issues.length} setup item(s) are incomplete.`, 422, issues);
     }
     const updated = await Tenant.findByIdAndUpdate(id, { $set: { status: TenantStatus.ACTIVE, goLiveAt: new Date() }, $inc: { version: 1 } }, { new: true }).lean();
-    return {
+    const response = {
       ok: true,
       checklist: [
         { key: "WHATSAPP_CREDENTIALS", done: true },
@@ -420,10 +482,33 @@ export async function tenantAction(id, action, body = {}) {
       ],
       tenant: { id: updated._id, status: updated.status, goLiveAt: updated.goLiveAt },
     };
+    if (req) {
+      await auditPlatformMutation({
+        req,
+        action: "PLATFORM_TENANT_GO_LIVE",
+        entityType: AuditEntityType.TENANT,
+        entityId: id,
+        tenantId: id,
+        before,
+        after: updated,
+      });
+    }
+    return response;
   }
   const status = action === "suspend" ? TenantStatus.SUSPENDED : TenantStatus.ACTIVE;
   const tenant = await Tenant.findByIdAndUpdate(id, { $set: { status, suspendReason: body.reason }, $inc: { version: 1 } }, { new: true });
   if (!tenant) throw errors.notFound("Tenant");
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: action === "suspend" ? "PLATFORM_TENANT_SUSPENDED" : "PLATFORM_TENANT_REACTIVATED",
+      entityType: AuditEntityType.TENANT,
+      entityId: id,
+      tenantId: id,
+      before,
+      after: tenant.toObject(),
+    });
+  }
   if (action === "suspend") {
     return {
       id: tenant._id,
@@ -520,7 +605,7 @@ export async function upsertTenantTemplate(tenantId, messageType, body) {
   ).lean();
 }
 
-export async function createInvoice(tenantId, body) {
+export async function createInvoice(tenantId, body, req) {
   const lineItems = body.lineItems?.length
     ? body.lineItems
     : [{ description: body.description ?? "Platform subscription", amountPaise: body.amountPaise ?? 0 }];
@@ -545,6 +630,16 @@ export async function createInvoice(tenantId, body) {
     status: InvoiceStatus.ISSUED,
     pdfUrl: body.pdfUrl ?? null,
   });
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_INVOICE_CREATED",
+      entityType: AuditEntityType.INVOICE,
+      entityId: row._id,
+      tenantId,
+      after: row.toObject(),
+    });
+  }
   return {
     id: row._id,
     invoiceNumber: row.invoiceNumber,
@@ -557,8 +652,9 @@ export async function createInvoice(tenantId, body) {
   };
 }
 
-export async function updateTenant(id, body) {
+export async function updateTenant(id, body, req) {
   if (body.expectedVersion == null) throw new AppError("VALIDATION_FAILED", "expectedVersion is required.", 422);
+  const before = await Tenant.findById(id).select("-integrationSecrets").lean();
   const patch = {};
   if (body.businessName ?? body.name) patch.name = body.businessName ?? body.name;
   if (body.displayName) patch.displayName = body.displayName;
@@ -584,6 +680,17 @@ export async function updateTenant(id, body) {
       throw errors.conflict("VERSION_CONFLICT", "This tenant changed. Refresh and try again.");
     }
     throw errors.notFound("Tenant");
+  }
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_TENANT_UPDATED",
+      entityType: AuditEntityType.TENANT,
+      entityId: id,
+      tenantId: id,
+      before,
+      after: row.toObject(),
+    });
   }
   return tenantDetail(id);
 }
@@ -618,17 +725,28 @@ export async function tenantUsage(id) {
   };
 }
 
-export async function setOwnerCredentials(id, body) {
+export async function setOwnerCredentials(id, body, req) {
   const owner = await User.findOne({ tenantId: id, role: TenantRole.TENANT_OWNER });
   if (!owner) throw errors.notFound("Tenant owner");
   const temporaryPassword = body.temporaryPassword ?? generateTemporaryPassword();
   owner.passwordHash = await argon2.hash(temporaryPassword, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
   owner.mustSetPassword = true;
   await owner.save();
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_OWNER_CREDENTIALS_RESET",
+      entityType: AuditEntityType.STAFF,
+      entityId: owner._id,
+      tenantId: id,
+      after: { ownerId: owner._id, mustSetPassword: true, mustChangePassword: true },
+    });
+  }
   return { ownerId: owner._id, temporaryPassword, mustSetPassword: true, mustChangePassword: true };
 }
 
-export async function setIntegration(id, kind, body) {
+export async function setIntegration(id, kind, body, req) {
+  const before = await Tenant.findById(id).select("+integrationSecrets").lean();
   const allowed = kind === "whatsapp"
     ? ["phoneNumberId", "businessAccountId", "accessToken", "appSecret", "verifyToken", "environment", "callbackUrlOverride"]
     : ["merchantId", "saltKey", "saltIndex", "environment", "callbackUrlOverride", "provider"];
@@ -638,6 +756,18 @@ export async function setIntegration(id, kind, body) {
   }
   const row = await Tenant.findByIdAndUpdate(id, { $set: { [`integrationSecrets.${kind === "phonepe" ? "phonepe" : kind}`]: value }, $inc: { version: 1 } }, { new: true }).select("_id version");
   if (!row) throw errors.notFound("Tenant");
+  const after = await Tenant.findById(id).select("+integrationSecrets").lean();
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: kind === "whatsapp" ? "PLATFORM_WHATSAPP_INTEGRATION_UPDATED" : "PLATFORM_PAYMENT_GATEWAY_UPDATED",
+      entityType: AuditEntityType.TENANT,
+      entityId: id,
+      tenantId: id,
+      before: before?.integrationSecrets,
+      after: after?.integrationSecrets,
+    });
+  }
   return {
     configured: true,
     verificationStatus: "NOT_VERIFIED",
@@ -705,14 +835,15 @@ async function currentUsageForLimits(tenantId) {
     Customer.countDocuments({ tenantId, status: "ACTIVE" }),
     Branch.countDocuments({ tenantId, active: true }),
     User.countDocuments({ tenantId, status: UserStatus.ACTIVE, type: UserType.TENANT_USER }),
-    Scheme.countDocuments({ tenantId }),
+    SchemePlan.countDocuments({ tenantId, status: SchemePlanStatus.ACTIVE }),
   ]);
   return { activeCustomers, branches, staffSeats: staff, schemePlans };
 }
 
-export async function changeSubscription(id, action, body) {
+export async function changeSubscription(id, action, body, req) {
   const tenant = await Tenant.findById(id);
   if (!tenant) throw errors.notFound("Tenant");
+  const before = tenant.toObject();
   if (action === "change-plan") {
     const planId = body.subscriptionPlanId ?? body.planId;
     const plan = await SubscriptionPlan.findById(planId).lean();
@@ -763,6 +894,17 @@ export async function changeSubscription(id, action, body) {
   }
   tenant.version += 1;
   await tenant.save();
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: `PLATFORM_SUBSCRIPTION_${action.replace(/-/g, "_").toUpperCase()}`,
+      entityType: AuditEntityType.SUBSCRIPTION,
+      entityId: id,
+      tenantId: id,
+      before: before.subscription,
+      after: tenant.subscription?.toObject?.() ?? tenant.subscription,
+    });
+  }
   if (action === "extend") {
     return {
       status: tenant.subscription.status,
@@ -790,7 +932,7 @@ export async function changeSubscription(id, action, body) {
   return tenant.subscription.toObject();
 }
 
-export async function tenantFlags(id, flags) {
+export async function tenantFlags(id, flags, req) {
   if (flags === undefined) {
     const tenant = await Tenant.findById(id).select("featureFlags subscription").lean();
     if (!tenant) throw errors.notFound("Tenant");
@@ -802,9 +944,21 @@ export async function tenantFlags(id, flags) {
     }
     return { flags: stored, effectiveFlags: effective };
   }
+  const before = await Tenant.findById(id).select("featureFlags").lean();
   const normalized = normalizeFeatureFlags(flags);
   const row = await Tenant.findByIdAndUpdate(id, { $set: { featureFlags: normalized }, $inc: { version: 1 } }, { new: true }).select("featureFlags subscription version");
   if (!row) throw errors.notFound("Tenant");
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_TENANT_FLAGS_UPDATED",
+      entityType: AuditEntityType.TENANT,
+      entityId: id,
+      tenantId: id,
+      before: before?.featureFlags,
+      after: row.featureFlags,
+    });
+  }
   const stored = normalizeFeatureFlags(row.featureFlags);
   const tierFeatures = defaultPlanFeaturesForTier(row.subscription?.tier);
   const effective = {};
@@ -833,9 +987,21 @@ export async function listInvoices(id) {
   return rows.map(mapInvoice);
 }
 
-export async function markInvoicePaid(invoiceId, body) {
+export async function markInvoicePaid(invoiceId, body, req) {
+  const before = await Invoice.findById(invoiceId).lean();
   const row = await Invoice.findByIdAndUpdate(invoiceId, { $set: { status: InvoiceStatus.PAID, paidAt: body.paidAt ?? new Date(), reference: body.reference }, $inc: { version: 1 } }, { new: true });
   if (!row) throw errors.notFound("Invoice");
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_INVOICE_PAID",
+      entityType: AuditEntityType.INVOICE,
+      entityId: invoiceId,
+      tenantId: row.tenantId,
+      before,
+      after: row.toObject(),
+    });
+  }
   return mapInvoice(row.toObject());
 }
 
@@ -1000,4 +1166,35 @@ export async function listAuditLogs(req) {
     traceId: row.traceId ?? null,
   }));
   return page;
+}
+
+export async function getAppConfig() {
+  const row = await PlatformSettings.findById("global").lean();
+  return row?.appConfig ?? DEFAULT_APP_CONFIG;
+}
+
+export async function updateAppConfig(body, req) {
+  const before = await getAppConfig();
+  const next = {
+    android: { ...before.android, ...(body.android ?? {}) },
+    ios: { ...before.ios, ...(body.ios ?? {}) },
+    maintenance: { ...before.maintenance, ...(body.maintenance ?? {}) },
+  };
+  await PlatformSettings.findOneAndUpdate(
+    { _id: "global" },
+    { $set: { appConfig: next }, $inc: { version: 1 } },
+    { upsert: true },
+  );
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_APP_CONFIG_UPDATED",
+      entityType: AuditEntityType.TENANT,
+      entityId: "global",
+      tenantId: "platform",
+      before,
+      after: next,
+    });
+  }
+  return next;
 }

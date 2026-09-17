@@ -10,7 +10,7 @@ export const enumField = (enumeration, options = {}) => ({ type: String, enum: O
 
 export function immutablePlugin(schema) {
   const reject = (next) => next(new Error("Immutable records cannot be modified or deleted"));
-  for (const hook of ["updateOne", "updateMany", "findOneAndUpdate", "deleteOne", "deleteMany", "findOneAndDelete"]) schema.pre(hook, reject);
+  for (const hook of ["updateOne", "updateMany", "findOneAndUpdate", "replaceOne", "deleteOne", "deleteMany", "findOneAndDelete", "bulkWrite"]) schema.pre(hook, reject);
   schema.pre("save", function immutableSave(next) { if (!this.isNew) return next(new Error("Immutable records cannot be modified or deleted")); return next(); });
   schema.pre("deleteOne", { document: true, query: false }, reject);
 }

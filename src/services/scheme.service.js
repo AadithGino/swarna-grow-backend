@@ -657,12 +657,14 @@ export async function payableRange(req, schemeInput) {
     const due = scheme.installments.find((row) => row.status !== "PAID" && row.status !== "WAIVED"); if (!due) return { minPayablePaise: 0, maxPayablePaise: 0, payable: false };
     const remaining = due.amountPaise - due.paidPaise;
     const advance = plan.paymentRules?.advancePaymentAllowed ? Math.max(1, plan.paymentRules.maxAdvanceInstallments ?? 1) : 1;
-    const maxPayablePaise =
+    let maxPayablePaise =
       remaining +
       scheme.installments
         .filter((row) => row.number > due.number && row.status === "PENDING")
         .slice(0, advance - 1)
         .reduce((sum, row) => sum + row.amountPaise, 0);
+    const perTxnCap = plan.paymentRules?.maxPaymentPerTransactionPaise;
+    if (perTxnCap != null) maxPayablePaise = Math.min(maxPayablePaise, perTxnCap);
     const minPayablePaise = plan.paymentRules?.partialPaymentAllowed
       ? Math.min(plan.paymentRules.minPaymentPaise || remaining, remaining)
       : remaining;
@@ -671,6 +673,7 @@ export async function payableRange(req, schemeInput) {
       installmentNumber: due.number,
       minPayablePaise,
       maxPayablePaise,
+      maxPaymentPerTransactionPaise: plan.paymentRules?.maxPaymentPerTransactionPaise ?? null,
       suggestedPaise: remaining,
       expectedVersion: scheme.version,
       payable: true,

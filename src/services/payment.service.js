@@ -1,5 +1,7 @@
 import {
   AuditEntityType,
+  CashAdjustmentDirection,
+  CashHandoverStatus,
   LedgerEntryType,
   LinkStatus,
   ManualPaymentMode,
@@ -9,10 +11,13 @@ import {
   PaymentMode,
   PaymentSource,
   PaymentStatus,
+  SchemeStatus,
   TenantRole,
   ValueBasis,
 } from "../constants/enums.js";
 import {
+  CashAdjustment,
+  CashHandover,
   Customer,
   LedgerEntry,
   OutboxEvent,
@@ -28,8 +33,9 @@ import { randomToken, sha256, unseal } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import { withTransaction } from "../lib/transaction.js";
-import { moneyToWeightMg } from "../lib/money.js";
+import { applyWeightPrecisionMg, decimalRoundingMode, moneyToWeightMg } from "../lib/money.js";
 import { today } from "../lib/date.js";
+import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { writeAudit } from "./audit.service.js";
 import {
@@ -47,6 +53,8 @@ import {
   resolvePaymentBranchId,
 } from "../lib/payment-scope.js";
 import { moneyRef } from "../lib/money.js";
+import { assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
+import { cashBalance } from "./cash.service.js";
 import {
   branchDto,
   loadBranchMap,
@@ -208,7 +216,16 @@ function checkAmount(quote, amountPaise) {
       quote,
     );
   if (
-    quote.model !== "FLEXIBLE" &&
+    quote.maxPaymentPerTransactionPaise != null &&
+    amountPaise > quote.maxPaymentPerTransactionPaise
+  ) {
+    throw errors.business(
+      "AMOUNT_ABOVE_MAXIMUM",
+      "The payment exceeds the per-transaction limit for this plan.",
+      quote,
+    );
+  }
+  if (
     quote.paymentIncrementPaise > 1 &&
     amountPaise % quote.paymentIncrementPaise !== 0 &&
     !(
@@ -405,6 +422,7 @@ export async function recordPayment(req, override = {}) {
     let rate;
     let weightMg = 0;
     if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
+      const goldRules = scheme.planSnapshot?.goldRules ?? {};
       rate = await currentGoldRate(
         {
           tenantId: scheme.tenantId,
@@ -412,12 +430,17 @@ export async function recordPayment(req, override = {}) {
         },
         today(),
       );
-      if (!rate)
+      if (!rate && goldRules.blockPaymentIfRateNotSet !== false) {
         throw errors.business(
           "GOLD_RATE_NOT_SET",
           "Today's gold rate must be set before accepting this payment.",
         );
-      weightMg = moneyToWeightMg(req.body.amountPaise, rate.ratePerGramPaise);
+      }
+      if (rate) {
+        const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
+        weightMg = moneyToWeightMg(req.body.amountPaise, rate.ratePerGramPaise, rounding);
+        weightMg = applyWeightPrecisionMg(weightMg, goldRules.weightPrecisionMg, rounding);
+      }
     }
     let payment;
     if (override.existingPaymentId) {
@@ -436,6 +459,7 @@ export async function recordPayment(req, override = {}) {
           "This gateway attempt is no longer pending.",
           409,
         );
+      // PERF(audit): single counter per tenant/year serializes concurrent payments under load — see audit doc
       payment.receiptNumber = await nextReceipt(scheme.tenantId, session);
       payment.status = quote
         ? PaymentStatus.SUCCESS
@@ -538,6 +562,12 @@ export async function recordPayment(req, override = {}) {
           installment.paidPaise === installment.amountPaise
             ? "PAID"
             : "PARTIALLY_PAID";
+      }
+      if (
+        scheme.status === SchemeStatus.DEFAULTED &&
+        !(scheme.installments ?? []).some((row) => row.status === "OVERDUE")
+      ) {
+        scheme.status = SchemeStatus.ACTIVE;
       }
     } else if (quote) {
       const cycleKey =
@@ -740,6 +770,19 @@ export async function reversePayment(req) {
         "REVERSAL_NOT_ALLOWED",
         "Only successful payments can be reversed.",
       );
+    const tenant = await Tenant.findById(payment.tenantId)
+      .select("operations")
+      .session(session)
+      .lean();
+    const windowHours = Number(tenant?.operations?.paymentReversalWindowHours ?? 48);
+    const paidAtMs = payment.paidAt ? new Date(payment.paidAt).getTime() : 0;
+    if (paidAtMs && Date.now() - paidAtMs > windowHours * 3_600_000) {
+      throw errors.business(
+        "REVERSAL_WINDOW_EXPIRED",
+        `Payments can only be reversed within ${windowHours} hours.`,
+        { windowHours, paidAt: payment.paidAt },
+      );
+    }
     const scheme = await Scheme.findById(payment.schemeId).session(session);
     const sequence = await nextSequence(
       payment.tenantId,
@@ -784,15 +827,47 @@ export async function reversePayment(req) {
     rebuildSchemeProjection(scheme, entries);
     scheme.version += 1;
     await scheme.save({ session });
+    let cashAdjustmentId;
+    if (payment.mode === PaymentMode.CASH && payment.collectedBy) {
+      const balance = await cashBalance({
+        tenantId: payment.tenantId,
+        branchId: payment.branchId,
+        staffId: payment.collectedBy,
+      }, session);
+      const inHandAfter = balance.cashInHandPaise - payment.amountPaise;
+      if (inHandAfter < 0 && balance.handedOverPaise > 0) {
+        const handoverExists = await CashHandover.exists({
+          tenantId: payment.tenantId,
+          staffId: payment.collectedBy,
+          ...(payment.branchId ? { branchId: payment.branchId } : {}),
+          status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY] },
+          submittedAt: { $gte: payment.paidAt },
+        }).session(session);
+        if (handoverExists) {
+          cashAdjustmentId = createId("cad");
+          await CashAdjustment.create([{
+            _id: cashAdjustmentId,
+            tenantId: payment.tenantId,
+            branchId: payment.branchId,
+            staffId: payment.collectedBy,
+            direction: CashAdjustmentDirection.CREDIT,
+            amountPaise: payment.amountPaise,
+            reason: `REVERSAL_AFTER_HANDOVER_ACCEPTED payment:${payment._id}`,
+            createdBy: req.auth.id,
+          }], { session });
+        }
+      }
+    }
     const auditEventId = await writeAudit({
       req,
       action: "PAYMENT_REVERSED",
       entityType: AuditEntityType.PAYMENT,
       entityId: payment._id,
       after: payment.toObject(),
+      metadata: cashAdjustmentId ? { cashAdjustmentId } : undefined,
       session,
     });
-    return { id: payment._id, status: payment.status, auditEventId };
+    return { id: payment._id, status: payment.status, auditEventId, cashAdjustmentId };
   });
 }
 export async function createPaymentLink(req) {
@@ -963,9 +1038,31 @@ async function renewFlexibleLinkReservation(link) {
     return link;
   });
 }
+function isPaymentLinkClaim(paymentId) {
+  return paymentId && String(paymentId).startsWith("CLAIMING-");
+}
+
+function assertRedirectUrlAllowed(redirectUrl, tenant) {
+  const allowedOrigins = new Set(env.corsOrigins);
+  const brandingUrl = tenant?.branding?.websiteUrl;
+  if (brandingUrl) {
+    try { allowedOrigins.add(new URL(brandingUrl).origin); } catch { /* ignore invalid branding url */ }
+  }
+  let origin;
+  try { origin = new URL(redirectUrl).origin; } catch {
+    throw errors.validation([{ field: "redirectUrl", message: "redirectUrl must be a valid absolute URL." }]);
+  }
+  if (!allowedOrigins.has(origin)) {
+    throw errors.validation([{ field: "redirectUrl", message: "redirectUrl origin is not allowed for this jeweller." }]);
+  }
+}
+
 export async function initiatePublicPayment(req) {
   let link = await getPublicLink(req.params.linkToken, false);
-  if (link.paymentId) {
+  const tenant = await Tenant.findById(link.tenantId).select("operations branding").lean();
+  assertCustomerPaymentsEnabled(tenant);
+  assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
+  if (link.paymentId && !isPaymentLinkClaim(link.paymentId)) {
     const existing = await Payment.findById(link.paymentId).lean();
     if (
       [
@@ -981,47 +1078,74 @@ export async function initiatePublicPayment(req) {
       };
     if (link.paymentIntentId) link = await renewFlexibleLinkReservation(link);
   }
-  const provider = await phonePeProvider.createPayment({
-    merchantTransactionId: link._id,
-    amountPaise: link.amountPaise,
-    redirectUrl: req.body.redirectUrl,
-    callbackUrl: `/api/v1/webhooks/phonepe/${link.tenantId}`,
-    mobile: req.body.mobile,
-    credentials: await gatewayCredentials(link.tenantId),
-  });
-  const pending = await Payment.create({
-    _id: createId("payment"),
-    tenantId: link.tenantId,
-    branchId: link.branchId,
-    schemeId: link.schemeId,
-    customerId: link.customerId,
-    receiptNumber: `PENDING-${link._id}`,
-    amountPaise: link.amountPaise,
-    targetCycle: link.targetCycle,
-    mode: PaymentMode.ONLINE_GATEWAY,
-    status: PaymentStatus.PENDING,
-    source: PaymentSource.CUSTOMER_APP,
-    providerTransactionId: provider.providerOrderId,
-    paidAt: new Date(),
-  });
-  link.paymentId = pending._id;
-  await link.save();
-  if (link.paymentIntentId)
-    await PaymentIntent.updateOne(
-      { _id: link.paymentIntentId, status: PaymentIntentStatus.PENDING },
-      {
-        $set: {
-          paymentId: pending._id,
-          providerOrderId: provider.providerOrderId,
+  const claimMarker = `CLAIMING-${createId("payment")}`;
+  const claimed = await PaymentLink.findOneAndUpdate(
+    {
+      _id: link._id,
+      $or: [{ paymentId: null }, { paymentId: { $exists: false } }, { paymentId: { $regex: /^CLAIMING-/ } }],
+    },
+    { $set: { paymentId: claimMarker } },
+    { new: true },
+  );
+  if (!claimed) {
+    const current = await PaymentLink.findById(link._id).lean();
+    if (current?.paymentId && !isPaymentLinkClaim(current.paymentId)) {
+      const existing = await Payment.findById(current.paymentId).lean();
+      return {
+        paymentLinkId: current._id,
+        paymentId: existing?._id,
+        status: existing?.status,
+      };
+    }
+    throw errors.business("PAYMENT_LINK_BUSY", "Another payment attempt is already in progress for this link.");
+  }
+  link = claimed;
+  try {
+    const provider = await phonePeProvider.createPayment({
+      merchantTransactionId: link._id,
+      amountPaise: link.amountPaise,
+      redirectUrl: req.body.redirectUrl,
+      callbackUrl: `${env.PUBLIC_BASE_URL}${env.API_PREFIX}/webhooks/phonepe/${link.tenantId}`,
+      mobile: req.body.mobile,
+      credentials: await gatewayCredentials(link.tenantId),
+    });
+    const pending = await Payment.create({
+      _id: createId("payment"),
+      tenantId: link.tenantId,
+      branchId: link.branchId,
+      schemeId: link.schemeId,
+      customerId: link.customerId,
+      receiptNumber: `PENDING-${link._id}`,
+      amountPaise: link.amountPaise,
+      targetCycle: link.targetCycle,
+      mode: PaymentMode.ONLINE_GATEWAY,
+      status: PaymentStatus.PENDING,
+      source: PaymentSource.CUSTOMER_APP,
+      providerTransactionId: provider.providerOrderId,
+      paidAt: new Date(),
+    });
+    await PaymentLink.updateOne({ _id: link._id, paymentId: claimMarker }, { $set: { paymentId: pending._id } });
+    if (link.paymentIntentId) {
+      await PaymentIntent.updateOne(
+        { _id: link.paymentIntentId, status: PaymentIntentStatus.PENDING },
+        {
+          $set: {
+            paymentId: pending._id,
+            providerOrderId: provider.providerOrderId,
+          },
         },
-      },
-    );
-  return {
-    paymentLinkId: link._id,
-    paymentIntentId: link.paymentIntentId,
-    paymentId: pending._id,
-    ...provider,
-  };
+      );
+    }
+    return {
+      paymentLinkId: link._id,
+      paymentIntentId: link.paymentIntentId,
+      paymentId: pending._id,
+      ...provider,
+    };
+  } catch (error) {
+    await PaymentLink.updateOne({ _id: link._id, paymentId: claimMarker }, { $unset: { paymentId: "" } });
+    throw error;
+  }
 }
 export async function createPaymentIntent(req) {
   let reserved;
@@ -1302,9 +1426,13 @@ export async function resendPaymentLink(req) {
   });
   await PaymentLink.updateOne(
     { _id: link._id },
+    { $set: { status: LinkStatus.CANCELLED } },
+  );
+  await PaymentLink.updateOne(
+    { _id: created.id ?? created._id },
     { $set: { status: LinkStatus.SENT } },
   );
-  return { id: link._id, queued: true };
+  return { id: created.id ?? created._id, queued: true };
 }
 export async function persistWebhook({
   tenantId,

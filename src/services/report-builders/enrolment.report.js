@@ -30,7 +30,6 @@ export async function buildEnrolmentReport(req) {
 
   const byPlan = new Map();
   let totalCommitted = 0;
-  let firstPaidCount = 0;
 
   for (const scheme of schemes) {
     const planId = scheme.planId;
@@ -57,7 +56,6 @@ export async function buildEnrolmentReport(req) {
     const first = scheme.installments?.[0];
     if (first && (first.paidPaise ?? 0) > 0) {
       row.firstPaid += 1;
-      firstPaidCount += 1;
     }
   }
 

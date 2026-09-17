@@ -6,7 +6,23 @@ const routeFiles = {
   "staff.routes.js": "/staff", "app.routes.js": "/app", "app-auth.routes.js": "/app/auth", "auth.routes.js": "/auth", "public.routes.js": "/public", "platform.routes.js": "/platform", "webhook.routes.js": "/webhooks",
 };
 const actual = new Set();
-const guardedAdminFiles = new Set(["admin-config.routes.js", "admin-analytics.routes.js", "admin-operations.routes.js", "admin-schemes.routes.js", "admin-customers.routes.js"]);
+const permissionGatedFiles = new Set([
+  "admin-config.routes.js",
+  "admin-analytics.routes.js",
+  "admin-operations.routes.js",
+  "admin-schemes.routes.js",
+  "admin-customers.routes.js",
+  "staff.routes.js",
+]);
+/** Routes that only read/write req.auth.id-scoped data — intentionally ungated on permission. */
+const selfServiceAllowlist = new Set([
+  "GET /staff/home",
+  "GET /staff/dashboard/summary",
+  "GET /staff/profile",
+  "GET /staff/notifications",
+  "POST /staff/devices/fcm-token",
+  "DELETE /staff/devices/fcm-token",
+]);
 const unguarded = [];
 
 for (const [file, prefix] of Object.entries(routeFiles)) {
@@ -15,10 +31,12 @@ for (const [file, prefix] of Object.entries(routeFiles)) {
     const method = match[1].toUpperCase();
     const path = `${(prefix + match[2]).replace(/\/$/, "")}`;
     actual.add(`${method} ${path}`);
-    if (!guardedAdminFiles.has(file)) continue;
+    if (!permissionGatedFiles.has(file)) continue;
+    const routeKey = `${method} ${path}`;
+    if (selfServiceAllowlist.has(routeKey)) continue;
     const args = match[3] ?? "";
     const hasGuard = /requirePermission\s*\(|guarded\s*\(/.test(args) || /PUBLIC/.test(args);
-    if (!hasGuard) unguarded.push(`${method} ${path} (${file})`);
+    if (!hasGuard) unguarded.push(`${routeKey} (${file})`);
   }
 }
 
@@ -34,7 +52,7 @@ if (!adminMountOk) {
   process.exit(1);
 }
 if (unguarded.length) {
-  process.stderr.write(`Unguarded admin routes (${unguarded.length}):\n${unguarded.join("\n")}\n`);
+  process.stderr.write(`Unguarded protected routes (${unguarded.length}):\n${unguarded.join("\n")}\n`);
   process.exit(1);
 }
 if (missing.length) {

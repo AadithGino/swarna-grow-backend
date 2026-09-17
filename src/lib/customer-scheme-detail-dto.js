@@ -59,18 +59,6 @@ function fixedProgress(scheme) {
   };
 }
 
-function flexibleFreeProgress(scheme, totals) {
-  const rules = scheme.planSnapshot?.flexibleRules?.flexiblePhase ?? {};
-  return {
-    phase: "FLEXIBLE",
-    totalPaidInPhase: moneyRef(totals?.amountPaidPaise ?? 0),
-    minPerPayment: moneyRef(rules.minimumPaymentPaise ?? 0),
-    maxPerPayment: moneyRef(rules.maximumPaymentPaise ?? 0),
-    cyclesRemaining: scheme.planSnapshot?.flexibleRules?.flexiblePhaseCycles ?? null,
-    projectedCapHint: scheme.lockedAveragePaise ? moneyRef(scheme.lockedAveragePaise) : null,
-  };
-}
-
 function flexibleCappedProgress(scheme) {
   const current = monthKey();
   const cycle = scheme.cycles?.find((r) => r.cycle === current) ?? scheme.cycles?.find((r) => (r.remainingPaise ?? 0) > 0);
@@ -100,29 +88,6 @@ function passbookSummary(scheme, passbook, totals) {
     installmentsPaid: null,
     installmentsTotal: null,
     paymentCount: null,
-  };
-}
-
-function redemptionBlock(pending, completed) {
-  return {
-    pending: pending
-      ? {
-          id: pending.id,
-          status: pending.status,
-          closureType: pending.closureType,
-          mode: pending.mode,
-          requestedAt: pending.requestedAt,
-        }
-      : null,
-    completed: completed
-      ? {
-          id: completed.id,
-          status: completed.status,
-          settlement: moneyRef(completed.settlementPaise ?? 0),
-          completedAt: completed.completedAt,
-          mode: completed.mode,
-        }
-      : null,
   };
 }
 
@@ -406,7 +371,7 @@ function buildProgressCard(raw, displayMode, totals) {
   };
 }
 
-function buildHeader(card, displayMode, raw) {
+function buildHeader(card, displayMode, _raw) {
   const eyebrow =
     displayMode === "FIXED"
       ? "FIXED SAVINGS"
@@ -603,10 +568,6 @@ function freeWindowCurrentMonth(startDate, endDate = today()) {
 /** Full free-window months already elapsed (start month does not count until the next month). */
 function freeWindowMonthsCompleted(startDate, endDate = today()) {
   return Math.max(0, freeWindowCurrentMonth(startDate, endDate) - 1);
-}
-
-function monthsBetween(startDate, endDate = today()) {
-  return freeWindowCurrentMonth(startDate, endDate);
 }
 
 /** Compact scheme row for GET /app/home activeSchemes[]. */

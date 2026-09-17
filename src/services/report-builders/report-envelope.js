@@ -1,5 +1,5 @@
 import { AppError } from "../../lib/app-error.js";
-import { moneyRef, weightRef } from "../../lib/money.js";
+import { moneyRef } from "../../lib/money.js";
 import { dateMatch, resolveQueryDateRange } from "../../lib/query-filters.js";
 import { Branch, Scheme } from "../../models/index.js";
 

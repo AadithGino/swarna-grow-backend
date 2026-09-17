@@ -4,15 +4,30 @@ import { errors } from "../lib/app-error.js";
 import { Customer, Tenant, User } from "../models/index.js";
 import { TenantStatus, UserStatus } from "../constants/enums.js";
 import { ROLE_SCOPE } from "../constants/permissions.js";
+import { assertSubscriptionActive } from "../lib/tenant-limits.js";
 
 export const authenticate = asyncHandler(async (req, _res, next) => {
   const [scheme, token] = (req.headers.authorization ?? "").split(" ");
   if (scheme !== "Bearer" || !token) throw errors.unauthenticated();
   const claims = verifyAccessToken(token);
   req.auth = { id: claims.sub, type: claims.typ, tenantId: claims.tid, branchId: claims.bid ?? null, role: claims.rol, permissions: claims.per ?? [], deviceId: claims.did };
-  if (claims.typ === "CUSTOMER") { const customer = await Customer.findOne({ _id: claims.sub, tenantId: claims.tid }).lean(); if (!customer || customer.status !== "ACTIVE") throw errors.unauthenticated(); }
-  else { const user = await User.findById(claims.sub).lean(); if (!user || user.status !== UserStatus.ACTIVE) throw errors.unauthenticated(); }
-  if (claims.tid) { const tenant = await Tenant.findById(claims.tid).lean(); if (!tenant || ![TenantStatus.ACTIVE, TenantStatus.PENDING_SETUP].includes(tenant.status)) throw errors.forbidden("This jewellery account is not active."); req.tenant = tenant; }
+  if (claims.typ === "CUSTOMER") {
+    const customer = await Customer.findOne({ _id: claims.sub, tenantId: claims.tid }).lean();
+    if (!customer || customer.status !== "ACTIVE") throw errors.unauthenticated();
+    if ((claims.sv ?? 0) !== (customer.securityVersion ?? 0)) throw errors.unauthenticated("Your session is no longer valid. Sign in again.");
+  } else {
+    const user = await User.findById(claims.sub).lean();
+    if (!user || user.status !== UserStatus.ACTIVE) throw errors.unauthenticated();
+    if ((claims.sv ?? 0) !== (user.securityVersion ?? 0)) throw errors.unauthenticated("Your session is no longer valid. Sign in again.");
+  }
+  if (claims.tid) {
+    const tenant = await Tenant.findById(claims.tid).lean();
+    if (!tenant || ![TenantStatus.ACTIVE, TenantStatus.PENDING_SETUP].includes(tenant.status)) {
+      throw errors.forbidden("This jewellery account is not active.");
+    }
+    assertSubscriptionActive(tenant);
+    req.tenant = tenant;
+  }
   next();
 });
 

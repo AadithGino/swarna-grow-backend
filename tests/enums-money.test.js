@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CycleStatus, PaymentStatus, enumValues } from "../src/constants/enums.js";
-import { moneyRef, moneyToWeightMg, weightRef } from "../src/lib/money.js";
+import { applyWeightPrecisionMg, decimalRoundingMode, moneyRef, moneyToWeightMg, weightRef } from "../src/lib/money.js";
 
 test("runtime enums are frozen and expose canonical values", () => {
   assert.equal(Object.isFrozen(PaymentStatus), true);
@@ -15,5 +15,13 @@ test("paise and milligrams format without currency scale loss", () => {
   assert.equal(weightRef(126480).weightDisplay, "126.480 g");
   assert.equal(moneyToWeightMg(84200000, 6657100), 12648);
   assert.throws(() => moneyRef(1.25), /safe integer/);
+});
+
+test("gold conversion honors ROUND_DOWN with 10mg precision", () => {
+  const rounding = decimalRoundingMode("ROUND_DOWN");
+  let weightMg = moneyToWeightMg(84_200_000, 6_657_100, rounding);
+  weightMg = applyWeightPrecisionMg(weightMg, 10, rounding);
+  assert.equal(weightMg, 12_640);
+  assert.equal(weightMg % 10, 0);
 });
 

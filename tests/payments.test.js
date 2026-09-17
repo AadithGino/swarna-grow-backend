@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AppError } from "../src/lib/app-error.js";
 import { createId } from "../src/lib/ids.js";
-import { Customer, LedgerEntry, Scheme } from "../src/models/index.js";
+import { Customer, LedgerEntry, Payment, Scheme, Tenant } from "../src/models/index.js";
 import { recordPayment, reversePayment } from "../src/services/payment.service.js";
 import { TenantRole } from "../src/constants/enums.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
@@ -107,4 +107,26 @@ test("reversal appends a ledger entry rather than mutating the original payment 
   assert.equal(after[1].type, "REVERSAL");
   assert.equal(after[1].amountPaise, 100000);
   assert.equal(after[1].reversalOf, payment._id);
+});
+
+test("reversal is blocked after tenant paymentReversalWindowHours", async () => {
+  const { tenant, scheme, user } = await seedFixedScheme();
+  await Tenant.updateOne(
+    { _id: tenant._id },
+    { $set: { "operations.paymentReversalWindowHours": 24 } },
+  );
+  const payment = await recordPayment(paymentReq({ scheme, user, amountPaise: 100000, expectedVersion: 1 }));
+  const stalePaidAt = new Date(Date.now() - 25 * 3_600_000);
+  await Payment.updateOne({ _id: payment._id }, { $set: { paidAt: stalePaidAt } });
+  await assert.rejects(
+    () => reversePayment({
+      auth: { id: user._id, tenantId: scheme.tenantId },
+      scope: { tenantId: scheme.tenantId, branchId: scheme.branchId },
+      params: { paymentId: payment._id },
+      body: { reason: "Too late" },
+      headers: { "user-agent": "payments-test" },
+      ip: "127.0.0.1",
+    }),
+    (error) => error instanceof AppError && error.code === "REVERSAL_WINDOW_EXPIRED",
+  );
 });

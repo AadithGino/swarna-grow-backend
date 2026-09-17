@@ -55,6 +55,7 @@ export function bearerFor(user, permissions = ROLE_PERMISSIONS[user.role] ?? use
     role: user.role,
     permissions,
     deviceId: "test-device",
+    securityVersion: user.securityVersion ?? 0,
   });
 }
 
@@ -74,6 +75,11 @@ export async function seedTenantUser({
     name: `${code} Jewellers`,
     mobile: `+9197${String(10000000 + tenantCodeSeq).slice(-8)}`,
     status: TenantStatus.ACTIVE,
+    subscription: {
+      status: "ACTIVE",
+      tier: "STARTER",
+      limits: { activeCustomers: 1000, branches: 10, staff: 50, schemePlans: 20, whatsappMessages: 1000 },
+    },
   });
   const branch = await Branch.create({
     _id: createId("branch"),
