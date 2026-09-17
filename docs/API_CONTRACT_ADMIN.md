@@ -1,6 +1,6 @@
 # Admin Panel API Contract
 
-**Audience:** Tenant admin portal (`TENANT_USER`) + staff app APIs used by jewellery staff
+**Audience:** Tenant admin portal (`TENANT_USER` — owner, admin, branch manager). Collection agent app APIs are documented in [API_CONTRACT_STAFF.md](./API_CONTRACT_STAFF.md).
 
 **Base:** `http://localhost:4000` · **Prefix:** `/api/v1` (except `/health*`)
 
@@ -9,7 +9,7 @@
 ## Scope
 - Tenant auth: `/auth/*`
 - All `/admin/*` routes
-- Staff app: `/staff/*` (field staff companion to admin)
+- Collection agent app: `/staff/*` subset — see [API_CONTRACT_STAFF.md](./API_CONTRACT_STAFF.md) (this file retains full `/staff` entries for cross-reference)
 - Public helpers used by admin web: password policy, tenant resolve, branch lookup
 - Health checks
 

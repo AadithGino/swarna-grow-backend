@@ -15,7 +15,7 @@
 
 **Route count (this panel):** **59** — full list in [Appendix C](#appendix-c--route-inventory-customer-panel)
 
-See also: [Full contract](./API_CONTRACT.md) · [Admin](./API_CONTRACT_ADMIN.md) · [Super Admin](./API_CONTRACT_SUPER_ADMIN.md)
+See also: [Full contract](./API_CONTRACT.md) · [Admin](./API_CONTRACT_ADMIN.md) · [Collection agent app](./API_CONTRACT_STAFF.md) · [Super Admin](./API_CONTRACT_SUPER_ADMIN.md)
 
 ## Locked product rules (V1)
 

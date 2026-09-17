@@ -4,12 +4,32 @@ import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
-import { effectiveScope, searchRegex } from "../lib/query-filters.js";
+import { effectiveScope, fuzzyMongoFilter, searchRegex } from "../lib/query-filters.js";
+import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
+import { loadUserMap, userDto } from "../lib/relation-maps.js";
+
+const CUSTOMER_LIST_SEARCH_FIELDS = ["name", "mobile", "customerNumber", "passbookNumber", "email"];
+
+function schemePreviewDto(scheme) {
+  const snap = scheme.planSnapshot ?? {};
+  return {
+    _id: scheme._id,
+    id: scheme._id,
+    enrollmentNumber: scheme.enrollmentNumber,
+    planName: snap.displayName ?? snap.name ?? "Savings scheme",
+    status: scheme.status,
+    paymentPattern: scheme.paymentPattern,
+    valueBasis: scheme.valueBasis,
+    maturityDate: scheme.maturityDate,
+    planSnapshot: scheme.planSnapshot,
+  };
+}
 import { writeAudit } from "./audit.service.js";
 import { nextSequence } from "./sequence.service.js";
 import { canonicalMobile, mobileLookupVariants } from "../lib/mobile.js";
 import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
 import { enrichCustomerKycRecord } from "../lib/customer-kyc-enrichment.js";
+import { attachLedgerTotals, schemeAgentCollectPreview } from "./scheme.service.js";
 
 const STATUS_LABELS = { ACTIVE: "Active", BLOCKED: "Blocked", INACTIVE: "Inactive" };
 
@@ -135,9 +155,16 @@ export async function listCustomers(req) {
   const scope = effectiveScope(req);
   const kycStatus = req.query.kycStatus ?? req.query.kyc;
   if (kycStatus) filters["kyc.status"] = kycStatus;
-  const pattern = searchRegex(req.query.q);
-  if (pattern) {
-    filters.$or = [{ name: pattern }, { mobile: pattern }, { customerNumber: pattern }, { passbookNumber: pattern }, { email: pattern }];
+  const q = String(req.query.q ?? "").trim();
+  if (q) {
+    const fuzzy = fuzzyMongoFilter(CUSTOMER_LIST_SEARCH_FIELDS, q);
+    if (fuzzy) Object.assign(filters, fuzzy);
+    else {
+      const pattern = searchRegex(q);
+      if (pattern) {
+        filters.$or = CUSTOMER_LIST_SEARCH_FIELDS.map((field) => ({ [field]: pattern }));
+      }
+    }
   }
   const result = await paginate(Customer, {
     scope,
@@ -157,7 +184,9 @@ export async function listCustomers(req) {
       customerId: { $in: customerIds },
       status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED", "MATURED"] },
     })
-      .select("_id customerId status enrollmentNumber installmentAmountPaise installments maturityDate")
+      .select(
+        "_id customerId status enrollmentNumber installmentAmountPaise installments maturityDate planSnapshot paymentPattern valueBasis flexiblePhase",
+      )
       .lean(),
   ]);
   const branchMap = new Map(branches.map((row) => [row._id, row]));
@@ -169,12 +198,22 @@ export async function listCustomers(req) {
   }
 
   const today = new Date().toISOString().slice(0, 10);
+  const allActiveSchemeRows = [];
+  for (const customer of result.data) {
+    const customerSchemes = schemesByCustomer.get(customer._id) ?? [];
+    for (const row of customerSchemes.filter((s) => ["ACTIVE", "LOCKED", "DEFAULTED"].includes(s.status))) {
+      allActiveSchemeRows.push(row);
+    }
+  }
+  const activeWithTotals = await attachLedgerTotals(req.auth.tenantId, allActiveSchemeRows);
+  const previewById = new Map(activeWithTotals.map((row) => [row._id, schemeAgentCollectPreview(row)]));
+
   result.data = result.data.map((customer) => {
     const branch = branchMap.get(customer.branchId);
     const customerSchemes = schemesByCustomer.get(customer._id) ?? [];
-    const activeSchemes = customerSchemes.filter((row) =>
-      ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status),
-    );
+    const activeSchemes = customerSchemes
+      .filter((row) => ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status))
+      .map((row) => previewById.get(row._id) ?? schemePreviewDto(row));
     let nextDue = null;
     let overduePaise = 0;
     for (const scheme of activeSchemes) {
@@ -215,6 +254,7 @@ export async function listCustomers(req) {
         active: activeSchemes.length,
         total: customerSchemes.length,
       },
+      activeSchemes,
       nextDue,
       overdue: { amountPaise: overduePaise },
     };
@@ -342,11 +382,13 @@ export async function customer360(req) {
   const lifetimePaidPaise = ledgers
     .filter((row) => ["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT"].includes(row.type))
     .reduce((sum, row) => sum + row.amountPaise, 0);
-  const activeSchemes = schemes.filter((row) => ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status));
+  const activeSchemesRaw = schemes.filter((row) => ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status));
+  const activeSchemesWithTotals = await attachLedgerTotals(customer.tenantId, activeSchemesRaw);
+  const activeSchemes = activeSchemesWithTotals.map(schemeAgentCollectPreview);
   const today = new Date().toISOString().slice(0, 10);
   let nextDue = null;
   let overduePaise = 0;
-  for (const scheme of activeSchemes) {
+  for (const scheme of activeSchemesRaw) {
     for (const inst of scheme.installments ?? []) {
       if (["PAID", "WAIVED"].includes(inst.status)) continue;
       const remaining = Math.max(0, Number(inst.amountPaise ?? 0) - Number(inst.paidPaise ?? 0));
@@ -379,6 +421,7 @@ export async function customer360(req) {
     nextDue,
     overdue: { amountPaise: overduePaise },
     schemeSummary: { active: activeSchemes.length, total: schemes.length },
+    activeSchemes,
     summary: {
       activeSchemes: activeSchemes.length,
       pastSchemes: schemes.filter((row) => ["REDEEMED", "CLOSED_PREMATURE"].includes(row.status)).length,
@@ -502,20 +545,27 @@ export async function listCustomerRelations(req, relation) {
     const result = await paginate(Payment, { scope: query, filters: {}, cursor: req.query.cursor, limit: req.query.limit, sort: "paidAt:desc" });
     if (!result.data.length) return result;
     const schemeIds = [...new Set(result.data.map((row) => row.schemeId).filter(Boolean))];
-    const schemes = await Scheme.find({ _id: { $in: schemeIds } }).select("_id enrollmentNumber planSnapshot.name").lean();
+    const staffIds = [...new Set(result.data.map((row) => row.collectedBy).filter(Boolean))];
+    const [schemes, staffMap] = await Promise.all([
+      Scheme.find({ _id: { $in: schemeIds } }).select("_id enrollmentNumber planSnapshot.name planSnapshot.displayName").lean(),
+      loadUserMap(staffIds),
+    ]);
     const schemeMap = new Map(schemes.map((row) => [row._id, row]));
     result.data = result.data.map((row) => {
       const scheme = schemeMap.get(row.schemeId);
+      const collector = staffMap.get(row.collectedBy);
       return {
         ...row,
         amount: { amountPaise: row.amountPaise },
+        goldAccrual: paymentGoldAccrualDto(row),
+        collectedBy: userDto(collector) ?? row.collectedBy,
         scheme: scheme
           ? {
               _id: scheme._id,
               id: scheme._id,
               enrollmentNumber: scheme.enrollmentNumber,
               schemeNumber: scheme.enrollmentNumber,
-              name: scheme.planSnapshot?.name,
+              name: scheme.planSnapshot?.displayName ?? scheme.planSnapshot?.name,
             }
           : undefined,
       };

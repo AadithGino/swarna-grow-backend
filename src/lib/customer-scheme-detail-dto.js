@@ -176,13 +176,15 @@ export function mapCustomerPaymentListItem(payment, scheme) {
     receiptDownloadPath: status === "SUCCESS" && id ? `/app/payments/${id}/receipt` : undefined,
     channel,
     channelLabel:
-      channel === "CASH"
+      payment.recordedByLabel ??
+      (channel === "CASH"
         ? "Cash at branch"
         : channel === "PHONEPE"
           ? "PhonePe"
           : channel === "UPI"
             ? "UPI"
-            : "Bank transfer",
+            : "Bank transfer"),
+    recordedByLabel: payment.recordedByLabel ?? undefined,
     paymentPattern: scheme.paymentPattern === "FIXED" ? "FIXED" : "FLEXIBLE",
     targetCycle: payment.targetCycle ?? null,
     valueBasis: scheme.valueBasis ?? scheme.planSnapshot?.valueBasis ?? "CASH",

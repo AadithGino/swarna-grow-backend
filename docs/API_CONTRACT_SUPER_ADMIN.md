@@ -81,7 +81,7 @@ List routes return `meta.hasMore` and `meta.nextCursor` when cursor pagination a
 
 **Integration secrets:** WhatsApp and PhonePe credential fields are **write-only**. Responses expose masked values and verification status only; secrets are never returned after save.
 
-**Tenant roles (tenant users only):** `TENANT_OWNER` · `TENANT_ADMIN` · `BRANCH_MANAGER` · `BRANCH_STAFF`
+**Tenant roles (tenant users only):** `TENANT_OWNER` · `TENANT_ADMIN` · `BRANCH_MANAGER` · `BRANCH_STAFF` · `COLLECTION_AGENT` (field cash collector; see [Collection agent app contract](./API_CONTRACT_STAFF.md))
 
 ### Shared DTOs
 

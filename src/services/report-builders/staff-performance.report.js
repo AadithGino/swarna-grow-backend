@@ -22,7 +22,11 @@ const COLUMNS = [
   { key: "discrepancies", label: "Discrepancies", type: "count", align: "right" },
 ];
 
-const STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER];
+const STAFF_ROLES = [
+  TenantRole.BRANCH_STAFF,
+  TenantRole.BRANCH_MANAGER,
+  TenantRole.COLLECTION_AGENT,
+];
 
 export async function buildStaffPerformanceReport(req) {
   const envelope = baseEnvelope(req, "STAFF_PERFORMANCE", "Staff performance");
@@ -46,7 +50,7 @@ export async function buildStaffPerformanceReport(req) {
   const staffIds = staff.map((s) => s._id);
   const schemeIds = await schemeIdsForPlan(scope, req.query.planId);
   const paymentMatch = {
-    ...scope,
+    tenantId,
     status: "SUCCESS",
     collectedBy: { $in: staffIds },
     ...dateMatch("paidAt", { from, to }),
@@ -115,14 +119,14 @@ export async function buildStaffPerformanceReport(req) {
   return {
     ...envelope,
     summary: [
-      { key: "TOTAL_COLLECTED", label: "Collected by staff", value: moneyRef(totalCollected), valueType: "currency" },
+      { key: "TOTAL_COLLECTED", label: "Collected by staff & agents", value: moneyRef(totalCollected), valueType: "currency" },
       { key: "ENROLMENTS", label: "Enrolments", value: totalEnrolments, valueType: "count" },
-      { key: "STAFF_ACTIVE", label: "Active staff", value: staff.length, valueType: "count" },
+      { key: "STAFF_ACTIVE", label: "Active staff & agents", value: staff.length, valueType: "count" },
     ],
     charts: {
       collectionByStaff: {
         chartType: "horizontalBar",
-        title: "Collection by staff",
+        title: "Collection by staff & agents",
         yAxis: { type: "currency", label: "Amount" },
         series: [
           {

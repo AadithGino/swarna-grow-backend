@@ -90,6 +90,8 @@ staffRouter.post(
   asyncHandler(payment.record),
 );
 staffRouter.get("/payments", asyncHandler(payment.list));
+staffRouter.get("/payments/:paymentId", asyncHandler(payment.get));
+staffRouter.get("/payments/:paymentId/receipt", asyncHandler(payment.receipt));
 staffRouter.post(
   "/payment-links",
   validate({ body: paymentLinkBody }),
@@ -119,20 +121,7 @@ staffRouter.post(
   idempotent,
   asyncHandler(operations.cancelHandover),
 );
-staffRouter.get(
-  "/cash/handovers/:handoverId",
-  asyncHandler(async (req, res) => {
-    const { CashHandover } = await import("../models/index.js");
-    return sendSuccess(
-      res,
-      await CashHandover.findOne({
-        _id: req.params.handoverId,
-        ...req.scope,
-        staffId: req.auth.id,
-      }).lean(),
-    );
-  }),
-);
+staffRouter.get("/cash/handovers/:handoverId", asyncHandler(operations.getHandoverStaff));
 staffRouter.get("/dues", asyncHandler(analytics.dueList("dues")));
 staffRouter.get("/overdues", asyncHandler(analytics.dueList("overdues")));
 staffRouter.get(
@@ -186,21 +175,23 @@ staffRouter.delete(
 );
 staffRouter.get(
   "/profile",
-  asyncHandler(async (req, res) =>
+  asyncHandler(async (req, res) => {
+    const { tenantUserAuthDto } = await import("../services/auth.service.js");
     sendSuccess(
       res,
-      await User.findById(req.auth.id).select("-passwordHash").lean(),
-    ),
-  ),
+      await tenantUserAuthDto(
+        await User.findById(req.auth.id).select("-passwordHash").lean(),
+      ),
+    );
+  }),
 );
 staffRouter.get(
   "/gold-rate/current",
-  asyncHandler(async (req, res) =>
-    sendSuccess(
-      res,
-      await GoldRate.findOne(req.scope).sort({ effectiveDate: -1 }).lean(),
-    ),
-  ),
+  asyncHandler(async (req, res) => {
+    const { currentGoldRate } = await import("../services/tenant.service.js");
+    const { today } = await import("../lib/date.js");
+    sendSuccess(res, await currentGoldRate(req.scope, today()));
+  }),
 );
 staffRouter.get("/grievances", asyncHandler(operations.grievances));
 staffRouter.get(

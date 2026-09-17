@@ -1,6 +1,6 @@
 # SwarnaGrow API Contract (v1.2)
 
-**Panel-wise split:** [Index](./API_CONTRACT_PANELS.md) · [Super Admin](./API_CONTRACT_SUPER_ADMIN.md) · [Admin](./API_CONTRACT_ADMIN.md) · [Customer](./API_CONTRACT_CUSTOMER.md)
+**Panel-wise split:** [Index](./API_CONTRACT_PANELS.md) · [Super Admin](./API_CONTRACT_SUPER_ADMIN.md) · [Admin](./API_CONTRACT_ADMIN.md) · [Collection agent app](./API_CONTRACT_STAFF.md) · [Customer](./API_CONTRACT_CUSTOMER.md)
 
 Base: `http://localhost:4000` · Prefix: `/api/v1` (except `/health*`)
 

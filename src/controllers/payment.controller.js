@@ -9,7 +9,8 @@ import * as messaging from "../services/messaging.service.js";
 
 export const record = async (req, res) => sendSuccess(res, await payments.recordPayment(req), {}, 201);
 export const list = async (req, res) => sendList(res, await payments.listPayments(req));
-export const detail = async (req, res) => { const row = await Payment.findOne({ _id: req.params.paymentId, ...req.scope }).lean(); if (!row) throw errors.notFound("Payment"); sendSuccess(res, row); };
+export const detail = async (req, res) => sendSuccess(res, await payments.getPayment(req));
+export const get = detail;
 export const reverse = async (req, res) => sendSuccess(res, await payments.reversePayment(req));
 export const createLink = async (req, res) => sendSuccess(res, await payments.createPaymentLink(req), {}, 201);
 export const publicLink = async (req, res) => {
@@ -57,8 +58,7 @@ function escapeSvgText(value) {
 }
 
 export const receipt = async (req, res) => {
-  const payment = await Payment.findOne({ _id: req.params.paymentId, ...req.scope }).lean();
-  if (!payment) throw errors.notFound("Payment");
+  const payment = await payments.getPayment(req);
   const doc = new PDFDocument({ size: "A5", margin: 36 });
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${payment.receiptNumber}.pdf"`);

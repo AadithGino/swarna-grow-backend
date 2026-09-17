@@ -8,6 +8,8 @@ import { paginate } from "../lib/pagination.js";
 import { moneyRef } from "../lib/money.js";
 import { now } from "../lib/date.js";
 import { dateMatch } from "../lib/query-filters.js";
+import { cashPaymentBranchMatch } from "../lib/payment-scope.js";
+import { branchDto, loadBranchMap, loadUserMap, userDto } from "../lib/relation-maps.js";
 
 async function sumAggregate(model, pipeline, session) {
   const query = model.aggregate(pipeline);
@@ -17,7 +19,7 @@ async function sumAggregate(model, pipeline, session) {
 }
 
 export async function cashBalance({ tenantId, branchId, staffId }, session) {
-  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...(branchId ? { branchId } : {}) };
+  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...cashPaymentBranchMatch(branchId, staffId) };
   const handoverBase = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
   const adjustmentMatch = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
   const cashCollectedPaise = await sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
@@ -30,7 +32,7 @@ export async function cashBalance({ tenantId, branchId, staffId }, session) {
   return { cashCollectedPaise, cashInHandPaise, cashPendingAcceptancePaise, collectedPaise: cashCollectedPaise, handedOverPaise, adjustmentPaise };
 }
 
-const CASH_STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER];
+const CASH_STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER, TenantRole.COLLECTION_AGENT];
 const dayStart = () => now().startOf("day").toDate();
 
 function cashScope(req) {
@@ -55,7 +57,7 @@ async function branchMap(tenantId, branchIds) {
 }
 
 async function staffCashExtras({ tenantId, branchId, staffId }) {
-  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...(branchId ? { branchId } : {}), paidAt: { $gte: dayStart() } };
+  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...cashPaymentBranchMatch(branchId, staffId), paidAt: { $gte: dayStart() } };
   const handoverMatch = { tenantId, staffId, ...(branchId ? { branchId } : {}), status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY, CashHandoverStatus.REJECTED] } };
   const [collectedToday, lastHandover] = await Promise.all([
     sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]),
@@ -336,5 +338,74 @@ export async function listHandovers(req, staffOnly = false) {
   if (req.query.staffId && !staffOnly) filters.staffId = req.query.staffId;
   Object.assign(filters, dateMatch("createdAt", req.query));
   return paginate(CashHandover, { scope, filters, cursor: req.query.cursor, limit: req.query.limit, sort: "createdAt:desc" });
+}
+
+export async function getHandoverForStaff(req) {
+  const row = await CashHandover.findOne({
+    _id: req.params.handoverId,
+    tenantId: req.auth.tenantId,
+    staffId: req.auth.id,
+  }).lean();
+  if (!row) throw errors.notFound("Cash handover");
+
+  const relatedUserIds = [row.settledBy, row.staffId].filter(Boolean);
+  const [branchMap, userMap] = await Promise.all([
+    loadBranchMap(req.auth.tenantId, [row.branchId]),
+    loadUserMap(relatedUserIds),
+  ]);
+  const branch = branchMap.get(row.branchId);
+  const settledByUser = userMap.get(row.settledBy);
+  const staffUser = userMap.get(row.staffId);
+  const staffName = staffUser?.name ?? "You";
+
+  const timeline = [];
+  const submittedAt = row.submittedAt ?? row.createdAt;
+  if (submittedAt) {
+    timeline.push({
+      event: "SUBMITTED",
+      at: submittedAt,
+      by: staffName,
+      note: row.remarks ?? undefined,
+    });
+  }
+  if (row.status === CashHandoverStatus.PENDING) {
+    timeline.push({
+      event: "AWAITING_ACCEPTANCE",
+      at: submittedAt ?? new Date(),
+      by: branch?.name ?? "Branch",
+    });
+  } else if (row.settledAt) {
+    const by = settledByUser?.name ?? "Branch";
+    if (row.status === CashHandoverStatus.CANCELLED) {
+      timeline.push({ event: "CANCELLED", at: row.settledAt, by: staffName, note: row.reason ?? undefined });
+    } else if (row.status === CashHandoverStatus.REJECTED) {
+      timeline.push({ event: "REJECTED", at: row.settledAt, by, note: row.reason ?? undefined });
+    } else if (row.status === CashHandoverStatus.DISCREPANCY) {
+      timeline.push({
+        event: "ACCEPTED_WITH_DISCREPANCY",
+        at: row.settledAt,
+        by,
+        note:
+          row.discrepancyPaise != null
+            ? `Difference ${moneyRef(row.discrepancyPaise).amountDisplay}`
+            : row.reason ?? undefined,
+      });
+    } else if (row.status === CashHandoverStatus.ACCEPTED) {
+      timeline.push({
+        event: "ACCEPTED",
+        at: row.settledAt,
+        by,
+        note: row.acceptedAmountPaise != null && row.acceptedAmountPaise !== row.amountPaise ? `Accepted ${row.acceptedAmountPaise} paise` : undefined,
+      });
+    }
+  }
+
+  return {
+    ...row,
+    id: row._id,
+    branch: branchDto(branch),
+    settledBy: userDto(settledByUser),
+    timeline,
+  };
 }
 export async function createCashAdjustment(req) { return withTransaction(async (session) => { const row = (await CashAdjustment.create([{ _id: createId("cashAdjustment"), tenantId: req.auth.tenantId, branchId: req.scope.branchId ?? req.body.branchId, staffId: req.body.staffId, direction: req.body.direction, amountPaise: req.body.amountPaise, reason: req.body.reason, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "CASH_ADJUSTMENT_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId }; }); }

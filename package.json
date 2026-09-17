@@ -19,7 +19,8 @@
     "test": "NODE_ENV=test node --test --test-concurrency=1 --test-reporter=spec",
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage",
     "seed": "node --env-file=.env scripts/seed.js",
-    "seed:demo": "node --env-file=.env scripts/seed-demo.js"
+    "seed:demo": "node --env-file=.env scripts/seed-demo.js",
+    "seed:collection-agent": "node --env-file=.env scripts/seed-collection-agent.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.883.0",

@@ -13,7 +13,7 @@ export const me = async (req, res) => {
     return sendSuccess(res, await getAppProfile(req.auth, tenant));
   }
   const record = await User.findById(req.auth.id).select("-passwordHash").lean();
-  sendSuccess(res, record);
+  sendSuccess(res, await auth.tenantUserAuthDto(record));
 };
 export const logout = async (req, res) => { await auth.logout(req.auth, req.body.refreshToken); sendSuccess(res, { loggedOut: true }); };
 export const logoutAll = async (req, res) => { await auth.logoutAll(req.auth); sendSuccess(res, { loggedOut: true }); };

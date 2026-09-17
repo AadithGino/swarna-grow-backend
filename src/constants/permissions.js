@@ -18,6 +18,7 @@ export const ROLE_SCOPE = Object.freeze({
   TENANT_ADMIN: "TENANT",
   BRANCH_MANAGER: "BRANCH",
   BRANCH_STAFF: "BRANCH",
+  COLLECTION_AGENT: "BRANCH",
 });
 
 export const ROLE_PERMISSIONS = Object.freeze({
@@ -25,4 +26,6 @@ export const ROLE_PERMISSIONS = Object.freeze({
   TENANT_ADMIN: allPermissions,
   BRANCH_MANAGER: allPermissions.filter((permission) => ![Permission.SETTINGS_WRITE, Permission.BRANCH_WRITE, Permission.CUSTOMER_BLOCK].includes(permission)),
   BRANCH_STAFF: [Permission.CUSTOMER_READ, Permission.CUSTOMER_WRITE, Permission.PLAN_READ, Permission.SCHEME_READ, Permission.SCHEME_WRITE, Permission.PAYMENT_READ, Permission.PAYMENT_RECORD, Permission.CASH_READ, Permission.CASH_HANDOVER, Permission.GRIEVANCE_READ, Permission.GRIEVANCE_REPLY],
+  /** Field collector: search customers, view schemes, record cash, hand over cash — no enrol/KYC/grievances/plan admin. */
+  COLLECTION_AGENT: [Permission.CUSTOMER_READ, Permission.SCHEME_READ, Permission.PAYMENT_READ, Permission.PAYMENT_RECORD, Permission.CASH_READ, Permission.CASH_HANDOVER, Permission.GOLD_RATE_READ],
 });

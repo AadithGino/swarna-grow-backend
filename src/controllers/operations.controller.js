@@ -127,6 +127,8 @@ export const handovers =
   (staffOnly = false) =>
   async (req, res) =>
     sendList(res, await cash.listHandovers(req, staffOnly));
+export const getHandoverStaff = async (req, res) =>
+  sendSuccess(res, await cash.getHandoverForStaff(req));
 export const cashOverview = async (req, res) =>
   sendSuccess(res, await cash.adminCashOverview(req));
 export const cashStaffBalances = async (req, res) =>

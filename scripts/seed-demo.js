@@ -9,6 +9,7 @@
  * Usage:  npm run seed:demo
  * Login:  tenantCode KAIRALI · mobile 9847012345 · password Swarna@2026
  * Staff:  9847012350 / 9847012351 · same password (branch staff, MGR)
+ * Collector: 9847012352 · COLLECTION_AGENT (Kochi branch)
  */
 import argon2 from "argon2";
 import dayjs from "dayjs";
@@ -97,6 +98,7 @@ const DEMO = {
   managerMobile: "9847012346",
   staffMobile1: "9847012350",
   staffMobile2: "9847012351",
+  collectorMobile: "9847012352",
   goldRatePerGramPaise: 725_000,
 };
 
@@ -198,6 +200,7 @@ async function createDemoTenant() {
   const managerId = createId("user");
   const staff1Id = createId("user");
   const staff2Id = createId("user");
+  const collectorId = createId("user");
   const passwordHash = await argon2.hash(DEMO.ownerPassword, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
 
   const renewsAt = new Date(Date.now() + 17 * 86_400_000);
@@ -307,6 +310,19 @@ async function createDemoTenant() {
     passwordHash,
     status: UserStatus.ACTIVE,
     permissions: ROLE_PERMISSIONS[TenantRole.BRANCH_STAFF],
+  });
+
+  await User.create({
+    _id: collectorId,
+    type: UserType.TENANT_USER,
+    tenantId,
+    branchId: kochi._id,
+    role: TenantRole.COLLECTION_AGENT,
+    name: "Vijay Field",
+    mobile: DEMO.collectorMobile,
+    passwordHash,
+    status: UserStatus.ACTIVE,
+    permissions: ROLE_PERMISSIONS[TenantRole.COLLECTION_AGENT],
   });
 
   const goldRateDates = [
@@ -1599,6 +1615,9 @@ try {
   process.stdout.write(`Owner login: ${DEMO.ownerMobile} / ${DEMO.ownerPassword}\n`);
   process.stdout.write(
     `Staff login: ${DEMO.staffMobile1} or ${DEMO.staffMobile2} / ${DEMO.ownerPassword} (${hq.code})\n`,
+  );
+  process.stdout.write(
+    `Collection agent: ${DEMO.collectorMobile} / ${DEMO.ownerPassword} (${kochi.code}, COLLECTION_AGENT)\n`,
   );
   process.stdout.write(`Branches: ${hq.code} (${hq.name}), ${kochi.code} (${kochi.name})\n`);
   process.stdout.write(

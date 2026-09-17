@@ -37,6 +37,8 @@ import { paginate } from "../lib/pagination.js";
 import { getPublicLink } from "./payment.service.js";
 import { currentGoldRate } from "./tenant.service.js";
 import { enrichCustomerKycRecord } from "../lib/customer-kyc-enrichment.js";
+import { paymentRecordedByLabel } from "../lib/payment-scope.js";
+import { loadUserMap } from "../lib/relation-maps.js";
 
 export async function resolveTenants(query) {
   if (query.deepLinkToken) {
@@ -513,9 +515,13 @@ export async function listPaymentsForApp(req) {
     };
   }
   const schemeIds = [...new Set(result.data.map((row) => row.schemeId).filter(Boolean))];
-  const schemeDocs = await Scheme.find({ _id: { $in: schemeIds } })
-    .select("_id enrollmentNumber planSnapshot paymentPattern")
-    .lean();
+  const staffIds = [...new Set(result.data.map((row) => row.collectedBy).filter(Boolean))];
+  const [schemeDocs, staffMap] = await Promise.all([
+    Scheme.find({ _id: { $in: schemeIds } })
+      .select("_id enrollmentNumber planSnapshot paymentPattern valueBasis")
+      .lean(),
+    loadUserMap(staffIds),
+  ]);
   const schemeMap = new Map(schemeDocs.map((row) => [String(row._id), row]));
   const data = result.data.map((payment) => {
     const scheme = schemeMap.get(String(payment.schemeId)) ?? {
@@ -524,7 +530,12 @@ export async function listPaymentsForApp(req) {
       planSnapshot: {},
       paymentPattern: "FIXED",
     };
-    return mapCustomerPaymentListItem(payment, scheme);
+    const collector = staffMap.get(payment.collectedBy);
+    const enriched = {
+      ...payment,
+      recordedByLabel: paymentRecordedByLabel(payment, collector),
+    };
+    return mapCustomerPaymentListItem(enriched, scheme);
   });
   const successRows = result.data.filter((row) => row.status === PaymentStatus.SUCCESS);
   const totalPaidPaise = successRows.reduce((sum, row) => sum + (row.amountPaise ?? 0), 0);

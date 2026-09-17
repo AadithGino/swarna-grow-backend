@@ -46,7 +46,7 @@ const TENANT_WIDE_ROLES = new Set([
   TenantRole.TENANT_OWNER,
   TenantRole.TENANT_ADMIN,
 ]);
-const CASH_STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER];
+const CASH_STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER, TenantRole.COLLECTION_AGENT];
 const OPEN_SCHEME_STATUSES = [
   SchemeStatus.ACTIVE,
   SchemeStatus.LOCKED,

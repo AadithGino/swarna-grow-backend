@@ -29,6 +29,30 @@ function sessionPayload(tokens) {
   };
 }
 
+/** Tenant staff profile for login / auth/me / staff profile (includes branch + tenant labels). */
+export async function tenantUserAuthDto(user) {
+  if (!user) return user;
+  const id = user._id ?? user.id;
+  const [tenant, branch] = await Promise.all([
+    user.tenantId ? Tenant.findById(user.tenantId).select("code name branding").lean() : null,
+    user.branchId ? Branch.findById(user.branchId).select("name code").lean() : null,
+  ]);
+  return {
+    id,
+    name: user.name,
+    mobile: user.mobile,
+    role: user.role,
+    tenantId: user.tenantId,
+    branchId: user.branchId,
+    tenantCode: tenant?.code ?? undefined,
+    tenantName: tenant?.branding?.displayName ?? tenant?.name ?? undefined,
+    branchName: branch?.name ?? undefined,
+    branchCode: branch?.code ?? undefined,
+    permissions: user.permissions,
+    mustSetPassword: user.mustSetPassword ?? false,
+  };
+}
+
 export async function login({ body, request, platform = false }) {
   if (platform) {
     const user = await User.findOne({ type: UserType.PLATFORM_USER, email: body.email?.toLowerCase?.() ?? body.email }).select("+passwordHash");
@@ -76,7 +100,10 @@ export async function login({ body, request, platform = false }) {
   const subject = toSubject(user.toObject(), UserType.TENANT_USER, body.platform !== "web");
   const tokens = await issueSession(subject, body, request); await User.updateOne({ _id: user._id }, { $set: { lastSeenAt: new Date() } });
   return {
-    user: { id: user._id, name: user.name, role: user.role, tenantId: user.tenantId, branchId: user.branchId, permissions: subject.permissions, mustSetPassword: user.mustSetPassword },
+    user: await tenantUserAuthDto({
+      ...user.toObject(),
+      permissions: subject.permissions,
+    }),
     ...sessionPayload(tokens),
   };
 }

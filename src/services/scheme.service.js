@@ -352,10 +352,27 @@ export async function enrol(req) {
     const auditEventId = await writeAudit({ req, action: "SCHEME_ENROLLED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId, firstInstallmentRequired: validation.firstInstallmentRequired };
   });
 }
+/** Branch staff/collection agents: scheme is accessible when the customer belongs to their branch (scheme.branchId may differ). */
+export async function assertStaffCanAccessScheme(req, scheme, session) {
+  if (req.auth.type === "CUSTOMER" || !req.scope?.branchId) return;
+  const existsQuery = Customer.exists({
+    _id: scheme.customerId,
+    tenantId: req.auth.tenantId,
+    branchId: req.scope.branchId,
+  });
+  if (session) existsQuery.session(session);
+  if (!(await existsQuery)) throw errors.notFound("Scheme");
+}
+
 export async function getScheme(req) {
   const id = req.params.schemeId ?? req.params.id;
-  const scope = req.auth.type === "CUSTOMER" ? { tenantId: req.auth.tenantId, customerId: req.auth.id } : req.scope;
-  const scheme = await Scheme.findOne({ _id: id, ...scope }).lean();
+  let scheme;
+  if (req.auth.type === "CUSTOMER") {
+    scheme = await Scheme.findOne({ _id: id, tenantId: req.auth.tenantId, customerId: req.auth.id }).lean();
+  } else {
+    scheme = await Scheme.findOne({ _id: id, tenantId: req.auth.tenantId }).lean();
+    if (scheme) await assertStaffCanAccessScheme(req, scheme);
+  }
   if (!scheme) throw errors.notFound("Scheme");
   const [customer, ledger, payments] = await Promise.all([
     Customer.findOne({ _id: scheme.customerId, tenantId: scheme.tenantId }).select("_id name mobile branchId").lean(),
@@ -509,6 +526,81 @@ export async function listSchemes(req) {
   return result;
 }
 export function ledgerTotals(entries) { const credits = new Set(["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "BENEFIT_CREDIT"]); const debits = new Set(["REVERSAL", "CLOSURE_PENALTY", "REDEMPTION_DEBIT"]); return entries.reduce((totals, entry) => { const direction = credits.has(entry.type) ? 1 : debits.has(entry.type) ? -1 : 0; return { amountPaidPaise: totals.amountPaidPaise + direction * entry.amountPaise, goldWeightMg: totals.goldWeightMg + direction * entry.weightMg }; }, { amountPaidPaise: 0, goldWeightMg: 0 }); }
+
+/** Staff/agent scheme card: ledger totals + suggested collect amount (aligned with payable-range rules). */
+export function schemeAgentCollectPreview(scheme) {
+  const snap = scheme.planSnapshot ?? {};
+  const planName = snap.displayName ?? snap.name ?? "Savings scheme";
+  const totals = scheme.totals ?? {};
+  const totalPaidPaise = Number(totals.amountPaidPaise ?? totals.totalPaid?.amountPaise ?? 0);
+  const goldWeightMg = Number(totals.goldWeightMg ?? 0);
+  const installments = scheme.installments ?? [];
+  const paidInstallments = installments.filter((row) => ["PAID", "WAIVED"].includes(row.status)).length;
+
+  let payablePaise = null;
+  let payableMaxPaise = null;
+  let payableLabel = "Active";
+  let payable = false;
+
+  if (["ACTIVE", "LOCKED", "DEFAULTED"].includes(scheme.status)) {
+    if (scheme.paymentPattern === PaymentPattern.FIXED) {
+      const due = installments.find((row) => row.status !== "PAID" && row.status !== "WAIVED");
+      if (due) {
+        const remaining = Math.max(0, Number(due.amountPaise ?? 0) - Number(due.paidPaise ?? 0));
+        payablePaise = remaining;
+        payableMaxPaise = remaining;
+        payable = remaining > 0;
+        payableLabel = due.status === "OVERDUE" ? "Overdue instalment" : "Instalment due";
+      } else {
+        payableLabel = "Fully paid";
+      }
+    } else if (scheme.flexiblePhase === FlexiblePhase.FLEXIBLE) {
+      const rules = snap.flexibleRules?.flexiblePhase;
+      if (rules) {
+        payablePaise = Number(rules.minimumPaymentPaise ?? 0);
+        payableMaxPaise = Number(rules.maximumPaymentPaise ?? payablePaise);
+        payable = true;
+        payableLabel = "Optional contribution";
+      }
+    } else {
+      const currentCycle = monthKey();
+      const cycle =
+        (scheme.cycles ?? []).find((row) => row.cycle === currentCycle) ??
+        (scheme.cycles ?? []).find((row) => Math.max(0, Number(row.capPaise ?? 0) - Number(row.paidPaise ?? 0)) > 0);
+      if (cycle) {
+        const remaining = Math.max(0, Number(cycle.capPaise ?? 0) - Number(cycle.paidPaise ?? 0));
+        payablePaise = remaining;
+        payableMaxPaise = remaining;
+        payable = remaining > 0;
+        payableLabel = remaining > 0 ? "Cycle due" : "Cycle complete";
+      }
+    }
+  }
+
+  const flex = scheme.flexiblePhase;
+  return {
+    _id: scheme._id,
+    id: scheme._id,
+    enrollmentNumber: scheme.enrollmentNumber,
+    planName,
+    status: scheme.status,
+    paymentPattern: scheme.paymentPattern,
+    valueBasis: scheme.valueBasis,
+    phase: flex === FlexiblePhase.FLEXIBLE ? "FREE" : flex === FlexiblePhase.CAPPED ? "CAPPED" : undefined,
+    maturityDate: scheme.maturityDate,
+    installmentAmountPaise: scheme.installmentAmountPaise,
+    totalPaidPaise,
+    goldBalanceMg: goldWeightMg,
+    nextAmountPaise: payablePaise ?? undefined,
+    payableMaxPaise: payableMaxPaise ?? undefined,
+    payableLabel,
+    payable,
+    progressLabel:
+      scheme.paymentPattern === PaymentPattern.FIXED && installments.length
+        ? `${paidInstallments}/${installments.length} instalments`
+        : payableLabel,
+  };
+}
 /** Attach ledger-backed totals for customer scheme cards (list/home). */
 export async function attachLedgerTotals(tenantId, schemeRows) {
   if (!schemeRows?.length) return schemeRows ?? [];
