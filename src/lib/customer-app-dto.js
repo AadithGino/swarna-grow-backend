@@ -2,6 +2,8 @@ import { PaymentPattern, ValueBasis } from "../constants/enums.js";
 import { moneyRef, rateRef, weightRef } from "./money.js";
 import { maskMobile } from "./mobile.js";
 import { buildAmountSummary, planBenefitLabel } from "./plan-amount-summary.js";
+import { normalizePlanFinancialRules } from "./plan-amount-normalize.js";
+import { monthKey } from "./date.js";
 
 export function withId(doc) {
   if (!doc || typeof doc !== "object") return doc;
@@ -164,6 +166,75 @@ function mapNomineeDto(nominee) {
   };
 }
 
+function monthDistanceBetween(from, to) {
+  return (
+    (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 +
+    Number(to.slice(5, 7)) -
+    Number(from.slice(5, 7))
+  );
+}
+
+function formatTargetCycleLabel(cycleKey) {
+  if (!cycleKey || cycleKey.length < 7) return cycleKey ?? "";
+  const [year, month] = cycleKey.split("-");
+  const date = new Date(Number(year), Number(month) - 1, 1);
+  return date.toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+}
+
+function buildTargetCycleOptions(scheme, quote) {
+  const plan = scheme?.planSnapshot;
+  const capped = plan?.flexibleRules?.cappedPhase;
+  if (quote?.phase !== "CAPPED" || !capped?.allowFutureCyclePayment) {
+    return { allowFutureCycleSelection: false, targetCycleOptions: [] };
+  }
+  const current = monthKey();
+  const maxAdvance = capped.maxAdvanceCycles ?? 0;
+  const currentRow = scheme?.cycles?.find((row) => row.cycle === current);
+  const currentComplete = (currentRow?.remainingPaise ?? 0) <= 0;
+  const targetCycleOptions = (scheme?.cycles ?? [])
+    .map((row) => {
+      const distance = monthDistanceBetween(current, row.cycle);
+      const remainingPaise = Math.max(0, (row.capPaise ?? 0) - (row.paidPaise ?? 0));
+      if (distance < 0 || remainingPaise <= 0) return null;
+      if (distance > 0) {
+        if (!currentComplete) return null;
+        if (distance > maxAdvance) return null;
+        for (const other of scheme.cycles ?? []) {
+          const d = monthDistanceBetween(current, other.cycle);
+          const otherRemaining = Math.max(0, (other.capPaise ?? 0) - (other.paidPaise ?? 0));
+          if (d > 0 && d < distance && otherRemaining > 0) return null;
+        }
+      }
+      return {
+        cycle: row.cycle,
+        label: formatTargetCycleLabel(row.cycle),
+        remaining: moneyRef(remainingPaise),
+        isCurrentCycle: distance === 0,
+      };
+    })
+    .filter(Boolean);
+  return {
+    allowFutureCycleSelection: targetCycleOptions.length > 1,
+    targetCycleOptions,
+  };
+}
+
+function fixedPaymentHints(scheme, quote) {
+  if (quote?.model !== "FIXED") return null;
+  const pr = scheme?.planSnapshot?.paymentRules ?? {};
+  const bits = [];
+  if (pr.partialPaymentAllowed) bits.push("Partial instalment payments are allowed.");
+  if (pr.advancePaymentAllowed) {
+    const max = Math.max(1, pr.maxAdvanceInstallments ?? 1);
+    bits.push(
+      max > 1
+        ? `You can pay up to ${max} instalments in one PhonePe payment.`
+        : "Pay one due instalment at a time unless advance payments are configured.",
+    );
+  }
+  return bits.length ? bits.join(" ") : null;
+}
+
 export function enrichPayableRange(quote, scheme) {
   const helperBits = [];
   if (quote.contributionIsOptional) {
@@ -171,11 +242,14 @@ export function enrichPayableRange(quote, scheme) {
     helperBits.push("Unused monthly allowance does not carry forward.");
     helperBits.push("Paid amounts remain in your scheme permanently.");
   }
+  const fixedHints = fixedPaymentHints(scheme, quote);
+  if (fixedHints) helperBits.push(fixedHints);
   const maxPayablePaise = quote.maxPayablePaise ?? 0;
   const remainingPaise = quote.remainingPaise ?? maxPayablePaise;
   const cycleCapPaise = quote.capPaise ?? (quote.phase === "CAPPED" ? quote.capPaise : null);
   const quickAmounts = buildQuickAmounts({ ...quote, maxPayablePaise: remainingPaise });
   const positionVersion = quote.positionVersion ?? scheme?.positionVersion ?? 0;
+  const cycleSelection = buildTargetCycleOptions(scheme, quote);
   return {
     model: quote.model,
     phase: quote.phase ?? null,
@@ -184,7 +258,11 @@ export function enrichPayableRange(quote, scheme) {
     payable: quote.payable !== false,
     minPayable: moneyRef(quote.minPayablePaise ?? 0),
     maxPayable: moneyRef(remainingPaise),
-    suggested: moneyRef(quote.suggestedPaise ?? remainingPaise),
+    suggested: moneyRef(
+      quote.suggestedPaise ??
+        (quote.model === "FIXED" ? quote.minPayablePaise : null) ??
+        remainingPaise,
+    ),
     cycleCap: cycleCapPaise != null ? moneyRef(cycleCapPaise) : null,
     remainingThisCycle: moneyRef(remainingPaise),
     multipleOfPaise: quote.paymentIncrementPaise ?? 1,
@@ -200,6 +278,11 @@ export function enrichPayableRange(quote, scheme) {
     positionVersion,
     paidMoneyNeverExpires: true,
     unusedAllowanceCarriesForward: false,
+    allowFutureCycleSelection: cycleSelection.allowFutureCycleSelection,
+    targetCycleOptions: cycleSelection.targetCycleOptions,
+    advancePaymentAllowed: Boolean(scheme?.planSnapshot?.paymentRules?.advancePaymentAllowed),
+    maxAdvanceInstallments: scheme?.planSnapshot?.paymentRules?.maxAdvanceInstallments ?? null,
+    partialPaymentAllowed: Boolean(scheme?.planSnapshot?.paymentRules?.partialPaymentAllowed),
   };
 }
 
@@ -362,7 +445,29 @@ function buildPlanHighlights(plan) {
   return highlights;
 }
 
+function mapPlanEnrolUi(plan, enrolCheck) {
+  const rules = plan.amountRules ?? {};
+  const schedule = plan.scheduleRules ?? {};
+  return {
+    amountMode: rules.amountMode ?? null,
+    fixedAmount: rules.fixedAmountPaise != null ? moneyRef(rules.fixedAmountPaise) : null,
+    slabs: Array.isArray(rules.slabsPaise) ? rules.slabsPaise.map((p) => moneyRef(p)) : [],
+    minInstallment:
+      rules.minInstallmentPaise != null ? moneyRef(rules.minInstallmentPaise) : null,
+    maxInstallment:
+      rules.maxInstallmentPaise != null ? moneyRef(rules.maxInstallmentPaise) : null,
+    multipleOf: rules.multipleOfPaise != null ? moneyRef(rules.multipleOfPaise) : null,
+    firstInstallmentModeDefault: schedule.firstInstallmentModeDefault ?? "COLLECT_NOW",
+    firstInstallmentModeEditable: schedule.firstInstallmentModeEditable !== false,
+    firstInstallmentRequired:
+      enrolCheck?.firstInstallmentRequired ??
+      (schedule.firstInstallmentModeDefault !== "START_NEXT_CYCLE"),
+    termsText: plan.termsText ?? null,
+  };
+}
+
 export function mapCustomerPlanListItem(plan, enrolCheck) {
+  normalizePlanFinancialRules(plan);
   const id = String(plan._id ?? plan.id ?? "");
   const amountSummary =
     plan.amountSummary && typeof plan.amountSummary === "object" && plan.amountSummary.label
@@ -370,6 +475,7 @@ export function mapCustomerPlanListItem(plan, enrolCheck) {
       : buildAmountSummary(plan);
   const benefitLabel = planBenefitLabel(plan);
   const paymentPattern = plan.paymentPattern;
+  const rules = plan.amountRules ?? {};
   return {
     id,
     code: plan.code,
@@ -382,6 +488,17 @@ export function mapCustomerPlanListItem(plan, enrolCheck) {
     paymentPatternLabel: paymentPatternLabel(paymentPattern),
     durationMonths: plan.durationMonths,
     amountSummary,
+    amountRules: {
+      amountMode: rules.amountMode ?? amountSummary.amountMode ?? null,
+      fixedAmountPaise: rules.fixedAmountPaise ?? null,
+      slabsPaise: rules.slabsPaise ?? [],
+      minInstallmentPaise: rules.minInstallmentPaise ?? null,
+      maxInstallmentPaise: rules.maxInstallmentPaise ?? null,
+      multipleOfPaise: rules.multipleOfPaise ?? null,
+    },
+    scheduleRules: plan.scheduleRules ?? null,
+    termsText: plan.termsText ?? null,
+    enrol: mapPlanEnrolUi(plan, enrolCheck),
     benefitLabel,
     benefitType: plan.benefit?.type ?? null,
     highlights: buildPlanHighlights(plan),
@@ -415,18 +532,9 @@ export function mapPastSchemeRow(scheme, redemption) {
   };
 }
 
-export function mapNotification(row) {
-  return {
-    id: row._id,
-    type: row.type ?? "GENERAL",
-    title: row.title ?? row.templateKey ?? "Notification",
-    body: row.body ?? row.preview ?? "",
-    createdAt: row.createdAt,
-    read: Boolean(row.readAt),
-    deepLink: row.deepLink ?? row.actionPath ?? null,
-    cta: row.ctaLabel ?? null,
-    imageUrl: row.imageUrl ?? null,
-  };
-}
+export {
+  mapCustomerNotification as mapNotification,
+  buildNotificationContext,
+} from "./customer-notification-dto.js";
 
 export { maskMobile };

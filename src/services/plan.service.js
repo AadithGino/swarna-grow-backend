@@ -9,6 +9,7 @@ import { effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, monthKey, today } from "../lib/date.js";
 import { moneyRef, weightRef } from "../lib/money.js";
 import { buildAmountSummary } from "../lib/plan-amount-summary.js";
+import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { buildSchedulePreview } from "./schedule.service.js";
 
 const ACTIVE_SCHEME_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED"];
@@ -162,6 +163,7 @@ function defaultTermsText(plan) {
 }
 
 async function presentPlanDetail(tenantId, plan) {
+  normalizePlanFinancialRules(plan);
   const counts = await planEnrolmentCounts(tenantId, plan._id);
   const projectedPaise = await planProjectedMonthlyPaise(tenantId, plan._id);
   return {
@@ -469,9 +471,51 @@ function buildFixedPreviewResponse(body) {
   };
 }
 
+function planCustomerAppVisibilityFilter() {
+  return {
+    $or: [
+      { "availability.visibleInCustomerApp": true },
+      { "availability.visibleInCustomerApp": { $exists: false } },
+    ],
+  };
+}
+
+function planCustomerSelfEnrolFilter() {
+  return {
+    $or: [
+      { "availability.customerSelfEnrolAllowed": true },
+      { "availability.customerSelfEnrolAllowed": { $exists: false } },
+    ],
+  };
+}
+
+function planBranchAvailabilityFilter(branchId) {
+  return {
+    $or: [
+      { "availability.allBranches": { $ne: false } },
+      { "availability.branchIds": branchId },
+    ],
+  };
+}
+
+function isPlanEnrolmentWindowOpen(plan, ymd = today()) {
+  const fromYmd = plan.availability?.enrolmentOpenFrom
+    ? String(plan.availability.enrolmentOpenFrom).slice(0, 10)
+    : null;
+  const toYmd = plan.availability?.enrolmentOpenTo
+    ? String(plan.availability.enrolmentOpenTo).slice(0, 10)
+    : null;
+  if (fromYmd && ymd < fromYmd) return false;
+  if (toYmd && ymd > toYmd) return false;
+  return true;
+}
+
 export async function listPlans(req, consumer = "admin") {
   const filters = consumer === "admin" ? {} : { status: SchemePlanStatus.ACTIVE };
-  if (consumer === "app") { filters["availability.visibleInCustomerApp"] = true; filters["availability.customerSelfEnrolAllowed"] = true; }
+  const appAnd = [];
+  if (consumer === "app") {
+    appAnd.push(planCustomerAppVisibilityFilter(), planCustomerSelfEnrolFilter());
+  }
   if (consumer === "admin") {
     if (req.query.status) filters.status = req.query.status;
     if (req.query.valueBasis) filters.valueBasis = req.query.valueBasis;
@@ -480,13 +524,18 @@ export async function listPlans(req, consumer = "admin") {
     if (pattern) filters.$or = [{ name: pattern }, { code: pattern }];
   }
   if (req.scope?.branchId) {
-    const branchOr = [{ "availability.allBranches": true }, { "availability.branchIds": req.scope.branchId }];
+    const branchOr = planBranchAvailabilityFilter(req.scope.branchId);
     if (filters.$or) {
-      filters.$and = [{ $or: filters.$or }, { $or: branchOr }];
+      filters.$and = [{ $or: filters.$or }, branchOr];
       delete filters.$or;
+    } else if (appAnd.length) {
+      appAnd.push(branchOr);
     } else {
-      filters.$or = branchOr;
+      Object.assign(filters, branchOr);
     }
+  }
+  if (appAnd.length) {
+    filters.$and = [...(filters.$and ?? []), ...appAnd];
   }
   const result = await paginate(SchemePlan, {
     scope: { tenantId: req.auth.tenantId },
@@ -495,6 +544,11 @@ export async function listPlans(req, consumer = "admin") {
     limit: req.query.limit,
     sort: req.query.sort ?? "createdAt:desc",
   });
+
+  if (consumer === "app") {
+    const openToday = result.data.filter((plan) => isPlanEnrolmentWindowOpen(plan));
+    return { ...result, data: openToday };
+  }
 
   if (consumer !== "admin") return result;
 
@@ -534,7 +588,10 @@ export async function getPlan(req) {
   return presentPlanDetail(req.auth.tenantId, plan);
 }
 function rejectUnsupportedPlan(body) { if (body.flexibleRules?.extensionMode === "EXTEND_FLEXIBLE_PHASE") throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "Flexible-phase extension is not supported and cannot be saved."); }
-export async function createPlan(req) { rejectUnsupportedPlan(req.body); return withTransaction(async (session) => { const plan = (await SchemePlan.create([{ _id: createId("plan"), tenantId: req.auth.tenantId, ...req.body, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "PLAN_CREATED", entityType: AuditEntityType.PLAN, entityId: plan._id, after: plan.toObject(), session }); return { ...plan.toObject(), auditEventId }; }); }
+export async function createPlan(req) {
+  rejectUnsupportedPlan(req.body);
+  normalizePlanFinancialRules(req.body);
+  return withTransaction(async (session) => { const plan = (await SchemePlan.create([{ _id: createId("plan"), tenantId: req.auth.tenantId, ...req.body, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "PLAN_CREATED", entityType: AuditEntityType.PLAN, entityId: plan._id, after: plan.toObject(), session }); return { ...plan.toObject(), auditEventId }; }); }
 export async function updatePlan(req) {
   rejectUnsupportedPlan(req.body);
   return withTransaction(async (session) => {
@@ -543,7 +600,15 @@ export async function updatePlan(req) {
     const activeCount = await Scheme.countDocuments({ tenantId: plan.tenantId, planId: plan._id, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } }).session(session);
     const immutable = ["valueBasis", "paymentPattern", "durationMonths", "installmentCount", "amountRules", "scheduleRules", "paymentRules", "flexibleRules", "benefit", "redemptionRules"];
     if (activeCount && immutable.some((key) => req.body[key] !== undefined)) throw new AppError("PLAN_HAS_ACTIVE_ENROLMENTS", "Financial rules cannot be changed while the plan has active enrolments.", 409);
-    const before = plan.toObject(); const patch = { ...req.body }; delete patch.expectedVersion; Object.assign(plan, patch); plan.version += 1; await plan.save({ session });
+    const before = plan.toObject();
+    const patch = { ...req.body };
+    delete patch.expectedVersion;
+    if (patch.status === undefined) delete patch.status;
+    normalizePlanFinancialRules(patch);
+    Object.assign(plan, patch);
+    normalizePlanFinancialRules(plan);
+    plan.version += 1;
+    await plan.save({ session });
     const auditEventId = await writeAudit({ req, action: "PLAN_UPDATED", entityType: AuditEntityType.PLAN, entityId: plan._id, before, after: plan.toObject(), session }); return { ...plan.toObject(), auditEventId };
   });
 }

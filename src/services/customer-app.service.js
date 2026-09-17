@@ -15,6 +15,7 @@ import {
   customerProfileDto,
   enrichPayableRange,
   isCustomerProfileComplete,
+  buildNotificationContext,
   mapNotification,
   mapPastSchemeRow,
   paymentPollStatusDto,
@@ -24,7 +25,7 @@ import {
   withId,
 } from "../lib/customer-app-dto.js";
 import { moneyRef, weightRef, rateRef } from "../lib/money.js";
-import { today } from "../lib/date.js";
+import { monthKey, today } from "../lib/date.js";
 import { SchemeStatus, RedemptionStatus, PaymentStatus, ValueBasis } from "../constants/enums.js";
 import * as schemes from "./scheme.service.js";
 import {
@@ -373,21 +374,48 @@ async function goldTrend(auth, months) {
   return rows.map((r) => ({ month: r._id, weight: weightRef(r.weightMg) }));
 }
 
+async function paymentBlockForScheme(scheme) {
+  if (scheme.valueBasis !== ValueBasis.GOLD_WEIGHT) return null;
+  const goldRules = scheme.planSnapshot?.goldRules ?? {};
+  if (goldRules.blockPaymentIfRateNotSet === false) return null;
+  const rate = await currentGoldRate(
+    { tenantId: scheme.tenantId, branchId: scheme.branchId },
+    today(),
+  );
+  if (rate) return null;
+  return {
+    code: "GOLD_RATE_NOT_SET",
+    message:
+      "Today's gold rate is not published yet. Payments will open once your jeweller sets the rate.",
+  };
+}
+
 export async function getSchemeDetailForApp(req) {
   const raw = await schemes.getScheme(req);
   let payableRange;
   if (["ACTIVE", "LOCKED", "DEFAULTED"].includes(raw.status)) {
     try {
-      payableRange = await payableRangeForApp(req);
+      const payReq = {
+        ...req,
+        query: {
+          ...req.query,
+          targetCycle: req.query?.targetCycle ?? monthKey(),
+        },
+      };
+      payableRange = await payableRangeForApp(payReq);
     } catch {
       payableRange = undefined;
     }
   }
-  const customer = await Customer.findById(req.auth.id).select("passbookNumber").lean();
+  const [customer, paymentBlock] = await Promise.all([
+    Customer.findById(req.auth.id).select("passbookNumber").lean(),
+    paymentBlockForScheme(raw),
+  ]);
   return mapCustomerSchemeDetail({
     ...raw,
     payableRange,
     passbookNumber: customer?.passbookNumber ?? null,
+    paymentBlock,
   });
 }
 
@@ -537,8 +565,32 @@ export async function listNotifications(auth) {
     customerId: auth.id,
     readAt: null,
   });
+  const paymentIds = [
+    ...new Set(
+      rows
+        .map((row) => row.templateParams?.paymentId)
+        .filter(Boolean)
+        .map(String),
+    ),
+  ];
+  const schemeIds = [
+    ...new Set(rows.map((row) => row.schemeId).filter(Boolean).map(String)),
+  ];
+  const [payments, schemes] = await Promise.all([
+    paymentIds.length
+      ? Payment.find({ _id: { $in: paymentIds }, customerId: auth.id })
+          .select("_id amountPaise receiptNumber schemeId")
+          .lean()
+      : [],
+    schemeIds.length
+      ? Scheme.find({ _id: { $in: schemeIds }, customerId: auth.id })
+          .select("_id enrollmentNumber planSnapshot")
+          .lean()
+      : [],
+  ]);
+  const ctx = buildNotificationContext({ payments, schemes });
   return {
-    items: rows.map(mapNotification),
+    items: rows.map((row) => mapNotification(row, ctx)),
     unreadCount,
   };
 }

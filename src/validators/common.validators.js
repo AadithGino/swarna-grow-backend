@@ -342,7 +342,8 @@ export const planPatchBody = z
     benefit: benefitPatch.optional(),
     redemptionRules: redemptionRules.optional(),
     availability: availability.partial().optional(),
-    status: planFields.status.optional(),
+    /** No `.default(DRAFT)` — optional()+default on PATCH was resetting Active plans on every save. */
+    status: enumSchema(E.SchemePlanStatus).optional(),
   })
   .superRefine((value, context) =>
     refinePlanCrossFields(value, context, { requireComplete: false }),

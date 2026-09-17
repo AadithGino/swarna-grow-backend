@@ -25,9 +25,12 @@ import { buildFlexibleEnrolPreview } from "./plan.service.js";
 import { buildSchedulePreview } from "./schedule.service.js";
 import { writeAudit } from "./audit.service.js";
 import { today, addMonthsClamped, monthKey } from "../lib/date.js";
+import { mapAdminLedgerEntry, paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
+import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { nextSequence } from "./sequence.service.js";
 
 function validateAmount(plan, amount) {
+  normalizePlanFinancialRules(plan);
   const rules = plan.amountRules ?? {};
   if (plan.paymentPattern === PaymentPattern.FLEXIBLE) {
     const fp = plan.flexibleRules?.flexiblePhase ?? {};
@@ -162,6 +165,7 @@ function buildFixedPassbook(scheme, payments) {
           paidAt: pay.paidAt,
           amountPaid: moneyField(pay.amountPaise),
           mode: pay.mode,
+          goldAccrual: paymentGoldAccrualDto(pay),
         }
         : null,
     };
@@ -217,7 +221,6 @@ export async function validateEnrolment(req) {
     }
     req.body.customerId = req.auth.id;
     delete req.body.branchId;
-    delete req.body.firstInstallmentMode;
     if (req.body.firstInstallmentAction || req.body.payment) {
       throw errors.business("MANUAL_PAYMENT_NOT_ALLOWED", "Customers cannot record manual payments during enrolment.");
     }
@@ -234,9 +237,25 @@ export async function validateEnrolment(req) {
   if (amount == null) throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
   validateAmount(plan, amount);
   const schedule = plan.scheduleRules ?? {};
-  const firstInstallmentMode = schedule.firstInstallmentModeEditable === false
-    ? (schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW)
-    : (req.body.firstInstallmentMode ?? schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW);
+  let firstInstallmentMode;
+  if (schedule.firstInstallmentModeEditable === false) {
+    firstInstallmentMode =
+      schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
+  } else if (req.auth?.type === "CUSTOMER") {
+    if (req.body.payNow === false) {
+      firstInstallmentMode = FirstInstallmentMode.START_NEXT_CYCLE;
+    } else if (req.body.payNow === true) {
+      firstInstallmentMode = FirstInstallmentMode.COLLECT_NOW;
+    } else {
+      firstInstallmentMode =
+        schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
+    }
+  } else {
+    firstInstallmentMode =
+      req.body.firstInstallmentMode ??
+      schedule.firstInstallmentModeDefault ??
+      FirstInstallmentMode.COLLECT_NOW;
+  }
   return { customer, plan, installmentAmountPaise: amount, firstInstallmentMode, firstInstallmentRequired: firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW };
 }
 
@@ -389,7 +408,12 @@ export async function getPassbook(req) {
       amountPaid: moneyField(pay.amountPaise),
       mode: pay.mode,
       receiptNumber: pay.receiptNumber,
-      payment: { id: pay._id, receiptNumber: pay.receiptNumber },
+      goldAccrual: paymentGoldAccrualDto(pay),
+      payment: {
+        id: pay._id,
+        receiptNumber: pay.receiptNumber,
+        goldAccrual: paymentGoldAccrualDto(pay),
+      },
     })),
     totals: { paid: moneyField(payments.reduce((s, p) => s + p.amountPaise, 0)), paymentCount: payments.length },
   };
@@ -513,16 +537,69 @@ export async function attachLedgerTotals(tenantId, schemeRows) {
 }
 export function rebuildSchemeProjection(scheme, entries) { const businessEntries = entries.filter((entry) => ["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "REVERSAL"].includes(entry.type)); if (scheme.paymentPattern === PaymentPattern.FIXED) { let remaining = businessEntries.reduce((sum, entry) => sum + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise), 0); const current = today(); for (const row of scheme.installments) { row.paidPaise = Math.max(0, Math.min(row.amountPaise, remaining)); remaining = Math.max(0, remaining - row.paidPaise); row.status = row.paidPaise >= row.amountPaise ? "PAID" : row.graceEndsAt < current ? "OVERDUE" : row.paidPaise > 0 ? "PARTIALLY_PAID" : row.dueDate <= current ? "DUE" : "PENDING"; } } else { const amounts = new Map(); for (const entry of businessEntries) if (entry.cycle) amounts.set(entry.cycle, (amounts.get(entry.cycle) ?? 0) + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise)); for (const row of scheme.cycles) { row.paidPaise = Math.max(0, amounts.get(row.cycle) ?? 0); const closed = row.status === "EXPIRED" || row.expiresAt < today(); row.remainingPaise = closed ? 0 : Math.max(0, row.capPaise - row.paidPaise); row.status = closed ? "EXPIRED" : row.capPaise > 0 && row.paidPaise >= row.capPaise ? "PAID" : row.paidPaise > 0 ? "PARTIALLY_PAID" : "UPCOMING"; } scheme.positionVersion += 1; } return scheme; }
 export async function recomputeScheme(req) { return withTransaction(async (session) => { const scheme = await Scheme.findOne({ _id: req.params.schemeId, ...req.scope }).session(session); if (!scheme) throw errors.notFound("Scheme"); const entries = await LedgerEntry.find({ tenantId: scheme.tenantId, schemeId: scheme._id }).sort({ sequence: 1 }).session(session).lean(); rebuildSchemeProjection(scheme, entries); scheme.version += 1; await scheme.save({ session }); const auditEventId = await writeAudit({ req, action: "SCHEME_PROJECTION_RECOMPUTED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId }; }); }
-export async function getLedger(req) { const scheme = await getScheme(req); return paginate(LedgerEntry, { scope: { tenantId: scheme.tenantId, schemeId: scheme._id }, filters: {}, cursor: req.query.cursor, limit: req.query.limit, sort: "sequence:asc" }); }
+export async function getLedger(req) {
+  const scheme = await getScheme(req);
+  const result = await paginate(LedgerEntry, {
+    scope: { tenantId: scheme.tenantId, schemeId: scheme._id },
+    filters: {},
+    cursor: req.query.cursor,
+    limit: req.query.limit,
+    sort: "sequence:asc",
+  });
+  if (!result.data.length) return result;
+  const paymentIds = [...new Set(result.data.map((row) => row.paymentId).filter(Boolean))];
+  const payments = paymentIds.length
+    ? await Payment.find({ _id: { $in: paymentIds }, tenantId: scheme.tenantId }).lean()
+    : [];
+  const paymentMap = new Map(payments.map((row) => [String(row._id), row]));
+  result.data = result.data.map((entry) =>
+    mapAdminLedgerEntry(entry, paymentMap.get(String(entry.paymentId))),
+  );
+  return result;
+}
 export async function payableRange(req, schemeInput) {
   const scheme = schemeInput ?? await getScheme(req); if (![SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED].includes(scheme.status)) throw new AppError("SCHEME_NOT_ACTIVE", "This scheme is not active.", 409);
-  const plan = scheme.planSnapshot; const targetCycle = req.query.targetCycle ?? req.body?.targetCycle;
+  const plan = scheme.planSnapshot;
+  const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle;
   if (scheme.paymentPattern === PaymentPattern.FIXED) {
     const due = scheme.installments.find((row) => row.status !== "PAID" && row.status !== "WAIVED"); if (!due) return { minPayablePaise: 0, maxPayablePaise: 0, payable: false };
-    const remaining = due.amountPaise - due.paidPaise; const advance = plan.paymentRules?.advancePaymentAllowed ? Math.max(1, plan.paymentRules.maxAdvanceInstallments ?? 1) : 1;
-    return { model: "FIXED", installmentNumber: due.number, minPayablePaise: plan.paymentRules?.partialPaymentAllowed ? Math.min(plan.paymentRules.minPaymentPaise || remaining, remaining) : remaining, maxPayablePaise: remaining + scheme.installments.filter((row) => row.number > due.number && row.status === "PENDING").slice(0, advance - 1).reduce((sum, row) => sum + row.amountPaise, 0), expectedVersion: scheme.version, payable: true };
+    const remaining = due.amountPaise - due.paidPaise;
+    const advance = plan.paymentRules?.advancePaymentAllowed ? Math.max(1, plan.paymentRules.maxAdvanceInstallments ?? 1) : 1;
+    const maxPayablePaise =
+      remaining +
+      scheme.installments
+        .filter((row) => row.number > due.number && row.status === "PENDING")
+        .slice(0, advance - 1)
+        .reduce((sum, row) => sum + row.amountPaise, 0);
+    const minPayablePaise = plan.paymentRules?.partialPaymentAllowed
+      ? Math.min(plan.paymentRules.minPaymentPaise || remaining, remaining)
+      : remaining;
+    return {
+      model: "FIXED",
+      installmentNumber: due.number,
+      minPayablePaise,
+      maxPayablePaise,
+      suggestedPaise: remaining,
+      expectedVersion: scheme.version,
+      payable: true,
+    };
   }
-  if (scheme.flexiblePhase === FlexiblePhase.FLEXIBLE) { const rules = plan.flexibleRules.flexiblePhase; return { model: "FLEXIBLE", phase: "FLEXIBLE", contributionIsOptional: true, targetCycle: targetCycle ?? monthKey(), minPayablePaise: rules.minimumPaymentPaise, maxPayablePaise: rules.maximumPaymentPaise, paymentIncrementPaise: 1, unusedAllowanceCarriesForward: false, positionVersion: scheme.positionVersion ?? 0, payable: true }; }
+  if (scheme.flexiblePhase === FlexiblePhase.FLEXIBLE) {
+    const rules = plan.flexibleRules?.flexiblePhase;
+    if (!rules) throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "This plan is missing flexible payment rules.");
+    return {
+      model: "FLEXIBLE",
+      phase: "FLEXIBLE",
+      contributionIsOptional: true,
+      targetCycle: targetCycle ?? monthKey(),
+      minPayablePaise: rules.minimumPaymentPaise,
+      maxPayablePaise: rules.maximumPaymentPaise,
+      paymentIncrementPaise: 1,
+      unusedAllowanceCarriesForward: false,
+      positionVersion: scheme.positionVersion ?? 0,
+      payable: true,
+    };
+  }
   if (!targetCycle) throw errors.validation([{ field: "targetCycle", message: "targetCycle is required in the capped phase" }]);
   const cycle = scheme.cycles.find((row) => row.cycle === targetCycle); if (!cycle) throw errors.notFound("Payment cycle");
   const rules = plan.flexibleRules.cappedPhase; const currentCycle = monthKey();

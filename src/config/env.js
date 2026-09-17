@@ -25,7 +25,7 @@ export function parseEnv(source = process.env) {
     JWT_REFRESH_SECRET: z.string().min(32).default(SECRET_DEFAULTS.JWT_REFRESH_SECRET),
     INTEGRATION_ENCRYPTION_KEY: z.string().min(32).default(SECRET_DEFAULTS.INTEGRATION_ENCRYPTION_KEY),
     JWT_WEB_TTL: z.string().default("30m"), JWT_MOBILE_TTL: z.string().default("60m"),
-    REFRESH_TOKEN_DAYS: z.coerce.number().int().positive().default(30),
+    REFRESH_TOKEN_DAYS: z.coerce.number().int().positive().default(365),
     CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:5173,http://localhost:5174"), LOG_LEVEL: z.string().default("info"),
     TRUST_PROXY: z.coerce.number().int().min(0).default(1), PROVIDER_MODE: z.enum(["mock", "live"]).default("mock"),
     PHONEPE_BASE_URL: z.string().url().default("https://api-preprod.phonepe.com/apis/pg-sandbox"),

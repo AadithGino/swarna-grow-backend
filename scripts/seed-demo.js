@@ -454,7 +454,12 @@ function goldWeightPlanBody() {
     paymentPattern: "FIXED",
     durationMonths: 12,
     installmentCount: 12,
-    amountRules: { amountMode: "JEWELLER_FIXED", fixedAmountPaise: 500_000 },
+    amountRules: {
+      amountMode: "JEWELLER_FIXED",
+      fixedAmountPaise: 500_000,
+      minInstallmentPaise: 500_000,
+      maxInstallmentPaise: 500_000,
+    },
     scheduleRules: {
       dueDateRule: "JOIN_ANNIVERSARY",
       graceDays: 5,
@@ -466,6 +471,7 @@ function goldWeightPlanBody() {
       advancePaymentAllowed: false,
       maxAdvanceInstallments: 0,
       minPaymentPaise: 10_000,
+      maxPaymentPerTransactionPaise: 500_000,
     },
     goldRules: {
       rateSource: "TENANT_DAILY_RATE",
@@ -502,7 +508,12 @@ function savingPlanBody() {
     paymentPattern: "FIXED",
     durationMonths: 12,
     installmentCount: 12,
-    amountRules: { amountMode: "JEWELLER_FIXED", fixedAmountPaise: 500_000 },
+    amountRules: {
+      amountMode: "JEWELLER_FIXED",
+      fixedAmountPaise: 500_000,
+      minInstallmentPaise: 500_000,
+      maxInstallmentPaise: 500_000,
+    },
     scheduleRules: {
       dueDateRule: "JOIN_ANNIVERSARY",
       graceDays: 5,
@@ -514,6 +525,7 @@ function savingPlanBody() {
       advancePaymentAllowed: false,
       maxAdvanceInstallments: 0,
       minPaymentPaise: 10_000,
+      maxPaymentPerTransactionPaise: 500_000,
     },
     benefit: {
       type: "ONE_FREE_INSTALLMENT",

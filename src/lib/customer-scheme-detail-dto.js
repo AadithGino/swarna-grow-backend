@@ -1,4 +1,5 @@
 import { moneyRef, weightRef } from "./money.js";
+import { paymentGoldAccrualDto } from "./payment-gold-dto.js";
 import { monthKey, today } from "./date.js";
 
 function statusLabel(scheme, uiStatus) {
@@ -14,7 +15,21 @@ function statusLabel(scheme, uiStatus) {
   return map[uiStatus ?? scheme.status] ?? scheme.status;
 }
 
-function payButtonState(scheme, actions) {
+const REDEMPTION_MODE_LABELS = {
+  CASH: "Cash payout",
+  GOLD_HANDOVER: "Take as gold",
+  PURCHASE_ADJUSTMENT: "Adjust against purchase",
+  TRANSFER_TO_SCHEME: "Start a new scheme",
+};
+
+function payButtonState(scheme, actions, paymentBlock) {
+  if (paymentBlock?.code) {
+    return {
+      enabled: false,
+      reason: paymentBlock.code,
+      helperText: paymentBlock.message ?? "Payments are temporarily unavailable.",
+    };
+  }
   if (actions?.canRecordPayment === false) {
     return { enabled: false, reason: "PAYMENTS_NOT_AVAILABLE", helperText: "Payments are not available for this scheme right now." };
   }
@@ -146,6 +161,7 @@ export function mapCustomerPaymentListItem(payment, scheme) {
   const id = String(payment._id ?? payment.id ?? "");
   const status = payment.status ?? "SUCCESS";
   const receiptNumber = sanitizeReceiptNumber(payment);
+  const goldAccrual = paymentGoldAccrualDto(payment);
   return {
     id,
     amount: moneyRef(payment.amountPaise ?? 0),
@@ -169,6 +185,8 @@ export function mapCustomerPaymentListItem(payment, scheme) {
             : "Bank transfer",
     paymentPattern: scheme.paymentPattern === "FIXED" ? "FIXED" : "FLEXIBLE",
     targetCycle: payment.targetCycle ?? null,
+    valueBasis: scheme.valueBasis ?? scheme.planSnapshot?.valueBasis ?? "CASH",
+    goldAccrual,
   };
 }
 
@@ -343,13 +361,25 @@ function buildPlanRules(raw, displayMode, payableRange) {
   return { sections };
 }
 
+function schemeValueBasis(raw) {
+  return raw.valueBasis ?? raw.planSnapshot?.valueBasis ?? "CASH";
+}
+
+function goldTotalsRef(raw, totals) {
+  if (schemeValueBasis(raw) !== "GOLD_WEIGHT") return undefined;
+  const ref = weightRef(totals?.goldWeightMg ?? 0);
+  return { goldAccumulated: ref, goldAccrued: ref };
+}
+
 function buildProgressCard(raw, displayMode, totals) {
+  const gold = goldTotalsRef(raw, totals);
   if (displayMode === "FIXED") {
     const fixed = fixedProgress(raw);
     return {
       type: "FIXED",
       installmentsPaid: fixed.installmentsPaid,
       installmentsTotal: fixed.installmentsTotal,
+      ...gold,
     };
   }
   if (displayMode === "FLEXIBLE_FREE_WINDOW") {
@@ -361,6 +391,7 @@ function buildProgressCard(raw, displayMode, totals) {
       freeWindowMonth: month,
       freeWindowMonths: freeMonths,
       freeWindowMonthsCompleted: completed,
+      ...gold,
     };
   }
   const capped = flexibleCappedProgress(raw);
@@ -369,6 +400,7 @@ function buildProgressCard(raw, displayMode, totals) {
     cycleCap: capped.cycleCap,
     remainingThisCycle: capped.remainingThisCycle,
     lockedAverage: capped.lockedAverage,
+    ...gold,
   };
 }
 
@@ -405,8 +437,17 @@ export function mapCustomerSchemeDetail(raw) {
   const progressCard = buildProgressCard(raw, displayMode, totals);
   const header = buildHeader({ ...card, progressCard }, displayMode, raw);
 
+  const isGoldWeight = schemeValueBasis(raw) === "GOLD_WEIGHT";
+  const goldAccumulated = isGoldWeight ? weightRef(totals.goldWeightMg ?? 0) : undefined;
+
   const statCards = [{ label: "Total paid", value: refDisplay(moneyRef(totals.amountPaidPaise ?? 0)), caption: "Permanent ledger balance" }];
-  if (totals.goldWeightMg) {
+  if (isGoldWeight) {
+    statCards.unshift({
+      label: "Gold accumulated",
+      value: refDisplay(goldAccumulated),
+      caption: "From eligible contributions",
+    });
+  } else if (totals.goldWeightMg) {
     statCards.push({
       label: "Gold accumulated",
       value: refDisplay(weightRef(totals.goldWeightMg)),
@@ -428,17 +469,22 @@ export function mapCustomerSchemeDetail(raw) {
     });
   }
 
-  const payState = payButtonState(raw, actions);
+  const paymentBlock = raw.paymentBlock ?? null;
+  const payState = payButtonState(raw, actions, paymentBlock);
+  const payAllowed = Boolean(payState.enabled && card.canPay && !paymentBlock);
   const payButton = {
     visible: !["MATURED", "REDEEMED", "CLOSED_PREMATURE"].includes(raw.status) && actions.canRecordPayment !== false,
-    enabled: Boolean(payState.enabled && card.canPay),
+    enabled: payAllowed,
     label:
-      card.canPay && card.nextActionAmount
+      payAllowed && card.nextActionAmount
         ? `Pay ${card.nextActionAmount.amountDisplay} with PhonePe`
-        : card.canPay
+        : payAllowed
           ? "Contribute with PhonePe"
-          : "Payments unavailable",
+          : paymentBlock?.code === "GOLD_RATE_NOT_SET"
+            ? "Gold rate not published"
+            : "Payments unavailable",
     reason: payState.reason ?? undefined,
+    helperText: payState.helperText ?? undefined,
   };
 
   const payments = (raw.payments ?? []).map((row) => mapCustomerPaymentRow(row, raw));
@@ -450,10 +496,14 @@ export function mapCustomerSchemeDetail(raw) {
   };
 
   const pending = raw.pendingRedemption;
+  const allowedRedemptionModes = raw.planSnapshot?.redemptionRules?.allowedModes ?? ["CASH"];
   const redemptionUi = {
     eligible: raw.status === "MATURED" && !pending,
     status: pending?.status ?? raw.completedRedemption?.status ?? "NOT_ELIGIBLE",
-    preferredModes: ["JEWELLERY_PURCHASE", "BANK_TRANSFER", "GOLD"],
+    preferredModes: allowedRedemptionModes.map((mode) => ({
+      mode,
+      label: REDEMPTION_MODE_LABELS[mode] ?? String(mode).replaceAll("_", " ").toLowerCase(),
+    })),
     blocker:
       pending != null
         ? "Redemption request already in progress"
@@ -493,6 +543,8 @@ export function mapCustomerSchemeDetail(raw) {
     positionVersion: raw.positionVersion ?? 0,
     helperText,
     benefitLabel: maturityBenefit.title || card.benefitLabel,
+    goldAccumulated,
+    goldAccrued: goldAccumulated,
   };
 }
 
@@ -619,6 +671,10 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     canPay = canPay && remaining > 0;
   }
 
+  const isGoldWeight = schemeValueBasis(scheme) === "GOLD_WEIGHT";
+  const goldMg = scheme.totals?.goldWeightMg ?? 0;
+  const goldAccumulated = isGoldWeight ? weightRef(goldMg) : undefined;
+
   return {
     id: scheme._id ?? scheme.id,
     schemeNumber: scheme.enrollmentNumber,
@@ -627,6 +683,8 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     subtitle: subtitleForMode(displayMode),
     displayMode,
     valueBasis: scheme.valueBasis ?? scheme.planSnapshot?.valueBasis,
+    goldAccumulated,
+    goldAccrued: goldAccumulated,
     status: scheme.status,
     statusLabel: statusLabel(scheme, uiStatus),
     progressPhase,

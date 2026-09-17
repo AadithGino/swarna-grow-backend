@@ -32,6 +32,7 @@ import { sendSuccess } from "../lib/response.js";
 import * as schemes from "../services/scheme.service.js";
 import * as payments from "../services/payment.service.js";
 import { PaymentPattern } from "../constants/enums.js";
+import { monthKey } from "../lib/date.js";
 export const appRouter = Router();
 
 appRouter.get("/auth/devices", asyncHandler(auth.devices));
@@ -95,13 +96,19 @@ appRouter.post(
     let payment = null;
     if (req.body.payNow !== false && enrolled.firstInstallmentRequired) {
       const schemeId = enrolled._id ?? enrolled.id;
+      const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle ?? monthKey();
       const payReq = {
-        ...req,
-        params: { schemeId },
+        auth: req.auth,
+        tenant: req.tenant,
+        baseUrl: req.baseUrl,
         scope: { tenantId: req.auth.tenantId, customerId: req.auth.id },
+        params: { schemeId },
+        query: { ...(req.query ?? {}), targetCycle },
         body: {
           amountPaise: enrolled.installmentAmountPaise,
           redirectUrl: req.body.redirectUrl,
+          schemeId,
+          targetCycle,
         },
       };
       if (enrolled.paymentPattern === PaymentPattern.FLEXIBLE) {
@@ -112,7 +119,6 @@ appRouter.post(
           paymentIntentAppDto(intent, intent),
         );
       } else {
-        payReq.body.schemeId = enrolled._id ?? enrolled.id;
         const link = await payments.createPaymentLink(payReq);
         payment = enrolPaymentResponse(
           "FIXED_PAYMENT_LINK",

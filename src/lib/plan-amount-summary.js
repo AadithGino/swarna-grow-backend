@@ -1,13 +1,22 @@
 import { PaymentPattern } from "../constants/enums.js";
 import { moneyRef } from "./money.js";
+import { normalizePlanFinancialRules, paiseOrNull } from "./plan-amount-normalize.js";
 
 /** Customer- and admin-facing contribution summary for a scheme plan. */
 export function buildAmountSummary(plan) {
-  const rules = plan.amountRules ?? {};
+  const normalized = normalizePlanFinancialRules(
+    typeof plan?.toObject === "function" ? plan.toObject() : { ...plan },
+  );
+  const rules = normalized.amountRules ?? {};
   const mode = rules.amountMode;
-  const minPaise = rules.minInstallmentPaise;
-  const maxPaise = rules.maxInstallmentPaise;
-  const multiplePaise = rules.multipleOfPaise;
+  const fixedPaise = paiseOrNull(rules.fixedAmountPaise);
+  const minPaise =
+    paiseOrNull(rules.minInstallmentPaise) ??
+    (mode === "JEWELLER_FIXED" ? fixedPaise : null);
+  const maxPaise =
+    paiseOrNull(rules.maxInstallmentPaise) ??
+    (mode === "JEWELLER_FIXED" ? fixedPaise : null);
+  const multiplePaise = paiseOrNull(rules.multipleOfPaise);
   let label = "—";
   if (plan.paymentPattern === PaymentPattern.FLEXIBLE) {
     const flex = plan.flexibleRules ?? {};

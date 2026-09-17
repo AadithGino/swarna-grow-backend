@@ -3,6 +3,7 @@ import { Customer, LedgerEntry, OutboxEvent, Payment, PaymentIntent, PaymentLink
 import { createId } from "../lib/ids.js";
 import { randomToken, sha256, unseal } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
+import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import { withTransaction } from "../lib/transaction.js";
 import { moneyToWeightMg } from "../lib/money.js";
 import { today } from "../lib/date.js";
@@ -297,6 +298,7 @@ export async function listPayments(req) {
     return {
       ...row,
       amount: { amountPaise: row.amountPaise },
+      goldAccrual: paymentGoldAccrualDto(row),
       customer: customer ? { _id: customer._id, id: customer._id, name: customer.name } : undefined,
       scheme: scheme ? { _id: scheme._id, id: scheme._id, enrollmentNumber: scheme.enrollmentNumber } : undefined,
       branch: branchDto(branchMap.get(row.branchId)),

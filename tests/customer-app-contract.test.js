@@ -112,6 +112,26 @@ test("scheme detail DTO — FLEXIBLE free window", () => {
   assert.match(dto.helperText ?? "", /optional/i);
 });
 
+test("scheme detail DTO — GOLD_WEIGHT includes zero gold balance", () => {
+  const dto = mapCustomerSchemeDetail({
+    _id: "sch_gold",
+    enrollmentNumber: "ENR-0000028",
+    planSnapshot: { name: "11+1 Gold weight", valueBasis: "GOLD_WEIGHT" },
+    valueBasis: "GOLD_WEIGHT",
+    paymentPattern: "FIXED",
+    displayMode: "FIXED",
+    status: "ACTIVE",
+    totals: { amountPaidPaise: 0, goldWeightMg: 0 },
+    actions: { canRecordPayment: true, canRedeem: false },
+    installments: [{ number: 1, dueDate: "2026-10-17", amountPaise: 500000, paidPaise: 0, status: "DUE" }],
+  });
+  assert.equal(dto.goldAccumulated?.weightMg, 0);
+  assert.equal(dto.goldAccumulated?.weightDisplay, "0.000 g");
+  assert.equal(dto.progressCard.goldAccumulated?.weightDisplay, "0.000 g");
+  assert.equal(dto.statCards[0].label, "Gold accumulated");
+  assert.equal(dto.statCards[0].value, "0.000 g");
+});
+
 test("scheme detail DTO — FLEXIBLE capped window", () => {
   const dto = mapCustomerSchemeDetail({
     _id: "sch_cap",
