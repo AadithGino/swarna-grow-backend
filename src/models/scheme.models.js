@@ -25,7 +25,7 @@ const schemeSchema = new mongoose.Schema({
   startDate: { type: String, required: true }, maturityDate: { type: String, required: true }, installmentAmountPaise: integerField(), installments: { type: [installmentSchema], default: [] }, cycles: { type: [cycleSchema], default: [] },
   flexiblePhase: enumField(FlexiblePhase), lockedAveragePaise: integerField(), lockedAt: Date, positionVersion: integerField({ default: 0, min: 0 }), version: versionField, createdBy: String,
 }, baseOptions);
-schemeSchema.index({ tenantId: 1, enrollmentNumber: 1 }, { unique: true }); schemeSchema.index({ tenantId: 1, branchId: 1, status: 1, maturityDate: 1 });
+schemeSchema.index({ tenantId: 1, enrollmentNumber: 1 }, { unique: true }); schemeSchema.index({ tenantId: 1, branchId: 1, status: 1, maturityDate: 1 }); schemeSchema.index({ tenantId: 1, branchId: 1, createdAt: -1 });
 
 const ledgerEntrySchema = new mongoose.Schema({
   _id: stringId("led"), tenantId: tenantField, branchId: branchField, schemeId: { type: String, required: true, index: true }, customerId: { type: String, required: true, index: true },

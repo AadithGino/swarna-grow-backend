@@ -102,8 +102,8 @@ The tests cover integer money behavior, immutable enums, flexible payable limits
 1. Replace every default secret and set `NODE_ENV=production`.
 2. Use a MongoDB replica set, Redis persistence/failover, TLS, private networking, and least-privilege accounts.
 3. Configure exact CORS origins and reverse-proxy forwarding.
-4. Configure live provider credentials, callback URLs, Meta templates (including `PAYMENT_SUCCESS_TEXT_FALLBACK`), and object storage.
-5. Run API and worker as separate supervised processes; register schedulers once per deployment.
-6. Send structured logs to centralized storage and alert on readiness, dead-letter webhooks, failed exports, queue lag, and pending gateway age.
-7. Back up MongoDB and test restore procedures before go-live.
-
+4. Configure live provider credentials, HTTPS callback/export URLs, Meta templates (including `PAYMENT_SUCCESS_TEXT_FALLBACK`), object storage, and `MALWARE_SCAN_URL`.
+5. Run `npm run db:sync-indexes` as a controlled migration step; application processes never synchronize indexes on boot.
+6. Run API and worker as separate supervised processes; register schedulers once per deployment.
+7. Send structured logs to centralized storage and alert on readiness, dead-letter webhooks/outbox events, failed exports, queue lag, and pending gateway age.
+8. Back up MongoDB and test restore procedures before go-live.

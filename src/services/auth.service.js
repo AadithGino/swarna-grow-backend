@@ -18,6 +18,7 @@ import { CustomerLoginMode, PlatformRole, UserType } from "../constants/enums.js
 import { env } from "../config/env.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { ttlToSeconds } from "../lib/jwt-ttl.js";
+import { assertWithinLimit } from "../lib/tenant-limits.js";
 
 const toSubject = (record, type, mobileClient = false) => ({ id: record._id, type, tenantId: record.tenantId, branchId: record.branchId, role: record.role, permissions: [...new Set([...(ROLE_PERMISSIONS[record.role] ?? []), ...(record.permissions ?? []), ...(record.permissionOverrides ?? [])])], mobileClient, securityVersion: record.securityVersion ?? 0 });
 function sessionPayload(tokens, mobileClient = false) {
@@ -115,8 +116,8 @@ export async function refresh(refreshToken) {
   });
   return { ...sessionPayload(rotated, rotated.mobileClient), ...rotated };
 }
-export async function logout(auth, refreshToken) { if (refreshToken) await Session.updateOne({ refreshTokenHash: sha256(refreshToken), $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
-export async function logoutAll(auth) { await Session.updateMany({ $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
+export async function logout(auth, refreshToken) { if (refreshToken) await Session.updateOne({ refreshTokenHash: sha256(refreshToken), tenantId: auth.tenantId ?? null, $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
+export async function logoutAll(auth) { await Session.updateMany({ tenantId: auth.tenantId ?? null, $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
 export async function revokeSessionsForUser(userId) { await Session.updateMany({ userId }, { $set: { revokedAt: new Date() } }); }
 export async function requestOtp(body) {
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
@@ -181,6 +182,11 @@ async function ensureCustomerAfterOtp(tenant, mobile, purpose) {
   let isNewCustomer = false;
   if (!customer) {
     if (purpose !== "SIGNUP") throw errors.notFound("Customer");
+    if (tenant.operations?.customerSelfRegistrationEnabled === false) {
+      throw errors.business("SELF_REGISTRATION_DISABLED", "Customer self-registration is disabled for this jewellery.");
+    }
+    const used = await Customer.countDocuments({ tenantId: tenant._id, status: CustomerStatus.ACTIVE });
+    await assertWithinLimit({ tenant, limitKey: "activeCustomers", used, errorCode: "LIMIT_CUSTOMERS", label: "active customers" });
     const branch =
       (await Branch.findOne({ tenantId: tenant._id, isHeadOffice: true, active: true }).lean()) ??
       (await Branch.findOne({ tenantId: tenant._id, active: true }).lean());
@@ -385,7 +391,7 @@ export async function loginCustomerPassword(body, request) {
 export async function setPassword({ auth, resetToken, token, password, confirmPassword, request }) {
   if (confirmPassword != null && password !== confirmPassword) throw new AppError("VALIDATION_FAILED", "Password and confirm password must match.", 422);
   const hash = await argon2.hash(password, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
-  let userId = null;
+  let userId;
   if (auth?.id) userId = auth.id;
   else {
     const plain = token ?? resetToken;

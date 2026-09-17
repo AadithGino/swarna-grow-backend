@@ -24,7 +24,7 @@ import { paginate } from "../lib/pagination.js";
 import { latestGoldRateOnOrBefore } from "./tenant.service.js";
 import { moneyToWeightMg, weightMgToMoneyPaise } from "../lib/money.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
-import { addMonthsClamped, today } from "../lib/date.js";
+import { addMonthsClamped, elapsedSchemeMonths, today } from "../lib/date.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
 
 const OPEN_REDEMPTION_STATUSES = [
@@ -123,9 +123,10 @@ export async function settlementPreview(req, closureType) {
   const benefitDef = scheme.planSnapshot?.benefit ?? null;
   const isPremature = closureType === ClosureType.PREMATURE_CLOSURE;
   const paidCount = installmentsPaidCount(scheme);
+  const monthsCompleted = elapsedSchemeMonths(scheme.startDate, today());
   const lockInMonths = rules.lockInMonths ?? 0;
   const lockInEligibleFrom = addMonthsClamped(scheme.startDate, lockInMonths).format("YYYY-MM-DD");
-  const lockInMet = lockInMonths === 0 || paidCount >= lockInMonths;
+  const lockInMet = lockInMonths === 0 || monthsCompleted >= lockInMonths;
   const blockers = [];
 
   if (isPremature) {
@@ -140,7 +141,7 @@ export async function settlementPreview(req, closureType) {
         code: "LOCK_IN_NOT_MET",
         message: `This scheme has a ${lockInMonths}-month lock-in. It can be closed from ${lockInEligibleFrom}.`,
         eligibleFrom: lockInEligibleFrom,
-        monthsCompleted: paidCount,
+        monthsCompleted,
         lockInMonths,
       });
     }
@@ -175,7 +176,7 @@ export async function settlementPreview(req, closureType) {
     !isPremature &&
     benefitDef &&
     benefitDef.type !== "TEXT_ONLY" &&
-    paidCount >= minMonthsCompleted &&
+    monthsCompleted >= minMonthsCompleted &&
     ((!eligibility?.requireAllInstallmentsPaid || requiredPaid) &&
       defaultCount <= (eligibility?.maxAllowedDefaults ?? Number.MAX_SAFE_INTEGER));
 
@@ -341,7 +342,7 @@ export async function settlementPreview(req, closureType) {
       valueBasis: scheme.valueBasis,
       status: scheme.status,
       maturityDate: scheme.maturityDate,
-      monthsCompleted: paidCount,
+      monthsCompleted,
       lockInMonths,
       lockInMet,
     },
@@ -660,8 +661,8 @@ export async function transitionRedemption(req, action) {
       row.settlementPaise = freshPreview.settlementPaise;
       row.weightMg = (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0);
       const completeDate = today();
-      let ledgerDebitAmountPaise = row.settlementPaise ?? 0;
-      let ledgerDebitWeightMg = row.weightMg ?? 0;
+      let ledgerDebitAmountPaise;
+      let ledgerDebitWeightMg;
       let ledgerDebitRatePaise = 0;
 
       if (

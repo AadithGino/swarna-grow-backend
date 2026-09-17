@@ -10,6 +10,9 @@ import { buildCustomerLedgerReport } from "./customer-ledger.report.js";
 import { buildCashHandoverReport } from "./cash-handover.report.js";
 import { buildReminderDeliveryReport } from "./reminder-delivery.report.js";
 import { buildWhatsappUsageReport } from "./whatsapp-usage.report.js";
+import { buildBranchPerformanceReport } from "./branch-performance.report.js";
+import { buildSchemePerformanceReport } from "./scheme-performance.report.js";
+import { buildCustomerPerformanceReport } from "./customer-performance.report.js";
 
 const REPORT_BUILDERS = {
   COLLECTION: buildCollectionReport,
@@ -24,6 +27,9 @@ const REPORT_BUILDERS = {
   CASH_HANDOVER: buildCashHandoverReport,
   REMINDER_DELIVERY: buildReminderDeliveryReport,
   WHATSAPP_USAGE: buildWhatsappUsageReport,
+  BRANCH_PERFORMANCE: buildBranchPerformanceReport,
+  SCHEME_PERFORMANCE: buildSchemePerformanceReport,
+  CUSTOMER_PERFORMANCE: buildCustomerPerformanceReport,
 };
 
 export async function buildAdminReport(req, reportKey) {

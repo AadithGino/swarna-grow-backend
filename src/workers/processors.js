@@ -8,13 +8,14 @@ import { writeAudit } from "../services/audit.service.js";
 import { addMonthsClamped } from "../lib/date.js";
 import { whatsappProvider } from "../integrations/whatsapp.provider.js";
 import { recordPayment } from "../services/payment.service.js";
-import { updateDelivery } from "../services/messaging.service.js";
+import { queueMessage, updateDelivery } from "../services/messaging.service.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { unseal } from "../lib/crypto.js";
 import { AppError } from "../lib/app-error.js";
 import { buildReportExportRows, exportReportKey, isRawExportType } from "../lib/report-export.js";
+import PDFDocument from "pdfkit";
 
 const csvCell = (value) => {
   let text = String(typeof value === "object" && value !== null ? JSON.stringify(value) : value ?? "");
@@ -44,7 +45,34 @@ export async function processWebhook(job) {
     event.status = "COMPLETED"; event.processedAt = new Date(); await event.save();
   } catch (error) { event.status = job.attemptsMade >= 4 ? "DEAD_LETTER" : "FAILED"; event.error = error.message; await event.save(); if (event.status === "DEAD_LETTER") await Alert.findOneAndUpdate({ tenantId: event.tenantId, type: "WEBHOOK_FAILURE", entityId: event._id, status: "OPEN" }, { $setOnInsert: { severity: "CRITICAL", title: "Webhook processing failed", message: error.message, entityType: "WEBHOOK", metadata: { provider: event.provider } } }, { upsert: true }); throw error; }
 }
-export async function processOutbox(job) { const event = await OutboxEvent.findById(job.data.outboxEventId); if (!event) return; if (event.topic === "payment.succeeded") { const customer = await Customer.findById(event.payload.customerId).select("mobile whatsappOptedOutAt").lean(); if (customer && !customer.whatsappOptedOutAt) await Message.create({ tenantId: event.tenantId, branchId: event.payload.branchId, customerId: event.payload.customerId, schemeId: event.payload.schemeId, type: "PAYMENT_SUCCESS", channel: "WHATSAPP", status: "QUEUED", templateKey: "PAYMENT_SUCCESS_MEDIA", templateParams: { paymentId: event.payload.paymentId, mobile: customer.mobile, passbookImageUrl: null, textComponents: [] } }); } else { logger.warn({ outboxEventId: event._id, topic: event.topic }, "Unhandled outbox topic"); } event.status = "COMPLETED"; event.processedAt = new Date(); await event.save(); }
+export async function processOutbox(job) {
+  const event = await OutboxEvent.findById(job.data.outboxEventId);
+  if (!event || event.status === "COMPLETED") return;
+  if (event.topic === "payment.succeeded") {
+    const customer = await Customer.findOne({ _id: event.payload.customerId, tenantId: event.tenantId }).select("mobile whatsappOptedOutAt").lean();
+    const exists = await Message.exists({ tenantId: event.tenantId, type: "PAYMENT_SUCCESS", "templateParams.paymentId": event.payload.paymentId });
+    if (customer && !customer.whatsappOptedOutAt && !exists) {
+      await queueMessage(
+        { auth: { id: "outbox-worker", tenantId: event.tenantId, type: "SYSTEM" }, scope: { tenantId: event.tenantId, branchId: event.payload.branchId }, headers: {}, ip: "worker" },
+        { branchId: event.payload.branchId, customerId: event.payload.customerId, schemeId: event.payload.schemeId, type: "PAYMENT_SUCCESS", templateKey: "PAYMENT_SUCCESS_MEDIA", templateParams: { paymentId: event.payload.paymentId, mobile: customer.mobile, passbookImageUrl: null, textComponents: [] } },
+      );
+    }
+  } else if (event.topic !== "message.send") {
+    event.status = "DEAD_LETTER";
+    event.error = `Unhandled outbox topic: ${event.topic}`;
+    await event.save();
+    await Alert.findOneAndUpdate(
+      { tenantId: event.tenantId, type: "SYSTEM_ERROR", entityId: String(event._id), status: "OPEN" },
+      { $setOnInsert: { severity: "CRITICAL", title: "Unknown outbox topic", message: event.error, entityType: "OUTBOX_EVENT", metadata: { topic: event.topic } } },
+      { upsert: true },
+    );
+    logger.error({ outboxEventId: event._id, topic: event.topic }, "Unknown outbox topic moved to dead letter");
+    return;
+  }
+  event.status = "COMPLETED";
+  event.processedAt = new Date();
+  await event.save();
+}
 async function writeExportCsv(tempFile, headers, rows) {
   const output = createWriteStream(tempFile, { encoding: "utf8" });
   output.write(`${headers.map(csvCell).join(",")}\n`);
@@ -92,6 +120,34 @@ async function writeRawModelExport(record, tempFile) {
   return rowCount;
 }
 
+async function writePdf(tempFile, title, headers, rows) {
+  const output = createWriteStream(tempFile);
+  const document = new PDFDocument({ margin: 36, size: "A4", layout: headers.length > 6 ? "landscape" : "portrait" });
+  document.pipe(output);
+  document.fontSize(16).text(title);
+  document.moveDown(0.5).fontSize(8).fillColor("#444444").text(headers.join(" | "));
+  document.moveDown(0.5).fillColor("#111111");
+  for (const row of rows) {
+    if (document.y > document.page.height - 48) document.addPage();
+    document.text(row.map((value) => String(value ?? "")).join(" | "), { width: document.page.width - 72 });
+  }
+  document.end();
+  await once(output, "finish");
+}
+
+async function writeRawModelPdf(record, tempFile) {
+  const models = await import("../models/index.js");
+  const model = record.type === "AUDIT" ? models.AuditEvent : record.type === "CUSTOMER" ? models.Customer : models.Scheme;
+  const dateField = record.type === "AUDIT" ? "occurredAt" : "createdAt";
+  const query = { tenantId: record.tenantId };
+  for (const key of ["branchId", "status", "customerId", "schemeId", "mode"]) if (record.filters?.[key]) query[key] = record.filters[key];
+  if (record.filters?.from || record.filters?.to) query[dateField] = { ...(record.filters.from ? { $gte: new Date(`${record.filters.from}T00:00:00+05:30`) } : {}), ...(record.filters.to ? { $lte: new Date(`${record.filters.to}T23:59:59.999+05:30`) } : {}) };
+  const rows = await model.find(query).lean();
+  const headers = rows.length ? Object.keys(rows[0]) : ["No records"];
+  await writePdf(tempFile, `${record.type} export`, headers, rows.map((row) => headers.map((key) => typeof row[key] === "object" ? JSON.stringify(row[key]) : row[key])));
+  return rows.length;
+}
+
 export async function processExport(job) {
   const record = await ExportJob.findById(job.data.exportId);
   if (!record) return;
@@ -100,14 +156,17 @@ export async function processExport(job) {
   try {
     const directory = path.resolve("exports");
     await fs.mkdir(directory, { recursive: true });
-    const tempFile = path.join(directory, `${record._id}.csv`);
+    const format = record.filters?.format ?? "CSV";
+    const extension = format === "PDF" ? "pdf" : "csv";
+    const tempFile = path.join(directory, `${record._id}.${extension}`);
     let rowCount = 0;
 
     if (isRawExportType(record.type)) {
-      rowCount = await writeRawModelExport(record, tempFile);
+      rowCount = format === "PDF" ? await writeRawModelPdf(record, tempFile) : await writeRawModelExport(record, tempFile);
     } else if (exportReportKey(record.type)) {
       const built = await buildReportExportRows(record);
-      await writeExportCsv(tempFile, built.headers, built.rows);
+      if (format === "PDF") await writePdf(tempFile, `${record.type} report`, built.headers, built.rows);
+      else await writeExportCsv(tempFile, built.headers, built.rows);
       rowCount = built.rows.length;
     } else {
       throw new AppError(
@@ -118,9 +177,9 @@ export async function processExport(job) {
       );
     }
 
-    const objectKey = `exports/${record.tenantId}/${record._id}.csv`;
+    const objectKey = `exports/${record.tenantId}/${record._id}.${extension}`;
     const body = await fs.readFile(tempFile);
-    await storageProvider.uploadFile({ objectKey, body, contentType: "text/csv; charset=utf-8" });
+    await storageProvider.uploadFile({ objectKey, body, contentType: format === "PDF" ? "application/pdf" : "text/csv; charset=utf-8" });
     await fs.unlink(tempFile).catch(() => {});
     record.objectKey = objectKey;
     record.rowCount = rowCount;
@@ -138,7 +197,20 @@ export async function processMaintenance(job) {
   const now = new Date(); const today = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   if (job.name === "maturity") await Scheme.updateMany({ status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] }, maturityDate: { $lte: today } }, { $set: { status: "MATURED" }, $inc: { version: 1 } });
   if (job.name === "overdue") await Scheme.updateMany({ status: "ACTIVE", paymentPattern: "FIXED", installments: { $elemMatch: { graceEndsAt: { $lt: today }, status: { $in: ["DUE", "PARTIALLY_PAID"] } } } }, { $set: { "installments.$[row].status": "OVERDUE" }, $inc: { version: 1 } }, { arrayFilters: [{ "row.graceEndsAt": { $lt: today }, "row.status": { $in: ["DUE", "PARTIALLY_PAID"] } }] });
-  if (job.name === "payment-reminders") { const schemes = await Scheme.find({ paymentPattern: "FIXED", status: { $in: ["ACTIVE", "DEFAULTED"] }, installments: { $elemMatch: { $or: [{ dueDate: today, status: { $in: ["DUE", "PARTIALLY_PAID"] } }, { status: "OVERDUE" }] } } }).lean(); for (const scheme of schemes) { const overdue = scheme.installments.some((row) => row.status === "OVERDUE"); const customer = await Customer.findById(scheme.customerId).select("mobile whatsappOptedOutAt").lean(); if (!customer || customer.whatsappOptedOutAt) continue; const type = overdue ? "PAYMENT_OVERDUE" : "PAYMENT_DUE"; const exists = await Message.exists({ tenantId: scheme.tenantId, schemeId: scheme._id, type, "templateParams.reminderDate": today }); if (!exists) await Message.create({ tenantId: scheme.tenantId, branchId: scheme.branchId, customerId: scheme.customerId, schemeId: scheme._id, type, channel: "WHATSAPP", status: "QUEUED", templateKey: type, templateParams: { mobile: customer.mobile, reminderDate: today, enrollmentNumber: scheme.enrollmentNumber } }); } }
+  if (job.name === "payment-reminders") {
+    const schemes = await Scheme.find({ paymentPattern: "FIXED", status: { $in: ["ACTIVE", "DEFAULTED"] }, installments: { $elemMatch: { $or: [{ dueDate: today, status: { $in: ["DUE", "PARTIALLY_PAID"] } }, { status: "OVERDUE" }] } } }).lean();
+    for (const scheme of schemes) {
+      const overdue = scheme.installments.some((row) => row.status === "OVERDUE");
+      const customer = await Customer.findOne({ _id: scheme.customerId, tenantId: scheme.tenantId }).select("mobile whatsappOptedOutAt").lean();
+      if (!customer || customer.whatsappOptedOutAt) continue;
+      const type = overdue ? "PAYMENT_OVERDUE" : "PAYMENT_DUE";
+      const exists = await Message.exists({ tenantId: scheme.tenantId, schemeId: scheme._id, type, "templateParams.reminderDate": today });
+      if (!exists) await queueMessage(
+        { auth: { id: "reminder-worker", tenantId: scheme.tenantId, type: "SYSTEM" }, scope: { tenantId: scheme.tenantId, branchId: scheme.branchId }, headers: {}, ip: "worker" },
+        { branchId: scheme.branchId, customerId: scheme.customerId, schemeId: scheme._id, type, templateKey: type, templateParams: { mobile: customer.mobile, reminderDate: today, enrollmentNumber: scheme.enrollmentNumber } },
+      );
+    }
+  }
   if (job.name === "expire-flexible-capacity") await Scheme.updateMany({ paymentPattern: "FLEXIBLE", cycles: { $elemMatch: { expiresAt: { $lt: today }, status: { $in: ["UPCOMING", "PARTIALLY_PAID"] } } } }, { $set: { "cycles.$[row].status": "EXPIRED", "cycles.$[row].remainingPaise": 0 }, $inc: { positionVersion: 1, version: 1 } }, { arrayFilters: [{ "row.expiresAt": { $lt: today }, "row.status": { $in: ["UPCOMING", "PARTIALLY_PAID"] } }] });
   if (job.name === "defaulting") {
     const candidates = await Scheme.find({ status: "ACTIVE", paymentPattern: "FIXED" }).lean();
@@ -146,7 +218,7 @@ export async function processMaintenance(job) {
       const threshold = scheme.planSnapshot?.benefit?.eligibility?.maxAllowedDefaults;
       if (threshold == null) continue;
       const overdueCount = (scheme.installments ?? []).filter((row) => row.status === "OVERDUE").length;
-      if (overdueCount < threshold) continue;
+      if (overdueCount === 0 || overdueCount <= threshold) continue;
       const updated = await Scheme.findOneAndUpdate(
         { _id: scheme._id, status: "ACTIVE" },
         { $set: { status: "DEFAULTED" }, $inc: { version: 1 } },

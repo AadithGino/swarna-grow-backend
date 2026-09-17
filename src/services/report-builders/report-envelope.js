@@ -1,11 +1,17 @@
 import { AppError } from "../../lib/app-error.js";
 import { moneyRef } from "../../lib/money.js";
 import { dateMatch, resolveQueryDateRange } from "../../lib/query-filters.js";
+import {
+  formatTrendBucketLabel,
+  inferTrendGroupBy,
+  iteratePeriodBuckets,
+  weekStartYmd,
+} from "../../lib/analytics-period.js";
 import { Branch, Scheme } from "../../models/index.js";
 
 export { dateMatch };
 
-export const EXPORT_FORMATS = Object.freeze(["CSV", "XLSX", "PDF"]);
+export const EXPORT_FORMATS = Object.freeze(["CSV", "PDF"]);
 
 const MONTH_MS = 366 * 24 * 60 * 60 * 1000;
 
@@ -21,7 +27,8 @@ export function assertReportRange(query = {}) {
   if (!from || !to) return { from, to };
   const rangeMs = new Date(`${to}T23:59:59.999+05:30`) - new Date(`${from}T00:00:00+05:30`);
   if (rangeMs < 0) throw new AppError("REPORT_RANGE_INVALID", "Report end date must be on or after start date.", 422);
-  if (rangeMs > 12 * MONTH_MS) {
+  const maxMonths = query._asyncExport ? 60 : 12;
+  if (rangeMs > maxMonths * MONTH_MS) {
     throw new AppError("REPORT_RANGE_TOO_LARGE", "Report range cannot exceed 12 months. Use async export for longer ranges.", 422);
   }
   return { from, to };
@@ -29,10 +36,33 @@ export function assertReportRange(query = {}) {
 
 /** Tenant/branch filter for report queries (honours ?branchId for tenant-wide roles). */
 export function reportDataScope(req) {
-  if (req.scope.branchId) return { ...req.scope };
-  const branchId = req.query.branchId ? String(req.query.branchId) : null;
+  const tenantId = req.scope?.tenantId ?? req.auth?.tenantId;
+  const rawQueryBranch =
+    req.query?.branchId != null ? String(req.query.branchId).trim() : "";
+  if (
+    rawQueryBranch.toUpperCase() === "ALL" &&
+    hasTenantWideReportAccess(req.auth?.role)
+  ) {
+    return { tenantId };
+  }
+  const scopeBranchId = parseReportFocusId(req.scope?.branchId);
+  if (scopeBranchId) return { ...req.scope, branchId: scopeBranchId };
+  const branchId = parseReportFocusId(req.query.branchId);
   if (branchId) return { ...req.scope, branchId };
   return { ...req.scope };
+}
+
+/** Report focus ids from query params; `ALL`/blank means no drill-down focus. */
+export function parseReportFocusId(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  if (!normalized || normalized.toUpperCase() === "ALL") return null;
+  return normalized;
+}
+
+/** Tenant-wide roles may compare all branches/plans even with an acting branch selected. */
+export function hasTenantWideReportAccess(role) {
+  return role === "TENANT_OWNER" || role === "TENANT_ADMIN";
 }
 
 export async function schemeIdsForPlan(scope, planId) {
@@ -42,7 +72,18 @@ export async function schemeIdsForPlan(scope, planId) {
 }
 
 export function reportScope(req) {
-  const branchId = req.query.branchId || req.scope.branchId;
+  const focusBranchId = parseReportFocusId(req.query.branchId);
+  const scopeBranchId = parseReportFocusId(req.scope?.branchId);
+  const branchId = focusBranchId ?? scopeBranchId;
+  const comparingAll =
+    !branchId &&
+    String(req.query?.branchId ?? "")
+      .trim()
+      .toUpperCase() === "ALL" &&
+    hasTenantWideReportAccess(req.auth?.role);
+  if (comparingAll) {
+    return { level: "TENANT", label: "All showrooms", branchId: null };
+  }
   return {
     level: branchId ? "BRANCH" : "TENANT",
     label: branchId ? "Branch" : "All showrooms",
@@ -77,6 +118,9 @@ export function maskMobile(mobile) {
 }
 
 export function paginateRows(rows, query = {}) {
+  if (query._exportAll) {
+    return { rows, meta: { nextCursor: null, hasMore: false, limit: rows.length, total: rows.length } };
+  }
   const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 100);
   const offset = Math.max(Number(query.offset) || 0, 0);
   let start = offset;
@@ -169,6 +213,72 @@ export function emptyMoney() {
 
 export function chartPointCurrency(x, amountPaise) {
   return { x, y: amountPaise, yDisplay: moneyRef(amountPaise).amountDisplay };
+}
+
+export function reportTrendGroupBy(from, to, query = {}) {
+  return inferTrendGroupBy(from, to, query?.groupBy);
+}
+
+export function rollupDailyMetric(
+  dailyRows,
+  from,
+  to,
+  groupBy,
+  valueField = "count",
+) {
+  const dailyMap = new Map(
+    dailyRows.map((row) => [
+      String(row._id),
+      Number(row[valueField] ?? row.count ?? row.amountPaise ?? 0) || 0,
+    ]),
+  );
+
+  if (groupBy === "DAY") {
+    return [...iteratePeriodBuckets(from, to, "DAY")].map((key) => ({
+      key,
+      value: dailyMap.get(key) ?? 0,
+    }));
+  }
+
+  if (groupBy === "WEEK") {
+    const weekMap = new Map();
+    for (const [day, value] of dailyMap) {
+      const weekKey = weekStartYmd(day);
+      weekMap.set(weekKey, (weekMap.get(weekKey) ?? 0) + value);
+    }
+    return [...iteratePeriodBuckets(from, to, "WEEK")].map((key) => ({
+      key,
+      value: weekMap.get(key) ?? 0,
+    }));
+  }
+
+  const monthMap = new Map();
+  for (const [day, value] of dailyMap) {
+    const monthKey = day.slice(0, 7);
+    monthMap.set(monthKey, (monthMap.get(monthKey) ?? 0) + value);
+  }
+  return [...iteratePeriodBuckets(from, to, "MONTH")].map((key) => ({
+    key,
+    value: monthMap.get(key) ?? 0,
+  }));
+}
+
+export function buildCountTrendPoints(dailyRows, from, to, groupBy) {
+  return rollupDailyMetric(dailyRows, from, to, groupBy).map((bucket) => ({
+    x: bucket.key,
+    xDisplay: formatTrendBucketLabel(bucket.key, groupBy),
+    y: bucket.value,
+    yDisplay: String(bucket.value),
+  }));
+}
+
+export function buildCurrencyTrendPoints(dailyRows, from, to, groupBy) {
+  return rollupDailyMetric(dailyRows, from, to, groupBy, "amountPaise").map(
+    (bucket) => ({
+      ...chartPointCurrency(bucket.key, bucket.value),
+      xDisplay: formatTrendBucketLabel(bucket.key, groupBy),
+    }),
+  );
 }
 
 export function baseEnvelope(req, reportKey, title, extra = {}) {

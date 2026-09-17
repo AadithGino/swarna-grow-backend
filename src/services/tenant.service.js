@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import argon2 from "argon2";
 import {
   AuditEntityType,
@@ -41,6 +40,23 @@ import { now } from "../lib/date.js";
 import { moneyRef } from "../lib/money.js";
 import { writeAudit } from "./audit.service.js";
 import { cashBalance } from "./cash.service.js";
+import { assertWithinLimit } from "../lib/tenant-limits.js";
+import { generateTemporaryPassword } from "../lib/password-generator.js";
+import {
+  PASSWORD_PIN_MESSAGE,
+  passwordPolicySchema,
+} from "../validators/common.validators.js";
+
+function resolveTemporaryPassword(raw) {
+  const value = raw ?? generateTemporaryPassword();
+  const parsed = passwordPolicySchema.safeParse(value);
+  if (!parsed.success) {
+    throw errors.validation([
+      { field: "temporaryPassword", message: PASSWORD_PIN_MESSAGE },
+    ]);
+  }
+  return parsed.data;
+}
 
 const dayStart = () => now().startOf("day").toDate();
 const monthStart = () => now().startOf("month").toDate();
@@ -1189,15 +1205,7 @@ export async function createBranch(req) {
   return withTransaction(async (session) => {
     const tenant = await Tenant.findById(req.auth.tenantId).session(session);
     const used = await Branch.countDocuments({ tenantId: tenant._id, active: true }).session(session);
-    const limit = tenant.subscription?.limits?.branches;
-    if (limit && used >= limit) {
-      throw new AppError(
-        "LIMIT_BRANCHES",
-        `Your plan allows ${limit} branches.`,
-        403,
-        { limit, used, currentPlan: tenant.subscription.tier },
-      );
-    }
+    await assertWithinLimit({ tenant, limitKey: "branches", used, errorCode: "LIMIT_BRANCHES", label: "branches" });
     const branch = (
       await Branch.create(
         [{ _id: createId("branch"), tenantId: req.auth.tenantId, ...req.body }],
@@ -1222,15 +1230,16 @@ export async function createStaff(req) {
       tenantId: tenant._id,
       status: UserStatus.ACTIVE,
     }).session(session);
-    const limit = tenant.subscription?.limits?.staff;
-    if (limit && used >= limit)
-      throw new AppError(
-        "LIMIT_STAFF",
-        `Your plan allows ${limit} active staff.`,
-        403,
-        { limit, used, currentPlan: tenant.subscription.tier },
-      );
-    const temporaryPassword = req.body.temporaryPassword ?? crypto.randomUUID();
+    await assertWithinLimit({ tenant, limitKey: "staff", used, errorCode: "LIMIT_STAFF", label: "active staff" });
+    const role = req.body.role ?? TenantRole.BRANCH_STAFF;
+    let branchId = req.body.branchId ?? null;
+    if (TENANT_WIDE_ROLES.has(role)) {
+      branchId = null;
+    } else {
+      const branch = await Branch.findOne({ _id: branchId, tenantId: tenant._id, active: true }).session(session).select("_id").lean();
+      if (!branch) throw errors.business("BRANCH_NOT_ACTIVE", "Branch-scoped staff must be assigned to an active branch in this jewellery.");
+    }
+    const temporaryPassword = resolveTemporaryPassword(req.body.temporaryPassword);
     const mustSetPassword = req.body.mustSetPassword !== false;
     const user = (
       await User.create(
@@ -1239,15 +1248,15 @@ export async function createStaff(req) {
             _id: createId("user"),
             type: UserType.TENANT_USER,
             tenantId: tenant._id,
-            branchId: req.body.branchId,
-            role: req.body.role ?? TenantRole.BRANCH_STAFF,
+            branchId,
+            role,
             name: req.body.name,
             mobile: req.body.mobile,
             email: req.body.email,
             passwordHash: await argon2.hash(temporaryPassword),
             mustSetPassword,
             permissions:
-              ROLE_PERMISSIONS[req.body.role ?? TenantRole.BRANCH_STAFF],
+              ROLE_PERMISSIONS[role],
           },
         ],
         { session },
@@ -1511,8 +1520,7 @@ export async function transferStaff(req) {
   return row.toObject();
 }
 export async function resetStaffPassword(req) {
-  const temporaryPassword =
-    req.body.temporaryPassword ?? crypto.randomBytes(18).toString("base64url");
+  const temporaryPassword = resolveTemporaryPassword(req.body.temporaryPassword);
   const row = await User.findOneAndUpdate(
     { _id: req.params.staffId, tenantId: req.auth.tenantId },
     {

@@ -9,16 +9,20 @@ const enumSchema = (enumeration) => z.enum(Object.values(enumeration));
 export const mobile = z.string().regex(/^\+?[1-9]\d{9,14}$/);
 export const paise = z.number().int().safe().nonnegative();
 export const positivePaise = z.number().int().safe().positive();
-const passwordPolicyMessage =
-  "Password must be at least 8 characters and include uppercase, lowercase, a number, and a symbol.";
+export const PASSWORD_PIN_MESSAGE =
+  "Password must be at least 4 digits (numbers only).";
 export const passwordPolicySchema = z
   .string()
-  .min(8)
+  .min(4)
   .max(128)
-  .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/, passwordPolicyMessage);
+  .regex(/^\d+$/, PASSWORD_PIN_MESSAGE);
 
-export const loginBody = z.object({ tenantCode: z.string().trim().toUpperCase().optional(), mobile, password: z.string().min(8), deviceId: z.string().min(4), platform: z.enum(["web", "android", "ios"]).default("web"), appVersion: z.string().optional() });
-export const platformLoginBody = z.object({ email: z.string().email(), password: z.string().min(8), deviceId: z.string().min(4).optional(), platform: z.enum(["web", "android", "ios"]).default("web").optional() });
+export const loginBody = z.object({ tenantCode: z.string().trim().toUpperCase().optional(), mobile, password: passwordPolicySchema, deviceId: z.string().min(4), platform: z.enum(["web", "android", "ios"]).default("web"), appVersion: z.string().optional() });
+export const platformLoginBody = z.object({ email: z.string().email(), password: passwordPolicySchema, deviceId: z.string().min(4).optional(), platform: z.enum(["web", "android", "ios"]).default("web").optional() });
+export const changePasswordBody = z.object({
+  currentPassword: passwordPolicySchema,
+  newPassword: passwordPolicySchema,
+});
 const platformAppPlatformPatch = z.object({
   minimumVersion: z.string().trim().min(1).max(32).optional(),
   latestVersion: z.string().trim().min(1).max(32).optional(),
@@ -458,4 +462,4 @@ export const publicPaymentInitiateBody = z.object({
   mobile,
 });
 export const uploadBody = z.object({ purpose: enumSchema(E.UploadPurpose), fileName: z.string().min(1).max(255), contentType: z.string(), sizeBytes: z.number().int().positive() });
-export const exportBody = z.object({ type: enumSchema(E.ExportType), filters: z.record(z.string(), z.unknown()).default({}), format: z.enum(["CSV", "XLSX", "PDF"]).default("CSV") });
+export const exportBody = z.object({ type: enumSchema(E.ExportType), filters: z.record(z.string(), z.unknown()).default({}), format: z.enum(["CSV", "PDF"]).default("CSV") });

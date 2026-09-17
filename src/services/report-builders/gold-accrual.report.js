@@ -2,6 +2,11 @@ import { LedgerEntry, Scheme, SchemePlan } from "../../models/index.js";
 import { moneyRef, rateRef, weightRef } from "../../lib/money.js";
 import { currentGoldRate } from "../tenant.service.js";
 import { today } from "../../lib/date.js";
+import { dateMatch } from "../../lib/query-filters.js";
+import {
+  formatTrendBucketLabel,
+  iteratePeriodBuckets,
+} from "../../lib/analytics-period.js";
 import { baseEnvelope, paginateRows, reportDataScope } from "./report-envelope.js";
 
 const COLUMNS = [
@@ -13,8 +18,64 @@ const COLUMNS = [
   { key: "averageRatePaid", label: "Avg rate paid", type: "currency", align: "right" },
 ];
 
+async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to) {
+  if (!schemeIds.length || !from || !to) return [];
+
+  const baseMatch = {
+    tenantId,
+    schemeId: { $in: schemeIds },
+    weightMg: { $gt: 0 },
+  };
+  const [openingRow, dailyRows] = await Promise.all([
+    LedgerEntry.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          effectiveAt: { $lt: new Date(`${from}T00:00:00+05:30`) },
+        },
+      },
+      { $group: { _id: null, weightMg: { $sum: "$weightMg" } } },
+    ]),
+    LedgerEntry.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          ...dateMatch("effectiveAt", { from, to }),
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: "%Y-%m-%d",
+              date: "$effectiveAt",
+              timezone: "Asia/Kolkata",
+            },
+          },
+          weightMg: { $sum: "$weightMg" },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]),
+  ]);
+
+  const dailyMap = new Map(dailyRows.map((row) => [row._id, row.weightMg]));
+  let cumulative = openingRow[0]?.weightMg ?? 0;
+
+  return [...iteratePeriodBuckets(from, to, "DAY")].map((day) => {
+    cumulative += dailyMap.get(day) ?? 0;
+    return {
+      x: day,
+      xDisplay: formatTrendBucketLabel(day, "DAY"),
+      y: cumulative,
+      yDisplay: weightRef(cumulative).weightDisplay,
+    };
+  });
+}
+
 export async function buildGoldAccrualReport(req) {
   const envelope = baseEnvelope(req, "GOLD_ACCRUAL", "Gold accrual & liability");
+  const { from, to } = envelope.period;
   const scope = reportDataScope(req);
   const branchId = scope.branchId ?? null;
   const rateRow = await currentGoldRate({ tenantId: req.auth.tenantId, branchId }, today());
@@ -44,23 +105,12 @@ export async function buildGoldAccrualReport(req) {
   ]);
   const ledgerMap = new Map(ledgerByScheme.map((r) => [r._id, r]));
 
-  const trendRows = await LedgerEntry.aggregate([
-    { $match: { ...scope, weightMg: { $gt: 0 } } },
-    { $sort: { effectiveAt: 1 } },
-    {
-      $group: {
-        _id: { $dateToString: { format: "%Y-%m", date: "$effectiveAt", timezone: "Asia/Kolkata" } },
-        weightMg: { $sum: "$weightMg" },
-      },
-    },
-    { $sort: { _id: 1 } },
-  ]);
-
-  let cumulative = 0;
-  const trendData = trendRows.map((row) => {
-    cumulative += row.weightMg;
-    return { x: row._id, y: cumulative, yDisplay: weightRef(cumulative).weightDisplay };
-  });
+  const trendData = await buildCumulativeGramsTrend(
+    schemeIds,
+    req.auth.tenantId,
+    from,
+    to,
+  );
 
   const byPlan = new Map();
   for (const scheme of activeSchemes) {
@@ -140,8 +190,9 @@ export async function buildGoldAccrualReport(req) {
     ],
     charts: {
       accrualTrend: {
-        chartType: "area",
+        chartType: "line",
         title: "Cumulative grams",
+        subtitle: "Running total of gold credited to active schemes",
         yAxis: { type: "weight", label: "Grams" },
         series: [{ key: "GOLD_ACCRUED", name: "Grams", data: trendData }],
       },

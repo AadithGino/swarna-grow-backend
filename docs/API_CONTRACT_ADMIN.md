@@ -3479,7 +3479,7 @@ null
     "from": "YYYY-MM-DD?",
     "to": "YYYY-MM-DD?"
   },
-  "format": "CSV|XLSX|PDF"
+  "format": "CSV|PDF"
 }
 ```
 - **Response (201):**
@@ -4464,4 +4464,3 @@ null
   }
 }
 ```
-

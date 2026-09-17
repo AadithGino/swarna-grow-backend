@@ -1,7 +1,13 @@
 import { Scheme, SchemePlan } from "../../models/index.js";
 import { moneyRef } from "../../lib/money.js";
-import { calendarDateMatch } from "../../lib/query-filters.js";
-import { baseEnvelope, paginateRows, reportDataScope } from "./report-envelope.js";
+import { dateMatch } from "../../lib/query-filters.js";
+import {
+  baseEnvelope,
+  buildCountTrendPoints,
+  paginateRows,
+  reportDataScope,
+  reportTrendGroupBy,
+} from "./report-envelope.js";
 
 const COLUMNS = [
   { key: "label", label: "Plan", type: "text", sticky: true },
@@ -11,21 +17,35 @@ const COLUMNS = [
   { key: "firstInstallmentCollectedCount", label: "First paid", type: "count", align: "right" },
 ];
 
+function schemeCommittedPaise(scheme) {
+  const instAmt =
+    scheme.installmentAmountPaise ?? scheme.installments?.[0]?.amountPaise ?? 0;
+  const tenure =
+    scheme.installments?.length ?? scheme.planSnapshot?.installmentCount ?? 0;
+  return instAmt * (tenure || 1);
+}
+
 export async function buildEnrolmentReport(req) {
   const envelope = baseEnvelope(req, "ENROLMENT", "Enrolment report");
   const { from, to } = envelope.period;
+  const scope = reportDataScope(req);
+  const periodFilter = dateMatch("createdAt", { from, to });
+  const planFilter = req.query.planId ? { planId: req.query.planId } : {};
 
-  const dateFilter = calendarDateMatch("startDate", { from, to });
   const schemes = await Scheme.find({
-    ...reportDataScope(req),
-    ...dateFilter,
-    ...(req.query.planId ? { planId: req.query.planId } : {}),
+    ...scope,
+    ...periodFilter,
+    ...planFilter,
   })
-    .select("_id planId planSnapshot installmentAmountPaise installments startDate")
+    .select(
+      "_id planId planSnapshot installmentAmountPaise installments startDate createdAt",
+    )
     .lean();
 
   const planIds = [...new Set(schemes.map((s) => s.planId))];
-  const plans = await SchemePlan.find({ _id: { $in: planIds } }).select("_id name code").lean();
+  const plans = await SchemePlan.find({ _id: { $in: planIds } })
+    .select("_id name code")
+    .lean();
   const planMap = new Map(plans.map((p) => [p._id, p]));
 
   const byPlan = new Map();
@@ -46,9 +66,9 @@ export async function buildEnrolmentReport(req) {
     }
     const row = byPlan.get(planId);
     row.enrolments += 1;
-    const instAmt = scheme.installmentAmountPaise ?? scheme.installments?.[0]?.amountPaise ?? 0;
-    const tenure = scheme.installments?.length ?? scheme.planSnapshot?.installmentCount ?? 0;
-    const committed = instAmt * (tenure || 1);
+    const instAmt =
+      scheme.installmentAmountPaise ?? scheme.installments?.[0]?.amountPaise ?? 0;
+    const committed = schemeCommittedPaise(scheme);
     row.committedPaise += committed;
     row.installmentSum += instAmt;
     totalCommitted += committed;
@@ -65,40 +85,82 @@ export async function buildEnrolmentReport(req) {
       label: row.label,
       enrolments: row.enrolments,
       totalCommitted: moneyRef(row.committedPaise),
-      averageInstallment: moneyRef(row.enrolments ? Math.round(row.installmentSum / row.enrolments) : 0),
+      averageInstallment: moneyRef(
+        row.enrolments ? Math.round(row.installmentSum / row.enrolments) : 0,
+      ),
       firstInstallmentCollectedCount: row.firstPaid,
     }))
     .sort((a, b) => b.enrolments - a.enrolments);
 
   const enrolmentCount = schemes.length;
   const avgInstallment = enrolmentCount
-    ? Math.round(schemes.reduce((sum, s) => sum + (s.installmentAmountPaise ?? s.installments?.[0]?.amountPaise ?? 0), 0) / enrolmentCount)
+    ? Math.round(
+        schemes.reduce(
+          (sum, s) =>
+            sum +
+            (s.installmentAmountPaise ?? s.installments?.[0]?.amountPaise ?? 0),
+          0,
+        ) / enrolmentCount,
+      )
     : 0;
 
-  const weekBuckets = new Map();
-  for (const scheme of schemes) {
-    const start = scheme.startDate ?? from;
-    const weekKey = start?.slice(0, 7) ?? "unknown";
-    weekBuckets.set(weekKey, (weekBuckets.get(weekKey) ?? 0) + 1);
-  }
+  const groupBy = reportTrendGroupBy(from, to, req.query);
+  const dailyEnrolments = await Scheme.aggregate([
+    { $match: { ...scope, ...periodFilter, ...planFilter } },
+    {
+      $group: {
+        _id: {
+          $dateToString: {
+            format: "%Y-%m-%d",
+            date: "$createdAt",
+            timezone: "Asia/Kolkata",
+          },
+        },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+  const enrolmentTrend = buildCountTrendPoints(
+    dailyEnrolments,
+    from,
+    to,
+    groupBy,
+  );
 
   return {
     ...envelope,
     summary: [
-      { key: "NEW_ENROLMENTS", label: "New enrolments", value: enrolmentCount, valueType: "count" },
-      { key: "COMMITTED", label: "Total committed", value: moneyRef(totalCommitted), valueType: "currency" },
-      { key: "AVG_INSTALLMENT", label: "Average installment", value: moneyRef(avgInstallment), valueType: "currency" },
+      {
+        key: "NEW_ENROLMENTS",
+        label: "New enrolments",
+        value: enrolmentCount,
+        valueType: "count",
+      },
+      {
+        key: "COMMITTED",
+        label: "Total committed",
+        value: moneyRef(totalCommitted),
+        valueType: "currency",
+      },
+      {
+        key: "AVG_INSTALLMENT",
+        label: "Average installment",
+        value: moneyRef(avgInstallment),
+        valueType: "currency",
+      },
     ],
     charts: {
       enrolmentTrend: {
-        chartType: "bar",
+        chartType: "line",
         title: "Enrolments over time",
+        subtitle: `Grouped by ${groupBy.toLowerCase()}`,
         yAxis: { type: "count", label: "Enrolments" },
         series: [
           {
             key: "ENROLMENTS",
             name: "Enrolments",
-            data: [...weekBuckets.entries()].sort().map(([x, y]) => ({ x, y })),
+            data: enrolmentTrend,
           },
         ],
       },

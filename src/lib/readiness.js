@@ -4,7 +4,7 @@ import { redisReady } from "../config/redis.js";
 import { workerProcessReady } from "./worker-heartbeat.js";
 
 export function computeReadiness({ dbOk, redisOk, nodeEnv, redisRequired, workersOk = false }) {
-  const ready = dbOk && (nodeEnv !== "production" || redisOk);
+  const ready = dbOk && (nodeEnv !== "production" || (redisOk && workersOk));
   return {
     ready,
     data: {

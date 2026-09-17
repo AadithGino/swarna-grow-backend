@@ -7,7 +7,7 @@ import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
 import { moneyRef } from "../lib/money.js";
 import { now } from "../lib/date.js";
-import { dateMatch } from "../lib/query-filters.js";
+import { dateMatch, effectiveScope } from "../lib/query-filters.js";
 import { cashPaymentBranchMatch } from "../lib/payment-scope.js";
 import { branchDto, loadBranchMap, loadUserMap, userDto } from "../lib/relation-maps.js";
 
@@ -39,9 +39,8 @@ const CASH_STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER, Te
 const dayStart = () => now().startOf("day").toDate();
 
 function cashScope(req) {
-  const tenantId = req.auth.tenantId;
-  const branchId = req.query.branchId || req.scope.branchId || null;
-  return { tenantId, branchId };
+  const scope = effectiveScope(req);
+  return { tenantId: scope.tenantId, branchId: scope.branchId ?? null };
 }
 
 async function listCashStaff(req) {
@@ -339,7 +338,10 @@ export async function settleHandover(req, action) {
           tenantId: row.tenantId,
           branchId: row.branchId,
           staffId: row.staffId,
-          direction: diffPaise > 0 ? CashAdjustmentDirection.DEBIT : CashAdjustmentDirection.CREDIT,
+          // The submitted handover was already removed from cash-in-hand. A
+          // shortfall means less cash was actually accepted, so restore the
+          // difference; an overage means remove the additional accepted cash.
+          direction: diffPaise > 0 ? CashAdjustmentDirection.CREDIT : CashAdjustmentDirection.DEBIT,
           amountPaise: Math.abs(diffPaise),
           reason: diffPaise > 0 ? "Cash handover shortfall" : "Cash handover overage",
           createdBy: req.auth.id,

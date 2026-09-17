@@ -1,6 +1,6 @@
 import { AuditEntityType, PaymentPattern, PaymentStatus, SchemePlanStatus } from "../constants/enums.js";
 import { Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
-import { assertFeatureEntitled } from "../lib/tenant-limits.js";
+import { assertFeatureEntitled, assertWithinLimit } from "../lib/tenant-limits.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -8,6 +8,7 @@ import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
 import { effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, monthKey, today } from "../lib/date.js";
+import { iteratePeriodBuckets } from "../lib/analytics-period.js";
 import { moneyRef, weightRef } from "../lib/money.js";
 import { buildAmountSummary } from "../lib/plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
@@ -233,14 +234,14 @@ async function buildPlanStatsPayload(tenantId, plan) {
         (plan.benefit.bonusValue ?? 0) * counts.activeSchemes;
     }
   }
-  const trendData =
-    trendRows.length > 0
-      ? trendRows.map((row) =>
-          countChartPoint(formatMonthBucket(row._id), row.count),
-        )
-      : counts.total > 0
-        ? [countChartPoint(formatMonthBucket(monthKey()), counts.total)]
-        : [];
+  const trendEnd = today();
+  const trendStart = addMonthsClamped(trendEnd, -11)
+    .startOf("month")
+    .format("YYYY-MM-DD");
+  const monthMap = new Map(trendRows.map((row) => [row._id, row.count]));
+  const trendData = [...iteratePeriodBuckets(trendStart, trendEnd, "MONTH")].map(
+    (key) => countChartPoint(formatMonthBucket(key), monthMap.get(key) ?? 0),
+  );
   const statusData = [
     { x: "Active", y: counts.activeSchemes },
     { x: "Matured", y: counts.matured },
@@ -271,7 +272,7 @@ async function buildPlanStatsPayload(tenantId, plan) {
     },
     charts: {
       enrolmentTrend: {
-        chartType: "bar",
+        chartType: "line",
         title: "New enrolments by month",
         yAxis: { type: "count", label: "Enrolments" },
         series: [
@@ -602,15 +603,7 @@ export async function createPlan(req) {
   return withTransaction(async (session) => {
     const tenantRow = await Tenant.findById(req.auth.tenantId).session(session);
     const used = await SchemePlan.countDocuments({ tenantId: tenantRow._id, status: SchemePlanStatus.ACTIVE }).session(session);
-    const limit = tenantRow.subscription?.limits?.schemePlans;
-    if (limit && used >= limit) {
-      throw new AppError(
-        "LIMIT_SCHEME_PLANS",
-        `Your plan allows ${limit} active scheme plans.`,
-        403,
-        { limit, used, currentPlan: tenantRow.subscription.tier },
-      );
-    }
+    await assertWithinLimit({ tenant: tenantRow, limitKey: "schemePlans", used, errorCode: "LIMIT_SCHEME_PLANS", label: "active scheme plans" });
     const plan = (await SchemePlan.create([{ _id: createId("plan"), tenantId: req.auth.tenantId, ...req.body, createdBy: req.auth.id }], { session }))[0];
     const auditEventId = await writeAudit({ req, action: "PLAN_CREATED", entityType: AuditEntityType.PLAN, entityId: plan._id, after: plan.toObject(), session });
     return { ...plan.toObject(), auditEventId };

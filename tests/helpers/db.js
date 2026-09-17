@@ -1,7 +1,7 @@
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import argon2 from "argon2";
-import { Branch, Customer, Tenant, User } from "../../src/models/index.js";
+import { Branch, Customer, Session, Tenant, User } from "../../src/models/index.js";
 import { TenantRole, TenantStatus, UserStatus, UserType } from "../../src/constants/enums.js";
 import { ROLE_PERMISSIONS } from "../../src/constants/permissions.js";
 import { createId } from "../../src/lib/ids.js";
@@ -56,12 +56,13 @@ export function bearerFor(user, permissions = ROLE_PERMISSIONS[user.role] ?? use
     permissions,
     deviceId: "test-device",
     securityVersion: user.securityVersion ?? 0,
+    sessionId: user.$locals?.testSessionId,
   });
 }
 
 export async function seedTenantUser({
   mobile = "+919888877766",
-  password = "SecurePass!123",
+  password = "1234",
   role = TenantRole.TENANT_OWNER,
   tenantCode,
   branchCode = "HQ",
@@ -101,6 +102,17 @@ export async function seedTenantUser({
     status: UserStatus.ACTIVE,
     permissions: ROLE_PERMISSIONS[role] ?? [],
   });
+  const session = await Session.create({
+    _id: createId("session"),
+    userId: user._id,
+    tenantId: tenant._id,
+    deviceId: "test-device",
+    familyId: createId("family"),
+    refreshTokenHash: createId("refresh"),
+    platform: "web",
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
+  user.$locals.testSessionId = session._id;
   return { tenant, branch, user, password };
 }
 

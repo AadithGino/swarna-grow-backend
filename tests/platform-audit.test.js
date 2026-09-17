@@ -78,7 +78,7 @@ test("invoice create, mark paid, and owner credential reset are audited without 
     dueDate: "2026-02-07",
   }, req);
   await markInvoicePaid(invoice.id, { reference: "NEFT-001" }, req);
-  await setOwnerCredentials(tenant._id, { temporaryPassword: "TempPass!123" }, req);
+  await setOwnerCredentials(tenant._id, { temporaryPassword: "1234" }, req);
 
   const createAudit = await AuditEvent.findOne({ action: "PLATFORM_INVOICE_CREATED", entityId: invoice.id }).lean();
   assert.ok(createAudit);

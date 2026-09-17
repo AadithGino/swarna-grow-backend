@@ -6,7 +6,7 @@ export const escaped = (value) =>
 export const searchRegex = (q) => {
   const text = String(q ?? "").trim();
   if (!text) return null;
-  return new RegExp(escaped(text), "i");
+  return new RegExp(`^${escaped(text)}`, "i");
 };
 
 /** Split a search string into tokens (words). */
@@ -26,10 +26,8 @@ export function fuzzyTokenRegex(token) {
   if (!raw) return null;
   const normalized = raw.replace(/[\s_-]+/g, "");
   if (!normalized) return null;
-  const chars = [...normalized].map(escaped);
-  if (!chars.length) return null;
-  if (chars.length === 1) return new RegExp(chars[0], "i");
-  return new RegExp(chars.join(".*?"), "i");
+  if (normalized.length < 2) return null;
+  return new RegExp(`^${escaped(normalized)}`, "i");
 }
 
 /**
@@ -130,6 +128,9 @@ export function resolveDatePreset(preset, query = {}) {
     const firstPrev = new Date(lastPrev.getFullYear(), lastPrev.getMonth(), 1);
     return { from: ymd(firstPrev), to: ymd(lastPrev) };
   }
+  if (p === "LAST_3_MONTHS") {
+    return { from: shiftYmd(today, -89), to: today };
+  }
   return { from: query.from, to: query.to };
 }
 
@@ -175,14 +176,18 @@ export function maturityListFilter(query = {}) {
   return filter;
 }
 
+function scopeBranchId(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  if (!normalized || normalized.toUpperCase() === "ALL") return null;
+  return normalized;
+}
+
 /** Tenant-wide roles may narrow lists via ?branchId=; branch roles stay locked to JWT scope. */
 export function effectiveScope(req) {
   const scope = { tenantId: req.scope.tenantId };
-  const lockedBranch = req.scope.branchId;
-  const queryBranch =
-    req.query?.branchId != null && String(req.query.branchId).trim()
-      ? String(req.query.branchId).trim()
-      : null;
+  const lockedBranch = scopeBranchId(req.scope.branchId);
+  const queryBranch = scopeBranchId(req.query?.branchId);
   if (lockedBranch) {
     scope.branchId = lockedBranch;
   } else if (queryBranch) {

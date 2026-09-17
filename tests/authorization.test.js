@@ -37,7 +37,7 @@ const STAFF_MATRIX = [
   [Permission.CUSTOMER_READ, "get", "/api/v1/staff/customers"],
   [Permission.CUSTOMER_WRITE, "post", "/api/v1/staff/customers", { name: "New", mobile: "+919811122233" }],
   [Permission.CUSTOMER_KYC, "put", `/api/v1/staff/customers/${createId("customer")}/kyc`, {}],
-  [Permission.CUSTOMER_PASSWORD_WRITE, "post", `/api/v1/staff/customers/${createId("customer")}/set-password`, { password: "TempPass!123" }],
+  [Permission.CUSTOMER_PASSWORD_WRITE, "post", `/api/v1/staff/customers/${createId("customer")}/set-password`, { password: "1234" }],
   [Permission.PLAN_READ, "get", "/api/v1/staff/scheme-plans"],
   [Permission.SCHEME_WRITE, "post", "/api/v1/staff/schemes/enrol", { customerId: createId("customer"), planId: createId("schemePlan") }],
   [Permission.SCHEME_READ, "get", `/api/v1/staff/schemes/${createId("scheme")}`],
@@ -53,7 +53,7 @@ const STAFF_MATRIX = [
 ];
 
 test("staff role change revokes refresh sessions", async () => {
-  const password = "SecurePass!123";
+  const password = "1234";
   const { tenant, branch, user: owner } = await seedTenantUser({ role: TenantRole.TENANT_OWNER, mobile: "+919811144400", password });
   const staff = await User.create({
     _id: createId("user"),

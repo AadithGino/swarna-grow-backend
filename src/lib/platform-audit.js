@@ -35,10 +35,11 @@ export async function auditPlatformMutation({
   after,
   session,
 }) {
+  const request = req ?? { auth: { id: "platform-system", type: "SYSTEM" }, headers: {}, ip: "system" };
   await writeAudit({
     req: {
-      ...req,
-      auth: { ...req.auth, tenantId: tenantId ?? req.auth?.tenantId ?? "platform" },
+      ...request,
+      auth: { ...request.auth, tenantId: tenantId ?? request.auth?.tenantId ?? "platform" },
     },
     action,
     entityType,

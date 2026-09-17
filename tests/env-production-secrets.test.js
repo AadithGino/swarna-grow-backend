@@ -25,7 +25,7 @@ test("production parse fails when REDIS_REQUIRED is false or unset", () => {
     JWT_ACCESS_SECRET: "production-access-secret-value-32chars-min",
     JWT_REFRESH_SECRET: "production-refresh-secret-value-32chars-x",
     INTEGRATION_ENCRYPTION_KEY: "production-integration-key-32chars-min",
-    SEED_PLATFORM_PASSWORD: "ProductionSeed!Pass99",
+    SEED_PLATFORM_PASSWORD: "9876",
     REDIS_REQUIRED: "false",
   });
   assert.equal(result.success, false);
@@ -38,7 +38,7 @@ const validProductionEnv = {
   JWT_ACCESS_SECRET: "production-access-secret-value-32chars-min",
   JWT_REFRESH_SECRET: "production-refresh-secret-value-32chars-x",
   INTEGRATION_ENCRYPTION_KEY: "production-integration-key-32chars-min",
-  SEED_PLATFORM_PASSWORD: "ProductionSeed!Pass99",
+  SEED_PLATFORM_PASSWORD: "9876",
   REDIS_REQUIRED: "true",
   PROVIDER_MODE: "live",
   PHONEPE_BASE_URL: "https://api.phonepe.com/apis/hermes",
@@ -46,6 +46,9 @@ const validProductionEnv = {
   S3_ACCESS_KEY_ID: "prod-access-key",
   S3_SECRET_ACCESS_KEY: "prod-secret-key",
   CORS_ORIGINS: "https://app.example.com",
+  PUBLIC_BASE_URL: "https://api.example.com",
+  EXPORT_BASE_URL: "https://api.example.com",
+  MALWARE_SCAN_URL: "https://scanner.example.com/scan",
 };
 
 test("production parse succeeds with unique non-default secrets", () => {

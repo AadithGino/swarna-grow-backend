@@ -20,7 +20,19 @@ import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
 import { withTransaction } from "../lib/transaction.js";
-import { calendarDateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
+import {
+  assertAnalyticsPeriod,
+  buildAnalyticsScope,
+  formatPeriodLabel,
+  formatTrendBucketLabel,
+  inferTrendGroupBy,
+  percentChange,
+  previousPeriod,
+  rollupDailyRegistrationCounts,
+} from "../lib/analytics-period.js";
+import { dateMatch, calendarDateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
+import { moneyRef } from "../lib/money.js";
+import { generatedAtIst } from "./report-builders/report-envelope.js";
 import { buildFlexibleEnrolPreview } from "./plan.service.js";
 import { buildSchedulePreview } from "./schedule.service.js";
 import { writeAudit } from "./audit.service.js";
@@ -28,6 +40,7 @@ import { today, addMonthsClamped, monthKey } from "../lib/date.js";
 import { mapAdminLedgerEntry, paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { nextSequence } from "./sequence.service.js";
+import { assertFeatureEntitled } from "../lib/tenant-limits.js";
 
 function validateAmount(plan, amount) {
   normalizePlanFinancialRules(plan);
@@ -192,7 +205,15 @@ function enrolBlockerActionPath(code, customerId) {
 }
 
 function resolveEnrolBranchId(req, customer) {
-  return req.body.branchId ?? req.scope?.branchId ?? customer?.branchId ?? null;
+  if (req.auth?.type === "CUSTOMER") return customer?.branchId ?? null;
+  if (req.scope?.branchId) return req.scope.branchId;
+  return req.body.branchId ?? customer?.branchId ?? null;
+}
+
+async function assertActiveEnrolBranch(tenantId, branchId) {
+  if (!branchId) throw errors.business("BRANCH_REQUIRED", "An active enrolment branch is required.");
+  const branch = await Branch.findOne({ _id: branchId, tenantId, active: true }).select("_id").lean();
+  if (!branch) throw errors.business("BRANCH_NOT_ACTIVE", "The selected branch is not active for this jewellery.");
 }
 
 function assertPlanAvailableAtBranch(plan, branchId) {
@@ -219,6 +240,7 @@ export async function validateEnrolment(req) {
         "Self-enrolment is not available. Contact your branch to join a scheme.",
       );
     }
+    assertFeatureEntitled(req.tenant, "customerSelfEnrol", "Your jewellery plan does not include customer self-enrolment.");
     req.body.customerId = req.auth.id;
     delete req.body.branchId;
     if (req.body.firstInstallmentAction || req.body.payment) {
@@ -228,14 +250,24 @@ export async function validateEnrolment(req) {
   const [customer, plan] = await Promise.all([Customer.findOne({ _id: req.body.customerId, ...req.scope }).lean(), SchemePlan.findOne({ _id: req.body.planId, tenantId: req.auth.tenantId }).lean()]);
   if (!customer) throw errors.notFound("Customer"); if (!plan) throw errors.notFound("Scheme plan");
   if (plan.status !== SchemePlanStatus.ACTIVE) throw errors.business("PLAN_ENROLMENT_CLOSED", "This plan is not accepting enrolments.");
+  const availability = plan.availability ?? {};
+  const calendarToday = today();
+  if (availability.enrolmentOpenFrom && calendarToday < availability.enrolmentOpenFrom) throw errors.business("PLAN_ENROLMENT_NOT_OPEN", `Enrolment opens on ${availability.enrolmentOpenFrom}.`);
+  if (availability.enrolmentOpenTo && calendarToday > availability.enrolmentOpenTo) throw errors.business("PLAN_ENROLMENT_CLOSED", "The enrolment window for this plan has closed.");
+  if (req.auth?.type === "CUSTOMER" && availability.customerSelfEnrolAllowed !== true) throw errors.business("PLAN_SELF_ENROL_DISABLED", "This plan requires branch-assisted enrolment.");
+  if (availability.maxEnrolments != null) {
+    const enrolled = await Scheme.countDocuments({ tenantId: req.auth.tenantId, planId: plan._id });
+    if (enrolled >= availability.maxEnrolments) throw errors.business("PLAN_ENROLMENT_LIMIT_REACHED", "This plan has reached its enrolment limit.");
+  }
   if (plan.flexibleRules?.extensionMode === "EXTEND_FLEXIBLE_PHASE") throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "Flexible-phase extension is not supported and cannot be used in a plan.");
   if (customer.status !== "ACTIVE") throw errors.business("CUSTOMER_NOT_ACTIVE", "This customer is not active.");
   if (req.tenant.settings?.requireKycForEnrolment && customer.kyc?.status !== "VERIFIED") throw errors.business("KYC_REQUIRED", "Verified KYC is required before enrolment.");
   if (req.tenant.settings?.oneActiveSchemePerCustomer && await Scheme.exists({ tenantId: req.auth.tenantId, customerId: customer._id, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } })) throw errors.business("ONE_SCHEME_POLICY", "This customer already has an active scheme.");
-  assertPlanAvailableAtBranch(plan, resolveEnrolBranchId(req, customer));
+  const branchId = resolveEnrolBranchId(req, customer);
+  await assertActiveEnrolBranch(req.auth.tenantId, branchId);
+  assertPlanAvailableAtBranch(plan, branchId);
   const amount = defaultInstallmentAmountPaise(plan, req.body.installmentAmountPaise);
-  if (amount == null) throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
-  validateAmount(plan, amount);
+  if (amount != null) validateAmount(plan, amount);
   const schedule = plan.scheduleRules ?? {};
   let firstInstallmentMode;
   if (schedule.firstInstallmentModeEditable === false) {
@@ -256,13 +288,28 @@ export async function validateEnrolment(req) {
       schedule.firstInstallmentModeDefault ??
       FirstInstallmentMode.COLLECT_NOW;
   }
-  return { customer, plan, installmentAmountPaise: amount, firstInstallmentMode, firstInstallmentRequired: firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW };
+  return { customer, plan, branchId, installmentAmountPaise: amount, firstInstallmentMode, firstInstallmentRequired: firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW };
 }
 
 export async function validateEnrolmentResponse(req) {
   try {
     const result = await validateEnrolment(req);
     const { plan, installmentAmountPaise, firstInstallmentMode, firstInstallmentRequired } = result;
+    if (installmentAmountPaise == null) {
+      return {
+        canEnrol: true,
+        valid: false,
+        blockers: [],
+        warnings: [{
+          code: "INSTALLMENT_AMOUNT_REQUIRED",
+          message: "Choose an installment amount for this plan.",
+          resolvable: true,
+        }],
+        installmentAmountPaise: null,
+        firstInstallmentRequired,
+        preview: null,
+      };
+    }
     const startDate = req.body.startDate ?? today();
     const installmentCount = plan.installmentCount ?? plan.durationMonths;
     if (plan.paymentPattern === PaymentPattern.FLEXIBLE) {
@@ -335,7 +382,16 @@ export async function validateEnrolmentResponse(req) {
 }
 export async function enrol(req) {
   const validation = await validateEnrolment(req);
+  if (validation.installmentAmountPaise == null) {
+    throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
+  }
   return withTransaction(async (session) => {
+    await SchemePlan.updateOne({ _id: validation.plan._id, tenantId: req.auth.tenantId }, { $inc: { version: 1 } }, { session });
+    const maxEnrolments = validation.plan.availability?.maxEnrolments;
+    if (maxEnrolments != null) {
+      const enrolled = await Scheme.countDocuments({ tenantId: req.auth.tenantId, planId: validation.plan._id }).session(session);
+      if (enrolled >= maxEnrolments) throw errors.business("PLAN_ENROLMENT_LIMIT_REACHED", "This plan has reached its enrolment limit.");
+    }
     const number = await nextSequence(req.auth.tenantId, "scheme", session); const startDate = today(); const maturityDate = addMonthsClamped(startDate, validation.plan.durationMonths).format("YYYY-MM-DD");
     const isFlexible = validation.plan.paymentPattern === PaymentPattern.FLEXIBLE;
     const schedulePreviewArgs = {
@@ -348,7 +404,7 @@ export async function enrol(req) {
     };
     const fixedInstallments = isFlexible ? [] : buildSchedulePreview(schedulePreviewArgs);
     const maturityFromSchedule = fixedInstallments.length ? fixedInstallments[fixedInstallments.length - 1].dueDate : maturityDate;
-    const scheme = (await Scheme.create([{ _id: createId("scheme"), tenantId: req.auth.tenantId, branchId: req.scope.branchId ?? validation.customer.branchId, customerId: validation.customer._id, planId: validation.plan._id, enrollmentNumber: `ENR-${String(number).padStart(7, "0")}`, planSnapshot: validation.plan, valueBasis: validation.plan.valueBasis, paymentPattern: validation.plan.paymentPattern, startDate, maturityDate: maturityFromSchedule, installmentAmountPaise: validation.installmentAmountPaise, installments: fixedInstallments, cycles: isFlexible ? buildSchedulePreview({ startDate, durationMonths: validation.plan.durationMonths, installmentCount: validation.plan.durationMonths }).map((row) => ({ cycle: row.dueDate.slice(0, 7), capPaise: 0, paidPaise: 0, remainingPaise: 0, status: "UPCOMING", expiresAt: row.graceEndsAt })) : [], flexiblePhase: isFlexible ? FlexiblePhase.FLEXIBLE : undefined, positionVersion: 0, createdBy: req.auth.id }], { session }))[0];
+    const scheme = (await Scheme.create([{ _id: createId("scheme"), tenantId: req.auth.tenantId, branchId: validation.branchId, customerId: validation.customer._id, planId: validation.plan._id, enrollmentNumber: `ENR-${String(number).padStart(7, "0")}`, planSnapshot: validation.plan, valueBasis: validation.plan.valueBasis, paymentPattern: validation.plan.paymentPattern, startDate, maturityDate: maturityFromSchedule, installmentAmountPaise: validation.installmentAmountPaise, installments: fixedInstallments, cycles: isFlexible ? buildSchedulePreview({ startDate, durationMonths: validation.plan.durationMonths, installmentCount: validation.plan.durationMonths }).map((row) => ({ cycle: row.dueDate.slice(0, 7), capPaise: 0, paidPaise: 0, remainingPaise: 0, status: "UPCOMING", expiresAt: row.graceEndsAt })) : [], flexiblePhase: isFlexible ? FlexiblePhase.FLEXIBLE : undefined, positionVersion: 0, createdBy: req.auth.id }], { session }))[0];
     const auditEventId = await writeAudit({ req, action: "SCHEME_ENROLLED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId, firstInstallmentRequired: validation.firstInstallmentRequired };
   });
 }
@@ -435,6 +491,319 @@ export async function getPassbook(req) {
     totals: { paid: moneyField(payments.reduce((s, p) => s + p.amountPaise, 0)), paymentCount: payments.length },
   };
 }
+const SCHEME_STATUS_LABELS = {
+  ACTIVE: "Active",
+  LOCKED: "Locked / capped",
+  DEFAULTED: "Defaulted",
+  MATURED: "Matured",
+  REDEEMED: "Redeemed",
+  CLOSED_PREMATURE: "Closed premature",
+};
+
+function schemeCommittedPaise(scheme) {
+  const instAmt =
+    scheme.installmentAmountPaise ?? scheme.installments?.[0]?.amountPaise ?? 0;
+  const tenure =
+    scheme.installments?.length ??
+    scheme.planSnapshot?.installmentCount ??
+    scheme.planSnapshot?.durationMonths ??
+    0;
+  return instAmt * (tenure || 1);
+}
+
+function sumCommittedPaise(schemes) {
+  return schemes.reduce((sum, scheme) => sum + schemeCommittedPaise(scheme), 0);
+}
+
+export async function schemeAnalytics(req) {
+  const scope = effectiveScope(req);
+  const match = { ...scope };
+  const periodRange = assertAnalyticsPeriod(req.query);
+  const comparedTo = previousPeriod(periodRange.from, periodRange.to);
+  const groupBy = inferTrendGroupBy(
+    periodRange.from,
+    periodRange.to,
+    req.query.groupBy,
+  );
+  const periodCreatedFilter = dateMatch("createdAt", periodRange);
+  const priorCreatedFilter = dateMatch("createdAt", comparedTo);
+
+  const [
+    total,
+    activeOnly,
+    locked,
+    defaulted,
+    matured,
+    redeemed,
+    closedPremature,
+    byStatus,
+    byPattern,
+    byPlan,
+    dailyEnrolments,
+    newInPeriod,
+    newInPriorPeriod,
+    periodSchemes,
+    scopeBlock,
+  ] = await Promise.all([
+    Scheme.countDocuments(match),
+    Scheme.countDocuments({ ...match, status: SchemeStatus.ACTIVE }),
+    Scheme.countDocuments({ ...match, status: SchemeStatus.LOCKED }),
+    Scheme.countDocuments({ ...match, status: SchemeStatus.DEFAULTED }),
+    Scheme.countDocuments({ ...match, status: SchemeStatus.MATURED }),
+    Scheme.countDocuments({ ...match, status: SchemeStatus.REDEEMED }),
+    Scheme.countDocuments({ ...match, status: SchemeStatus.CLOSED_PREMATURE }),
+    Scheme.aggregate([
+      { $match: match },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]),
+    Scheme.aggregate([
+      { $match: match },
+      { $group: { _id: "$paymentPattern", count: { $sum: 1 } } },
+    ]),
+    scope.branchId
+      ? Promise.resolve([])
+      : Scheme.aggregate([
+          { $match: match },
+          {
+            $group: {
+              _id: "$planId",
+              count: { $sum: 1 },
+              label: {
+                $first: {
+                  $ifNull: [
+                    "$planSnapshot.displayName",
+                    "$planSnapshot.name",
+                  ],
+                },
+              },
+            },
+          },
+          { $sort: { count: -1 } },
+          { $limit: 12 },
+        ]),
+    Scheme.aggregate([
+      { $match: { ...match, ...periodCreatedFilter } },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: "%Y-%m-%d",
+              date: "$createdAt",
+              timezone: "Asia/Kolkata",
+            },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]),
+    Scheme.countDocuments({ ...match, ...periodCreatedFilter }),
+    Scheme.countDocuments({ ...match, ...priorCreatedFilter }),
+    Scheme.find({ ...match, ...periodCreatedFilter })
+      .select("installmentAmountPaise installments planSnapshot")
+      .lean(),
+    buildAnalyticsScope(scope),
+  ]);
+
+  const [allSchemesForCommitted] = await Promise.all([
+    Scheme.find(match)
+      .select("installmentAmountPaise installments planSnapshot")
+      .lean(),
+  ]);
+
+  const enrolmentBuckets = rollupDailyRegistrationCounts(
+    dailyEnrolments,
+    periodRange.from,
+    periodRange.to,
+    groupBy,
+  );
+  const newEnrolmentChange = percentChange(newInPeriod, newInPriorPeriod);
+  const periodKey = String(req.query.period ?? "THIS_MONTH").toUpperCase();
+  const periodLabel = formatPeriodLabel(periodRange.from, periodRange.to);
+  const activeEnrolments = activeOnly + locked;
+  const redeemedOrClosed = redeemed + closedPremature;
+  const totalCommittedPaise = sumCommittedPaise(allSchemesForCommitted);
+  const periodCommittedPaise = sumCommittedPaise(periodSchemes);
+  const avgInstallmentPaise = newInPeriod
+    ? Math.round(
+        periodSchemes.reduce(
+          (sum, scheme) =>
+            sum +
+            (scheme.installmentAmountPaise ??
+              scheme.installments?.[0]?.amountPaise ??
+              0),
+          0,
+        ) / newInPeriod,
+      )
+    : 0;
+
+  const summary = [
+    {
+      key: "TOTAL_ENROLLMENTS",
+      label: "Total enrollments",
+      value: total,
+      valueType: "count",
+      note: "Current snapshot",
+    },
+    {
+      key: "ACTIVE_ENROLLMENTS",
+      label: "Active enrollments",
+      value: activeEnrolments,
+      valueType: "count",
+      note: "Current snapshot",
+    },
+    {
+      key: "NEW_ENROLLMENTS",
+      label: "New enrollments",
+      value: newInPeriod,
+      valueType: "count",
+      ...(newEnrolmentChange ? { change: newEnrolmentChange } : {}),
+    },
+    {
+      key: "DEFAULTED",
+      label: "Defaulted",
+      value: defaulted,
+      valueType: "count",
+      severity: defaulted > 0 ? "WARNING" : undefined,
+      note: "Current snapshot",
+    },
+    {
+      key: "MATURED",
+      label: "Matured",
+      value: matured,
+      valueType: "count",
+      note: "Current snapshot",
+    },
+    {
+      key: "TOTAL_COMMITTED",
+      label: "Total committed",
+      value: moneyRef(totalCommittedPaise),
+      valueType: "currency",
+      note: "Current snapshot",
+    },
+  ];
+
+  const charts = {
+    schemeStatusDistribution: {
+      chartType: "donut",
+      title: "Enrollment status",
+      yAxis: { type: "count", label: "Enrollments" },
+      series: [{
+        key: "STATUS",
+        name: "Enrollments",
+        data: byStatus.map((row) => ({
+          x: SCHEME_STATUS_LABELS[row._id] ?? row._id ?? "Unknown",
+          y: row.count,
+          yDisplay: String(row.count),
+          modeKey: row._id,
+        })),
+      }],
+      summary: { total, centreLabel: `${total} enrollments` },
+    },
+    paymentPatternDistribution: {
+      chartType: "donut",
+      title: "Payment pattern",
+      yAxis: { type: "count", label: "Enrollments" },
+      series: [{
+        key: "PATTERN",
+        name: "Enrollments",
+        data: byPattern.map((row) => ({
+          x: row._id === PaymentPattern.FLEXIBLE ? "Flexible" : "Fixed",
+          y: row.count,
+          yDisplay: String(row.count),
+          modeKey: row._id,
+        })),
+      }],
+      summary: { total, centreLabel: `${total} enrollments` },
+    },
+    enrollmentTrend: {
+      chartType: "line",
+      title: "New enrollments",
+      subtitle: "Enrollments created during the selected period",
+      xAxis: {
+        type: "category",
+        label: "Date",
+        format: groupBy === "MONTH" ? "MMM YYYY" : "D MMM",
+      },
+      yAxis: { type: "count", label: "Enrollments", min: 0 },
+      series: [{
+        key: "NEW_ENROLLMENTS",
+        name: "New enrollments",
+        data: enrolmentBuckets.map((row) => ({
+          x: row.key,
+          xDisplay: formatTrendBucketLabel(row.key, groupBy),
+          y: row.count,
+          yDisplay: String(row.count),
+        })),
+      }],
+      summary: {
+        total: newInPeriod,
+        ...(newEnrolmentChange?.percent != null
+          ? {
+              changePercent: newEnrolmentChange.percent,
+              changeDirection: newEnrolmentChange.direction,
+            }
+          : {}),
+      },
+    },
+  };
+
+  if (!scope.branchId) {
+    charts.enrollmentsByPlan = {
+      chartType: "horizontalBar",
+      title: "Enrollments by plan",
+      yAxis: { type: "count", label: "Enrollments" },
+      series: [{
+        key: "PLAN",
+        name: "Enrollments",
+        data: byPlan.map((row) => ({
+          x: row.label ?? row._id ?? "Unknown plan",
+          y: row.count,
+          yDisplay: String(row.count),
+        })),
+      }],
+    };
+  }
+
+  return {
+    scope: scopeBlock,
+    period: {
+      key: periodKey,
+      from: periodRange.from,
+      to: periodRange.to,
+      label: periodLabel,
+      comparedTo: {
+        from: comparedTo.from,
+        to: comparedTo.to,
+        label: formatPeriodLabel(comparedTo.from, comparedTo.to),
+      },
+      groupBy,
+    },
+    total,
+    active: activeEnrolments,
+    locked,
+    defaulted,
+    matured,
+    redeemed: redeemedOrClosed,
+    newEnrollmentsInPeriod: newInPeriod,
+    totals: {
+      allEnrollments: total,
+      activeEnrollments: activeEnrolments,
+      lockedEnrollments: locked,
+      defaultedEnrollments: defaulted,
+      maturedEnrollments: matured,
+      redeemedOrClosedEnrollments: redeemedOrClosed,
+      newEnrollmentsInPeriod: newInPeriod,
+      periodCommittedPaise,
+      totalCommittedPaise,
+      averageInstallmentPaise: avgInstallmentPaise,
+    },
+    summary,
+    charts,
+    generatedAt: generatedAtIst(),
+  };
+}
+
 export async function listSchemes(req) {
   const scope =
     req.auth.type === "CUSTOMER"
@@ -689,7 +1058,7 @@ export async function payableRange(req, schemeInput) {
       targetCycle: targetCycle ?? monthKey(),
       minPayablePaise: rules.minimumPaymentPaise,
       maxPayablePaise: rules.maximumPaymentPaise,
-      paymentIncrementPaise: 1,
+      paymentIncrementPaise: rules.paymentIncrementPaise ?? 1,
       unusedAllowanceCarriesForward: false,
       positionVersion: scheme.positionVersion ?? 0,
       payable: true,

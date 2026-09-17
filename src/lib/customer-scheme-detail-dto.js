@@ -576,11 +576,11 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
   const uiStatus = scheme.uiStatus ?? scheme.status;
   const paidPaise = amountPaidPaise(scheme);
   const planName = scheme.planSnapshot?.displayName ?? scheme.planSnapshot?.name ?? "Savings scheme";
-  let progressPercent = 0;
-  let progressLabel = "In progress";
-  let progressDetail = "";
-  let progressPhase = "FIXED";
-  let nextActionLabel = "View details";
+  let progressPercent;
+  let progressLabel;
+  let progressDetail;
+  let progressPhase;
+  let nextActionLabel;
   let nextActionAmount = null;
   let canPay = ["ACTIVE", "LOCKED", "DEFAULTED"].includes(scheme.status);
   const planMonths = scheme.planSnapshot?.durationMonths ?? scheme.planSnapshot?.installmentCount ?? null;

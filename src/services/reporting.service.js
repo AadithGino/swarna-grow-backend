@@ -25,7 +25,12 @@ import {
 } from "../lib/query-filters.js";
 import { Branch } from "../models/index.js";
 import { redemptionPeriodSummary } from "./redemption-period-summary.js";
-import { moneyRef } from "../lib/money.js";
+import { moneyRef, weightRef } from "../lib/money.js";
+import {
+  buildCountTrendPoints,
+  buildCurrencyTrendPoints,
+  reportTrendGroupBy,
+} from "./report-builders/report-envelope.js";
 
 export { collectionSummary };
 
@@ -156,21 +161,45 @@ async function collectionTrendChart(req, scope) {
     entry[row._id.bucket] = row.value;
     byDay.set(day, entry);
   }
-  const days = [...byDay.keys()].sort();
-  const point = (day, bucket) => {
-    const y = byDay.get(day)?.[bucket] ?? 0;
-    return { x: day, y, yDisplay: moneyRef(y).amountDisplay };
-  };
+  const { from, to } = range;
+  const groupBy = reportTrendGroupBy(from, to, req.query);
+  const cashRows = [...byDay.entries()].map(([day, entry]) => ({
+    _id: day,
+    amountPaise: entry.CASH ?? 0,
+  }));
+  const digitalRows = [...byDay.entries()].map(([day, entry]) => ({
+    _id: day,
+    amountPaise: entry.DIGITAL ?? 0,
+  }));
   return {
     chartType: "line",
     title: "Collection trend",
+    subtitle: from && to ? `Grouped by ${groupBy.toLowerCase()}` : undefined,
     yAxis: { type: "currency", label: "Amount" },
     series: [
-      { key: "CASH", name: "Cash", data: days.map((d) => point(d, "CASH")) },
+      {
+        key: "CASH",
+        name: "Cash",
+        data:
+          from && to
+            ? buildCurrencyTrendPoints(cashRows, from, to, groupBy)
+            : cashRows.map((row) => ({
+                x: row._id,
+                y: row.amountPaise,
+                yDisplay: moneyRef(row.amountPaise).amountDisplay,
+              })),
+      },
       {
         key: "DIGITAL",
         name: "Digital",
-        data: days.map((d) => point(d, "DIGITAL")),
+        data:
+          from && to
+            ? buildCurrencyTrendPoints(digitalRows, from, to, groupBy)
+            : digitalRows.map((row) => ({
+                x: row._id,
+                y: row.amountPaise,
+                yDisplay: moneyRef(row.amountPaise).amountDisplay,
+              })),
       },
     ],
   };
@@ -202,23 +231,48 @@ export async function chart(req, key) {
     ]);
   }
   if (key === "gold-accrual-trend") {
-    return LedgerEntry.aggregate([
-      { $match: { ...scope, weightMg: { $gt: 0 }, ...dateMatch("effectiveAt", range) } },
+    const dailyRows = await LedgerEntry.aggregate([
+      {
+        $match: {
+          ...scope,
+          weightMg: { $gt: 0 },
+          ...dateMatch("effectiveAt", range),
+        },
+      },
       {
         $group: {
           _id: {
             $dateToString: {
-              format: "%Y-%m",
+              format: "%Y-%m-%d",
               date: "$effectiveAt",
               timezone: "Asia/Kolkata",
             },
           },
-          value: { $sum: "$weightMg" },
+          count: { $sum: "$weightMg" },
         },
       },
       { $sort: { _id: 1 } },
-      { $project: { _id: 0, key: "$_id", label: "$_id", value: 1 } },
     ]);
+    const { from, to } = range;
+    const groupBy = reportTrendGroupBy(from, to, req.query);
+    const trend =
+      from && to
+        ? buildCountTrendPoints(dailyRows, from, to, groupBy).map((point) => ({
+            ...point,
+            yDisplay: weightRef(point.y).weightDisplay,
+          }))
+        : dailyRows.map((row) => ({
+            x: row._id,
+            y: row.count,
+            yDisplay: weightRef(row.count).weightDisplay,
+          }));
+    return {
+      chartType: "line",
+      title: "Gold accrual",
+      subtitle: from && to ? `Grouped by ${groupBy.toLowerCase()}` : undefined,
+      yAxis: { type: "weight", label: "Weight" },
+      series: [{ key: "GOLD", name: "Gold", data: trend }],
+    };
   }
   const group = key === "collection-by-branch" ? "$branchId" : key === "collection-by-mode" ? "$mode" : { $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" } };
   return Payment.aggregate([{ $match: { ...scope, status: "SUCCESS", ...dateMatch("paidAt", range) } }, { $group: { _id: group, value: { $sum: "$amountPaise" }, count: { $sum: 1 } } }, { $sort: { _id: 1 } }, { $project: { _id: 0, key: "$_id", label: "$_id", value: 1, count: 1 } }]);
@@ -248,7 +302,7 @@ export function toExportJobDto(job) {
   return dto;
 }
 
-export async function createExport(req) { const { from, to } = req.body.filters ?? {}; if (from && to) { const rangeMs = new Date(`${to}T23:59:59Z`) - new Date(`${from}T00:00:00Z`); if (rangeMs < 0 || rangeMs > 5 * 366 * 86_400_000) throw new AppError("EXPORT_RANGE_TOO_LARGE", "Export date range cannot exceed five years.", 422); } const job = await ExportJob.create({ _id: createId("export"), tenantId: req.auth.tenantId, requestedBy: req.auth.id, type: req.body.type, filters: { ...req.body.filters, format: req.body.format } }); const queue = getQueue("exports"); await queue?.add("generate", { exportId: job._id }, { jobId: job._id, attempts: 3, backoff: { type: "exponential", delay: 5000 } }); return toExportJobDto(job.toObject()); }
+export async function createExport(req) { const format = req.body.format ?? "CSV"; if (!["CSV", "PDF"].includes(format)) throw new AppError("EXPORT_FORMAT_NOT_SUPPORTED", `Export format ${format} is not supported.`, 422, { supported: ["CSV", "PDF"] }); const { from, to } = req.body.filters ?? {}; if (from && to) { const rangeMs = new Date(`${to}T23:59:59Z`) - new Date(`${from}T00:00:00Z`); if (rangeMs < 0 || rangeMs > 5 * 366 * 86_400_000) throw new AppError("EXPORT_RANGE_TOO_LARGE", "Export date range cannot exceed five years.", 422); } const job = await ExportJob.create({ _id: createId("export"), tenantId: req.auth.tenantId, requestedBy: req.auth.id, type: req.body.type, filters: { ...req.body.filters, format } }); const queue = getQueue("exports"); await queue?.add("generate", { exportId: job._id }, { jobId: job._id, attempts: 3, backoff: { type: "exponential", delay: 5000 } }); return toExportJobDto(job.toObject()); }
 export async function getExport(req) { const job = await ExportJob.findOne({ _id: req.params.exportId ?? req.params.id, tenantId: req.auth.tenantId }).lean(); return job ? toExportJobDto(job) : null; }
 
 export async function downloadExportFile(req, res) {
@@ -270,8 +324,8 @@ export async function downloadExportFile(req, res) {
     throw new AppError("EXPORT_FILE_MISSING", "Export file is no longer available.", 404);
   }
   const format = (job.filters?.format ?? "CSV").toLowerCase();
-  const ext = format === "xlsx" ? "xlsx" : "csv";
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  const ext = format === "pdf" ? "pdf" : "csv";
+  res.setHeader("Content-Type", format === "pdf" ? "application/pdf" : "text/csv; charset=utf-8");
   res.setHeader(
     "Content-Disposition",
     `attachment; filename="swarnagrow-${job.type.toLowerCase()}-${job._id}.${ext}"`,

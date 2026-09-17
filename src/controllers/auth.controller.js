@@ -16,8 +16,8 @@ export const me = async (req, res) => {
 };
 export const logout = async (req, res) => { await auth.logout(req.auth, req.body.refreshToken); sendSuccess(res, { loggedOut: true }); };
 export const logoutAll = async (req, res) => { await auth.logoutAll(req.auth); sendSuccess(res, { loggedOut: true }); };
-export const devices = async (req, res) => sendSuccess(res, await Session.find({ $or: [{ userId: req.auth.id }, { customerId: req.auth.id }], revokedAt: null }).select("deviceId platform appVersion lastUsedAt createdAt expiresAt").lean());
-export const revokeDevice = async (req, res) => { await Session.updateMany({ $or: [{ userId: req.auth.id }, { customerId: req.auth.id }], deviceId: req.params.deviceId }, { $set: { revokedAt: new Date() } }); sendSuccess(res, { revoked: true }); };
+export const devices = async (req, res) => sendSuccess(res, await Session.find({ tenantId: req.auth.tenantId ?? null, $or: [{ userId: req.auth.id }, { customerId: req.auth.id }], revokedAt: null }).select("deviceId platform appVersion lastUsedAt createdAt expiresAt").lean());
+export const revokeDevice = async (req, res) => { await Session.updateMany({ tenantId: req.auth.tenantId ?? null, $or: [{ userId: req.auth.id }, { customerId: req.auth.id }], deviceId: req.params.deviceId }, { $set: { revokedAt: new Date() } }); sendSuccess(res, { revoked: true }); };
 export const requestOtp = async (req, res) => sendSuccess(res, await auth.requestOtp(req.body), {}, 202);
 export const forgotPassword = async (req, res) => sendSuccess(res, await auth.forgotPassword(req.body), {}, 202);
 export const verifyOtp = async (req, res) => sendSuccess(res, await auth.verifyCustomerOtp(req.body, req));

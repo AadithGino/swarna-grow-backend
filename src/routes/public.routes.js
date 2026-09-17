@@ -21,7 +21,7 @@ import { requireSignupToken, requireSignupTokenForStatus } from "../middlewares/
 
 export const publicRouter = Router(); publicRouter.use(publicRateLimit);
 publicRouter.get("/app-config", asyncHandler(async (_req, res) => sendSuccess(res, await getAppConfig())));
-publicRouter.get("/auth/password-policy", (_req, res) => sendSuccess(res, { minLength: 8, requireUppercase: true, requireLowercase: true, requireNumber: true, requireSymbol: true }));
+publicRouter.get("/auth/password-policy", (_req, res) => sendSuccess(res, { minLength: 4, maxLength: 128, numericOnly: true, requireUppercase: false, requireLowercase: false, requireNumber: true, requireSymbol: false }));
 publicRouter.post("/auth/otp/request", otpRequestRateLimit, validate({ body: otpRequestBody }), idempotent, asyncHandler(auth.requestOtp));
 publicRouter.post("/auth/otp/verify", otpVerifyRateLimit, validate({ body: otpVerifyBody }), idempotent, asyncHandler(auth.verifyOtp));
 publicRouter.post("/auth/login-password", loginRateLimit, validate({ body: customerPasswordLoginBody }), asyncHandler(auth.loginCustomerPassword));

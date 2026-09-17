@@ -1,7 +1,7 @@
 import { verifyAccessToken } from "../services/token.service.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { errors } from "../lib/app-error.js";
-import { Customer, Tenant, User } from "../models/index.js";
+import { Customer, Session, Tenant, User } from "../models/index.js";
 import { TenantStatus, UserStatus } from "../constants/enums.js";
 import { ROLE_SCOPE } from "../constants/permissions.js";
 import { assertSubscriptionActive } from "../lib/tenant-limits.js";
@@ -10,7 +10,19 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
   const [scheme, token] = (req.headers.authorization ?? "").split(" ");
   if (scheme !== "Bearer" || !token) throw errors.unauthenticated();
   const claims = verifyAccessToken(token);
-  req.auth = { id: claims.sub, type: claims.typ, tenantId: claims.tid, branchId: claims.bid ?? null, role: claims.rol, permissions: claims.per ?? [], deviceId: claims.did };
+  req.auth = { id: claims.sub, type: claims.typ, tenantId: claims.tid, branchId: claims.bid ?? null, role: claims.rol, permissions: claims.per ?? [], deviceId: claims.did, sessionId: claims.sid };
+  if (!claims.sid) throw errors.unauthenticated("This access token is not bound to a live session.");
+  const sessionSubject = claims.typ === "CUSTOMER"
+    ? { customerId: claims.sub }
+    : { userId: claims.sub };
+  const liveSession = await Session.exists({
+    _id: claims.sid,
+    ...sessionSubject,
+    tenantId: claims.tid ?? null,
+    revokedAt: null,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!liveSession) throw errors.unauthenticated("This session has been signed out or revoked.");
   if (claims.typ === "CUSTOMER") {
     const customer = await Customer.findOne({ _id: claims.sub, tenantId: claims.tid }).lean();
     if (!customer || customer.status !== "ACTIVE") throw errors.unauthenticated();
@@ -44,9 +56,11 @@ export function tenantScope(req, _res, next) {
   const roleScope = ROLE_SCOPE[req.auth.role] ?? "BRANCH";
   let branchId = actingBranch || req.auth.branchId || null;
   if (!branchId && roleScope === "TENANT") {
+    const rawQueryBranch =
+      req.query?.branchId != null ? String(req.query.branchId).trim() : "";
     const queryBranch =
-      req.query?.branchId != null && String(req.query.branchId).trim()
-        ? String(req.query.branchId).trim()
+      rawQueryBranch && rawQueryBranch.toUpperCase() !== "ALL"
+        ? rawQueryBranch
         : null;
     if (queryBranch) branchId = queryBranch;
   }

@@ -1,12 +1,18 @@
 import { Customer, Payment, Scheme } from "../../models/index.js";
 import { moneyRef } from "../../lib/money.js";
 import {
+  bucketAsOfYmd,
+  formatTrendBucketLabel,
+  iteratePeriodBuckets,
+} from "../../lib/analytics-period.js";
+import {
   ageingBucket,
   baseEnvelope,
   branchNameMap,
   maskMobile,
   paginateRows,
   reportDataScope,
+  reportTrendGroupBy,
   schemeInstallmentStats,
 } from "./report-envelope.js";
 
@@ -46,17 +52,18 @@ async function aggregatePortfolio(req, asOfYmd) {
   return { expectedToDate, collectedToDate, outstanding, futureExpected, efficiency };
 }
 
-async function efficiencyTrend(req, asOfYmd) {
+async function efficiencyTrend(req, from, to) {
+  const groupBy = reportTrendGroupBy(from, to, req.query);
   const points = [];
-  const end = new Date(`${asOfYmd}T12:00:00+05:30`);
-  for (let i = 2; i >= 0; i -= 1) {
-    const d = new Date(end);
-    d.setMonth(d.getMonth() - i);
-    const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-    const ymd = monthEnd.toISOString().slice(0, 10);
-    const label = `${monthEnd.getFullYear()}-${String(monthEnd.getMonth() + 1).padStart(2, "0")}`;
-    const { efficiency } = await aggregatePortfolio(req, ymd);
-    points.push({ x: label, y: efficiency });
+  for (const key of iteratePeriodBuckets(from, to, groupBy)) {
+    const asOfYmd = bucketAsOfYmd(key, groupBy, to);
+    const { efficiency } = await aggregatePortfolio(req, asOfYmd);
+    points.push({
+      x: key,
+      xDisplay: formatTrendBucketLabel(key, groupBy),
+      y: efficiency,
+      yDisplay: `${efficiency}%`,
+    });
   }
   return points;
 }
@@ -159,8 +166,15 @@ export async function buildOutstandingReport(req) {
       efficiencyTrend: {
         chartType: "line",
         title: "Collection efficiency",
+        subtitle: `Grouped by ${reportTrendGroupBy(from, to, req.query).toLowerCase()}`,
         yAxis: { type: "percent", label: "Efficiency", min: 0, max: 100 },
-        series: [{ key: "EFFICIENCY", name: "Efficiency", data: await efficiencyTrend(req, asOfYmd) }],
+        series: [
+          {
+            key: "EFFICIENCY",
+            name: "Efficiency",
+            data: await efficiencyTrend(req, from, to),
+          },
+        ],
       },
     },
     columns: COLUMNS,

@@ -27,11 +27,12 @@ test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => { await resetTestDb(); });
 
 async function seedUploadedKycDoc({ tenantId, ownerId, purpose = UploadPurpose.KYC_DOCUMENT }) {
+  const fileBody = Buffer.from([0xff, 0xd8, 0x01, 0x02, 0xff, 0xd9]);
   const uploadId = createId("upload");
   const objectKey = `${tenantId}/${purpose.toLowerCase()}/${uploadId}/id-front.jpg`;
   await storageProvider.uploadFile({
     objectKey,
-    body: Buffer.from("fake-image-bytes"),
+    body: fileBody,
     contentType: "image/jpeg",
   });
   await Upload.create({
@@ -41,7 +42,7 @@ async function seedUploadedKycDoc({ tenantId, ownerId, purpose = UploadPurpose.K
     purpose,
     fileName: "id-front.jpg",
     contentType: "image/jpeg",
-    sizeBytes: 16,
+    sizeBytes: fileBody.length,
     objectKey,
     status: UploadStatus.UPLOADED,
     expiresAt: new Date(Date.now() + 15 * 60_000),
@@ -132,9 +133,10 @@ test("completeUpload verifies stored object and marks upload uploaded", async ()
   const { tenant, user } = await seedTenantUser();
   const uploadId = createId("upload");
   const objectKey = `${tenant._id}/kyc_document/${uploadId}/id-front.jpg`;
+  const fileBody = Buffer.from([0xff, 0xd8, 0x01, 0x02, 0xff, 0xd9]);
   await storageProvider.uploadFile({
     objectKey,
-    body: Buffer.from("fake-image-bytes"),
+    body: fileBody,
     contentType: "image/jpeg",
   });
   await Upload.create({
@@ -144,7 +146,7 @@ test("completeUpload verifies stored object and marks upload uploaded", async ()
     purpose: UploadPurpose.KYC_DOCUMENT,
     fileName: "id-front.jpg",
     contentType: "image/jpeg",
-    sizeBytes: 16,
+    sizeBytes: fileBody.length,
     objectKey,
     status: UploadStatus.PENDING,
     expiresAt: new Date(Date.now() + 15 * 60_000),

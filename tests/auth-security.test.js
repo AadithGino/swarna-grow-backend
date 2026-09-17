@@ -21,7 +21,7 @@ test.beforeEach(async () => { await resetTestDb(); });
 test("public set-password without resetToken is rejected", async () => {
   const response = await request(app)
     .post("/api/v1/public/auth/set-password")
-    .send({ mobile: "+919888877766", tenantCode: "TESTCO", password: "NewSecure!123" })
+    .send({ mobile: "+919888877766", tenantCode: "TESTCO", password: "1234" })
     .expect(400);
   assert.equal(response.body.success, false);
   assert.equal(response.body.error.code, "VALIDATION_FAILED");
@@ -69,13 +69,13 @@ test("password reset token works once and rejects reuse", async () => {
 
   const first = await request(app)
     .post("/api/v1/public/auth/set-password")
-    .send({ resetToken, password: "BrandNew!Pass1" })
+    .send({ resetToken, password: "5678" })
     .expect(200);
   assert.equal(first.body.data.passwordSet, true);
 
   const second = await request(app)
     .post("/api/v1/public/auth/set-password")
-    .send({ resetToken, password: "Another!Pass12" })
+    .send({ resetToken, password: "9012" })
     .expect(401);
   assert.equal(second.body.error.code, "UNAUTHENTICATED");
 });
@@ -143,13 +143,23 @@ test("weak customer password is rejected by validator", async () => {
   const parsed = customerPasswordLoginBody.safeParse({
     tenantCode: "TESTCO",
     mobile: "+919888877766",
-    password: "weakpass",
+    password: "123",
     deviceId: "customer-web",
   });
   assert.equal(parsed.success, false);
+  const valid = customerPasswordLoginBody.safeParse({
+    tenantCode: "TESTCO",
+    mobile: "+919888877766",
+    password: "1234",
+    deviceId: "customer-web",
+  });
+  assert.equal(valid.success, true);
   const policy = await request(app).get("/api/v1/public/auth/password-policy").expect(200);
-  assert.equal(policy.body.data.requireUppercase, true);
-  assert.equal(policy.body.data.requireSymbol, true);
+  assert.equal(policy.body.data.minLength, 4);
+  assert.equal(policy.body.data.maxLength, 128);
+  assert.equal(policy.body.data.numericOnly, true);
+  assert.equal(policy.body.data.requireUppercase, false);
+  assert.equal(policy.body.data.requireSymbol, false);
 });
 
 test("PASSWORD_ONLY login rejects mobile number as password when no hash exists", async () => {
@@ -176,7 +186,7 @@ test("PASSWORD_ONLY login rejects mobile number as password when no hash exists"
   const withoutHash = await request(app)
     .post("/api/v1/public/auth/login-password")
     .set("x-forwarded-for", "10.0.1.2")
-    .send({ tenantCode: tenant.code, mobile, password: "ValidPass!123", deviceId: "customer-web" })
+    .send({ tenantCode: tenant.code, mobile, password: "1234", deviceId: "customer-web" })
     .expect(403);
   assert.equal(withoutHash.body.error.code, "CUSTOMER_PASSWORD_NOT_SET");
   const stored = await Customer.findOne({ mobile }).select("+passwordHash").lean();
@@ -190,7 +200,7 @@ test("customer login-password is rate limited after repeated failures", async ()
     { $set: { "operations.customerLoginMode": CustomerLoginMode.PASSWORD_ONLY } },
   );
   const mobile = "+919888800002";
-  const password = "KnownPass!123";
+  const password = "4321";
   await Customer.create({
     _id: createId("customer"),
     tenantId: tenant._id,
@@ -205,14 +215,14 @@ test("customer login-password is rate limited after repeated failures", async ()
     const response = await request(app)
       .post("/api/v1/public/auth/login-password")
       .set("x-forwarded-for", "10.0.2.1")
-      .send({ tenantCode: tenant.code, mobile, password: "WrongPass!123", deviceId: "rate-device" });
+      .send({ tenantCode: tenant.code, mobile, password: "9999", deviceId: "rate-device" });
     lastStatus = response.status;
   }
   assert.equal(lastStatus, 429);
   assert.equal((await request(app)
     .post("/api/v1/public/auth/login-password")
     .set("x-forwarded-for", "10.0.2.1")
-    .send({ tenantCode: tenant.code, mobile, password: "WrongPass!123", deviceId: "rate-device" })).body.error.code, "RATE_LIMITED");
+    .send({ tenantCode: tenant.code, mobile, password: "9999", deviceId: "rate-device" })).body.error.code, "RATE_LIMITED");
 });
 
 test("expired password reset token returns 401", async () => {
@@ -227,7 +237,7 @@ test("expired password reset token returns 401", async () => {
   });
   const response = await request(app)
     .post("/api/v1/public/auth/set-password")
-    .send({ resetToken: raw, password: "BrandNew!Pass1" })
+    .send({ resetToken: raw, password: "5678" })
     .expect(401);
   assert.equal(response.body.error.code, "UNAUTHENTICATED");
 });

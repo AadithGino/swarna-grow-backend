@@ -7,6 +7,8 @@ import {
   resolveDatePreset,
 } from "../lib/query-filters.js";
 import { getSubscriptionForAdmin } from "./tenant-settings.service.js";
+import { moneyRef } from "../lib/money.js";
+import { ageingBucket } from "./report-builders/report-envelope.js";
 
 function istTodayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
@@ -244,7 +246,19 @@ export async function duesBoardSummary(req, kind) {
   let gracePaise = 0;
   let overduePaise = 0;
   let defaultedPaise = 0;
+  const ageingTotals = {
+    "1–7 days": 0,
+    "8–15 days": 0,
+    "16–30 days": 0,
+    "30+ days": 0,
+  };
   const customerIds = new Set();
+
+  const daysBetweenYmd = (fromYmd, toYmd) => {
+    const a = new Date(`${fromYmd}T12:00:00+05:30`);
+    const b = new Date(`${toYmd}T12:00:00+05:30`);
+    return Math.max(0, Math.round((b - a) / 86_400_000));
+  };
 
   for (const scheme of schemes) {
     if (scheme.status === SchemeStatus.DEFAULTED) {
@@ -285,6 +299,11 @@ export async function duesBoardSummary(req, kind) {
 
       if (inst.status === "OVERDUE") {
         overduePaise += remaining;
+        if (kind === "overdues" && dueYmd) {
+          const bucket = ageingBucket(daysBetweenYmd(dueYmd, today));
+          ageingTotals[bucket.label] =
+            (ageingTotals[bucket.label] ?? 0) + remaining;
+        }
       } else if (
         dueYmd &&
         dueYmd < today &&
@@ -304,6 +323,26 @@ export async function duesBoardSummary(req, kind) {
     overdue: overduePaise / 100,
     defaulted: defaultedPaise / 100,
     customers: customerIds.size,
+    ...(kind === "overdues"
+      ? {
+          chart: {
+            chartType: "bar",
+            title: "Overdue by ageing",
+            yAxis: { type: "currency", label: "Amount" },
+            series: [
+              {
+                key: "OVERDUE",
+                name: "Overdue",
+                data: Object.entries(ageingTotals).map(([x, amountPaise]) => ({
+                  x,
+                  y: amountPaise,
+                  yDisplay: moneyRef(amountPaise).amountDisplay,
+                })),
+              },
+            ],
+          },
+        }
+      : {}),
   };
 }
 

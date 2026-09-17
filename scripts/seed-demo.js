@@ -1,15 +1,17 @@
 /**
- * Demo tenant seed — KAIRALI Jewellers
+ * Demo tenant seed — KAIRALI Jewellers (full scenario matrix)
  *
- * Populates dues, overdues, maturities, collections, cash control (handovers),
- * support desk (grievances incl. receipt issues), flexible schemes, etc.
- * flexible free-window + locked schemes, fixed cash enrolments, gold-weight schemes,
- * and redemption queue states (pending approval, approved, completed, rejected).
+ * Covers fixed / flexible / gold-weight plans, every major scheme status
+ * (ACTIVE, DEFAULTED, MATURED, REDEEMED, CLOSED_PREMATURE, LOCKED flex),
+ * flex FLEXIBLE + CAPPED phases (incl. zero-close, expired cycle),
+ * redemption queue (pending / approved / completed / rejected),
+ * cash handovers (pending / accepted / discrepancy / cancelled / rejected),
+ * KYC states, support desk, collector field flow, and realistic payment amounts.
  *
  * Usage:  npm run seed:demo
- * Login:  tenantCode KAIRALI · mobile 9847012345 · password Swarna@2026
- * Staff:  9847012350 / 9847012351 · same password (branch staff, MGR)
- * Collector: 9847012352 · COLLECTION_AGENT (Kochi branch)
+ * Login:  tenantCode KAIRALI · mobile 9847012345 · password 2026
+ * Staff:  9847012350 / 9847012351 (MGR) · 9847012353 (KOC)
+ * Admin:   9847012347 · Branch mgr: 9847012346 · Collector: 9847012352
  */
 import argon2 from "argon2";
 import dayjs from "dayjs";
@@ -77,6 +79,18 @@ import {
 } from "../src/services/redemption.service.js";
 import { applyFlexibleLock, enrol, rebuildSchemeProjection } from "../src/services/scheme.service.js";
 import { nextSequence } from "../src/services/sequence.service.js";
+import {
+  draftPlanBody,
+  inactivePlanBody,
+  microSaverPlanBody,
+  slabPlanBody,
+  seedCollectorPayments,
+  seedExtendedCashControl,
+  seedExtendedFixedCash,
+  seedExtendedFlexible,
+  seedExtraStaff,
+  seedKycCustomers,
+} from "./seed-demo-matrix.js";
 
 async function recomputeSchemeStatuses(schemeId) {
   const scheme = await Scheme.findById(schemeId);
@@ -94,7 +108,7 @@ const DEMO = {
   tenantName: "Kairali Jewellers",
   tenantMobile: "+919847012346",
   ownerMobile: "9847012345",
-  ownerPassword: "Swarna@2026",
+  ownerPassword: "2026",
   managerMobile: "9847012346",
   staffMobile1: "9847012350",
   staffMobile2: "9847012351",
@@ -102,7 +116,7 @@ const DEMO = {
   goldRatePerGramPaise: 725_000,
 };
 
-if (env.NODE_ENV === "production" && DEMO.ownerPassword === "Swarna@2026") {
+if (env.NODE_ENV === "production" && DEMO.ownerPassword === "2026") {
   console.warn("Demo seed on production — set DEMO_OWNER_PASSWORD in env if you intend this.");
 }
 
@@ -130,7 +144,9 @@ function makeCtx(tenant, user) {
 }
 
 function makeStaffCtx(tenant, staff, branch) {
-  return makeCtx(tenant, { ...staff.toObject(), branchId: branch._id });
+  const user =
+    typeof staff.toObject === "function" ? staff.toObject() : staff;
+  return makeCtx(tenant, { ...user, branchId: branch._id });
 }
 
 function paymentReq(ctx, schemeId, { amountPaise, mode = "CASH", expectedVersion }) {
@@ -372,7 +388,7 @@ async function createDemoTenant() {
     },
   ]);
 
-  return { tenant, hq, kochi, owner, manager, staff1, staff2 };
+  return { tenant, hq, kochi, owner, manager, staff1, staff2, passwordHash };
 }
 
 function flexiblePlanBody() {
@@ -587,8 +603,16 @@ async function createCustomer(tenantId, branchId, { name, mobile, passbookNumber
   });
 }
 
-async function createFixedScheme(ctx, { customer, plan, branchId, startDate, label }) {
-  const installmentAmountPaise = plan.amountRules.fixedAmountPaise;
+async function createFixedScheme(ctx, {
+  customer,
+  plan,
+  branchId,
+  startDate,
+  label,
+  installmentAmountPaise: installmentOverride,
+}) {
+  const installmentAmountPaise =
+    installmentOverride ?? plan.amountRules.fixedAmountPaise;
   const installments = buildSchedulePreview({
     startDate,
     installmentAmountPaise,
@@ -1548,14 +1572,34 @@ await connectDatabase();
 try {
   await ensurePlatformBasics();
   await wipeDemoTenant(DEMO.tenantCode);
-  const { tenant, hq, kochi, owner, manager, staff1, staff2 } = await createDemoTenant();
+  const { tenant, hq, kochi, owner, manager, staff1, staff2, passwordHash } =
+    await createDemoTenant();
+  const { tenantAdmin, kochiStaff } = await seedExtraStaff(
+    tenant._id,
+    hq._id,
+    kochi._id,
+    passwordHash,
+  );
   const ctx = makeCtx(tenant, owner);
   const staffCtx = makeStaffCtx(tenant, staff1, hq);
   const staff2Ctx = makeStaffCtx(tenant, staff2, hq);
   const managerCtx = makeStaffCtx(tenant, manager, kochi);
+  const kochiStaffCtx = makeStaffCtx(tenant, kochiStaff, kochi);
+  const collector = await User.findOne({
+    tenantId: tenant._id,
+    mobile: DEMO.collectorMobile,
+    type: UserType.TENANT_USER,
+  }).lean();
+  const collectorCtx = collector
+    ? makeStaffCtx(tenant, collector, kochi)
+    : managerCtx;
   const plan = await createPlan(tenant._id, owner._id, savingPlanBody());
   const flexPlan = await createPlan(tenant._id, owner._id, flexiblePlanBody());
   const goldPlan = await createPlan(tenant._id, owner._id, goldWeightPlanBody());
+  const microPlan = await createPlan(tenant._id, owner._id, microSaverPlanBody());
+  const slabPlan = await createPlan(tenant._id, owner._id, slabPlanBody());
+  await createPlan(tenant._id, owner._id, draftPlanBody());
+  await createPlan(tenant._id, owner._id, inactivePlanBody());
 
   const customers = await Promise.all([
     createCustomer(tenant._id, hq._id, { name: "Sachu Sudhish", mobile: "7907753163", passbookNumber: "CUS-000001" }),
@@ -1581,6 +1625,37 @@ try {
     createCustomer(tenant._id, kochi._id, { name: "Gold Priya G", mobile: "9847011111", passbookNumber: "CUS-000021" }),
     createCustomer(tenant._id, hq._id, { name: "Gold Qadir", mobile: "9847022222", passbookNumber: "CUS-000022" }),
   ]);
+
+  await seedKycCustomers(tenant._id, hq._id, kochi._id, () =>
+    nextSequence(tenant._id, "customer"),
+  );
+
+  const matrixCustomers = await Promise.all([
+    createCustomer(tenant._id, hq._id, { name: "Matrix Default", mobile: "9847040001", passbookNumber: "CUS-M-DEF" }),
+    createCustomer(tenant._id, hq._id, { name: "Matrix Redeemed", mobile: "9847040002", passbookNumber: "CUS-M-RED" }),
+    createCustomer(tenant._id, kochi._id, { name: "Matrix Purchase", mobile: "9847040003", passbookNumber: "CUS-M-PA" }),
+    createCustomer(tenant._id, hq._id, { name: "Matrix Premature", mobile: "9847040004", passbookNumber: "CUS-M-PRE" }),
+    createCustomer(tenant._id, hq._id, { name: "Matrix Micro", mobile: "9847040005", passbookNumber: "CUS-M-MIC" }),
+    createCustomer(tenant._id, kochi._id, { name: "Matrix Slab", mobile: "9847040006", passbookNumber: "CUS-M-SLB" }),
+    createCustomer(tenant._id, hq._id, { name: "Matrix Flex Early", mobile: "9847040007", passbookNumber: "CUS-M-FE" }),
+    createCustomer(tenant._id, hq._id, { name: "Matrix Flex Zero", mobile: "9847040008", passbookNumber: "CUS-M-FZ" }),
+    createCustomer(tenant._id, hq._id, { name: "Matrix Flex CapFull", mobile: "9847040009", passbookNumber: "CUS-M-FC" }),
+    createCustomer(tenant._id, hq._id, { name: "Matrix Flex Expired", mobile: "9847040010", passbookNumber: "CUS-M-FX" }),
+    createCustomer(tenant._id, kochi._id, { name: "Matrix Collector", mobile: "9847040011", passbookNumber: "CUS-M-COL" }),
+  ]);
+
+  const seedDeps = {
+    createFixedScheme,
+    payInstallments,
+    markMatured,
+    recordPayment,
+    paymentReq,
+    recomputeSchemeStatuses,
+    createFlexibleScheme,
+    recordFlexPayment,
+    flexPhaseCycleKeys,
+    enrolFlexible,
+  };
 
   const stories = await seedScenarios(ctx, plan, customers.slice(0, 9), { hq, kochi });
   const flex = await seedFlexibleScenarios(ctx, staffCtx, flexPlan, customers.slice(9, 12));
@@ -1610,6 +1685,41 @@ try {
     customers[2]._id,
   );
 
+  const matrixFixed = await seedExtendedFixedCash({
+    ctx,
+    plan,
+    microPlan,
+    slabPlan,
+    customers: matrixCustomers.slice(0, 6),
+    branches: { hq, kochi },
+    deps: seedDeps,
+  });
+  const matrixFlex = await seedExtendedFlexible({
+    ownerCtx: ctx,
+    staffCtx,
+    flexPlan,
+    customers: matrixCustomers.slice(6, 10),
+    branches: { hq, kochi },
+    deps: seedDeps,
+  });
+  const collectorLines = await seedCollectorPayments(
+    collectorCtx,
+    matrixCustomers[10],
+    flexPlan,
+    seedDeps,
+  );
+  const matrixCash = await seedExtendedCashControl({
+    ownerCtx: ctx,
+    staffCtx,
+    staff2Ctx,
+    managerCtx,
+    collectorCtx,
+    hq,
+    kochi,
+    freeScheme: flex.freeScheme,
+    deps: seedDeps,
+  });
+
   process.stdout.write("\n=== Demo seed complete (KAIRALI) ===\n");
   process.stdout.write(`Tenant code: ${DEMO.tenantCode}\n`);
   process.stdout.write(`Owner login: ${DEMO.ownerMobile} / ${DEMO.ownerPassword}\n`);
@@ -1617,11 +1727,14 @@ try {
     `Staff login: ${DEMO.staffMobile1} or ${DEMO.staffMobile2} / ${DEMO.ownerPassword} (${hq.code})\n`,
   );
   process.stdout.write(
+    `Tenant admin: 9847012347 / ${DEMO.ownerPassword} · Kochi staff: 9847012353 / ${DEMO.ownerPassword}\n`,
+  );
+  process.stdout.write(
     `Collection agent: ${DEMO.collectorMobile} / ${DEMO.ownerPassword} (${kochi.code}, COLLECTION_AGENT)\n`,
   );
   process.stdout.write(`Branches: ${hq.code} (${hq.name}), ${kochi.code} (${kochi.name})\n`);
   process.stdout.write(
-    `Plans: ${plan.code} (cash fixed ₹${plan.amountRules.fixedAmountPaise / 100}/mo) · ${flexPlan.code} (flexible) · ${goldPlan.code} (gold weight)\n`,
+    `Plans: ${plan.code} · ${flexPlan.code} · ${goldPlan.code} · ${microPlan.code} · ${slabPlan.code} · FEST27 (draft) · LEG10 (inactive)\n`,
   );
   process.stdout.write(`Gold rate today: ₹${DEMO.goldRatePerGramPaise / 100}/g\n\nFixed schemes:\n`);
   for (const row of stories) {
@@ -1641,6 +1754,18 @@ try {
   }
   process.stdout.write("\nCash control:\n");
   for (const line of cashLines) {
+    process.stdout.write(`  · ${line}\n`);
+  }
+  process.stdout.write("\nExtended fixed / redemption matrix:\n");
+  for (const row of matrixFixed) {
+    process.stdout.write(`  · ${row.enrollment} — ${row.story}\n`);
+  }
+  process.stdout.write("\nExtended flexible matrix:\n");
+  for (const row of matrixFlex) {
+    process.stdout.write(`  · ${row.enrollment} — ${row.story}\n`);
+  }
+  process.stdout.write("\nExtended cash / collector:\n");
+  for (const line of [...matrixCash, ...collectorLines.map((r) => `${r.enrollment} — ${r.story}`)]) {
     process.stdout.write(`  · ${line}\n`);
   }
   process.stdout.write(

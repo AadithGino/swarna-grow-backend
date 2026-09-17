@@ -17,6 +17,10 @@ import dayjs from "dayjs";
 import { env } from "../config/env.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import { moneyRef } from "../lib/money.js";
+import {
+  buildCountTrendPoints,
+  reportTrendGroupBy,
+} from "./report-builders/report-envelope.js";
 
 export async function messageBranchScope(req) {
   const scope = { tenantId: req.auth.tenantId };
@@ -84,12 +88,25 @@ function chartBlocksFromMessages(req, messages) {
       : "—";
     byDay.set(day, (byDay.get(day) ?? 0) + 1);
   }
-  const days = [...byDay.keys()].sort();
-  const volumePoints = days.map((x) => ({
-    x,
-    y: byDay.get(x) ?? 0,
-    yDisplay: String(byDay.get(x) ?? 0),
+  const from = req.query.from ? String(req.query.from).slice(0, 10) : null;
+  const to = req.query.to ? String(req.query.to).slice(0, 10) : null;
+  const dailyRows = [...byDay.entries()].map(([day, count]) => ({
+    _id: day,
+    count,
   }));
+  const volumePoints =
+    from && to
+      ? buildCountTrendPoints(
+          dailyRows,
+          from,
+          to,
+          reportTrendGroupBy(from, to, req.query),
+        )
+      : dailyRows.map((row) => ({
+          x: row._id,
+          y: row.count,
+          yDisplay: String(row.count),
+        }));
 
   const byType = new Map();
   for (const row of messages) {
@@ -105,6 +122,10 @@ function chartBlocksFromMessages(req, messages) {
     volumeTrend: {
       chartType: "line",
       title: "Message volume",
+      subtitle:
+        from && to
+          ? `Grouped by ${reportTrendGroupBy(from, to, req.query).toLowerCase()}`
+          : undefined,
       yAxis: { type: "count", label: "Messages" },
       series: [{ key: "VOLUME", name: "Sent", data: volumePoints }],
     },
@@ -163,22 +184,12 @@ export async function queueMessage(req, payload) {
     if (limit > 0) {
       const period = dayjs().format("YYYY-MM");
       const counterId = `whatsapp:${req.auth.tenantId}:${period}`;
-      let claimed = await Counter.findOneAndUpdate(
-        { _id: counterId, value: { $lt: limit } },
-        { $inc: { value: 1 } },
-        { new: true, session },
+      const claimed = await Counter.findOneAndUpdate(
+        { _id: counterId },
+        [{ $set: { value: { $add: [{ $ifNull: ["$value", 0] }, 1] } } }],
+        { new: true, upsert: true, session },
       );
-      if (!claimed) {
-        const existing = await Counter.findById(counterId).session(session).lean();
-        if (!existing) {
-          claimed = await Counter.findOneAndUpdate(
-            { _id: counterId },
-            { $setOnInsert: { value: 1 } },
-            { new: true, upsert: true, session },
-          );
-        }
-      }
-      if (!claimed || claimed.value > limit) {
+      if (claimed.value > limit) {
         throw errors.business(
           "QUOTA_EXCEEDED",
           "WhatsApp quota exceeded for this month.",

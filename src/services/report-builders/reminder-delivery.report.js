@@ -1,6 +1,12 @@
 import { Message } from "../../models/index.js";
 import { dateMatch } from "../../lib/query-filters.js";
-import { baseEnvelope, paginateRows, reportDataScope } from "./report-envelope.js";
+import {
+  baseEnvelope,
+  buildCountTrendPoints,
+  paginateRows,
+  reportDataScope,
+  reportTrendGroupBy,
+} from "./report-envelope.js";
 
 const TYPE_ROWS = [
   { key: "PAYMENT_DUE", messageType: "Due reminder" },
@@ -96,6 +102,8 @@ export async function buildReminderDeliveryReport(req) {
   }
 
   const { rows, meta } = paginateRows(tableRows, req.query);
+  const groupBy = reportTrendGroupBy(from, to, req.query);
+  const volumeTrend = buildCountTrendPoints(volumeByDay, from, to, groupBy);
 
   return {
     ...envelope,
@@ -114,12 +122,13 @@ export async function buildReminderDeliveryReport(req) {
       volumeTrend: {
         chartType: "line",
         title: "Message volume",
+        subtitle: `Grouped by ${groupBy.toLowerCase()}`,
         yAxis: { type: "count", label: "Messages" },
         series: [
           {
             key: "SENT",
             name: "Sent",
-            data: volumeByDay.map((row) => ({ x: row._id, y: row.count })),
+            data: volumeTrend,
           },
         ],
       },

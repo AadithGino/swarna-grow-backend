@@ -17,7 +17,7 @@ test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => { await resetTestDb(); });
 
 test("login without tenantCode returns TENANT_SELECTION_REQUIRED when mobile spans tenants", async () => {
-  const password = "SecurePass!123";
+  const password = "1234";
   const hash = await argon2.hash(password, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
   const tenants = [];
   for (const code of ["ALPHA", "BETA"]) {

@@ -38,22 +38,36 @@ export async function buildDefaulterReport(req) {
   const customerIds = [...new Set(page.data.map((s) => s.customerId))];
   const branchIds = [...new Set(page.data.map((s) => s.branchId).filter(Boolean))];
 
-  const [customers, branchNames, branchRecovery] = await Promise.all([
-    Customer.find({ _id: { $in: customerIds } }).select("_id name mobile").lean(),
-    branchNameMap(req.auth.tenantId, branchIds),
-    Scheme.aggregate([
-      { $match: { ...scope, status: "DEFAULTED", paymentPattern: "FIXED" } },
-      { $group: { _id: "$branchId", count: { $sum: 1 } } },
-    ]),
-  ]);
+  const defaulterFilter = {
+    ...scope,
+    status: "DEFAULTED",
+    paymentPattern: "FIXED",
+    ...(req.query.planId ? { planId: req.query.planId } : {}),
+  };
+
+  const [customers, branchNames, branchRecovery, allDefaulted] =
+    await Promise.all([
+      Customer.find({ _id: { $in: customerIds } })
+        .select("_id name mobile")
+        .lean(),
+      branchNameMap(req.auth.tenantId, branchIds),
+      Scheme.aggregate([
+        { $match: defaulterFilter },
+        { $group: { _id: "$branchId", count: { $sum: 1 } } },
+      ]),
+      Scheme.find(defaulterFilter).select("installments").lean(),
+    ]);
 
   const customerMap = new Map(customers.map((c) => [c._id, c]));
+  const totalRecovery = allDefaulted.reduce(
+    (sum, scheme) =>
+      sum + schemeInstallmentStats(scheme, asOfYmd).paidTotal,
+    0,
+  );
 
-  let totalRecovery = 0;
   const rows = page.data.map((scheme) => {
     const stats = schemeInstallmentStats(scheme, asOfYmd);
     const recoveryValue = stats.paidTotal;
-    totalRecovery += recoveryValue;
     const customer = customerMap.get(scheme.customerId);
     return {
       key: scheme._id,

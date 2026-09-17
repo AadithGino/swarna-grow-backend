@@ -14,13 +14,6 @@ export async function connectDatabase() {
     socketTimeoutMS: 45_000,
     autoIndex: env.NODE_ENV !== "production",
   });
-  try {
-    const { Customer, GoldRate } = await import("../models/index.js");
-    await GoldRate.syncIndexes();
-    await Customer.syncIndexes();
-  } catch (error) {
-    logger.warn({ err: error }, "Customer/GoldRate index sync skipped");
-  }
   logger.info("MongoDB connected");
 }
 

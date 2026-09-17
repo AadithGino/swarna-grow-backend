@@ -2,7 +2,13 @@ import { Customer, Redemption, Scheme } from "../../models/index.js";
 import { moneyRef, weightRef } from "../../lib/money.js";
 import { dateMatch } from "../../lib/query-filters.js";
 import { paginate } from "../../lib/pagination.js";
-import { baseEnvelope, branchNameMap, chartPointCurrency, reportDataScope } from "./report-envelope.js";
+import {
+  baseEnvelope,
+  branchNameMap,
+  buildCurrencyTrendPoints,
+  reportDataScope,
+  reportTrendGroupBy,
+} from "./report-envelope.js";
 import { redemptionPeriodSummary } from "../redemption-period-summary.js";
 
 const MODE_LABEL = {
@@ -35,13 +41,6 @@ const COLUMNS = [
   { key: "mode", label: "Mode", type: "text" },
   { key: "settledAt", label: "Settled on", type: "date" },
 ];
-
-function weekLabel(date) {
-  const d = new Date(date);
-  const day = d.getUTCDate();
-  const week = Math.min(4, Math.ceil(day / 7));
-  return `${d.toISOString().slice(0, 7)} W${week}`;
-}
 
 export async function buildMaturityRedemptionReport(req) {
   const envelope = baseEnvelope(req, "MATURITY_REDEMPTION", "Maturity & redemption");
@@ -143,11 +142,8 @@ export async function buildMaturityRedemptionReport(req) {
   const customerMap = new Map(customers.map((c) => [c._id, c]));
   const totals = periodTotals;
 
-  const weekMap = new Map();
-  for (const row of byWeek) {
-    const label = weekLabel(`${row._id}T12:00:00Z`);
-    weekMap.set(label, (weekMap.get(label) ?? 0) + row.amountPaise);
-  }
+  const groupBy = reportTrendGroupBy(from, to, req.query);
+  const settlementTrend = buildCurrencyTrendPoints(byWeek, from, to, groupBy);
 
   const rows = page.data.map((red) => {
     const scheme = schemeMap.get(red.schemeId);
@@ -245,12 +241,13 @@ export async function buildMaturityRedemptionReport(req) {
       settlementTrend: {
         chartType: "line",
         title: "Settlements",
+        subtitle: `Grouped by ${groupBy.toLowerCase()}`,
         yAxis: { type: "currency", label: "Amount" },
         series: [
           {
             key: "SETTLED",
             name: "Settled",
-            data: [...weekMap.entries()].map(([x, amountPaise]) => chartPointCurrency(x, amountPaise)),
+            data: settlementTrend,
           },
         ],
       },

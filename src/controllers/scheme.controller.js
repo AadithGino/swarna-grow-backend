@@ -13,6 +13,8 @@ export const previewSchedule = async (req, res) =>
 export const planStats = async (req, res) => sendSuccess(res, await plans.planStats(req));
 export const validateEnrolment = async (req, res) => sendSuccess(res, await schemes.validateEnrolmentResponse(req));
 export const enrol = async (req, res) => sendSuccess(res, await schemes.enrol(req), {}, 201);
+export const schemeAnalytics = async (req, res) =>
+  sendSuccess(res, await schemes.schemeAnalytics(req));
 export const listSchemes = async (req, res) => sendList(res, await schemes.listSchemes(req));
 export const getScheme = async (req, res) => sendSuccess(res, await schemes.getScheme(req));
 export const payableRange = async (req, res) => sendSuccess(res, await schemes.payableRange(req));

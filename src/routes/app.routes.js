@@ -226,7 +226,7 @@ appRouter.post(
       { $pull: { fcmTokens: { deviceId } } },
     );
     await Customer.updateOne(
-      { _id: req.auth.id },
+      { _id: req.auth.id, tenantId: req.auth.tenantId },
       {
         $push: {
           fcmTokens: {
@@ -251,10 +251,10 @@ appRouter.delete(
   validate({ body: fcmDeleteBody }),
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
-    await Customer.updateOne({ _id: req.auth.id }, { $pull: { fcmTokens: { deviceId } } });
+    await Customer.updateOne({ _id: req.auth.id, tenantId: req.auth.tenantId }, { $pull: { fcmTokens: { deviceId } } });
     const { Session } = await import("../models/index.js");
     await Session.updateMany(
-      { customerId: req.auth.id, deviceId },
+      { customerId: req.auth.id, tenantId: req.auth.tenantId, deviceId },
       { $set: { revokedAt: new Date() } },
     );
     sendSuccess(res, { removed: true, deviceId });

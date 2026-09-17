@@ -46,7 +46,7 @@ import {
 import { currentGoldRate } from "./tenant.service.js";
 import { paginate } from "../lib/pagination.js";
 import { phonePeProvider } from "../integrations/phonepe.provider.js";
-import { nextSequence } from "./sequence.service.js";
+import { nextSequence, nextSequenceFromBlock } from "./sequence.service.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import {
   paymentListScope,
@@ -301,11 +301,10 @@ async function assertMaxPaymentsPerCycle({ scheme, targetCycle, session }) {
     );
 }
 
-async function nextReceipt(tenantId, session) {
-  const number = await nextSequence(
+async function nextReceipt(tenantId, _session) {
+  const number = await nextSequenceFromBlock(
     tenantId,
     `receipt:${new Date().getFullYear()}`,
-    session,
   );
   return `RCP-${new Date().getFullYear()}-${String(number).padStart(7, "0")}`;
 }
@@ -1079,12 +1078,22 @@ export async function initiatePublicPayment(req) {
     if (link.paymentIntentId) link = await renewFlexibleLinkReservation(link);
   }
   const claimMarker = `CLAIMING-${createId("payment")}`;
+  const claimExpiresAt = new Date(Date.now() + 5 * 60_000);
   const claimed = await PaymentLink.findOneAndUpdate(
     {
       _id: link._id,
-      $or: [{ paymentId: null }, { paymentId: { $exists: false } }, { paymentId: { $regex: /^CLAIMING-/ } }],
+      $and: [
+        { $or: [{ paymentId: null }, { paymentId: { $exists: false } }] },
+        {
+          $or: [
+            { initiationClaimToken: null },
+            { initiationClaimToken: { $exists: false } },
+            { initiationClaimExpiresAt: { $lte: new Date() } },
+          ],
+        },
+      ],
     },
-    { $set: { paymentId: claimMarker } },
+    { $set: { initiationClaimToken: claimMarker, initiationClaimExpiresAt: claimExpiresAt } },
     { new: true },
   );
   if (!claimed) {
@@ -1124,7 +1133,17 @@ export async function initiatePublicPayment(req) {
       providerTransactionId: provider.providerOrderId,
       paidAt: new Date(),
     });
-    await PaymentLink.updateOne({ _id: link._id, paymentId: claimMarker }, { $set: { paymentId: pending._id } });
+    const committed = await PaymentLink.updateOne(
+      { _id: link._id, initiationClaimToken: claimMarker },
+      {
+        $set: { paymentId: pending._id },
+        $unset: { initiationClaimToken: "", initiationClaimExpiresAt: "" },
+      },
+    );
+    if (committed.modifiedCount !== 1) {
+      await Payment.deleteOne({ _id: pending._id, status: PaymentStatus.PENDING });
+      throw errors.business("PAYMENT_LINK_CLAIM_LOST", "The payment-link claim expired before initiation completed.");
+    }
     if (link.paymentIntentId) {
       await PaymentIntent.updateOne(
         { _id: link.paymentIntentId, status: PaymentIntentStatus.PENDING },
@@ -1143,7 +1162,10 @@ export async function initiatePublicPayment(req) {
       ...provider,
     };
   } catch (error) {
-    await PaymentLink.updateOne({ _id: link._id, paymentId: claimMarker }, { $unset: { paymentId: "" } });
+    await PaymentLink.updateOne(
+      { _id: link._id, initiationClaimToken: claimMarker },
+      { $unset: { initiationClaimToken: "", initiationClaimExpiresAt: "" } },
+    );
     throw error;
   }
 }
@@ -1235,11 +1257,14 @@ export async function createPaymentIntent(req) {
     };
   });
   try {
+    const tenant = await Tenant.findById(reserved.tenantId).select("operations branding").lean();
+    assertCustomerPaymentsEnabled(tenant);
+    assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
     const provider = await phonePeProvider.createPayment({
       merchantTransactionId: reserved.intent._id,
       amountPaise: reserved.intent.amountPaise,
       redirectUrl: req.body.redirectUrl,
-      callbackUrl: `/api/v1/webhooks/phonepe/${reserved.tenantId}`,
+      callbackUrl: `${env.PUBLIC_BASE_URL}${env.API_PREFIX}/webhooks/phonepe/${reserved.tenantId}`,
       mobile: req.body.mobile,
       credentials: await gatewayCredentials(reserved.tenantId),
     });

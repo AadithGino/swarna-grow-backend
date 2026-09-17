@@ -5,7 +5,17 @@ import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
-import { effectiveScope, fuzzyMongoFilter, searchRegex } from "../lib/query-filters.js";
+import {
+  assertAnalyticsPeriod,
+  formatPeriodLabel,
+  formatTrendBucketLabel,
+  inferTrendGroupBy,
+  percentChange,
+  previousPeriod,
+  rollupDailyRegistrationCounts,
+} from "../lib/analytics-period.js";
+import { dateMatch, effectiveScope, fuzzyMongoFilter, searchRegex } from "../lib/query-filters.js";
+import { generatedAtIst } from "./report-builders/report-envelope.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import { loadUserMap, userDto } from "../lib/relation-maps.js";
 
@@ -32,12 +42,57 @@ import { canonicalMobile, mobileLookupVariants } from "../lib/mobile.js";
 import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
 import { enrichCustomerKycRecord } from "../lib/customer-kyc-enrichment.js";
 import { attachLedgerTotals, schemeAgentCollectPreview } from "./scheme.service.js";
+import { assertWithinLimit } from "../lib/tenant-limits.js";
 
 const STATUS_LABELS = { ACTIVE: "Active", BLOCKED: "Blocked", INACTIVE: "Inactive" };
+const KYC_LABELS = {
+  [KycStatus.VERIFIED]: "Verified",
+  [KycStatus.SUBMITTED]: "Submitted",
+  [KycStatus.NOT_SUBMITTED]: "Not submitted",
+  [KycStatus.REJECTED]: "Rejected",
+};
+
+async function analyticsScopeBlock(scope) {
+  if (!scope.branchId) {
+    return { level: "TENANT", label: "All showrooms", branchId: null };
+  }
+  const branch = await Branch.findOne({
+    _id: scope.branchId,
+    tenantId: scope.tenantId,
+  })
+    .select("_id name code")
+    .lean();
+  return {
+    level: "BRANCH",
+    label: branch?.name ?? branch?.code ?? "Branch",
+    branchId: scope.branchId,
+    branch: branch
+      ? { id: branch._id, name: branch.name, code: branch.code }
+      : undefined,
+  };
+}
+
+function kycStatusFilter(kycStatus) {
+  const normalized = String(kycStatus).toUpperCase();
+  if (normalized === "PENDING") {
+    return { $in: [KycStatus.NOT_SUBMITTED, KycStatus.SUBMITTED] };
+  }
+  return normalized;
+}
 
 export async function customerAnalytics(req) {
   const scope = effectiveScope(req);
   const match = { ...scope };
+  const periodRange = assertAnalyticsPeriod(req.query);
+  const comparedTo = previousPeriod(periodRange.from, periodRange.to);
+  const groupBy = inferTrendGroupBy(
+    periodRange.from,
+    periodRange.to,
+    req.query.groupBy,
+  );
+  const periodCreatedFilter = dateMatch("createdAt", periodRange);
+  const priorCreatedFilter = dateMatch("createdAt", comparedTo);
+
   const [
     total,
     active,
@@ -46,42 +101,121 @@ export async function customerAnalytics(req) {
     kycVerified,
     kycPending,
     byStatus,
+    byKyc,
     byBranch,
-    registrationTrend,
+    dailyRegistrations,
+    newInPeriod,
+    newInPriorPeriod,
     withActiveScheme,
+    withRegisteredDevice,
+    whatsappOptedIn,
+    scopeBlock,
   ] = await Promise.all([
     Customer.countDocuments(match),
     Customer.countDocuments({ ...match, status: CustomerStatus.ACTIVE }),
     Customer.countDocuments({ ...match, status: CustomerStatus.BLOCKED }),
     Customer.countDocuments({ ...match, status: CustomerStatus.INACTIVE }),
     Customer.countDocuments({ ...match, "kyc.status": KycStatus.VERIFIED }),
-    Customer.countDocuments({ ...match, "kyc.status": { $in: [KycStatus.SUBMITTED, KycStatus.NOT_SUBMITTED] } }),
-    Customer.aggregate([{ $match: match }, { $group: { _id: "$status", count: { $sum: 1 } } }]),
-    scope.branchId
-      ? Promise.resolve([])
-      : Customer.aggregate([{ $match: match }, { $group: { _id: "$branchId", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+    Customer.countDocuments({
+      ...match,
+      "kyc.status": { $in: [KycStatus.SUBMITTED, KycStatus.NOT_SUBMITTED] },
+    }),
     Customer.aggregate([
       { $match: match },
-      { $group: { _id: { $dateToString: { format: "%Y-%m", date: "$createdAt", timezone: "Asia/Kolkata" } }, count: { $sum: 1 } } },
-      { $sort: { _id: 1 } },
-      { $limit: 12 },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
     ]),
-    Scheme.distinct("customerId", { ...match, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } }).then((ids) => ids.length),
+    Customer.aggregate([
+      { $match: match },
+      { $group: { _id: "$kyc.status", count: { $sum: 1 } } },
+    ]),
+    scope.branchId
+      ? Promise.resolve([])
+      : Customer.aggregate([
+          { $match: match },
+          { $group: { _id: "$branchId", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]),
+    Customer.aggregate([
+      { $match: { ...match, ...periodCreatedFilter } },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: "%Y-%m-%d",
+              date: "$createdAt",
+              timezone: "Asia/Kolkata",
+            },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]),
+    Customer.countDocuments({ ...match, ...periodCreatedFilter }),
+    Customer.countDocuments({ ...match, ...priorCreatedFilter }),
+    Scheme.distinct("customerId", {
+      ...match,
+      status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] },
+    }).then((ids) => ids.length),
+    Customer.countDocuments({ ...match, "fcmTokens.0": { $exists: true } }),
+    Customer.countDocuments({
+      ...match,
+      $or: [{ whatsappOptedOutAt: null }, { whatsappOptedOutAt: { $exists: false } }],
+    }),
+    analyticsScopeBlock(scope),
   ]);
 
   const branchIds = byBranch.map((row) => row._id).filter(Boolean);
   const branches = branchIds.length
-    ? await Branch.find({ _id: { $in: branchIds }, tenantId: scope.tenantId }).select("_id name code").lean()
+    ? await Branch.find({ _id: { $in: branchIds }, tenantId: scope.tenantId })
+        .select("_id name code")
+        .lean()
     : [];
-  const branchName = new Map(branches.map((row) => [row._id, row.name || row.code || row._id]));
+  const branchName = new Map(
+    branches.map((row) => [row._id, row.name || row.code || row._id]),
+  );
+
+  const registrationBuckets = rollupDailyRegistrationCounts(
+    dailyRegistrations,
+    periodRange.from,
+    periodRange.to,
+    groupBy,
+  );
+  const newCustomerChange = percentChange(newInPeriod, newInPriorPeriod);
+  const periodKey = String(req.query.period ?? "THIS_MONTH").toUpperCase();
+  const periodLabel = formatPeriodLabel(periodRange.from, periodRange.to);
 
   const summary = [
-    { key: "TOTAL", label: "Total customers", value: total, valueType: "count" },
-    { key: "ACTIVE", label: "Active", value: active, valueType: "count" },
-    { key: "BLOCKED", label: "Blocked", value: blocked, valueType: "count", severity: blocked > 0 ? "WARNING" : undefined },
-    { key: "KYC_VERIFIED", label: "KYC verified", value: kycVerified, valueType: "count" },
-    { key: "KYC_PENDING", label: "KYC pending", value: kycPending, valueType: "count" },
-    { key: "WITH_ACTIVE_SCHEME", label: "With active scheme", value: withActiveScheme, valueType: "count" },
+    { key: "TOTAL_CUSTOMERS", label: "Total customers", value: total, valueType: "count", note: "Current snapshot" },
+    { key: "ACTIVE_CUSTOMERS", label: "Active customers", value: active, valueType: "count", note: "Current snapshot" },
+    {
+      key: "NEW_CUSTOMERS",
+      label: "New customers",
+      value: newInPeriod,
+      valueType: "count",
+      ...(newCustomerChange ? { change: newCustomerChange } : {}),
+    },
+    {
+      key: "CUSTOMERS_WITH_ACTIVE_SCHEME",
+      label: "With active scheme",
+      value: withActiveScheme,
+      valueType: "count",
+      note: "Current snapshot",
+    },
+    {
+      key: "KYC_PENDING",
+      label: "KYC pending",
+      value: kycPending,
+      valueType: "count",
+      note: "Current snapshot",
+    },
+    {
+      key: "WHATSAPP_OPTED_IN",
+      label: "WhatsApp opted in",
+      value: whatsappOptedIn,
+      valueType: "count",
+      note: "Current snapshot",
+    },
   ];
 
   const charts = {
@@ -99,20 +233,49 @@ export async function customerAnalytics(req) {
           modeKey: row._id,
         })),
       }],
+      summary: { total, centreLabel: `${total} customers` },
+    },
+    kycDistribution: {
+      chartType: "donut",
+      title: "KYC status",
+      yAxis: { type: "count", label: "Customers" },
+      series: [{
+        key: "KYC",
+        name: "Customers",
+        data: byKyc.map((row) => ({
+          x: KYC_LABELS[row._id] ?? row._id ?? "Unknown",
+          y: row.count,
+          yDisplay: String(row.count),
+          statusKey: row._id,
+        })),
+      }],
+      summary: { total, centreLabel: `${total} customers` },
     },
     registrationTrend: {
       chartType: "line",
-      title: "Registrations",
-      yAxis: { type: "count", label: "Customers" },
+      title: "New customers",
+      subtitle: "Customers registered during the selected period",
+      xAxis: { type: "category", label: "Date", format: groupBy === "MONTH" ? "MMM YYYY" : "D MMM" },
+      yAxis: { type: "count", label: "Customers", min: 0 },
       series: [{
-        key: "REG",
-        name: "Customers",
-        data: registrationTrend.map((row) => ({
-          x: row._id,
+        key: "NEW_CUSTOMERS",
+        name: "New customers",
+        data: registrationBuckets.map((row) => ({
+          x: row.key,
+          xDisplay: formatTrendBucketLabel(row.key, groupBy),
           y: row.count,
           yDisplay: String(row.count),
         })),
       }],
+      summary: {
+        total: newInPeriod,
+        ...(newCustomerChange?.percent != null
+          ? {
+              changePercent: newCustomerChange.percent,
+              changeDirection: newCustomerChange.direction,
+            }
+          : {}),
+      },
     },
   };
 
@@ -134,6 +297,19 @@ export async function customerAnalytics(req) {
   }
 
   return {
+    scope: scopeBlock,
+    period: {
+      key: periodKey,
+      from: periodRange.from,
+      to: periodRange.to,
+      label: periodLabel,
+      comparedTo: {
+        from: comparedTo.from,
+        to: comparedTo.to,
+        label: formatPeriodLabel(comparedTo.from, comparedTo.to),
+      },
+      groupBy,
+    },
     total,
     active,
     blocked,
@@ -141,13 +317,31 @@ export async function customerAnalytics(req) {
     kycVerified,
     kycPending,
     withActiveScheme,
+    newCustomersInPeriod: newInPeriod,
     customersByBranch: byBranch.map((row) => ({
       branchId: row._id,
       name: branchName.get(row._id) ?? row._id,
       count: row.count,
     })),
+    totals: {
+      allCustomers: total,
+      activeCustomers: active,
+      inactiveCustomers: inactive,
+      blockedCustomers: blocked,
+      newCustomersInPeriod: newInPeriod,
+      customersWithActiveScheme: withActiveScheme,
+      customersWithRegisteredDevice: withRegisteredDevice,
+      whatsappOptedIn,
+      kyc: {
+        notSubmitted: byKyc.find((row) => row._id === KycStatus.NOT_SUBMITTED)?.count ?? 0,
+        submitted: byKyc.find((row) => row._id === KycStatus.SUBMITTED)?.count ?? 0,
+        verified: byKyc.find((row) => row._id === KycStatus.VERIFIED)?.count ?? 0,
+        rejected: byKyc.find((row) => row._id === KycStatus.REJECTED)?.count ?? 0,
+      },
+    },
     summary,
     charts,
+    generatedAt: generatedAtIst(),
   };
 }
 
@@ -156,7 +350,7 @@ export async function listCustomers(req) {
   if (req.query.status) filters.status = req.query.status;
   const scope = effectiveScope(req);
   const kycStatus = req.query.kycStatus ?? req.query.kyc;
-  if (kycStatus) filters["kyc.status"] = kycStatus;
+  if (kycStatus) filters["kyc.status"] = kycStatusFilter(kycStatus);
   const q = String(req.query.q ?? "").trim();
   if (q) {
     const fuzzy = fuzzyMongoFilter(CUSTOMER_LIST_SEARCH_FIELDS, q);
@@ -319,6 +513,8 @@ async function assertCustomerMobileAvailable(
 
 export async function createCustomer(req) {
   const branchId = req.scope.branchId ?? req.body.branchId;
+  const branch = await Branch.findOne({ _id: branchId, tenantId: req.auth.tenantId, active: true }).select("_id").lean();
+  if (!branch) throw errors.business("BRANCH_NOT_ACTIVE", "The selected branch is not active for this jewellery.");
   const writePayload = buildCustomerWritePayload(req.body, { branchId });
 
   await assertCustomerMobileAvailable(req.auth.tenantId, writePayload.mobile);
@@ -326,15 +522,7 @@ export async function createCustomer(req) {
   return withTransaction(async (session) => {
     const tenant = await Tenant.findById(req.auth.tenantId).session(session);
     const used = await Customer.countDocuments({ tenantId: tenant._id, status: "ACTIVE" }).session(session);
-    const limit = tenant.subscription?.limits?.activeCustomers;
-    if (limit && used >= limit) {
-      throw new AppError(
-        "LIMIT_CUSTOMERS",
-        `Your plan allows ${limit} active customers.`,
-        403,
-        { limit, used, currentPlan: tenant.subscription.tier },
-      );
-    }
+    await assertWithinLimit({ tenant, limitKey: "activeCustomers", used, errorCode: "LIMIT_CUSTOMERS", label: "active customers" });
     await assertCustomerMobileAvailable(req.auth.tenantId, writePayload.mobile, {
       session,
     });

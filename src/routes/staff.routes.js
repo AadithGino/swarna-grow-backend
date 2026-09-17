@@ -182,11 +182,11 @@ staffRouter.post(
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
     await User.updateOne(
-      { _id: req.auth.id },
+      { _id: req.auth.id, tenantId: req.auth.tenantId },
       { $pull: { fcmTokens: { deviceId } } },
     );
     await User.updateOne(
-      { _id: req.auth.id },
+      { _id: req.auth.id, tenantId: req.auth.tenantId },
       {
         $push: {
           fcmTokens: {
@@ -207,8 +207,13 @@ staffRouter.delete(
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
     await User.updateOne(
-      { _id: req.auth.id },
+      { _id: req.auth.id, tenantId: req.auth.tenantId },
       { $pull: { fcmTokens: { deviceId } } },
+    );
+    const { Session } = await import("../models/index.js");
+    await Session.updateMany(
+      { userId: req.auth.id, tenantId: req.auth.tenantId, deviceId },
+      { $set: { revokedAt: new Date() } },
     );
     return sendSuccess(res, { removed: true, deviceId });
   }),

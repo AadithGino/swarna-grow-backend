@@ -126,11 +126,12 @@ async function enrichGrievanceDetail(tenantId, row) {
 export async function createGrievance(req) {
   return withTransaction(async (session) => {
     const { validateGrievanceUploadReferences } = await import("./upload.service.js");
-    await validateGrievanceUploadReferences(req, req.body.attachmentUploadIds, session);
+    const grievanceId = createId("grievance");
+    await validateGrievanceUploadReferences(req, req.body.attachmentUploadIds, session, grievanceId);
     const createdAt = new Date();
     const number = await nextSequence(req.auth.tenantId, `grievance:${createdAt.getFullYear()}`, session);
     const row = (await Grievance.create([{
-      _id: createId("grievance"),
+      _id: grievanceId,
       tenantId: req.auth.tenantId,
       branchId: req.auth.branchId,
       customerId: req.auth.id,
@@ -204,7 +205,7 @@ export async function addGrievanceMessage(req) {
     }
     if (req.auth.type === "CUSTOMER" && req.body.messageType === GrievanceMessageType.INTERNAL_NOTE) throw errors.forbidden();
     const { validateGrievanceUploadReferences } = await import("./upload.service.js");
-    await validateGrievanceUploadReferences(req, req.body.attachmentUploadIds, session);
+    await validateGrievanceUploadReferences(req, req.body.attachmentUploadIds, session, row._id);
     const messageType = req.auth.type === "CUSTOMER" ? GrievanceMessageType.PUBLIC_REPLY : req.body.messageType;
     const message = {
       type: messageType,

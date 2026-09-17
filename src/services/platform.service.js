@@ -16,6 +16,10 @@ import { seal } from "../lib/crypto.js";
 import { moneyRef } from "../lib/money.js";
 import { generateTemporaryPassword } from "../lib/password-generator.js";
 import {
+  PASSWORD_PIN_MESSAGE,
+  passwordPolicySchema,
+} from "../validators/common.validators.js";
+import {
   chartSeries, defaultPlanFeaturesForTier, deriveTenantCodeFromName, mapPublicPlans,
   mapPublicSubscriptionPlan, maskSecret, subscriptionSummaryForTenant, tenantListRow, usagePercent,
 } from "../lib/platform-dto.js";
@@ -575,7 +579,7 @@ export async function platformSummary() {
   };
 }
 
-export async function upsertTenantTemplate(tenantId, messageType, body) {
+export async function upsertTenantTemplate(tenantId, messageType, body, req) {
   const definition = getTemplateDefinition(messageType);
   if (definition && body.variableOrder) {
     const required = definition.variables.map((row) => row.key);
@@ -586,7 +590,8 @@ export async function upsertTenantTemplate(tenantId, messageType, body) {
       throw new AppError("VALIDATION_FAILED", "Template variable order does not match the platform definition.", 400, { missing, extra });
     }
   }
-  return TemplateDefinition.findOneAndUpdate(
+  const before = await TemplateDefinition.findOne({ tenantId, messageType }).lean();
+  const updated = await TemplateDefinition.findOneAndUpdate(
     { tenantId, messageType },
     {
       $set: {
@@ -603,6 +608,8 @@ export async function upsertTenantTemplate(tenantId, messageType, body) {
     },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   ).lean();
+  await auditPlatformMutation({ req, action: before ? "TENANT_TEMPLATE_UPDATED" : "TENANT_TEMPLATE_CREATED", entityType: AuditEntityType.TEMPLATE, entityId: updated._id, tenantId, before, after: updated });
+  return updated;
 }
 
 export async function createInvoice(tenantId, body, req) {
@@ -728,7 +735,15 @@ export async function tenantUsage(id) {
 export async function setOwnerCredentials(id, body, req) {
   const owner = await User.findOne({ tenantId: id, role: TenantRole.TENANT_OWNER });
   if (!owner) throw errors.notFound("Tenant owner");
-  const temporaryPassword = body.temporaryPassword ?? generateTemporaryPassword();
+  const parsedPassword = passwordPolicySchema.safeParse(
+    body.temporaryPassword ?? generateTemporaryPassword(),
+  );
+  if (!parsedPassword.success) {
+    throw errors.validation([
+      { field: "temporaryPassword", message: PASSWORD_PIN_MESSAGE },
+    ]);
+  }
+  const temporaryPassword = parsedPassword.data;
   owner.passwordHash = await argon2.hash(temporaryPassword, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
   owner.mustSetPassword = true;
   await owner.save();
@@ -778,15 +793,17 @@ export async function setIntegration(id, kind, body, req) {
   };
 }
 
-export async function verifyIntegration(id, kind, body = {}) {
+export async function verifyIntegration(id, kind, body = {}, req) {
   const tenant = await Tenant.findById(id).select("+integrationSecrets");
   if (!tenant?.integrationSecrets?.[kind === "phonepe" ? "phonepe" : kind]) throw errors.notFound("Integration configuration");
   const bucket = kind === "phonepe" ? tenant.integrationSecrets.phonepe : tenant.integrationSecrets.whatsapp;
   const required = kind === "whatsapp" ? ["phoneNumberId", "accessToken", "appSecret"] : ["merchantId", "saltKey", "saltIndex"];
   if (required.some((key) => !bucket[key])) throw errors.business("INTEGRATION_INCOMPLETE", `The ${kind} integration is incomplete.`);
+  const before = tenant.toObject();
   bucket.verifiedAt = new Date();
   bucket.verificationStatus = "VERIFIED";
   await tenant.save();
+  await auditPlatformMutation({ req, action: "TENANT_INTEGRATION_VERIFIED", entityType: AuditEntityType.TENANT, entityId: id, tenantId: id, before, after: tenant.toObject() });
   return {
     tenantId: id,
     integration: kind,
@@ -818,8 +835,10 @@ export async function listTenantTemplates(id) {
   return rows.map(mapTenantTemplateRegistration);
 }
 
-export async function deleteTenantTemplate(id, messageType) {
+export async function deleteTenantTemplate(id, messageType, req) {
+  const before = await TemplateDefinition.findOne({ tenantId: id, messageType }).lean();
   const result = await TemplateDefinition.deleteOne({ tenantId: id, messageType });
+  if (before) await auditPlatformMutation({ req, action: "TENANT_TEMPLATE_DELETED", entityType: AuditEntityType.TEMPLATE, entityId: before._id, tenantId: id, before });
   return { deleted: result.deletedCount === 1 };
 }
 

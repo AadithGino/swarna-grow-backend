@@ -3,8 +3,7 @@ import { RedisStore } from "rate-limit-redis";
 import { env } from "../config/env.js";
 import { getRedis, redisReady } from "../config/redis.js";
 
-const skipRateLimitInLocal = () =>
-  env.NODE_ENV === "development" || env.NODE_ENV === "test";
+const skipRateLimit = () => !env.RATE_LIMIT_ENABLED;
 
 function otpRateLimitKey(prefix, req) {
   const ip = ipKeyGenerator(req.ip ?? "127.0.0.1");
@@ -27,14 +26,17 @@ class RedisOrMemoryStore {
   }
   increment(key) {
     if (redisReady()) return this.redis.increment(key);
+    if (env.NODE_ENV === "production") return Promise.reject(new Error("RATE_LIMIT_STORE_UNAVAILABLE"));
     return this.memory.increment(key);
   }
   decrement(key) {
     if (redisReady()) return this.redis.decrement(key);
+    if (env.NODE_ENV === "production") return Promise.reject(new Error("RATE_LIMIT_STORE_UNAVAILABLE"));
     return this.memory.decrement(key);
   }
   resetKey(key) {
     if (redisReady()) return this.redis.resetKey(key);
+    if (env.NODE_ENV === "production") return Promise.reject(new Error("RATE_LIMIT_STORE_UNAVAILABLE"));
     return this.memory.resetKey(key);
   }
 }
@@ -48,7 +50,7 @@ export const publicRateLimit = rateLimit({
   limit: 60,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimitInLocal,
+  skip: skipRateLimit,
   store: sharedStore("public"),
 });
 
@@ -58,7 +60,7 @@ export const otpRequestRateLimit = rateLimit({
   limit: 5,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimitInLocal,
+  skip: skipRateLimit,
   keyGenerator: (req) => otpRateLimitKey("otp:req", req),
   store: sharedStore("otp-req"),
   message: {
@@ -76,7 +78,7 @@ export const otpVerifyRateLimit = rateLimit({
   limit: 30,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimitInLocal,
+  skip: skipRateLimit,
   keyGenerator: (req) => otpRateLimitKey("otp:verify", req),
   store: sharedStore("otp-verify"),
   message: {
@@ -95,6 +97,7 @@ export const loginRateLimit = rateLimit({
   limit: 10,
   standardHeaders: "draft-8",
   legacyHeaders: false,
+  skip: skipRateLimit,
   store: sharedStore("login"),
   message: {
     success: false,
@@ -109,7 +112,7 @@ export const tenantResolveRateLimit = rateLimit({
   limit: 60,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimitInLocal,
+  skip: skipRateLimit,
   store: sharedStore("tenant-resolve"),
   message: {
     success: false,

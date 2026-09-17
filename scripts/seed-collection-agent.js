@@ -2,7 +2,7 @@
  * Upsert demo collection agent only (no full demo re-seed).
  *
  * Usage: npm run seed:collection-agent
- * Login: tenant KAIRALI · mobile 9847012352 · password Swarna@2026 (KOC branch)
+ * Login: tenant KAIRALI · mobile 9847012352 · password 2026 (KOC branch)
  */
 import argon2 from "argon2";
 import { connectDatabase, disconnectDatabase } from "../src/config/database.js";
@@ -14,7 +14,7 @@ import { Branch, Tenant, User } from "../src/models/index.js";
 const TENANT_CODE = process.env.DEMO_TENANT_CODE ?? "KAIRALI";
 const BRANCH_CODE = process.env.DEMO_COLLECTOR_BRANCH_CODE ?? "KOC";
 const MOBILE = process.env.DEMO_COLLECTOR_MOBILE ?? "9847012352";
-const PASSWORD = process.env.DEMO_COLLECTOR_PASSWORD ?? process.env.DEMO_OWNER_PASSWORD ?? "Swarna@2026";
+const PASSWORD = process.env.DEMO_COLLECTOR_PASSWORD ?? process.env.DEMO_OWNER_PASSWORD ?? "2026";
 const NAME = process.env.DEMO_COLLECTOR_NAME ?? "Vijay Field";
 
 async function main() {

@@ -1,14 +1,15 @@
 import { Payment } from "../../models/index.js";
 import { PAYMENT_MODE_LABELS, PAYMENT_MODE_ORDER } from "../../constants/enums.js";
 import { moneyRef, weightRef } from "../../lib/money.js";
-import { collectionSummary } from "../collection-summary.js";
 import {
   baseEnvelope,
   branchNameMap,
+  buildCurrencyTrendPoints,
   chartPointCurrency,
   dateMatch,
   paginateRows,
   reportDataScope,
+  reportTrendGroupBy,
   schemeIdsForPlan,
 } from "./report-envelope.js";
 
@@ -61,8 +62,7 @@ export async function buildCollectionReport(req) {
     ...(schemeIds ? { schemeId: { $in: schemeIds } } : {}),
   };
 
-  const [summaryRaw, byBranchMode, byDay, totalWeight] = await Promise.all([
-    collectionSummary({ ...req, scope, query: { ...req.query, from, to } }),
+  const [byBranchMode, byDay] = await Promise.all([
     Payment.aggregate([
       { $match: match },
       {
@@ -85,10 +85,6 @@ export async function buildCollectionReport(req) {
         },
       },
       { $sort: { _id: 1 } },
-    ]),
-    Payment.aggregate([
-      { $match: match },
-      { $group: { _id: null, weightMg: { $sum: { $ifNull: ["$weightMg", 0] } } } },
     ]),
   ]);
 
@@ -116,11 +112,6 @@ export async function buildCollectionReport(req) {
     }))
     .sort((a, b) => b.total.amountPaise - a.total.amountPaise);
 
-  const totalPaise = summaryRaw.amountPaise ?? 0;
-  const count = summaryRaw.count ?? 0;
-  const cashPaise = summaryRaw.byMode?.find((m) => m.mode === "CASH")?.amountPaise ?? 0;
-  const goldMg = totalWeight[0]?.weightMg ?? 0;
-
   const totalsRow = tableRows.reduce(
     (acc, row) => {
       acc.paymentCount += row.paymentCount;
@@ -133,7 +124,36 @@ export async function buildCollectionReport(req) {
     { label: "Total", ...emptyModeRow() },
   );
 
+  const totalPaise = totalsRow.total.amountPaise;
+  const count = totalsRow.paymentCount;
+  const goldMg = totalsRow.goldCredited.weightMg;
+  const cashPaise = totalsRow.cash.amountPaise;
+
+  const modeTotals = new Map();
+  for (const row of byBranchMode) {
+    const mode = row._id.mode ?? "UNKNOWN";
+    const prev = modeTotals.get(mode) ?? { amountPaise: 0, count: 0 };
+    modeTotals.set(mode, {
+      amountPaise: prev.amountPaise + row.amountPaise,
+      count: prev.count + row.count,
+    });
+  }
+  const byModeChart = PAYMENT_MODE_ORDER.filter(
+    (mode) => mode !== "LEGACY_ONLINE" || modeTotals.has(mode),
+  ).map((mode) => {
+    const stats = modeTotals.get(mode) ?? { amountPaise: 0, count: 0 };
+    return {
+      mode,
+      label: PAYMENT_MODE_LABELS[mode] ?? mode,
+      amountPaise: stats.amountPaise,
+      count: stats.count,
+    };
+  });
+
   const stackedModes = PAYMENT_MODE_ORDER.filter((mode) => mode !== "LEGACY_ONLINE" || byBranchMode.some((r) => r._id.mode === mode));
+
+  const trendGroupBy = reportTrendGroupBy(from, to, req.query);
+  const collectionTrend = buildCurrencyTrendPoints(byDay, from, to, trendGroupBy);
 
   const envelope = {
     ...envelopeBase,
@@ -158,12 +178,13 @@ export async function buildCollectionReport(req) {
       trend: {
         chartType: "line",
         title: "Daily collection",
+        subtitle: `Grouped by ${trendGroupBy.toLowerCase()}`,
         yAxis: { type: "currency", label: "Amount" },
         series: [
           {
             key: "COLLECTED",
             name: "Collected",
-            data: byDay.map((row) => chartPointCurrency(row._id, row.amountPaise)),
+            data: collectionTrend,
           },
         ],
       },
@@ -175,8 +196,8 @@ export async function buildCollectionReport(req) {
           {
             key: "mode",
             name: "Amount",
-            data: (summaryRaw.byMode ?? []).map((row) => ({
-              x: row.label ?? PAYMENT_MODE_LABELS[row.mode] ?? row.mode,
+            data: byModeChart.map((row) => ({
+              x: row.label,
               y: row.amountPaise,
               yDisplay: moneyRef(row.amountPaise).amountDisplay,
               modeKey: row.mode,
@@ -186,8 +207,9 @@ export async function buildCollectionReport(req) {
         drilldown: { enabled: true, path: "/payments", paramKey: "mode", paramSource: "modeKey" },
       },
       byBranch: {
-        chartType: "stackedBar",
+        chartType: "groupedBar",
         title: "By showroom and mode",
+        subtitle: "Mode mix within each showroom (% of branch total)",
         yAxis: { type: "currency", label: "Amount" },
         series: stackedModes.map((mode) => ({
           key: mode,
@@ -201,7 +223,7 @@ export async function buildCollectionReport(req) {
       },
     },
     columns: COLLECTION_COLUMNS,
-    totalsRow: tableRows.length ? totalsRow : { label: "Total", ...emptyModeRow(), paymentCount: count, total: moneyRef(totalPaise), goldCredited: weightRef(goldMg) },
+    totalsRow,
   };
 
   const { rows, meta } = paginateRows(tableRows, req.query);

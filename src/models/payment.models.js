@@ -81,6 +81,8 @@ const paymentLinkSchema = new mongoose.Schema(
     openedAt: Date,
     paidAt: Date,
     paymentId: String,
+    initiationClaimToken: String,
+    initiationClaimExpiresAt: Date,
     createdBy: String,
   },
   baseOptions,

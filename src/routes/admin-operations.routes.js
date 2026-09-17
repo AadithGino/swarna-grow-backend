@@ -72,7 +72,5 @@ adminOperationsRouter.post("/grievances/:grievanceId/assign", ...guarded(Permiss
 adminOperationsRouter.post("/grievances/:grievanceId/priority", ...guarded(Permission.GRIEVANCE_ASSIGN, idempotent, asyncHandler(controller.mutateGrievance("priority"))));
 adminOperationsRouter.post("/grievances/:grievanceId/messages", ...guarded(Permission.GRIEVANCE_REPLY, validate({ body: messageBody }), idempotent, asyncHandler(controller.grievanceMessage)));
 adminOperationsRouter.post("/grievances/:grievanceId/status", ...guarded(Permission.GRIEVANCE_RESOLVE, idempotent, asyncHandler(controller.mutateGrievance("status"))));
-adminOperationsRouter.get("/payments/pending", ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => { req.query.status = "PENDING"; return payment.list(req, res); })));
-adminOperationsRouter.get("/payments/late-success", ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => sendSuccess(res, await (await import("../models/index.js")).Payment.find({ ...req.scope, isLateSuccess: true }).sort({ paidAt: -1 }).lean()))));
 adminOperationsRouter.post("/payments/:paymentId/poll-status", ...guarded(Permission.PAYMENT_READ, idempotent, asyncHandler(async () => { throw new AppError("FEATURE_NOT_AVAILABLE", "Gateway poll-status is not available yet.", 501); })));
 adminOperationsRouter.post("/payments/:paymentId/reconcile", ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async () => { throw new AppError("FEATURE_NOT_AVAILABLE", "Manual payment reconcile is not available yet.", 501); })));

@@ -1,6 +1,6 @@
 import { Payment } from "../models/index.js";
 import { PAYMENT_MODE_LABELS, PAYMENT_MODE_ORDER, TenantRole } from "../constants/enums.js";
-import { dateMatch } from "../lib/query-filters.js";
+import { dateMatch, resolveQueryDateRange } from "../lib/query-filters.js";
 import { paymentListScope } from "../lib/payment-scope.js";
 
 const fillModes = (rows) =>
@@ -10,7 +10,12 @@ const fillModes = (rows) =>
   });
 
 export async function collectionSummary(req) {
-  const match = { ...(await paymentListScope(req)), status: "SUCCESS", ...dateMatch("paidAt", req.query) };
+  const range = resolveQueryDateRange(req.query);
+  const match = {
+    ...(await paymentListScope(req)),
+    status: "SUCCESS",
+    ...dateMatch("paidAt", range),
+  };
   if (req.auth?.role === TenantRole.COLLECTION_AGENT) {
     match.collectedBy = req.auth.id;
   }

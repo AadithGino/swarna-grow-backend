@@ -116,6 +116,10 @@ adminSchemeRouter.get(
   ...guarded(Permission.SCHEME_READ, asyncHandler(scheme.listSchemes)),
 );
 adminSchemeRouter.get(
+  "/schemes/analytics",
+  ...guarded(Permission.REPORT_READ, asyncHandler(scheme.schemeAnalytics)),
+);
+adminSchemeRouter.get(
   "/schemes/:schemeId/payable-range",
   ...guarded(Permission.SCHEME_READ, asyncHandler(scheme.payableRange)),
 );
@@ -232,6 +236,30 @@ adminSchemeRouter.post(
 adminSchemeRouter.get(
   "/payments",
   ...guarded(Permission.PAYMENT_READ, asyncHandler(payment.list)),
+);
+adminSchemeRouter.get(
+  "/payments/pending",
+  ...guarded(
+    Permission.PAYMENT_READ,
+    asyncHandler(async (req, res) => {
+      req.query.status = "PENDING";
+      return payment.list(req, res);
+    }),
+  ),
+);
+adminSchemeRouter.get(
+  "/payments/late-success",
+  ...guarded(
+    Permission.PAYMENT_READ,
+    asyncHandler(async (req, res) =>
+      sendSuccess(
+        res,
+        await Payment.find({ ...req.scope, isLateSuccess: true })
+          .sort({ paidAt: -1 })
+          .lean(),
+      ),
+    ),
+  ),
 );
 adminSchemeRouter.get(
   "/payments/:paymentId",

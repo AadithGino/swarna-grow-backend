@@ -21,6 +21,7 @@ export function parseEnv(source = process.env) {
     MONGODB_MAX_POOL_SIZE: z.coerce.number().int().positive().default(50),
     REDIS_URL: z.string().default("redis://127.0.0.1:6379"),
     REDIS_REQUIRED: booleanString,
+    RATE_LIMIT_ENABLED: z.string().default("true").transform((value) => value === "true"),
     JWT_ACCESS_SECRET: z.string().min(32).default(SECRET_DEFAULTS.JWT_ACCESS_SECRET),
     JWT_REFRESH_SECRET: z.string().min(32).default(SECRET_DEFAULTS.JWT_REFRESH_SECRET),
     INTEGRATION_ENCRYPTION_KEY: z.string().min(32).default(SECRET_DEFAULTS.INTEGRATION_ENCRYPTION_KEY),
@@ -34,11 +35,12 @@ export function parseEnv(source = process.env) {
     OTP_PROVIDER: z.enum(["mock", "msg91"]).default("mock"), OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
     S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""), FCM_PROJECT_ID: z.string().default(""),
+    MALWARE_SCAN_URL: z.string().url().optional(), MALWARE_SCAN_API_KEY: z.string().default(""),
     EXPORT_BASE_URL: z.string().url().default("http://localhost:4000"),
     PUBLIC_BASE_URL: z.string().url().default("http://localhost:4000"),
     SEED_PLATFORM_MOBILE: z.string().default("+919999999999"),
     SEED_PLATFORM_EMAIL: z.string().email().default("ops@platform.com"),
-    SEED_PLATFORM_PASSWORD: z.string().min(12).default(SECRET_DEFAULTS.SEED_PLATFORM_PASSWORD),
+    SEED_PLATFORM_PASSWORD: z.string().min(4).max(128).default("1234"),
   }).superRefine((_value, context) => {
     const nodeEnv = source.NODE_ENV ?? "development";
     if (nodeEnv !== "production") return;
@@ -57,8 +59,18 @@ export function parseEnv(source = process.env) {
       const raw = source[key];
       if (raw == null || String(raw).trim() === "") offending.push(key);
     }
+    if (!source.MALWARE_SCAN_URL) offending.push("MALWARE_SCAN_URL");
     const corsOrigins = source.CORS_ORIGINS ?? "http://localhost:3000,http://localhost:5173,http://localhost:5174";
     if (corsOrigins === "http://localhost:3000,http://localhost:5173,http://localhost:5174") offending.push("CORS_ORIGINS");
+    for (const key of ["PUBLIC_BASE_URL", "EXPORT_BASE_URL"]) {
+      const raw = source[key];
+      try {
+        const url = new URL(raw);
+        if (url.protocol !== "https:" || ["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname)) offending.push(key);
+      } catch {
+        offending.push(key);
+      }
+    }
     if (offending.length) {
       context.addIssue({
         code: "custom",

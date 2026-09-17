@@ -8,6 +8,7 @@ import {
   TenantRole,
   UserStatus,
   UserType,
+  UploadPurpose,
 } from "../constants/enums.js";
 import {
   Branch,
@@ -639,6 +640,10 @@ export async function patchSettingsBranding(req) {
     const tenant = await Tenant.findById(req.auth.tenantId).session(session);
     if (!tenant) throw errors.notFound("Tenant");
     enforceVersion(tenant, req.body.expectedVersion);
+    if (req.body.logoUploadId) {
+      const { validateUploadReferences } = await import("./upload.service.js");
+      await validateUploadReferences({ req, uploadIds: [req.body.logoUploadId], purpose: UploadPurpose.TENANT_LOGO, session, subjectId: req.auth.id, entityType: "TENANT_BRANDING", entityId: tenant._id });
+    }
     const patch = { ...req.body };
     delete patch.expectedVersion;
     if (patch.secondaryColor != null) {

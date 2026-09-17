@@ -5,6 +5,7 @@ import { Session } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
+import { withTransaction } from "../lib/transaction.js";
 
 const accessTtl = (subject) => subject.type === "TENANT_USER" && subject.mobileClient ? env.JWT_MOBILE_TTL : env.JWT_WEB_TTL;
 export function signAccessToken(subject) {
@@ -36,29 +37,47 @@ export async function issueSession(subject, device, request) {
 }
 export async function rotateSession(refreshToken, subjectLoader) {
   const hash = sha256(refreshToken);
-  const existing = await Session.findOneAndUpdate(
-    {
-      refreshTokenHash: hash,
-      consumedAt: null,
-      revokedAt: null,
-      expiresAt: { $gt: new Date() },
-    },
-    { $set: { consumedAt: new Date() } },
-    { new: false },
-  );
-  if (!existing) {
-    const stale = await Session.findOne({ refreshTokenHash: hash }).select("+refreshTokenHash");
-    if (stale?.consumedAt) {
-      await Session.updateMany({ familyId: stale.familyId }, { $set: { revokedAt: new Date() } });
-      throw new AppError("TOKEN_REUSE_DETECTED", "This device session was revoked because a refresh token was reused.", 401);
+  const result = await withTransaction(async (mongoSession) => {
+    const existing = await Session.findOne({ refreshTokenHash: hash })
+      .select("+refreshTokenHash")
+      .session(mongoSession);
+    if (!existing || existing.revokedAt || existing.expiresAt <= new Date()) {
+      return { invalid: true };
     }
-    throw errors.unauthenticated("The refresh token is invalid or expired.");
+    if (existing.consumedAt) {
+      await Session.updateMany(
+        { familyId: existing.familyId },
+        { $set: { revokedAt: new Date() } },
+        { session: mongoSession },
+      );
+      return { reused: true };
+    }
+    existing.consumedAt = new Date();
+    await existing.save({ session: mongoSession });
+    const subject = await subjectLoader(existing);
+    if (!subject) return { invalid: true };
+    const next = randomToken(48);
+    const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_DAYS * 86_400_000);
+    const [nextSession] = await Session.create([{
+      userId: existing.userId,
+      customerId: existing.customerId,
+      tenantId: existing.tenantId,
+      deviceId: existing.deviceId,
+      familyId: existing.familyId,
+      refreshTokenHash: sha256(next),
+      platform: existing.platform,
+      appVersion: existing.appVersion,
+      expiresAt,
+    }], { session: mongoSession });
+    return { subject, next, expiresAt, sessionId: nextSession._id, existing };
+  });
+  if (result.reused) {
+    throw new AppError("TOKEN_REUSE_DETECTED", "This device session was revoked because a refresh token was reused.", 401);
   }
-  const subject = await subjectLoader(existing); if (!subject) throw errors.unauthenticated();
-  const next = randomToken(48); const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_DAYS * 86_400_000);
-  const session = await Session.create({ userId: existing.userId, customerId: existing.customerId, tenantId: existing.tenantId, deviceId: existing.deviceId, familyId: existing.familyId, refreshTokenHash: sha256(next), platform: existing.platform, appVersion: existing.appVersion, expiresAt });
+  if (result.invalid) throw errors.unauthenticated("The refresh token is invalid or expired.");
+  const { subject, next, expiresAt, sessionId, existing } = result;
   return {
-    accessToken: signAccessToken({ ...subject, deviceId: existing.deviceId, securityVersion: subject.securityVersion ?? 0, sessionId: session._id }),
+    accessToken: signAccessToken({ ...subject, deviceId: existing.deviceId, securityVersion: subject.securityVersion ?? 0, sessionId }),
     refreshToken: next,
     expiresAt,
     mobileClient: existing.platform !== "web",

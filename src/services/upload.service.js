@@ -5,6 +5,7 @@ import { createId } from "../lib/ids.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { env } from "../config/env.js";
+import { malwareScanProvider } from "../integrations/malware-scan.provider.js";
 
 const RULES = Object.freeze({
   TENANT_LOGO: { max: 2_000_000, types: ["image/png", "image/jpeg", "image/webp"] },
@@ -42,34 +43,51 @@ export async function presignUpload(req) {
     method: "PUT",
     headers: { "Content-Type": upload.contentType },
     expiresAt,
-    completeUrl: uploadViewPath(id),
+    completeUrl: `${req.baseUrl}/uploads/${id}/complete`,
   };
 }
 
+function sniffContentType(body) {
+  if (body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (body[0] === 0xff && body[1] === 0xd8 && body[body.length - 2] === 0xff && body[body.length - 1] === 0xd9) return "image/jpeg";
+  if (body.subarray(0, 4).toString("ascii") === "%PDF") return "application/pdf";
+  if (body.subarray(0, 4).toString("ascii") === "RIFF" && body.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return null;
+}
+
 async function verifyStoredObject(upload) {
+  let body;
   if (env.PROVIDER_MODE === "mock") {
     try {
-      await storageProvider.readObjectBody(upload.objectKey);
+      body = await storageProvider.readObjectBody(upload.objectKey);
     } catch {
       throw errors.business("UPLOAD_NOT_FOUND", "The uploaded file was not found in storage.", { uploadId: upload._id });
     }
-    return;
+  } else {
+    const head = await storageProvider.headObject(upload.objectKey);
+    if (upload.sizeBytes != null && head.contentLength != null && head.contentLength !== upload.sizeBytes) {
+      throw errors.business("UPLOAD_SIZE_MISMATCH", "The uploaded file size does not match what was declared.", { expectedBytes: upload.sizeBytes, actualBytes: head.contentLength });
+    }
+    body = await storageProvider.readObjectBody(upload.objectKey);
   }
-  const head = await storageProvider.headObject(upload.objectKey);
-  if (upload.sizeBytes != null && head.contentLength != null && head.contentLength !== upload.sizeBytes) {
+  if (upload.sizeBytes != null && body.length !== upload.sizeBytes) {
     throw errors.business(
       "UPLOAD_SIZE_MISMATCH",
       "The uploaded file size does not match what was declared.",
-      { expectedBytes: upload.sizeBytes, actualBytes: head.contentLength },
+      { expectedBytes: upload.sizeBytes, actualBytes: body.length },
     );
   }
-  if (upload.contentType && head.contentType && head.contentType !== upload.contentType) {
+  const detectedType = sniffContentType(body);
+  if (!detectedType || detectedType !== upload.contentType) {
     throw errors.business(
       "UPLOAD_TYPE_MISMATCH",
-      "The uploaded file type does not match what was declared.",
-      { expectedType: upload.contentType, actualType: head.contentType },
+      "The uploaded file signature does not match what was declared.",
+      { expectedType: upload.contentType, actualType: detectedType },
     );
   }
+  const scan = await malwareScanProvider.assertClean({ body, fileName: upload.fileName, contentType: detectedType });
+  upload.scannedAt = new Date();
+  upload.scanProvider = scan.provider ?? "external";
 }
 
 export async function completeUpload(req) {
@@ -139,6 +157,8 @@ export async function validateUploadReferences({
   purpose,
   session,
   subjectId,
+  entityType,
+  entityId,
 }) {
   const ids = [...new Set(uploadIds.filter(Boolean))];
   if (!ids.length) return [];
@@ -162,10 +182,13 @@ export async function validateUploadReferences({
       );
     }
     assertAttachableOwner(req, upload, subjectId);
+    if (upload.status === UploadStatus.ATTACHED && (upload.attachedEntityType !== entityType || upload.attachedEntityId !== entityId)) {
+      throw new AppError("UPLOAD_ALREADY_ATTACHED", "This upload is already bound to another record.", 409, { uploadId: upload._id });
+    }
   }
   await Upload.updateMany(
     { _id: { $in: ids }, tenantId: req.auth.tenantId, status: UploadStatus.UPLOADED },
-    { $set: { status: UploadStatus.ATTACHED } },
+    { $set: { status: UploadStatus.ATTACHED, attachedEntityType: entityType, attachedEntityId: entityId } },
     { session },
   );
   return uploads;
@@ -180,10 +203,12 @@ export async function validateKycUploadReferences(req, body, session) {
     purpose: UploadPurpose.KYC_DOCUMENT,
     session,
     subjectId: req.params.customerId,
+    entityType: "CUSTOMER_KYC",
+    entityId: req.params.customerId,
   });
 }
 
-export async function validateGrievanceUploadReferences(req, uploadIds, session) {
+export async function validateGrievanceUploadReferences(req, uploadIds, session, grievanceId) {
   if (!uploadIds?.length) return [];
   return validateUploadReferences({
     req,
@@ -191,5 +216,7 @@ export async function validateGrievanceUploadReferences(req, uploadIds, session)
     purpose: UploadPurpose.GRIEVANCE_ATTACHMENT,
     session,
     subjectId: req.auth.type === "CUSTOMER" ? req.auth.id : undefined,
+    entityType: "GRIEVANCE",
+    entityId: grievanceId ?? req.params.grievanceId,
   });
 }

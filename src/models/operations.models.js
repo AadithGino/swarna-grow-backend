@@ -26,6 +26,10 @@ const redemptionSchema = new mongoose.Schema({
   modeDetails: mongoose.Schema.Types.Mixed,
   requestedBy: String, approvedBy: String, completedBy: String, requestedAt: Date, approvedAt: Date, completedAt: Date, rejectionReason: String, version: versionField,
 }, baseOptions);
+redemptionSchema.index(
+  { tenantId: 1, schemeId: 1 },
+  { unique: true, partialFilterExpression: { status: { $in: [RedemptionStatus.REQUESTED, RedemptionStatus.PENDING_APPROVAL, RedemptionStatus.APPROVED] } } },
+);
 
 const messageSchema = new mongoose.Schema({
   _id: stringId("msg"), tenantId: tenantField, branchId: branchField, customerId: String, schemeId: String, type: enumField(MessageType, { required: true }), status: enumField(MessageStatus, { default: MessageStatus.QUEUED }),
@@ -33,7 +37,8 @@ const messageSchema = new mongoose.Schema({
 }, baseOptions);
 messageSchema.index({ tenantId: 1, status: 1, createdAt: -1 }); messageSchema.index({ providerMessageId: 1 }, { unique: true, sparse: true });
 
-const uploadSchema = new mongoose.Schema({ _id: stringId("upl"), tenantId: tenantField, ownerId: String, purpose: enumField(UploadPurpose, { required: true }), fileName: String, contentType: String, sizeBytes: integerField(), objectKey: String, status: enumField(UploadStatus, { default: UploadStatus.PENDING }), expiresAt: Date }, baseOptions);
+const uploadSchema = new mongoose.Schema({ _id: stringId("upl"), tenantId: tenantField, ownerId: String, purpose: enumField(UploadPurpose, { required: true }), fileName: String, contentType: String, sizeBytes: integerField(), objectKey: String, status: enumField(UploadStatus, { default: UploadStatus.PENDING }), expiresAt: Date, attachedEntityType: String, attachedEntityId: String, scannedAt: Date, scanProvider: String }, baseOptions);
+uploadSchema.index({ tenantId: 1, attachedEntityType: 1, attachedEntityId: 1 });
 const exportSchema = new mongoose.Schema({ _id: stringId("exp"), tenantId: tenantField, requestedBy: String, type: enumField(ExportType, { required: true }), status: enumField(ExportStatus, { default: ExportStatus.QUEUED }), filters: mongoose.Schema.Types.Mixed, objectKey: String, downloadExpiresAt: Date, rowCount: integerField(), error: String, auditResults: mongoose.Schema.Types.Mixed }, baseOptions);
 const alertSchema = new mongoose.Schema({ _id: stringId("alt"), tenantId: tenantField, branchId: branchField, type: enumField(AlertType, { required: true }), severity: enumField(AlertSeverity, { default: AlertSeverity.WARNING }), status: enumField(AlertStatus, { default: AlertStatus.OPEN }), title: String, message: String, entityType: String, entityId: String, metadata: mongoose.Schema.Types.Mixed, dismissedAt: Date, dismissedBy: String }, baseOptions);
 alertSchema.index({ tenantId: 1, status: 1, severity: 1, createdAt: -1 });

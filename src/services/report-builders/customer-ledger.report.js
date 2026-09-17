@@ -29,11 +29,25 @@ export async function buildCustomerLedgerReport(req) {
   if (!customerId) {
     throw new AppError("CUSTOMER_ID_REQUIRED", "customerId query parameter is required for the customer ledger report.", 422);
   }
+  return buildCustomerLedgerDetail(req, {
+    reportKey: "CUSTOMER_LEDGER",
+    titlePrefix: "Customer ledger",
+  });
+}
+
+export async function buildCustomerLedgerDetail(
+  req,
+  { reportKey = "CUSTOMER_LEDGER", titlePrefix = "Customer ledger" } = {},
+) {
+  const customerId = req.query.customerId;
+  if (!customerId) {
+    throw new AppError("CUSTOMER_ID_REQUIRED", "customerId query parameter is required.", 422);
+  }
 
   const customer = await Customer.findOne({ _id: customerId, ...req.scope }).select("_id name customerNumber").lean();
   if (!customer) throw new AppError("CUSTOMER_NOT_FOUND", "Customer not found in this scope.", 404);
 
-  const envelope = baseEnvelope(req, "CUSTOMER_LEDGER", `Customer ledger — ${customer.name}`);
+  const envelope = baseEnvelope(req, reportKey, `${titlePrefix} — ${customer.name}`);
   const { from, to } = envelope.period;
 
   const openingEntries = await LedgerEntry.find({
@@ -76,6 +90,11 @@ export async function buildCustomerLedgerReport(req) {
 
   return {
     ...envelope,
+    scope: {
+      level: "CUSTOMER",
+      label: customer.name,
+      customerId: customer._id,
+    },
     summary: [
       { key: "OPENING", label: "Opening balance", value: moneyRef(Math.max(0, openingBalance)), valueType: "currency" },
       { key: "CREDITS", label: "Credits", value: moneyRef(creditsInPeriod), valueType: "currency" },

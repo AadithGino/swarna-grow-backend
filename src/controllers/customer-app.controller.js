@@ -47,7 +47,7 @@ export const listPlans = async (req, res) => {
         ...req,
         body: { customerId: req.auth.id, planId: plan._id },
       };
-      let enrolCheck = { canEnrol: true, blockers: [] };
+      let enrolCheck;
       try {
         enrolCheck = await validateEnrolmentResponse(fakeReq);
       } catch {
