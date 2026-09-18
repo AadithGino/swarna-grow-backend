@@ -147,7 +147,7 @@ async function provisioningSummary(tenantId) {
   const configuredTypes = new Set(configuredRows.map((row) => row.messageType));
   const configuredRequired = REQUIRED_TEMPLATE_TYPES.filter((type) => configuredTypes.has(type)).length;
   const whatsappConfigured = Boolean(tenant?.integrationSecrets?.whatsapp?.accessToken);
-  const paymentGatewayConfigured = Boolean(tenant?.integrationSecrets?.phonepe?.merchantId);
+  const paymentGatewayConfigured = Boolean(tenant?.integrationSecrets?.phonepe?.clientId);
   const templatesRequired = REQUIRED_TEMPLATE_TYPES.length;
   return {
     whatsappConfigured,
@@ -416,9 +416,13 @@ export async function tenantDetail(id) {
           ?? (secrets?.integrationSecrets?.whatsapp?.verifiedAt ? "VERIFIED" : "NOT_VERIFIED"),
       },
       paymentGateway: {
-        configured: Boolean(secrets?.integrationSecrets?.phonepe?.merchantId),
+        configured: Boolean(secrets?.integrationSecrets?.phonepe?.clientId),
+        clientCredentialsConfigured: Boolean(
+          secrets?.integrationSecrets?.phonepe?.clientId
+            && secrets?.integrationSecrets?.phonepe?.clientSecret,
+        ),
         provider: "PHONEPE",
-        merchantIdMasked: maskSecret(secrets?.integrationSecrets?.phonepe?.merchantId),
+        clientIdMasked: maskSecret(secrets?.integrationSecrets?.phonepe?.clientId),
         environment: secrets?.integrationSecrets?.phonepe?.environment ?? "SANDBOX",
         lastVerifiedAt: secrets?.integrationSecrets?.phonepe?.verifiedAt ?? null,
         verificationStatus: secrets?.integrationSecrets?.phonepe?.verificationStatus
@@ -764,10 +768,27 @@ export async function setIntegration(id, kind, body, req) {
   const before = await Tenant.findById(id).select("+integrationSecrets").lean();
   const allowed = kind === "whatsapp"
     ? ["phoneNumberId", "businessAccountId", "accessToken", "appSecret", "verifyToken", "environment", "callbackUrlOverride"]
-    : ["merchantId", "saltKey", "saltIndex", "environment", "callbackUrlOverride", "provider"];
-  const value = { provider: body.provider ?? (kind === "whatsapp" ? "META_CLOUD" : "PHONEPE") };
+    : [
+      "clientId",
+      "clientSecret",
+      "clientVersion",
+      "webhookUsername",
+      "webhookPassword",
+      "environment",
+      "provider",
+    ];
+  const existingBucket = before?.integrationSecrets?.[kind === "phonepe" ? "phonepe" : kind] ?? {};
+  const value = {
+    ...existingBucket,
+    provider: body.provider ?? existingBucket.provider ?? (kind === "whatsapp" ? "META_CLOUD" : "PHONEPE"),
+  };
+  const sealedKeys = new Set(["accessToken", "appSecret", "verifyToken", "clientSecret", "webhookPassword"]);
   for (const key of allowed) if (body[key] !== undefined) {
-    value[key] = ["accessToken", "appSecret", "verifyToken", "saltKey"].includes(key) ? seal(body[key]) : key === "saltIndex" ? Number(body[key]) : body[key];
+    value[key] = sealedKeys.has(key)
+      ? seal(body[key])
+      : key === "clientVersion"
+        ? Number(body[key])
+        : body[key];
   }
   const row = await Tenant.findByIdAndUpdate(id, { $set: { [`integrationSecrets.${kind === "phonepe" ? "phonepe" : kind}`]: value }, $inc: { version: 1 } }, { new: true }).select("_id version");
   if (!row) throw errors.notFound("Tenant");
@@ -789,7 +810,15 @@ export async function setIntegration(id, kind, body, req) {
     version: row.version,
     ...(kind === "whatsapp"
       ? { provider: "META_CLOUD", phoneNumberDisplay: body.phoneNumberId, accessTokenMasked: maskSecret(body.accessToken) }
-      : { provider: "PHONEPE", merchantIdMasked: maskSecret(body.merchantId), environment: body.environment ?? "SANDBOX" }),
+      : {
+        provider: "PHONEPE",
+        clientIdMasked: maskSecret(body.clientId ?? existingBucket.clientId),
+        clientCredentialsConfigured: Boolean(
+          (body.clientId ?? existingBucket.clientId)
+            && (body.clientSecret ?? existingBucket.clientSecret),
+        ),
+        environment: body.environment ?? existingBucket.environment ?? "SANDBOX",
+      }),
   };
 }
 
@@ -797,8 +826,16 @@ export async function verifyIntegration(id, kind, body = {}, req) {
   const tenant = await Tenant.findById(id).select("+integrationSecrets");
   if (!tenant?.integrationSecrets?.[kind === "phonepe" ? "phonepe" : kind]) throw errors.notFound("Integration configuration");
   const bucket = kind === "phonepe" ? tenant.integrationSecrets.phonepe : tenant.integrationSecrets.whatsapp;
-  const required = kind === "whatsapp" ? ["phoneNumberId", "accessToken", "appSecret"] : ["merchantId", "saltKey", "saltIndex"];
-  if (required.some((key) => !bucket[key])) throw errors.business("INTEGRATION_INCOMPLETE", `The ${kind} integration is incomplete.`);
+  if (kind === "phonepe") {
+    if (!bucket.clientId || !bucket.clientSecret || bucket.clientVersion == null) {
+      throw errors.business("INTEGRATION_INCOMPLETE", "The phonepe integration is incomplete.");
+    }
+    const { phonePeProvider, resolvePhonePeCredentials } = await import("../integrations/phonepe.provider.js");
+    await phonePeProvider.verifyCredentials(resolvePhonePeCredentials(tenant));
+  } else {
+    const required = ["phoneNumberId", "accessToken", "appSecret"];
+    if (required.some((key) => !bucket[key])) throw errors.business("INTEGRATION_INCOMPLETE", `The ${kind} integration is incomplete.`);
+  }
   const before = tenant.toObject();
   bucket.verifiedAt = new Date();
   bucket.verificationStatus = "VERIFIED";

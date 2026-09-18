@@ -41,7 +41,6 @@ const validProductionEnv = {
   SEED_PLATFORM_PASSWORD: "9876",
   REDIS_REQUIRED: "true",
   PROVIDER_MODE: "live",
-  PHONEPE_BASE_URL: "https://api.phonepe.com/apis/hermes",
   S3_BUCKET: "prod-bucket",
   S3_ACCESS_KEY_ID: "prod-access-key",
   S3_SECRET_ACCESS_KEY: "prod-secret-key",

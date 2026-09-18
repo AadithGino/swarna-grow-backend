@@ -38,6 +38,12 @@ import {
 } from "../lib/query-filters.js";
 import { now } from "../lib/date.js";
 import { moneyRef } from "../lib/money.js";
+import {
+  formatTrendBucketLabel,
+  inferTrendGroupBy,
+  iteratePeriodBuckets,
+  weekStartYmd,
+} from "../lib/analytics-period.js";
 import { writeAudit } from "./audit.service.js";
 import { cashBalance } from "./cash.service.js";
 import { assertWithinLimit } from "../lib/tenant-limits.js";
@@ -550,6 +556,45 @@ async function aggregateCollectionTrend(paymentMatch) {
   }));
 }
 
+function performanceTrendGroupBy(range, requestedGroupBy) {
+  if (!range?.from || !range?.to) return "DAY";
+  return inferTrendGroupBy(range.from, range.to, requestedGroupBy);
+}
+
+function trendBucketKey(ymd, groupBy) {
+  if (groupBy === "YEAR") return String(ymd).slice(0, 4);
+  if (groupBy === "MONTH") return String(ymd).slice(0, 7);
+  if (groupBy === "WEEK") return weekStartYmd(ymd);
+  return String(ymd).slice(0, 10);
+}
+
+function aggregateCollectionTrendByGroup(rows, range, groupBy) {
+  const aggregate = new Map();
+  for (const row of rows ?? []) {
+    const key = trendBucketKey(row.date, groupBy);
+    const prev = aggregate.get(key) ?? { count: 0, amountPaise: 0 };
+    aggregate.set(key, {
+      count: prev.count + (Number(row.count) || 0),
+      amountPaise: prev.amountPaise + (Number(row.amount?.amountPaise) || 0),
+    });
+  }
+
+  const sortedKeys =
+    range?.from && range?.to
+      ? [...iteratePeriodBuckets(range.from, range.to, groupBy)]
+      : [...aggregate.keys()].sort((a, b) => a.localeCompare(b));
+
+  return sortedKeys.map((key) => {
+    const value = aggregate.get(key) ?? { count: 0, amountPaise: 0 };
+    return {
+      date: key,
+      label: formatTrendBucketLabel(key, groupBy),
+      count: value.count,
+      amount: moneyRef(value.amountPaise),
+    };
+  });
+}
+
 async function aggregateRedemptionsCompleted(match) {
   const [count, sumRow] = await Promise.all([
     Redemption.countDocuments({ ...match, status: RedemptionStatus.COMPLETED }),
@@ -659,6 +704,7 @@ export async function getStaffPerformanceSummary(req) {
   const tenantId = req.auth.tenantId;
   const range = performanceDateRange(req.query);
   const rangedQuery = { ...req.query, ...range };
+  const trendGroupBy = performanceTrendGroupBy(range, req.query?.groupBy);
   const paymentMatch = {
     tenantId,
     status: PaymentStatus.SUCCESS,
@@ -715,13 +761,18 @@ export async function getStaffPerformanceSummary(req) {
   const count = collectionRow[0]?.count ?? paymentsCount;
   return {
     range,
+    trendGroupBy,
     collectionTotal: moneyRef(totalPaise),
     enrolments,
     customersServed: customersServed.length,
     paymentsCount: count,
     averageTicket: moneyRef(count ? Math.round(totalPaise / count) : 0),
     collectionByMode,
-    collectionTrend,
+    collectionTrend: aggregateCollectionTrendByGroup(
+      collectionTrend,
+      range,
+      trendGroupBy,
+    ),
     redemptionsCompleted,
     handoversInPeriod,
     cash: {
@@ -939,6 +990,7 @@ export async function getBranchPerformanceSummary(req) {
   const branchId = branch._id;
   const range = performanceDateRange(req.query);
   const rangedQuery = { ...req.query, ...range };
+  const trendGroupBy = performanceTrendGroupBy(range, req.query?.groupBy);
   const paymentMatch = {
     tenantId,
     branchId,
@@ -990,13 +1042,18 @@ export async function getBranchPerformanceSummary(req) {
   const count = collectionRow[0]?.count ?? paymentsCount;
   return {
     range,
+    trendGroupBy,
     collectionTotal: moneyRef(totalPaise),
     enrolments,
     customersServed: customersServed.length,
     paymentsCount: count,
     averageTicket: moneyRef(count ? Math.round(totalPaise / count) : 0),
     collectionByMode,
-    collectionTrend,
+    collectionTrend: aggregateCollectionTrendByGroup(
+      collectionTrend,
+      range,
+      trendGroupBy,
+    ),
     redemptionsCompleted,
     handoversInPeriod,
     topCollectors,

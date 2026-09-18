@@ -338,6 +338,32 @@ export function paymentPollStatusDto({ link, payment, scheme }) {
   };
 }
 
+export function derivePaymentIntentUiState(intent, payment) {
+  if (intent.status === "SUCCEEDED" || payment?.status === "SUCCESS") return "PAID";
+  if (intent.status === "EXPIRED") return "EXPIRED";
+  if (intent.status === "CANCELLED") return "CANCELLED";
+  if (intent.status === "FAILED" || payment?.status === "FAILED" || payment?.status === "REVERSED") {
+    return "FAILED";
+  }
+  return "PROCESSING";
+}
+
+export function paymentIntentPollDto({ intent, payment, scheme }) {
+  const state = derivePaymentIntentUiState(intent, payment);
+  return {
+    intentId: intent._id,
+    status: state,
+    processing: state === "PROCESSING",
+    paid: state === "PAID",
+    failed: state === "FAILED",
+    receipt: payment?.status === "SUCCESS"
+      ? { paymentId: payment._id, receiptNumber: payment.receiptNumber, paidAt: payment.paidAt }
+      : null,
+    updatedScheme: scheme ? withId(scheme) : null,
+    retryAfterSeconds: state === "PROCESSING" ? 3 : null,
+  };
+}
+
 /** UI poll status — maps link + payment storage states. */
 export function derivePaymentUiState(link, payment) {
   if (link.status === "PAID" || payment?.status === "SUCCESS") return "PAID";

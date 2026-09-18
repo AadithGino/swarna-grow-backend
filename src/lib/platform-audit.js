@@ -5,7 +5,8 @@ const SECRET_KEYS = new Set([
   "accessToken",
   "appSecret",
   "verifyToken",
-  "saltKey",
+  "clientSecret",
+  "webhookPassword",
   "passwordHash",
 ]);
 

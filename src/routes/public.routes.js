@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as auth from "../controllers/auth.controller.js";
 import * as payment from "../controllers/payment.controller.js";
+import * as upload from "../controllers/upload.controller.js";
 import { Branch } from "../models/index.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
@@ -38,3 +39,4 @@ publicRouter.get("/signup/check-availability", asyncHandler(auth.checkAvailabili
 publicRouter.get("/pay/:linkToken", asyncHandler(payment.publicLink));
 publicRouter.post("/pay/:linkToken/initiate", validate({ body: publicPaymentInitiateBody }), idempotent, asyncHandler(payment.initiatePublic));
 publicRouter.get("/pay/:linkToken/status", asyncHandler(payment.publicStatus));
+publicRouter.get("/uploads/:uploadId", asyncHandler(upload.publicDownload));

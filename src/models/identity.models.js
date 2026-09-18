@@ -13,7 +13,17 @@ const subscriptionSchema = new mongoose.Schema({
   extensionReason: String, cancelReason: String,
 }, { _id: false });
 const integrationSecretsSchema = new mongoose.Schema({
-  phonepe: { provider: String, merchantId: String, saltKey: String, saltIndex: Number, environment: String, callbackUrlOverride: String, verifiedAt: Date, verificationStatus: String },
+  phonepe: {
+    provider: String,
+    clientId: String,
+    clientSecret: String,
+    clientVersion: Number,
+    webhookUsername: String,
+    webhookPassword: String,
+    environment: String,
+    verifiedAt: Date,
+    verificationStatus: String,
+  },
   whatsapp: { provider: String, phoneNumberId: String, businessAccountId: String, accessToken: String, appSecret: String, verifyToken: String, environment: String, callbackUrlOverride: String, verifiedAt: Date, verificationStatus: String },
 }, { _id: false });
 

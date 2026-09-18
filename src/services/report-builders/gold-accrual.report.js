@@ -5,9 +5,14 @@ import { today } from "../../lib/date.js";
 import { dateMatch } from "../../lib/query-filters.js";
 import {
   formatTrendBucketLabel,
-  iteratePeriodBuckets,
 } from "../../lib/analytics-period.js";
-import { baseEnvelope, paginateRows, reportDataScope } from "./report-envelope.js";
+import {
+  baseEnvelope,
+  paginateRows,
+  reportDataScope,
+  reportTrendGroupBy,
+  rollupDailyMetric,
+} from "./report-envelope.js";
 
 const COLUMNS = [
   { key: "label", label: "Plan", type: "text", sticky: true },
@@ -18,7 +23,7 @@ const COLUMNS = [
   { key: "averageRatePaid", label: "Avg rate paid", type: "currency", align: "right" },
 ];
 
-async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to) {
+async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to, groupBy) {
   if (!schemeIds.length || !from || !to) return [];
 
   const baseMatch = {
@@ -60,13 +65,17 @@ async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to) {
   ]);
 
   const dailyMap = new Map(dailyRows.map((row) => [row._id, row.weightMg]));
+  const rolled = rollupDailyMetric(dailyRows, from, to, groupBy, "weightMg");
   let cumulative = openingRow[0]?.weightMg ?? 0;
 
-  return [...iteratePeriodBuckets(from, to, "DAY")].map((day) => {
-    cumulative += dailyMap.get(day) ?? 0;
+  return rolled.map((bucket) => {
+    cumulative +=
+      groupBy === "DAY"
+        ? (dailyMap.get(bucket.key) ?? 0)
+        : (Number(bucket.value) || 0);
     return {
-      x: day,
-      xDisplay: formatTrendBucketLabel(day, "DAY"),
+      x: bucket.key,
+      xDisplay: formatTrendBucketLabel(bucket.key, groupBy),
       y: cumulative,
       yDisplay: weightRef(cumulative).weightDisplay,
     };
@@ -76,6 +85,7 @@ async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to) {
 export async function buildGoldAccrualReport(req) {
   const envelope = baseEnvelope(req, "GOLD_ACCRUAL", "Gold accrual & liability");
   const { from, to } = envelope.period;
+  const groupBy = reportTrendGroupBy(from, to, req.query);
   const scope = reportDataScope(req);
   const branchId = scope.branchId ?? null;
   const rateRow = await currentGoldRate({ tenantId: req.auth.tenantId, branchId }, today());
@@ -110,6 +120,7 @@ export async function buildGoldAccrualReport(req) {
     req.auth.tenantId,
     from,
     to,
+    groupBy,
   );
 
   const byPlan = new Map();
@@ -192,7 +203,7 @@ export async function buildGoldAccrualReport(req) {
       accrualTrend: {
         chartType: "line",
         title: "Cumulative grams",
-        subtitle: "Running total of gold credited to active schemes",
+        subtitle: `Running total of gold credited to active schemes · grouped by ${groupBy.toLowerCase()}`,
         yAxis: { type: "weight", label: "Grams" },
         series: [{ key: "GOLD_ACCRUED", name: "Grams", data: trendData }],
       },

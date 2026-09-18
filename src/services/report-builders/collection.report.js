@@ -5,7 +5,6 @@ import {
   baseEnvelope,
   branchNameMap,
   buildCurrencyTrendPoints,
-  chartPointCurrency,
   dateMatch,
   paginateRows,
   reportDataScope,

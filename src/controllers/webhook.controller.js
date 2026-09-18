@@ -1,6 +1,6 @@
 import { Tenant } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
-import { phonePeProvider } from "../integrations/phonepe.provider.js";
+import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import { whatsappProvider } from "../integrations/whatsapp.provider.js";
 import { persistWebhook } from "../services/payment.service.js";
 import { getQueue } from "../queues/index.js";
@@ -10,19 +10,48 @@ import { sha256, unseal } from "../lib/crypto.js";
 export const phonepe = async (req, res) => {
   const tenant = await Tenant.findById(req.params.tenantId).select("+integrationSecrets").lean();
   const raw = req.rawBody;
-  const signature = req.headers["x-verify"];
-  const sealed = tenant?.integrationSecrets?.phonepe?.saltKey;
-  const saltKey = sealed ? unseal(sealed) : undefined;
-  if (!phonePeProvider.verifyWebhook(raw, req.originalUrl.split("?")[0], signature, saltKey, tenant?.integrationSecrets?.phonepe?.saltIndex)) {
-    const event = await persistWebhook({ tenantId: req.params.tenantId, provider: "PHONEPE", providerEventId: `signature_${sha256(raw).slice(0, 24)}`, signature, rawBody: raw, payload: {} });
-    if (event) { event.status = "SIGNATURE_FAILED"; event.error = "Invalid webhook signature"; await event.save(); }
+  const authorization = req.headers.authorization ?? req.headers.Authorization;
+  const credentials = resolvePhonePeCredentials(tenant);
+  let callback;
+  try {
+    callback = phonePeProvider.verifyCallback(raw, authorization, credentials);
+  } catch {
+    const event = await persistWebhook({
+      tenantId: req.params.tenantId,
+      provider: "PHONEPE",
+      providerEventId: `signature_${sha256(raw).slice(0, 24)}`,
+      signature: authorization,
+      rawBody: raw,
+      payload: {},
+    });
+    if (event) {
+      event.status = "SIGNATURE_FAILED";
+      event.error = "Invalid webhook signature";
+      await event.save();
+    }
     throw new AppError("WEBHOOK_SIGNATURE_INVALID", "Invalid webhook signature.", 401);
   }
-  let payload;
-  try { payload = JSON.parse(raw.toString()); } catch { throw new AppError("WEBHOOK_SIGNATURE_INVALID", "Invalid webhook signature.", 401); }
-  const providerEventId = payload.data?.transactionId ?? payload.transactionId ?? payload.response;
-  const event = await persistWebhook({ tenantId: req.params.tenantId, provider: "PHONEPE", providerEventId, signature, rawBody: raw, payload });
-  if (event) await getQueue("webhooks")?.add("phonepe", { webhookEventId: event._id }, { jobId: event._id, attempts: 5, backoff: { type: "exponential", delay: 5000 } });
+
+  const payload = { type: callback.type, payload: callback.payload };
+  const providerEventId =
+    callback.payload?.orderId
+    ?? callback.payload?.paymentDetails?.[0]?.transactionId
+    ?? `pe_${callback.payload?.originalMerchantOrderId ?? callback.payload?.merchantOrderId ?? Date.now()}`;
+  const event = await persistWebhook({
+    tenantId: req.params.tenantId,
+    provider: "PHONEPE",
+    providerEventId,
+    signature: authorization,
+    rawBody: raw,
+    payload,
+  });
+  if (event) {
+    await getQueue("webhooks")?.add(
+      "phonepe",
+      { webhookEventId: event._id },
+      { jobId: event._id, attempts: 5, backoff: { type: "exponential", delay: 5000 } },
+    );
+  }
   sendSuccess(res, { received: true, eventId: event?._id ?? null });
 };
 

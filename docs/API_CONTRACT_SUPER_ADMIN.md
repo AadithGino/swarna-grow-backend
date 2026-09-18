@@ -188,7 +188,7 @@ Plan create uses `supportedBillingCycles: ["MONTHLY", "ANNUAL"]` (not a single `
   },
   "integrations": {
     "whatsapp": { "configured": true, "provider": "META_CLOUD", "phoneNumberDisplay": "...", "accessTokenMasked": "••••", "lastVerifiedAt": "ISO" },
-    "paymentGateway": { "configured": true, "provider": "PHONEPE", "merchantIdMasked": "SREE••••PE", "environment": "PRODUCTION", "lastVerifiedAt": "ISO" }
+    "paymentGateway": { "configured": true, "clientCredentialsConfigured": true, "provider": "PHONEPE", "clientIdMasked": "SREE••••SDK", "environment": "PRODUCTION", "lastVerifiedAt": "ISO" }
   },
   "templates": { "configured": 7, "required": 8, "missing": ["SCHEME_CLOSED"] },
   "usage": {
@@ -1022,15 +1022,18 @@ No plaintext secrets in responses.
 ```json
 {
   "provider": "PHONEPE",
-  "merchantId": "string",
-  "saltKey": "string",
-  "saltIndex": 1,
-  "environment": "PRODUCTION|SANDBOX",
-  "callbackUrlOverride": "string|null"
+  "clientId": "string",
+  "clientSecret": "string",
+  "clientVersion": 1,
+  "webhookUsername": "string",
+  "webhookPassword": "string",
+  "environment": "PRODUCTION|SANDBOX"
 }
 ```
 
-`saltIndex` is an **integer**.
+`clientVersion` is an **integer**. Webhook username/password must match the jeweller's PhonePe
+dashboard Webhooks tab. Register webhook URL once per tenant:
+`{PUBLIC_BASE_URL}/api/v1/webhooks/phonepe/{tenantId}`.
 
 - **Response (200):**
 
@@ -1039,8 +1042,9 @@ No plaintext secrets in responses.
   "success": true,
   "data": {
     "configured": true,
+    "clientCredentialsConfigured": true,
     "provider": "PHONEPE",
-    "merchantIdMasked": "SREE••••PE",
+    "clientIdMasked": "SREE••••SDK",
     "environment": "PRODUCTION",
     "verificationStatus": "PENDING|VERIFIED|FAILED",
     "version": 2

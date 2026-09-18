@@ -1574,17 +1574,11 @@ try {
   await wipeDemoTenant(DEMO.tenantCode);
   const { tenant, hq, kochi, owner, manager, staff1, staff2, passwordHash } =
     await createDemoTenant();
-  const { tenantAdmin, kochiStaff } = await seedExtraStaff(
-    tenant._id,
-    hq._id,
-    kochi._id,
-    passwordHash,
-  );
+  await seedExtraStaff(tenant._id, hq._id, kochi._id, passwordHash);
   const ctx = makeCtx(tenant, owner);
   const staffCtx = makeStaffCtx(tenant, staff1, hq);
   const staff2Ctx = makeStaffCtx(tenant, staff2, hq);
   const managerCtx = makeStaffCtx(tenant, manager, kochi);
-  const kochiStaffCtx = makeStaffCtx(tenant, kochiStaff, kochi);
   const collector = await User.findOne({
     tenantId: tenant._id,
     mobile: DEMO.collectorMobile,

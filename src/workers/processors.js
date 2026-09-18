@@ -14,6 +14,8 @@ import { logger } from "../config/logger.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { unseal } from "../lib/crypto.js";
 import { AppError } from "../lib/app-error.js";
+import { normalizePhonePeWebhookEvent } from "../lib/phonepe-webhook-payload.js";
+import { isPhonePeRefundCallback } from "../integrations/phonepe.provider.js";
 import { buildReportExportRows, exportReportKey, isRawExportType } from "../lib/report-export.js";
 import PDFDocument from "pdfkit";
 
@@ -33,11 +35,176 @@ export async function processWebhook(job) {
   event.status = "PROCESSING"; event.attempts = (event.attempts ?? 0) + 1; await event.save();
   try {
     if (event.provider === "PHONEPE") {
-      const payload = event.payload?.data ?? event.payload; const reference = payload?.merchantTransactionId ?? payload?.transactionId;
-      if (payload?.state === "COMPLETED" || payload?.code === "PAYMENT_SUCCESS") {
-        const intent = await PaymentIntent.findOne({ tenantId: event.tenantId, $or: [{ _id: reference }, { providerOrderId: reference }], status: { $ne: "SUCCEEDED" } }); const link = intent ? null : await PaymentLink.findOne({ tenantId: event.tenantId, _id: reference, status: { $ne: "PAID" } });
-        const source = intent ?? link; if (source) { if (Number(payload.amount) !== Number(source.amountPaise)) { const { Payment } = await import("../models/index.js"); await Payment.updateOne({ _id: source.paymentId }, { $set: { status: "AMOUNT_MISMATCH_PENDING_REVIEW", requiresReview: true, reviewReason: "GATEWAY_AMOUNT_MISMATCH", providerPayload: payload } }); await Alert.findOneAndUpdate({ tenantId: event.tenantId, type: "GATEWAY_AMOUNT_MISMATCH", entityId: source.paymentId, status: "OPEN" }, { $setOnInsert: { branchId: source.branchId, severity: "CRITICAL", title: "Gateway amount mismatch", message: "A verified gateway callback amount did not match the reserved payment amount.", entityType: "PAYMENT", metadata: { expectedPaise: source.amountPaise, receivedPaise: payload.amount } } }, { upsert: true }); if (intent?.status === "PENDING") { intent.status = "FAILED"; intent.version += 1; await intent.save(); await Scheme.updateOne({ _id: intent.schemeId }, { $inc: { positionVersion: 1, version: 1 } }); } event.status = "COMPLETED"; event.processedAt = new Date(); await event.save(); return; } const lateSuccess = intent ? intent.status !== "PENDING" : !["CREATED", "SENT", "OPENED"].includes(link.status); const fakeReq = { auth: { id: "phonepe", tenantId: event.tenantId, type: "WEBHOOK" }, scope: { tenantId: event.tenantId }, body: { schemeId: source.schemeId, amountPaise: source.amountPaise, mode: "ONLINE_GATEWAY", targetCycle: source.targetCycle, positionVersion: source.positionVersion }, query: { targetCycle: source.targetCycle }, baseUrl: "/webhooks", traceId: event._id, ip: "provider", headers: {} }; const payment = await recordPayment(fakeReq, { gateway: true, source: "WEBHOOK", actorType: "WEBHOOK", existingPaymentId: source.paymentId, providerTransactionId: payload.transactionId, providerPayload: payload, lateSuccess, lateSuccessDetectedVia: lateSuccess ? "WEBHOOK" : undefined, gatewayCompletedAt: payload.completedAt ? new Date(payload.completedAt) : new Date() }); if (intent) { intent.status = "SUCCEEDED"; intent.paymentId = payment._id; await intent.save(); } if (link) { link.status = "PAID"; link.paidAt = new Date(); await link.save(); if (link.paymentIntentId) await PaymentIntent.updateOne({ _id: link.paymentIntentId }, { $set: { status: "SUCCEEDED", paymentId: payment._id }, $inc: { version: 1 } }); } } else { await Alert.findOneAndUpdate({ tenantId: event.tenantId, type: "GATEWAY_WEBHOOK_UNMATCHED", entityId: reference ?? event._id, status: "OPEN" }, { $setOnInsert: { severity: "CRITICAL", title: "Unmatched gateway webhook", message: "A completed gateway callback did not match any payment intent or link.", entityType: "WEBHOOK", metadata: { provider: event.provider, reference, amount: payload.amount } } }, { upsert: true }); }
-      } else if (["FAILED", "PAYMENT_ERROR", "PAYMENT_DECLINED"].includes(payload?.state ?? payload?.code)) { const pending = await (await import("../models/index.js")).Payment.findOneAndUpdate({ tenantId: event.tenantId, $or: [{ providerTransactionId: reference }, { receiptNumber: `PENDING-${reference}` }], status: "PENDING" }, { $set: { status: "FAILED", providerPayload: payload } }, { new: true }); if (pending) { const intent = await PaymentIntent.findOneAndUpdate({ tenantId: event.tenantId, paymentId: pending._id, status: "PENDING" }, { $set: { status: "FAILED" }, $inc: { version: 1 } }, { new: true }); if (intent) await Scheme.updateOne({ _id: intent.schemeId }, { $inc: { positionVersion: 1, version: 1 } }); } }
+      const normalized = normalizePhonePeWebhookEvent(event.payload);
+      const { reference, payload, transactionId } = normalized;
+      if (normalized.refund || isPhonePeRefundCallback(event.payload?.type)) {
+        logger.info(
+          { type: event.payload?.type, orderId: payload?.orderId },
+          "Refund webhook received — refund handling not yet implemented",
+        );
+        // TODO(refund): build out in a later pass
+      } else if (normalized.completed) {
+        const intent = await PaymentIntent.findOne({
+          tenantId: event.tenantId,
+          $or: [{ _id: reference }, { providerOrderId: reference }],
+          status: { $ne: "SUCCEEDED" },
+        });
+        const link = intent
+          ? null
+          : await PaymentLink.findOne({
+            tenantId: event.tenantId,
+            _id: reference,
+            status: { $ne: "PAID" },
+          });
+        const source = intent ?? link;
+        if (source) {
+          if (Number(normalized.amount) !== Number(source.amountPaise)) {
+            const { Payment } = await import("../models/index.js");
+            await Payment.updateOne(
+              { _id: source.paymentId },
+              {
+                $set: {
+                  status: "AMOUNT_MISMATCH_PENDING_REVIEW",
+                  requiresReview: true,
+                  reviewReason: "GATEWAY_AMOUNT_MISMATCH",
+                  providerPayload: payload,
+                },
+              },
+            );
+            await Alert.findOneAndUpdate(
+              {
+                tenantId: event.tenantId,
+                type: "GATEWAY_AMOUNT_MISMATCH",
+                entityId: source.paymentId,
+                status: "OPEN",
+              },
+              {
+                $setOnInsert: {
+                  branchId: source.branchId,
+                  severity: "CRITICAL",
+                  title: "Gateway amount mismatch",
+                  message: "A verified gateway callback amount did not match the reserved payment amount.",
+                  entityType: "PAYMENT",
+                  metadata: {
+                    expectedPaise: source.amountPaise,
+                    receivedPaise: normalized.amount,
+                  },
+                },
+              },
+              { upsert: true },
+            );
+            if (intent?.status === "PENDING") {
+              intent.status = "FAILED";
+              intent.version += 1;
+              await intent.save();
+              await Scheme.updateOne(
+                { _id: intent.schemeId },
+                { $inc: { positionVersion: 1, version: 1 } },
+              );
+            }
+            event.status = "COMPLETED";
+            event.processedAt = new Date();
+            await event.save();
+            return;
+          }
+          const lateSuccess = intent
+            ? intent.status !== "PENDING"
+            : !["CREATED", "SENT", "OPENED"].includes(link.status);
+          const fakeReq = {
+            auth: { id: "phonepe", tenantId: event.tenantId, type: "WEBHOOK" },
+            scope: { tenantId: event.tenantId },
+            body: {
+              schemeId: source.schemeId,
+              amountPaise: source.amountPaise,
+              mode: "ONLINE_GATEWAY",
+              targetCycle: source.targetCycle,
+              positionVersion: source.positionVersion,
+            },
+            query: { targetCycle: source.targetCycle },
+            baseUrl: "/webhooks",
+            traceId: event._id,
+            ip: "provider",
+            headers: {},
+          };
+          const payment = await recordPayment(fakeReq, {
+            gateway: true,
+            source: "WEBHOOK",
+            actorType: "WEBHOOK",
+            existingPaymentId: source.paymentId,
+            providerTransactionId: transactionId,
+            providerPayload: payload,
+            lateSuccess,
+            lateSuccessDetectedVia: lateSuccess ? "WEBHOOK" : undefined,
+            gatewayCompletedAt: new Date(),
+          });
+          if (intent) {
+            intent.status = "SUCCEEDED";
+            intent.paymentId = payment._id;
+            await intent.save();
+          }
+          if (link) {
+            link.status = "PAID";
+            link.paidAt = new Date();
+            await link.save();
+            if (link.paymentIntentId) {
+              await PaymentIntent.updateOne(
+                { _id: link.paymentIntentId },
+                { $set: { status: "SUCCEEDED", paymentId: payment._id }, $inc: { version: 1 } },
+              );
+            }
+          }
+        } else {
+          await Alert.findOneAndUpdate(
+            {
+              tenantId: event.tenantId,
+              type: "GATEWAY_WEBHOOK_UNMATCHED",
+              entityId: reference ?? event._id,
+              status: "OPEN",
+            },
+            {
+              $setOnInsert: {
+                severity: "CRITICAL",
+                title: "Unmatched gateway webhook",
+                message: "A completed gateway callback did not match any payment intent or link.",
+                entityType: "WEBHOOK",
+                metadata: {
+                  provider: event.provider,
+                  reference,
+                  amount: normalized.amount,
+                },
+              },
+            },
+            { upsert: true },
+          );
+        }
+      } else if (normalized.failed) {
+        const pending = await (await import("../models/index.js")).Payment.findOneAndUpdate(
+          {
+            tenantId: event.tenantId,
+            $or: [
+              { providerTransactionId: reference },
+              { providerTransactionId: transactionId },
+              { receiptNumber: `PENDING-${reference}` },
+            ],
+            status: "PENDING",
+          },
+          { $set: { status: "FAILED", providerPayload: payload } },
+          { new: true },
+        );
+        if (pending) {
+          const intent = await PaymentIntent.findOneAndUpdate(
+            { tenantId: event.tenantId, paymentId: pending._id, status: "PENDING" },
+            { $set: { status: "FAILED" }, $inc: { version: 1 } },
+            { new: true },
+          );
+          if (intent) {
+            await Scheme.updateOne(
+              { _id: intent.schemeId },
+              { $inc: { positionVersion: 1, version: 1 } },
+            );
+          }
+        }
+      }
     } else if (event.provider === "WHATSAPP") {
       const status = event.payload?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
       if (status) await updateDelivery(status.id, status.status?.toUpperCase(), status.errors?.[0]);

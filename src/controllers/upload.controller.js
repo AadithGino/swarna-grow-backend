@@ -6,3 +6,6 @@ export const complete = async (req, res) =>
 
 export const download = async (req, res) =>
   sendSuccess(res, await uploads.getUploadDownload(req));
+
+export const publicDownload = async (req, res) =>
+  sendSuccess(res, await uploads.getPublicUploadDownload(req.params.uploadId));

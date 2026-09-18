@@ -7,7 +7,7 @@ import { withTransaction } from "../lib/transaction.js";
 import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
 import { effectiveScope, searchRegex } from "../lib/query-filters.js";
-import { addMonthsClamped, monthKey, today } from "../lib/date.js";
+import { addMonthsClamped, today } from "../lib/date.js";
 import { iteratePeriodBuckets } from "../lib/analytics-period.js";
 import { moneyRef, weightRef } from "../lib/money.js";
 import { buildAmountSummary } from "../lib/plan-amount-summary.js";

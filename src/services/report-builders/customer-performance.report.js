@@ -191,10 +191,6 @@ export async function buildCustomerPerformanceReport(req) {
     (sum, row) => sum + row.enrolments,
     0,
   );
-  const totalActive = tableRows.reduce(
-    (sum, row) => sum + row.activeSchemes,
-    0,
-  );
   const totalPayments = tableRows.reduce(
     (sum, row) => sum + row.paymentCount,
     0,

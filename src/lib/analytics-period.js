@@ -71,11 +71,12 @@ export function previousPeriod(from, to) {
 
 export function inferTrendGroupBy(from, to, requested) {
   const group = String(requested ?? "").trim().toUpperCase();
-  if (["DAY", "WEEK", "MONTH"].includes(group)) return group;
+  if (["DAY", "WEEK", "MONTH", "YEAR"].includes(group)) return group;
   const days = periodDayCount(from, to);
-  if (days <= 31) return "DAY";
-  if (days <= 93) return "WEEK";
-  return "MONTH";
+  if (days <= 7) return "DAY";
+  if (days <= 31) return "WEEK";
+  if (days <= 366) return "MONTH";
+  return "YEAR";
 }
 
 export function weekStartYmd(ymd) {
@@ -111,11 +112,21 @@ export function* iteratePeriodBuckets(from, to, groupBy) {
     return;
   }
 
-  let cur = start.startOf("month");
-  const limit = end.startOf("month");
-  while (!cur.isAfter(limit, "month")) {
-    yield cur.format("YYYY-MM");
-    cur = cur.add(1, "month");
+  if (groupBy === "MONTH") {
+    let cur = start.startOf("month");
+    const limit = end.startOf("month");
+    while (!cur.isAfter(limit, "month")) {
+      yield cur.format("YYYY-MM");
+      cur = cur.add(1, "month");
+    }
+    return;
+  }
+
+  let cur = start.startOf("year");
+  const limit = end.startOf("year");
+  while (!cur.isAfter(limit, "year")) {
+    yield cur.format("YYYY");
+    cur = cur.add(1, "year");
   }
 }
 
@@ -133,6 +144,13 @@ export function formatPeriodLabel(from, to) {
 export function bucketAsOfYmd(bucketKey, groupBy, periodTo) {
   const end = String(periodTo ?? "").slice(0, 10);
   if (groupBy === "DAY") return bucketKey;
+  if (groupBy === "YEAR") {
+    const yearEnd = dayjs
+      .tz(`${bucketKey}-01-01`, TZ)
+      .endOf("year")
+      .format("YYYY-MM-DD");
+    return !end || yearEnd <= end ? yearEnd : end;
+  }
   if (groupBy === "MONTH") {
     const monthEnd = dayjs
       .tz(`${bucketKey}-01`, TZ)
@@ -145,6 +163,9 @@ export function bucketAsOfYmd(bucketKey, groupBy, periodTo) {
 }
 
 export function formatTrendBucketLabel(bucketKey, groupBy) {
+  if (groupBy === "YEAR") {
+    return bucketKey;
+  }
   if (groupBy === "MONTH") {
     const d = dayjs.tz(`${bucketKey}-01`, TZ);
     return d.isValid() ? d.format("MMM YYYY") : bucketKey;
@@ -215,13 +236,25 @@ export function rollupDailyRegistrationCounts(dailyRows, from, to, groupBy) {
     }));
   }
 
-  const monthMap = new Map();
-  for (const [day, count] of dailyMap) {
-    const monthKey = day.slice(0, 7);
-    monthMap.set(monthKey, (monthMap.get(monthKey) ?? 0) + count);
+  if (groupBy === "MONTH") {
+    const monthMap = new Map();
+    for (const [day, count] of dailyMap) {
+      const monthKey = day.slice(0, 7);
+      monthMap.set(monthKey, (monthMap.get(monthKey) ?? 0) + count);
+    }
+    return [...iteratePeriodBuckets(from, to, "MONTH")].map((key) => ({
+      key,
+      count: monthMap.get(key) ?? 0,
+    }));
   }
-  return [...iteratePeriodBuckets(from, to, "MONTH")].map((key) => ({
+
+  const yearMap = new Map();
+  for (const [day, count] of dailyMap) {
+    const yearKey = day.slice(0, 4);
+    yearMap.set(yearKey, (yearMap.get(yearKey) ?? 0) + count);
+  }
+  return [...iteratePeriodBuckets(from, to, "YEAR")].map((key) => ({
     key,
-    count: monthMap.get(key) ?? 0,
+    count: yearMap.get(key) ?? 0,
   }));
 }

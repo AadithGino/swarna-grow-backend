@@ -454,12 +454,22 @@ export async function listSchemesForApp(req) {
 }
 
 export async function publicPayStatus(linkToken) {
-  const link = await getPublicLink(linkToken, false);
-  const [tenant, customer, scheme, payment] = await Promise.all([
+  let link = await getPublicLink(linkToken, false);
+  let payment = link.paymentId ? await Payment.findById(link.paymentId).lean() : null;
+  payment = await (
+    await import("./payment.service.js")
+  ).maybeCompleteMockGatewayPayment({
+    tenantId: link.tenantId,
+    link,
+    payment,
+  });
+  if (payment?.status === "SUCCESS") {
+    link = (await PaymentLink.findById(link._id).lean()) ?? link;
+  }
+  const [tenant, customer, scheme] = await Promise.all([
     Tenant.findById(link.tenantId).lean(),
     Customer.findById(link.customerId).select("name mobile").lean(),
     Scheme.findById(link.schemeId).lean(),
-    link.paymentId ? Payment.findById(link.paymentId).lean() : null,
   ]);
   const canPay = !["PAID", "EXPIRED", "CANCELLED"].includes(link.status);
   const page = publicPayPageDto({

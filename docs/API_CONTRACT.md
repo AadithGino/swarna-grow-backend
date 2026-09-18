@@ -1536,9 +1536,13 @@ null
 - **Request body:**
 ```json
 {
-  "merchantId": "string?",
-  "saltKey": "string?",
-  "saltIndex": "string?"
+  "provider": "PHONEPE",
+  "clientId": "string",
+  "clientSecret": "string",
+  "clientVersion": 1,
+  "webhookUsername": "string",
+  "webhookPassword": "string",
+  "environment": "SANDBOX|PRODUCTION"
 }
 ```
 - **Response (200):**

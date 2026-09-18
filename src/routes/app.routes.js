@@ -177,6 +177,13 @@ appRouter.post(
   idempotent,
   asyncHandler(appCustomer.createIntent),
 );
+appRouter.post(
+  "/schemes/:schemeId/pay/sdk-order",
+  requireCustomerPayments,
+  validate({ body: paymentIntentBody }),
+  idempotent,
+  asyncHandler(appCustomer.createSdkOrder),
+);
 appRouter.get("/payment-intents/:intentId", asyncHandler(appCustomer.getIntent));
 appRouter.post(
   "/payment-intents/:intentId/cancel",

@@ -134,13 +134,47 @@ export const createIntent = async (req, res) => {
   );
 };
 
+export const createSdkOrder = async (req, res) => {
+  const created = await payments.createSdkPaymentIntent(req);
+  return sendSuccess(
+    res,
+    paymentIntentAppDto(created, {
+      token: created.token,
+      merchantOrderId: created.merchantOrderId,
+      paymentId: created.paymentId,
+      providerOrderId: created.providerOrderId,
+    }),
+    {},
+    201,
+  );
+};
+
 export const getIntent = async (req, res) => {
-  const { PaymentIntent } = await import("../models/index.js");
-  const intent = await PaymentIntent.findOne({
+  const { Payment, PaymentIntent, Scheme } = await import("../models/index.js");
+  let intent = await PaymentIntent.findOne({
     _id: req.params.intentId,
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
   }).lean();
   if (!intent) throw errors.notFound("Payment intent");
-  return sendSuccess(res, paymentIntentAppDto(intent));
+  let payment = intent.paymentId ? await Payment.findById(intent.paymentId).lean() : null;
+  payment = await (
+    await import("../services/payment.service.js")
+  ).maybeCompleteMockGatewayPayment({
+    tenantId: req.auth.tenantId,
+    intent,
+    payment,
+  });
+  if (payment?.status === "SUCCESS") {
+    intent = (await PaymentIntent.findById(intent._id).lean()) ?? intent;
+  }
+  const scheme =
+    payment?.status === "SUCCESS"
+      ? await Scheme.findById(intent.schemeId).lean()
+      : null;
+  const { paymentIntentPollDto } = await import("../lib/customer-app-dto.js");
+  return sendSuccess(res, {
+    ...paymentIntentAppDto(intent, { paymentId: intent.paymentId ?? payment?._id }),
+    ...paymentIntentPollDto({ intent, payment, scheme }),
+  });
 };

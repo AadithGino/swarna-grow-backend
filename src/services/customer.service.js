@@ -255,7 +255,18 @@ export async function customerAnalytics(req) {
       chartType: "line",
       title: "New customers",
       subtitle: "Customers registered during the selected period",
-      xAxis: { type: "category", label: "Date", format: groupBy === "MONTH" ? "MMM YYYY" : "D MMM" },
+      xAxis: {
+        type: "category",
+        label: "Date",
+        format:
+          groupBy === "YEAR"
+            ? "YYYY"
+            : groupBy === "MONTH"
+              ? "MMM YYYY"
+              : groupBy === "WEEK"
+                ? "[Week of] D MMM"
+                : "D MMM",
+      },
       yAxis: { type: "count", label: "Customers", min: 0 },
       series: [{
         key: "NEW_CUSTOMERS",

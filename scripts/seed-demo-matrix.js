@@ -32,10 +32,6 @@ import {
   transitionRedemption,
 } from "../src/services/redemption.service.js";
 
-function daysFromToday(offsetDays) {
-  return dayjs(today()).add(offsetDays, "day").format("YYYY-MM-DD");
-}
-
 function redemptionCtx(ctx, schemeId, body = {}) {
   return { ...ctx, params: { schemeId }, body };
 }
@@ -637,7 +633,7 @@ export async function seedExtendedCashControl({
   summary.push("Sanjay · ₹20,000 handover CANCELLED by staff");
 
   // Rejected handover
-  free = await recordFlexPayment(staffCtx, free, 30_000, "CASH");
+  await recordFlexPayment(staffCtx, free, 30_000, "CASH");
   const rejectHo = await createHandover(
     {
       ...staffCtx,

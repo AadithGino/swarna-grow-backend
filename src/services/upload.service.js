@@ -140,6 +140,24 @@ export async function getUploadDownload(req) {
   };
 }
 
+export async function getPublicUploadDownload(uploadId) {
+  const upload = await Upload.findById(uploadId).lean();
+  if (!upload || upload.purpose !== UploadPurpose.TENANT_LOGO) {
+    throw errors.notFound("Upload");
+  }
+  if (upload.status === UploadStatus.PENDING || upload.status === UploadStatus.EXPIRED) {
+    throw errors.notFound("Upload");
+  }
+  const downloadUrl = await storageProvider.presignDownload(upload.objectKey);
+  return {
+    uploadId: upload._id,
+    downloadUrl,
+    fileName: upload.fileName ?? null,
+    contentType: upload.contentType ?? null,
+    expiresInSeconds: 900,
+  };
+}
+
 function assertAttachableOwner(req, upload, subjectId) {
   if (upload.ownerId === req.auth.id) return;
   if (subjectId && upload.ownerId === subjectId) return;

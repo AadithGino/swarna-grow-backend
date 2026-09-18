@@ -1,6 +1,5 @@
 import { Router } from "express";
 import * as controller from "../controllers/operations.controller.js";
-import * as payment from "../controllers/payment.controller.js";
 import { HandoverInitiator } from "../constants/enums.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import { asyncHandler } from "../lib/async-handler.js";

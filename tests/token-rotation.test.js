@@ -10,7 +10,7 @@ test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => { await resetTestDb(); });
 
-test("concurrent refresh rotation allows exactly one successor token", async () => {
+test("concurrent refresh rotation allows one successor and one idempotent refresh", async () => {
   const { tenant, branch, user } = await seedTenantUser();
   const subject = {
     id: user._id,
@@ -26,6 +26,11 @@ test("concurrent refresh rotation allows exactly one successor token", async () 
     { deviceId: "rotation-test", platform: "web" },
     { headers: {}, ip: "127.0.0.1" },
   );
+  const familyId = (
+    await Session.findOne({ userId: user._id, deviceId: "rotation-test" })
+      .sort({ createdAt: -1 })
+      .lean()
+  )?.familyId;
   const loader = async () => ({
     ...subject,
     securityVersion: user.securityVersion ?? 0,
@@ -35,15 +40,64 @@ test("concurrent refresh rotation allows exactly one successor token", async () 
     rotateSession(refreshToken, loader),
   ]);
   const fulfilled = results.filter((row) => row.status === "fulfilled");
-  const rejected = results.filter((row) => row.status === "rejected");
-  assert.equal(fulfilled.length, 1);
-  assert.equal(rejected.length, 1);
-  assert.ok(rejected[0].reason instanceof AppError);
-  assert.equal(rejected[0].reason.code, "TOKEN_REUSE_DETECTED");
-  assert.ok(fulfilled[0].value.refreshToken);
+  assert.equal(fulfilled.length, 2);
+  const withRefresh = fulfilled.filter((row) => row.value.refreshToken);
+  const accessOnly = fulfilled.filter((row) => !row.value.refreshToken);
+  assert.equal(withRefresh.length, 1);
+  assert.equal(accessOnly.length, 1);
   assert.equal(
-    await Session.countDocuments({ userId: user._id, revokedAt: null, consumedAt: null }),
+    await Session.countDocuments({
+      familyId,
+      revokedAt: null,
+      consumedAt: null,
+    }),
+    1,
+  );
+});
+
+test("stale refresh reuse outside grace revokes the token family", async () => {
+  const { tenant, branch, user } = await seedTenantUser();
+  const subject = {
+    id: user._id,
+    type: UserType.TENANT_USER,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    role: user.role,
+    permissions: user.permissions ?? ["*"],
+    securityVersion: user.securityVersion ?? 0,
+  };
+  const { refreshToken } = await issueSession(
+    subject,
+    { deviceId: "rotation-test", platform: "web" },
+    { headers: {}, ip: "127.0.0.1" },
+  );
+  const familyId = (
+    await Session.findOne({ userId: user._id, deviceId: "rotation-test" })
+      .sort({ createdAt: -1 })
+      .lean()
+  )?.familyId;
+  const loader = async () => ({
+    ...subject,
+    securityVersion: user.securityVersion ?? 0,
+  });
+  const first = await rotateSession(refreshToken, loader);
+  assert.ok(first.refreshToken);
+
+  const consumed = await Session.findOne({
+    familyId,
+    consumedAt: { $ne: null },
+  }).lean();
+  await Session.updateOne(
+    { _id: consumed._id },
+    { $set: { consumedAt: new Date(Date.now() - 60_000) } },
+  );
+
+  await assert.rejects(
+    () => rotateSession(refreshToken, loader),
+    (error) => error instanceof AppError && error.code === "TOKEN_REUSE_DETECTED",
+  );
+  assert.equal(
+    await Session.countDocuments({ familyId, revokedAt: null }),
     0,
   );
-  assert.equal(await Session.countDocuments({ userId: user._id, revokedAt: { $ne: null } }), 2);
 });

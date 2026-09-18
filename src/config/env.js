@@ -1,6 +1,20 @@
 import { z } from "zod";
 
 const booleanString = z.string().default("false").transform((value) => value === "true");
+const csvString = z.string().default("").transform((value) =>
+  value
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean),
+);
+const upiFlowsString = z.string().default("INTENT").transform((value) => {
+  const allowed = new Set(["INTENT", "COLLECT", "QR"]);
+  const parsed = value
+    .split(",")
+    .map((item) => item.trim().toUpperCase())
+    .filter((item) => allowed.has(item));
+  return parsed.length ? parsed : ["INTENT"];
+});
 
 export const SECRET_DEFAULTS = Object.freeze({
   JWT_ACCESS_SECRET: "REPLACE_ME_JWT_ACCESS_SECRET_DO_NOT_SHIP",
@@ -29,8 +43,10 @@ export function parseEnv(source = process.env) {
     REFRESH_TOKEN_DAYS: z.coerce.number().int().positive().default(365),
     CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:5173,http://localhost:5174"), LOG_LEVEL: z.string().default("info"),
     TRUST_PROXY: z.coerce.number().int().min(0).default(1), PROVIDER_MODE: z.enum(["mock", "live"]).default("mock"),
-    PHONEPE_BASE_URL: z.string().url().default("https://api-preprod.phonepe.com/apis/pg-sandbox"),
-    PHONEPE_MERCHANT_ID: z.string().default(""), PHONEPE_SALT_KEY: z.string().default(""), PHONEPE_SALT_INDEX: z.string().default("1"),
+    PHONEPE_ENV: z.enum(["SANDBOX", "PRODUCTION"]).default("SANDBOX"),
+    PHONEPE_UPI_INTENT_ONLY: booleanString,
+    PHONEPE_UPI_APPS: csvString,
+    PHONEPE_UPI_FLOWS: upiFlowsString,
     WHATSAPP_BASE_URL: z.string().default(""), WHATSAPP_ACCESS_TOKEN: z.string().default(""), WHATSAPP_APP_SECRET: z.string().default(""),
     OTP_PROVIDER: z.enum(["mock", "msg91"]).default("mock"), OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
@@ -53,8 +69,6 @@ export function parseEnv(source = process.env) {
     if (redisRequired !== "true") offending.push("REDIS_REQUIRED");
     const providerMode = source.PROVIDER_MODE ?? "mock";
     if (providerMode !== "live") offending.push("PROVIDER_MODE");
-    const phonepeBase = source.PHONEPE_BASE_URL ?? "https://api-preprod.phonepe.com/apis/pg-sandbox";
-    if (phonepeBase === "https://api-preprod.phonepe.com/apis/pg-sandbox") offending.push("PHONEPE_BASE_URL");
     for (const key of ["S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]) {
       const raw = source[key];
       if (raw == null || String(raw).trim() === "") offending.push(key);

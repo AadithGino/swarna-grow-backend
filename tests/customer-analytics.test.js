@@ -42,6 +42,13 @@ test("registration trend buckets are zero-filled by day", () => {
   ]);
 });
 
+test("trend grouping auto-scales day/week/month/year", () => {
+  assert.equal(inferTrendGroupBy("2026-09-01", "2026-09-07"), "DAY");
+  assert.equal(inferTrendGroupBy("2026-09-01", "2026-09-30"), "WEEK");
+  assert.equal(inferTrendGroupBy("2026-01-01", "2026-12-31"), "MONTH");
+  assert.equal(inferTrendGroupBy("2022-01-01", "2026-12-31"), "YEAR");
+});
+
 test("customer analytics returns period-scoped registration trend", async () => {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
   await Customer.create([

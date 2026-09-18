@@ -155,15 +155,6 @@ async function collectionMatchFromApi(token, query) {
   };
 }
 
-function istRange(period, from, to) {
-  const range = resolveQueryDateRange({ period, from, to });
-  return {
-    ...range,
-    fromDate: new Date(`${range.from}T00:00:00+05:30`),
-    toDate: new Date(`${range.to}T23:59:59.999+05:30`),
-  };
-}
-
 function chartHasNaN(charts) {
   for (const chart of Object.values(charts ?? {})) {
     for (const series of chart?.series ?? []) {
@@ -214,7 +205,6 @@ async function auditPeriodMatrix(token, label, user = null) {
   }
 
   // CUSTOM range spanning seed window
-  const customRange = istRange("CUSTOM", CUSTOM_FROM, CUSTOM_TO);
   const customColl = await api(token, "GET", "/admin/collections/summary", {
     from: CUSTOM_FROM,
     to: CUSTOM_TO,

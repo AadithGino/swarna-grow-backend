@@ -252,14 +252,26 @@ export function rollupDailyMetric(
     }));
   }
 
-  const monthMap = new Map();
-  for (const [day, value] of dailyMap) {
-    const monthKey = day.slice(0, 7);
-    monthMap.set(monthKey, (monthMap.get(monthKey) ?? 0) + value);
+  if (groupBy === "MONTH") {
+    const monthMap = new Map();
+    for (const [day, value] of dailyMap) {
+      const monthKey = day.slice(0, 7);
+      monthMap.set(monthKey, (monthMap.get(monthKey) ?? 0) + value);
+    }
+    return [...iteratePeriodBuckets(from, to, "MONTH")].map((key) => ({
+      key,
+      value: monthMap.get(key) ?? 0,
+    }));
   }
-  return [...iteratePeriodBuckets(from, to, "MONTH")].map((key) => ({
+
+  const yearMap = new Map();
+  for (const [day, value] of dailyMap) {
+    const yearKey = day.slice(0, 4);
+    yearMap.set(yearKey, (yearMap.get(yearKey) ?? 0) + value);
+  }
+  return [...iteratePeriodBuckets(from, to, "YEAR")].map((key) => ({
     key,
-    value: monthMap.get(key) ?? 0,
+    value: yearMap.get(key) ?? 0,
   }));
 }
 

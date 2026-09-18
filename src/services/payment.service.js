@@ -29,7 +29,7 @@ import {
   WebhookEvent,
 } from "../models/index.js";
 import { createId } from "../lib/ids.js";
-import { randomToken, sha256, unseal } from "../lib/crypto.js";
+import { randomToken, sha256 } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -312,14 +312,65 @@ async function gatewayCredentials(tenantId) {
   const tenant = await Tenant.findById(tenantId)
     .select("+integrationSecrets")
     .lean();
-  const config = tenant?.integrationSecrets?.phonepe;
-  return config
-    ? {
-        merchantId: config.merchantId,
-        saltKey: config.saltKey ? unseal(config.saltKey) : undefined,
-        saltIndex: config.saltIndex,
-      }
-    : {};
+  const { resolvePhonePeCredentials } = await import("../integrations/phonepe.provider.js");
+  return resolvePhonePeCredentials(tenant) ?? {};
+}
+
+/** In mock provider mode, simulate webhook completion when the customer polls status. */
+export async function maybeCompleteMockGatewayPayment({ tenantId, link, intent, payment }) {
+  if (env.PROVIDER_MODE !== "mock" || !payment || payment.status !== PaymentStatus.PENDING) {
+    return payment;
+  }
+  const source = intent ?? link;
+  if (!source) return payment;
+
+  const fakeReq = {
+    auth: { id: "mock-gateway", tenantId, type: "WEBHOOK" },
+    scope: { tenantId },
+    body: {
+      schemeId: source.schemeId,
+      amountPaise: source.amountPaise,
+      mode: PaymentMode.ONLINE_GATEWAY,
+      targetCycle: source.targetCycle,
+      positionVersion: source.positionVersion,
+    },
+    query: { targetCycle: source.targetCycle },
+    baseUrl: "/mock",
+    traceId: `mock_${payment._id}`,
+    ip: "mock",
+    headers: {},
+  };
+
+  const completed = await recordPayment(fakeReq, {
+    gateway: true,
+    source: "MOCK_GATEWAY",
+    actorType: "WEBHOOK",
+    existingPaymentId: payment._id,
+    providerTransactionId: payment.providerTransactionId ?? `mock_${payment._id}`,
+    providerPayload: { mode: "mock", simulated: true },
+    gatewayCompletedAt: new Date(),
+  });
+
+  if (intent?.status === PaymentIntentStatus.PENDING) {
+    await PaymentIntent.updateOne(
+      { _id: intent._id },
+      { $set: { status: "SUCCEEDED", paymentId: completed._id }, $inc: { version: 1 } },
+    );
+  }
+  if (link && link.status !== LinkStatus.PAID) {
+    await PaymentLink.updateOne(
+      { _id: link._id },
+      { $set: { status: LinkStatus.PAID, paidAt: new Date() } },
+    );
+    if (link.paymentIntentId) {
+      await PaymentIntent.updateOne(
+        { _id: link.paymentIntentId, status: PaymentIntentStatus.PENDING },
+        { $set: { status: "SUCCEEDED", paymentId: completed._id }, $inc: { version: 1 } },
+      );
+    }
+  }
+
+  return Payment.findById(payment._id).lean();
 }
 
 export async function recordPayment(req, override = {}) {
@@ -1056,6 +1107,14 @@ function assertRedirectUrlAllowed(redirectUrl, tenant) {
   }
 }
 
+function customerCheckoutPreference() {
+  return {
+    preferUpiIntentOnly: env.PHONEPE_UPI_INTENT_ONLY === true,
+    upiApps: env.PHONEPE_UPI_APPS,
+    upiFlows: env.PHONEPE_UPI_FLOWS,
+  };
+}
+
 export async function initiatePublicPayment(req) {
   let link = await getPublicLink(req.params.linkToken, false);
   const tenant = await Tenant.findById(link.tenantId).select("operations branding").lean();
@@ -1111,12 +1170,11 @@ export async function initiatePublicPayment(req) {
   link = claimed;
   try {
     const provider = await phonePeProvider.createPayment({
-      merchantTransactionId: link._id,
+      merchantOrderId: link._id,
       amountPaise: link.amountPaise,
       redirectUrl: req.body.redirectUrl,
-      callbackUrl: `${env.PUBLIC_BASE_URL}${env.API_PREFIX}/webhooks/phonepe/${link.tenantId}`,
-      mobile: req.body.mobile,
       credentials: await gatewayCredentials(link.tenantId),
+      ...customerCheckoutPreference(),
     });
     const pending = await Payment.create({
       _id: createId("payment"),
@@ -1261,12 +1319,11 @@ export async function createPaymentIntent(req) {
     assertCustomerPaymentsEnabled(tenant);
     assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
     const provider = await phonePeProvider.createPayment({
-      merchantTransactionId: reserved.intent._id,
+      merchantOrderId: reserved.intent._id,
       amountPaise: reserved.intent.amountPaise,
       redirectUrl: req.body.redirectUrl,
-      callbackUrl: `${env.PUBLIC_BASE_URL}${env.API_PREFIX}/webhooks/phonepe/${reserved.tenantId}`,
-      mobile: req.body.mobile,
       credentials: await gatewayCredentials(reserved.tenantId),
+      ...customerCheckoutPreference(),
     });
     await Promise.all([
       PaymentIntent.updateOne(
@@ -1310,6 +1367,149 @@ export async function createPaymentIntent(req) {
     throw error;
   }
 }
+
+export async function createSdkPaymentIntent(req) {
+  let reserved;
+  await withTransaction(async (session) => {
+    const scheme = await Scheme.findOne({
+      _id: req.params.schemeId,
+      tenantId: req.auth.tenantId,
+      customerId: req.auth.id,
+    }).session(session);
+    if (!scheme) throw errors.notFound("Scheme");
+    if (scheme.paymentPattern !== "FLEXIBLE")
+      throw errors.business(
+        "PAYMENT_INTENT_NOT_APPLICABLE",
+        "SDK payment orders apply only to flexible schemes.",
+      );
+    const quote = await payableRange(req, scheme.toObject());
+    const targetCycle = req.body.targetCycle ?? quote.targetCycle;
+    assertExpectedPositionVersion(scheme, quote, req.body);
+    await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
+    const reservations = await PaymentIntent.aggregate([
+      {
+        $match: {
+          tenantId: scheme.tenantId,
+          schemeId: scheme._id,
+          targetCycle,
+          status: PaymentIntentStatus.PENDING,
+          reservationExpiresAt: { $gt: new Date() },
+        },
+      },
+      { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
+    ]).session(session);
+    const reservedPaise = reservations[0]?.amountPaise ?? 0;
+    const availableQuote = {
+      ...quote,
+      maxPayablePaise: Math.max(0, quote.maxPayablePaise - reservedPaise),
+      reservedPaise,
+    };
+    checkAmount(availableQuote, req.body.amountPaise);
+    scheme.positionVersion += 1;
+    scheme.version += 1;
+    await scheme.save({ session });
+    const intent = (
+      await PaymentIntent.create(
+        [
+          {
+            _id: createId("paymentIntent"),
+            tenantId: scheme.tenantId,
+            branchId: scheme.branchId,
+            schemeId: scheme._id,
+            customerId: scheme.customerId,
+            targetCycle,
+            amountPaise: req.body.amountPaise,
+            positionVersion: scheme.positionVersion,
+            reservationExpiresAt: new Date(Date.now() + 30 * 60_000),
+          },
+        ],
+        { session },
+      )
+    )[0];
+    const pending = (
+      await Payment.create(
+        [
+          {
+            _id: createId("payment"),
+            tenantId: scheme.tenantId,
+            branchId: scheme.branchId,
+            schemeId: scheme._id,
+            customerId: scheme.customerId,
+            receiptNumber: `PENDING-${intent._id}`,
+            amountPaise: intent.amountPaise,
+            targetCycle,
+            mode: PaymentMode.ONLINE_GATEWAY,
+            status: PaymentStatus.PENDING,
+            source: PaymentSource.CUSTOMER_APP,
+            paidAt: new Date(),
+          },
+        ],
+        { session },
+      )
+    )[0];
+    intent.paymentId = pending._id;
+    await intent.save({ session });
+    reserved = {
+      intent: intent.toObject(),
+      paymentId: pending._id,
+      tenantId: scheme.tenantId,
+    };
+  });
+  try {
+    const tenant = await Tenant.findById(reserved.tenantId).select("operations branding").lean();
+    assertCustomerPaymentsEnabled(tenant);
+    assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
+    const provider = await phonePeProvider.createSdkOrder({
+      merchantOrderId: reserved.intent._id,
+      amountPaise: reserved.intent.amountPaise,
+      redirectUrl: req.body.redirectUrl,
+      credentials: await gatewayCredentials(reserved.tenantId),
+    });
+    await Promise.all([
+      PaymentIntent.updateOne(
+        { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
+        { $set: { providerOrderId: provider.providerOrderId } },
+      ),
+      Payment.updateOne(
+        { _id: reserved.paymentId, status: PaymentStatus.PENDING },
+        { $set: { providerTransactionId: provider.providerOrderId } },
+      ),
+    ]);
+    return {
+      ...reserved.intent,
+      paymentId: reserved.paymentId,
+      providerOrderId: provider.providerOrderId,
+      merchantOrderId: reserved.intent._id,
+      token: provider.token,
+      status: provider.status,
+    };
+  } catch (error) {
+    await withTransaction(async (session) => {
+      await PaymentIntent.updateOne(
+        { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
+        { $set: { status: PaymentIntentStatus.FAILED }, $inc: { version: 1 } },
+        { session },
+      );
+      await Payment.updateOne(
+        { _id: reserved.paymentId, status: PaymentStatus.PENDING },
+        {
+          $set: {
+            status: PaymentStatus.FAILED,
+            providerPayload: { initiationError: error.message },
+          },
+        },
+        { session },
+      );
+      await Scheme.updateOne(
+        { _id: reserved.intent.schemeId },
+        { $inc: { positionVersion: 1, version: 1 } },
+        { session },
+      );
+    });
+    throw error;
+  }
+}
+
 export async function cancelPaymentIntent(req) {
   return withTransaction(async (session) => {
     const intent = await PaymentIntent.findOne({

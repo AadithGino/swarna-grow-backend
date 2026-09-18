@@ -723,7 +723,14 @@ export async function schemeAnalytics(req) {
       xAxis: {
         type: "category",
         label: "Date",
-        format: groupBy === "MONTH" ? "MMM YYYY" : "D MMM",
+        format:
+          groupBy === "YEAR"
+            ? "YYYY"
+            : groupBy === "MONTH"
+              ? "MMM YYYY"
+              : groupBy === "WEEK"
+                ? "[Week of] D MMM"
+                : "D MMM",
       },
       yAxis: { type: "count", label: "Enrollments", min: 0 },
       series: [{

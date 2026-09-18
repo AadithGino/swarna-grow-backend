@@ -8,6 +8,8 @@ import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 
 const accessTtl = (subject) => subject.type === "TENANT_USER" && subject.mobileClient ? env.JWT_MOBILE_TTL : env.JWT_WEB_TTL;
+/** Allow duplicate refresh with the same consumed token briefly (multi-tab / parallel 401). */
+const REFRESH_REUSE_GRACE_MS = 30_000;
 export function signAccessToken(subject) {
   return jwt.sign({
     typ: subject.type,
@@ -35,9 +37,69 @@ export async function issueSession(subject, device, request) {
     mobileClient: subject.mobileClient ?? device.platform !== "web",
   };
 }
+async function resolveConsumedRefresh(existing, subjectLoader, mongoSession) {
+  const consumedAgeMs = Date.now() - new Date(existing.consumedAt).getTime();
+  if (consumedAgeMs <= REFRESH_REUSE_GRACE_MS) {
+    const successor = await Session.findOne({
+      familyId: existing.familyId,
+      revokedAt: null,
+      consumedAt: null,
+      expiresAt: { $gt: new Date() },
+    })
+      .sort({ createdAt: -1 })
+      .session(mongoSession);
+    if (successor) {
+      const subject = await subjectLoader(successor);
+      if (!subject) return { invalid: true };
+      return {
+        idempotent: true,
+        subject,
+        sessionId: successor._id,
+        existing: successor,
+        expiresAt: successor.expiresAt,
+      };
+    }
+  }
+  await Session.updateMany(
+    { familyId: existing.familyId },
+    { $set: { revokedAt: new Date() } },
+    { session: mongoSession },
+  );
+  return { reused: true };
+}
+
 export async function rotateSession(refreshToken, subjectLoader) {
   const hash = sha256(refreshToken);
   const result = await withTransaction(async (mongoSession) => {
+    const claimed = await Session.findOneAndUpdate(
+      {
+        refreshTokenHash: hash,
+        revokedAt: null,
+        expiresAt: { $gt: new Date() },
+        consumedAt: null,
+      },
+      { $set: { consumedAt: new Date() } },
+      { new: false, session: mongoSession },
+    ).select("+refreshTokenHash");
+    if (claimed) {
+      const subject = await subjectLoader(claimed);
+      if (!subject) return { invalid: true };
+      const next = randomToken(48);
+      const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_DAYS * 86_400_000);
+      const [nextSession] = await Session.create([{
+        userId: claimed.userId,
+        customerId: claimed.customerId,
+        tenantId: claimed.tenantId,
+        deviceId: claimed.deviceId,
+        familyId: claimed.familyId,
+        refreshTokenHash: sha256(next),
+        platform: claimed.platform,
+        appVersion: claimed.appVersion,
+        expiresAt,
+      }], { session: mongoSession });
+      return { subject, next, expiresAt, sessionId: nextSession._id, existing: claimed };
+    }
+
     const existing = await Session.findOne({ refreshTokenHash: hash })
       .select("+refreshTokenHash")
       .session(mongoSession);
@@ -45,36 +107,27 @@ export async function rotateSession(refreshToken, subjectLoader) {
       return { invalid: true };
     }
     if (existing.consumedAt) {
-      await Session.updateMany(
-        { familyId: existing.familyId },
-        { $set: { revokedAt: new Date() } },
-        { session: mongoSession },
-      );
-      return { reused: true };
+      return resolveConsumedRefresh(existing, subjectLoader, mongoSession);
     }
-    existing.consumedAt = new Date();
-    await existing.save({ session: mongoSession });
-    const subject = await subjectLoader(existing);
-    if (!subject) return { invalid: true };
-    const next = randomToken(48);
-    const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_DAYS * 86_400_000);
-    const [nextSession] = await Session.create([{
-      userId: existing.userId,
-      customerId: existing.customerId,
-      tenantId: existing.tenantId,
-      deviceId: existing.deviceId,
-      familyId: existing.familyId,
-      refreshTokenHash: sha256(next),
-      platform: existing.platform,
-      appVersion: existing.appVersion,
-      expiresAt,
-    }], { session: mongoSession });
-    return { subject, next, expiresAt, sessionId: nextSession._id, existing };
+    return { invalid: true };
   });
   if (result.reused) {
     throw new AppError("TOKEN_REUSE_DETECTED", "This device session was revoked because a refresh token was reused.", 401);
   }
   if (result.invalid) throw errors.unauthenticated("The refresh token is invalid or expired.");
+  if (result.idempotent) {
+    const { subject, sessionId, existing, expiresAt } = result;
+    return {
+      accessToken: signAccessToken({
+        ...subject,
+        deviceId: existing.deviceId,
+        securityVersion: subject.securityVersion ?? 0,
+        sessionId,
+      }),
+      expiresAt,
+      mobileClient: existing.platform !== "web",
+    };
+  }
   const { subject, next, expiresAt, sessionId, existing } = result;
   return {
     accessToken: signAccessToken({ ...subject, deviceId: existing.deviceId, securityVersion: subject.securityVersion ?? 0, sessionId }),

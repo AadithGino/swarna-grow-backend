@@ -31,11 +31,11 @@ test("redactPlatformAuditPayload masks integration secrets", () => {
     accessToken: "super-secret-token",
     appSecret: "app-secret",
     name: "Tenant A",
-    nested: { saltKey: "salt-value", label: "ok" },
+    nested: { clientSecret: "secret-value", label: "ok" },
   });
   assert.notEqual(out.accessToken, "super-secret-token");
   assert.notEqual(out.appSecret, "app-secret");
-  assert.notEqual(out.nested.saltKey, "salt-value");
+  assert.notEqual(out.nested.clientSecret, "secret-value");
   assert.equal(out.name, "Tenant A");
   assert.equal(out.nested.label, "ok");
 });

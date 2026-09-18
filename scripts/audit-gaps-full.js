@@ -15,7 +15,6 @@ import {
   SchemePlan,
   SubscriptionPlan,
   Tenant,
-  User,
   Invoice,
   Message,
   WebhookEvent,
