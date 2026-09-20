@@ -530,6 +530,8 @@ async function auditWriteFlows(ownerToken, staffToken, staffUser) {
       pass(`Created handover ₹${handoverAmount / 100}`);
       const midBalance = await cashBalance({ tenantId, branchId: staffUser.branchId, staffId: staffUser.id ?? staffUser._id });
       assertEq("Write handover", "pending acceptance", midBalance.cashPendingAcceptancePaise, beforeHandover.cashPendingAcceptancePaise + handoverAmount, "Handover");
+      assertEq("Write handover", "cash in hand unchanged while pending", midBalance.cashInHandPaise, beforeHandover.cashInHandPaise, "Handover");
+      assertEq("Write handover", "available for handover", midBalance.availableForHandoverPaise, Math.max(0, beforeHandover.cashInHandPaise - handoverAmount), "Handover");
       const cancelRes = await api(staffToken, "POST", `/staff/cash/handovers/${handoverId}/cancel`, { idempotency: true });
       if (cancelRes.ok) {
         pass("Cancelled audit handover");

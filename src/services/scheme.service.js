@@ -19,6 +19,7 @@ import {
 import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
+import { computeFlexibleCycleCapPaise } from "../lib/flexible-cap.js";
 import { OPEN_ENROLLMENT_STATUSES } from "../lib/scheme-enrollment-status.js";
 import { withTransaction } from "../lib/transaction.js";
 import {
@@ -1118,4 +1119,52 @@ export async function payableRange(req, schemeInput) {
     nextCycleAction,
   };
 }
-export async function applyFlexibleLock(req) { return withTransaction(async (session) => { const scheme = await Scheme.findOne({ _id: req.params.schemeId, ...req.scope }).session(session); if (!scheme) throw errors.notFound("Scheme"); if (scheme.flexiblePhase !== FlexiblePhase.FLEXIBLE) throw new AppError("LOCK_ALREADY_APPLIED", "The flexible lock has already been applied.", 409); const entries = await LedgerEntry.find({ tenantId: scheme.tenantId, schemeId: scheme._id, type: "FREE_WINDOW_PAYMENT" }).session(session).lean(); const rules = scheme.planSnapshot.flexibleRules; const total = entries.reduce((sum, row) => sum + row.amountPaise, 0); if (total === 0 && rules.capComputation.onZeroFlexiblePhaseTotal === "CLOSE_SCHEME") { scheme.status = SchemeStatus.CLOSED_PREMATURE; scheme.version += 1; await scheme.save({ session }); return { ...scheme.toObject(), closeReason: "ZERO_FLEXIBLE_PHASE_TOTAL" }; } const nearest = rules.capComputation.roundToNearestPaise; let cap = Math.ceil((total / rules.averagingDivisor) / nearest) * nearest; if (total < rules.flexiblePhase.minTotalPaise && rules.capComputation.onBelowMinimumTotal === "USE_MINIMUM") cap = rules.capComputation.minCycleCapPaise; cap = Math.min(rules.capComputation.maxCycleCapPaise, Math.max(rules.capComputation.minCycleCapPaise, cap)); scheme.lockedAveragePaise = cap; scheme.flexiblePhase = FlexiblePhase.CAPPED; scheme.status = SchemeStatus.LOCKED; scheme.lockedAt = new Date(); scheme.positionVersion += 1; scheme.version += 1; scheme.cycles.slice(rules.flexiblePhaseCycles).forEach((cycle) => { cycle.capPaise = cap; cycle.remainingPaise = cap; }); await scheme.save({ session }); const auditEventId = await writeAudit({ req, action: "FLEXIBLE_LOCK_APPLIED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId }; }); }
+export async function applyFlexibleLock(req) {
+  return withTransaction(async (session) => {
+    const scheme = await Scheme.findOne({ _id: req.params.schemeId, ...req.scope }).session(session);
+    if (!scheme) throw errors.notFound("Scheme");
+    if (scheme.flexiblePhase !== FlexiblePhase.FLEXIBLE) {
+      throw new AppError("LOCK_ALREADY_APPLIED", "The flexible lock has already been applied.", 409);
+    }
+    const entries = await LedgerEntry.find({
+      tenantId: scheme.tenantId,
+      schemeId: scheme._id,
+      type: "FREE_WINDOW_PAYMENT",
+    })
+      .session(session)
+      .lean();
+    const rules = scheme.planSnapshot.flexibleRules;
+    const total = entries.reduce((sum, row) => sum + row.amountPaise, 0);
+    if (total === 0 && rules.capComputation.onZeroFlexiblePhaseTotal === "CLOSE_SCHEME") {
+      scheme.status = SchemeStatus.CLOSED_PREMATURE;
+      scheme.version += 1;
+      await scheme.save({ session });
+      return { ...scheme.toObject(), closeReason: "ZERO_FLEXIBLE_PHASE_TOTAL" };
+    }
+    const cap = computeFlexibleCycleCapPaise({
+      totalPaise: total,
+      freeWindowPaymentCount: entries.length,
+      flexibleRules: rules,
+    });
+    scheme.lockedAveragePaise = cap;
+    scheme.flexiblePhase = FlexiblePhase.CAPPED;
+    scheme.status = SchemeStatus.LOCKED;
+    scheme.lockedAt = new Date();
+    scheme.positionVersion += 1;
+    scheme.version += 1;
+    scheme.cycles.slice(rules.flexiblePhaseCycles).forEach((cycle) => {
+      cycle.capPaise = cap;
+      cycle.remainingPaise = cap;
+    });
+    await scheme.save({ session });
+    const auditEventId = await writeAudit({
+      req,
+      action: "FLEXIBLE_LOCK_APPLIED",
+      entityType: AuditEntityType.SCHEME,
+      entityId: scheme._id,
+      after: scheme.toObject(),
+      session,
+    });
+    return { ...scheme.toObject(), auditEventId };
+  });
+}

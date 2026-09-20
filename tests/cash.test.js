@@ -42,8 +42,9 @@ test("second full-balance cash handover is rejected while first is still pending
     .set("x-idempotency-key", randomUUID())
     .send({ amountPaise: 50000 })
     .expect(201);
-  assert.equal(first.body.data.balance.cashInHandPaise, 0);
+  assert.equal(first.body.data.balance.cashInHandPaise, 50000);
   assert.equal(first.body.data.balance.cashPendingAcceptancePaise, 50000);
+  assert.equal(first.body.data.balance.availableForHandoverPaise, 0);
 
   const second = await request(app)
     .post("/api/v1/staff/cash/handovers")

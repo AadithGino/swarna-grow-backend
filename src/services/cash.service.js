@@ -31,8 +31,17 @@ export async function cashBalance({ tenantId, branchId, staffId, paidAtRange, ha
   const cashPendingAcceptancePaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.PENDING } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
   const adjustmentPaise = await sumAggregate(CashAdjustment, [{ $match: adjustmentMatch }, { $group: { _id: null, amountPaise: { $sum: { $cond: [{ $eq: ["$direction", CashAdjustmentDirection.CREDIT] }, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } } } }], session);
   const handedOverPaise = acceptedPaise + discrepancyAcceptedPaise;
-  const cashInHandPaise = cashCollectedPaise + adjustmentPaise - handedOverPaise - cashPendingAcceptancePaise;
-  return { cashCollectedPaise, cashInHandPaise, cashPendingAcceptancePaise, collectedPaise: cashCollectedPaise, handedOverPaise, adjustmentPaise };
+  const cashInHandPaise = cashCollectedPaise + adjustmentPaise - handedOverPaise;
+  const availableForHandoverPaise = Math.max(0, cashInHandPaise - cashPendingAcceptancePaise);
+  return {
+    cashCollectedPaise,
+    cashInHandPaise,
+    cashPendingAcceptancePaise,
+    availableForHandoverPaise,
+    collectedPaise: cashCollectedPaise,
+    handedOverPaise,
+    adjustmentPaise,
+  };
 }
 
 const CASH_STAFF_ROLES = [TenantRole.BRANCH_STAFF, TenantRole.BRANCH_MANAGER, TenantRole.COLLECTION_AGENT];
@@ -139,11 +148,15 @@ export async function adminStaffBalances(req) {
       branch: branch ? { id: branch._id, _id: branch._id, name: branch.name, code: branch.code } : null,
       cashInHand: moneyRef(balance.cashInHandPaise),
       cashPendingAcceptance: moneyRef(balance.cashPendingAcceptancePaise),
+      availableForHandover: moneyRef(balance.availableForHandoverPaise),
       cashCollectedToday: moneyRef(extras.cashCollectedTodayPaise),
       lastHandoverAt: extras.lastHandoverAt,
       status: row.status,
       riskFlag: flag,
-      actions: { canMarkSubmitted: balance.cashInHandPaise > 0, canViewCollections: true },
+      actions: {
+        canMarkSubmitted: balance.availableForHandoverPaise > 0,
+        canViewCollections: true,
+      },
     };
   }));
   if (req.query.hasBalance === "true") items = items.filter((row) => row.cashInHand.amountPaise > 0);
@@ -187,6 +200,7 @@ export async function adminStaffBalanceDetail(req) {
     ...balance,
     cashInHand: moneyRef(balance.cashInHandPaise),
     cashPendingAcceptance: moneyRef(balance.cashPendingAcceptancePaise),
+    availableForHandover: moneyRef(balance.availableForHandoverPaise),
     cashCollectedToday: moneyRef(extras.cashCollectedTodayPaise),
     lastHandoverAt: extras.lastHandoverAt,
     status: staff.status,
@@ -274,10 +288,10 @@ export async function createHandover(req, initiator) {
   return withTransaction(async (session) => {
     const { tenantId, staffId, branchId } = await resolveHandoverContext(req, initiator, session);
     const balance = await cashBalance({ tenantId, branchId, staffId }, session);
-    if (req.body.amountPaise > balance.cashInHandPaise) {
+    if (req.body.amountPaise > balance.availableForHandoverPaise) {
       throw errors.business(
         "CASH_HANDOVER_AMOUNT_EXCEEDS_BALANCE",
-        "The handover exceeds this staff member's cash-in-hand balance.",
+        "The handover exceeds the amount available to submit after pending handovers.",
         balance,
       );
     }
@@ -338,9 +352,8 @@ export async function settleHandover(req, action) {
           tenantId: row.tenantId,
           branchId: row.branchId,
           staffId: row.staffId,
-          // The submitted handover was already removed from cash-in-hand. A
-          // shortfall means less cash was actually accepted, so restore the
-          // difference; an overage means remove the additional accepted cash.
+          // Accepted amount differs from declared: shortfall restores custody;
+          // overage removes extra cash counted as handed over.
           direction: diffPaise > 0 ? CashAdjustmentDirection.CREDIT : CashAdjustmentDirection.DEBIT,
           amountPaise: Math.abs(diffPaise),
           reason: diffPaise > 0 ? "Cash handover shortfall" : "Cash handover overage",

@@ -10,6 +10,7 @@ import { effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, today } from "../lib/date.js";
 import { iteratePeriodBuckets } from "../lib/analytics-period.js";
 import { moneyRef, weightRef } from "../lib/money.js";
+import { computeFlexibleCycleCapPaise } from "../lib/flexible-cap.js";
 import { buildAmountSummary } from "../lib/plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { buildSchedulePreview } from "./schedule.service.js";
@@ -306,22 +307,13 @@ function previewDueOnMonth(iso, months, dueDay) {
 
 function computeIllustrativeFlexibleCap(installmentAmountPaise, flexRules) {
   const free = flexRules.flexiblePhaseCycles ?? 6;
-  const div = flexRules.averagingDivisor ?? free;
   const illustrativeFreeTotalPaise = installmentAmountPaise * free;
-  const capRules = flexRules.capComputation ?? {};
-  const nearest = Math.max(1, capRules.roundToNearestPaise ?? 100);
-  let capPaise = Math.ceil(illustrativeFreeTotalPaise / div / nearest) * nearest;
-  const minTotal = flexRules.flexiblePhase?.minTotalPaise;
-  if (
-    minTotal != null &&
-    illustrativeFreeTotalPaise < minTotal &&
-    capRules.onBelowMinimumTotal === "USE_MINIMUM"
-  ) {
-    capPaise = capRules.minCycleCapPaise ?? capPaise;
-  }
-  const minCap = capRules.minCycleCapPaise ?? 0;
-  const maxCap = capRules.maxCycleCapPaise ?? capPaise;
-  capPaise = Math.min(maxCap, Math.max(minCap, capPaise));
+  const illustrativePaymentCount = free;
+  const capPaise = computeFlexibleCycleCapPaise({
+    totalPaise: illustrativeFreeTotalPaise,
+    freeWindowPaymentCount: illustrativePaymentCount,
+    flexibleRules: flexRules,
+  });
   return { illustrativeFreeTotalPaise, capPaise };
 }
 

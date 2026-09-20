@@ -82,7 +82,10 @@ export const GrievanceRelatedEntityType = makeEnum("PAYMENT", "SCHEME", "REDEMPT
 export const PrematurePenaltyMode = makeEnum("NONE", "FLAT", "PERCENT_OF_PAID");
 export const BenefitTreatment = makeEnum("FORFEIT", "PRORATE", "FULL");
 export const FlexibleFrequencyMode = makeEnum("MULTIPLE");
-export const CapFormula = makeEnum("FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR");
+export const CapFormula = makeEnum(
+  "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
+  "FLEXIBLE_PHASE_TOTAL_DIV_PAYMENT_COUNT",
+);
 export const CapRoundingMode = makeEnum("ROUND_UP");
 export const ZeroFlexibleTotalAction = makeEnum("CLOSE_SCHEME", "USE_MINIMUM");
 export const BelowMinimumTotalAction = makeEnum("USE_MINIMUM", "CLOSE_SCHEME");

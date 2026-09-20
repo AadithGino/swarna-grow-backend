@@ -24,7 +24,8 @@ See also: [Full contract](./API_CONTRACT.md) · [Admin portal](./API_CONTRACT_AD
 - **Branch scope:** Every `/staff/*` call is scoped to the authenticated user’s **branch** and tenant. Do **not** send `branchId` to override scope.
 - **Online-only:** No offline queue, sync, or geo-stamping in V1.
 - **Cash-only collection UI:** The collect screen records **`mode: "CASH"`** only. Do not expose UPI/card/cheque or payment links in this app (backend may accept other modes for other roles — ignore here).
-- **Cash in hand:** Only successful **`CASH`** payments **collected by the logged-in agent** count toward **`cashInHandPaise`**, minus accepted handovers and amounts reserved by **pending** handovers ([Cash & handover](#cash--handover)).
+- **Cash in hand:** Successful **`CASH`** collections (minus reversals), minus **accepted** handovers and cash adjustments — **pending** handovers do **not** reduce **`cashInHandPaise`** ([Cash & handover](#cash--handover)).
+- **Available to submit:** **`availableForHandoverPaise`** = **`cashInHandPaise`** − **`cashPendingAcceptancePaise`** (floor 0). Handover amount must not exceed this.
 - **Flexible schemes:** Always **`GET .../payable-range`** immediately before **`POST /staff/payments`**; send **`expectedPositionVersion`** (or fixed **`expectedVersion`**) from that response.
 - **Gold-weight schemes:** Call **`GET /staff/gold-rate/current`** before showing the collect form; block submit if rate missing (**`GOLD_RATE_NOT_SET`**).
 - **Payment source:** Successful collections return **`source: "STAFF_APP"`**.
@@ -62,11 +63,11 @@ Global: on **`401`**, `POST /auth/refresh` then retry (same pattern as tenant ad
 ┌─────────────────────────────┐
 │  Branch name (from /auth/me) │
 │  ─────────────────────────── │
-│  Cash in hand    ₹18,500     │  ← cashInHandPaise (primary KPI)
+│  Cash in hand    ₹18,500     │  ← cashInHandPaise (custody until branch accepts)
 │  Collected today ₹7,000      │  ← optional collections/summary
 │  Pending submit  ₹0          │  ← cashPendingAcceptancePaise
 │  [ Collect payment ]         │  → Collect tab / search
-│  [ Submit cash to branch ]     │  → Handover flow (disabled if in hand = 0)
+│  [ Submit cash to branch ]   │  → Handover (max = availableForHandoverPaise)
 └─────────────────────────────┘
 ```
 
@@ -104,10 +105,10 @@ Optional read-only: **`GET .../passbook`** for last few ledger lines (trust / di
 
 ### Screen: Submit cash (handover)
 
-- Entry from Home when **`cashInHandPaise > 0`**.
-- Show max submittable = **`cashInHandPaise`**.
+- Entry from Home when **`availableForHandoverPaise > 0`**.
+- Show max submittable = **`availableForHandoverPaise`** (cash in hand minus pending submissions).
 - Amount + optional remarks → **`POST /staff/cash/handovers`**.
-- Success: status **`PENDING`** — explain that branch must accept in admin app; cash in hand drops by reserved amount.
+- Success: status **`PENDING`** — branch must accept in admin app; **`cashInHandPaise`** unchanged; **`cashPendingAcceptancePaise`** increases.
 
 ### Screen: History — Submissions
 
@@ -560,6 +561,7 @@ Gold-weight schemes include **`weightMg`** / **`ratePerGramPaise`** on the payme
     "cashCollectedPaise": 2500000,
     "cashInHandPaise": 1850000,
     "cashPendingAcceptancePaise": 0,
+    "availableForHandoverPaise": 1850000,
     "collectedPaise": 2500000,
     "handedOverPaise": 650000,
     "adjustmentPaise": 0
@@ -569,7 +571,7 @@ Gold-weight schemes include **`weightMg`** / **`ratePerGramPaise`** on the payme
 
 **Handover lifecycle (staff side):**
 
-1. Staff **`POST /staff/cash/handovers`** → status **`PENDING`**, amount reserved from cash in hand.
+1. Staff **`POST /staff/cash/handovers`** → status **`PENDING`**; **`cashPendingAcceptancePaise`** increases; **`cashInHandPaise`** unchanged until branch accepts.
 2. Branch manager / admin accepts or rejects via **`/admin/cash/handovers/:id/accept|reject`** (not staff routes).
 3. Staff may **`POST .../cancel`** while still pending.
 
