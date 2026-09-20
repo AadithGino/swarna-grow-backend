@@ -46,7 +46,7 @@ import {
 import { currentGoldRate } from "./tenant.service.js";
 import { paginate } from "../lib/pagination.js";
 import { phonePeProvider } from "../integrations/phonepe.provider.js";
-import { nextSequence } from "./sequence.service.js";
+import { nextSchemeLedgerSequence, nextSequence } from "./sequence.service.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import {
   paymentListScope,
@@ -215,6 +215,16 @@ function checkAmount(quote, amountPaise) {
       "The payment exceeds the allowed amount.",
       quote,
     );
+  if (
+    quote.allowedAmountsPaise?.length
+    && !quote.allowedAmountsPaise.includes(amountPaise)
+  ) {
+    throw errors.business(
+      "INVALID_PAYMENT_AMOUNT",
+      "This payment amount is not allowed for the current installment schedule.",
+      { allowedAmountsPaise: quote.allowedAmountsPaise },
+    );
+  }
   if (
     quote.maxPaymentPerTransactionPaise != null &&
     amountPaise > quote.maxPaymentPerTransactionPaise
@@ -453,16 +463,26 @@ async function recordPaymentInSession(session, req, override) {
         },
         today(),
       );
-      if (!rate && goldRules.blockPaymentIfRateNotSet !== false) {
+      if (!rate) {
         throw errors.business(
           "GOLD_RATE_NOT_SET",
-          "Today's gold rate must be set before accepting this payment.",
+          "Today's 22K gold rate must be set before accepting this payment.",
         );
       }
-      if (rate) {
-        const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
-        weightMg = moneyToWeightMg(req.body.amountPaise, rate.ratePerGramPaise, rounding);
-        weightMg = applyWeightPrecisionMg(weightMg, goldRules.weightPrecisionMg, rounding);
+      if (rate.purity && rate.purity !== "22K") {
+        throw errors.business(
+          "GOLD_PURITY_NOT_SUPPORTED",
+          "Only 22K gold rates can be used for payments.",
+        );
+      }
+      const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
+      weightMg = moneyToWeightMg(req.body.amountPaise, rate.ratePerGramPaise, rounding);
+      weightMg = applyWeightPrecisionMg(weightMg, goldRules.weightPrecisionMg, rounding);
+      if (!(weightMg > 0)) {
+        throw errors.business(
+          "GOLD_WEIGHT_ROUNDS_TO_ZERO",
+          "This payment amount rounds to zero gold weight at the current rate.",
+        );
       }
     }
     let payment;
@@ -545,9 +565,9 @@ async function recordPaymentInSession(session, req, override) {
           scheme.flexiblePhase === "FLEXIBLE"
         ? LedgerEntryType.FREE_WINDOW_PAYMENT
         : LedgerEntryType.INSTALLMENT_PAYMENT;
-    const sequence = await nextSequence(
+    const sequence = await nextSchemeLedgerSequence(
       scheme.tenantId,
-      `ledger:${scheme._id}`,
+      scheme._id,
       session,
     );
     await LedgerEntry.create(
@@ -574,21 +594,12 @@ async function recordPaymentInSession(session, req, override) {
     );
     gatewayTxFaultCheckpoint("recordPayment:ledger-created");
     if (quote && scheme.paymentPattern === "FIXED") {
-      let remaining = payment.amountPaise;
-      for (const installment of scheme.installments) {
-        if (remaining <= 0 || ["PAID", "WAIVED"].includes(installment.status))
-          continue;
-        const allocation = Math.min(
-          installment.amountPaise - installment.paidPaise,
-          remaining,
-        );
-        installment.paidPaise += allocation;
-        remaining -= allocation;
-        installment.status =
-          installment.paidPaise === installment.amountPaise
-            ? "PAID"
-            : "PARTIALLY_PAID";
-      }
+      const { allocateFixedPaymentToInstallments } = await import("../lib/fixed-payment-policy.js");
+      allocateFixedPaymentToInstallments(
+        scheme,
+        payment.amountPaise,
+        scheme.planSnapshot?.paymentRules ?? {},
+      );
       if (
         scheme.status === SchemeStatus.DEFAULTED &&
         !(scheme.installments ?? []).some((row) => row.status === "OVERDUE")
@@ -612,6 +623,15 @@ async function recordPaymentInSession(session, req, override) {
     scheme.version += 1;
     await scheme.save({ session });
     gatewayTxFaultCheckpoint("recordPayment:scheme-saved");
+    if (quote && payment.status === PaymentStatus.SUCCESS && !override.skipActivation) {
+      const { activateSchemeAfterAllocatedFirstPayment } = await import("../lib/scheme-activation.js");
+      await activateSchemeAfterAllocatedFirstPayment({
+        scheme,
+        payment,
+        session,
+        req,
+      });
+    }
     await OutboxEvent.create(
       [
         {
@@ -812,9 +832,9 @@ export async function reversePayment(req) {
       );
     }
     const scheme = await Scheme.findById(payment.schemeId).session(session);
-    const sequence = await nextSequence(
+    const sequence = await nextSchemeLedgerSequence(
       payment.tenantId,
-      `ledger:${payment.schemeId}`,
+      payment.schemeId,
       session,
     );
     await LedgerEntry.create(
@@ -898,98 +918,220 @@ export async function reversePayment(req) {
     return { id: payment._id, status: payment.status, auditEventId, cashAdjustmentId };
   });
 }
-export async function createPaymentLink(req) {
-  const token = randomToken(32);
-  const expiresAt = new Date(
-    Date.now() + Number(req.body.expiresInMinutes ?? 1440) * 60_000,
-  );
-  return withTransaction(async (session) => {
-    const scheme = await Scheme.findOne({
-      _id: req.body.schemeId,
-      ...req.scope,
-    }).session(session);
-    if (!scheme) throw errors.notFound("Scheme");
-    const quote = await payableRange(req, scheme.toObject());
-    const targetCycle = req.body.targetCycle ?? quote.targetCycle;
-    let intent;
-    let positionVersion = quote.positionVersion;
-    if (scheme.paymentPattern === "FLEXIBLE") {
-      assertExpectedPositionVersion(scheme, quote, req.body);
-      await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
-      const reservations = await PaymentIntent.aggregate([
-        {
-          $match: {
-            tenantId: scheme.tenantId,
-            schemeId: scheme._id,
-            targetCycle,
-            status: PaymentIntentStatus.PENDING,
-            reservationExpiresAt: { $gt: new Date() },
-          },
+export async function reservePaymentLinkInSession(
+  session,
+  req,
+  { token = randomToken(32), expiresAt = new Date(Date.now() + Number(req.body.expiresInMinutes ?? 1440) * 60_000) } = {},
+) {
+  const scheme = await Scheme.findOne({
+    _id: req.body.schemeId,
+    ...req.scope,
+  }).session(session);
+  if (!scheme) throw errors.notFound("Scheme");
+  const quote = await payableRange(req, scheme.toObject());
+  const targetCycle = req.body.targetCycle ?? quote.targetCycle;
+  let intent;
+  let positionVersion = quote.positionVersion;
+  if (scheme.paymentPattern === "FLEXIBLE") {
+    assertExpectedPositionVersion(scheme, quote, req.body);
+    await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
+    const reservations = await PaymentIntent.aggregate([
+      {
+        $match: {
+          tenantId: scheme.tenantId,
+          schemeId: scheme._id,
+          targetCycle,
+          status: PaymentIntentStatus.PENDING,
+          reservationExpiresAt: { $gt: new Date() },
         },
-        { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
-      ]).session(session);
-      const available = {
-        ...quote,
-        maxPayablePaise: Math.max(
-          0,
-          quote.maxPayablePaise - (reservations[0]?.amountPaise ?? 0),
-        ),
-      };
-      checkAmount(available, req.body.amountPaise);
-      scheme.positionVersion += 1;
-      scheme.version += 1;
-      positionVersion = scheme.positionVersion;
-      await scheme.save({ session });
-      intent = (
-        await PaymentIntent.create(
-          [
-            {
-              _id: createId("paymentIntent"),
-              tenantId: scheme.tenantId,
-              branchId: scheme.branchId,
-              schemeId: scheme._id,
-              customerId: scheme.customerId,
-              targetCycle,
-              amountPaise: req.body.amountPaise,
-              positionVersion,
-              reservationExpiresAt: expiresAt,
-            },
-          ],
-          { session },
-        )
-      )[0];
-    } else checkAmount(quote, req.body.amountPaise);
-    const link = (
-      await PaymentLink.create(
+      },
+      { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
+    ]).session(session);
+    const available = {
+      ...quote,
+      maxPayablePaise: Math.max(
+        0,
+        quote.maxPayablePaise - (reservations[0]?.amountPaise ?? 0),
+      ),
+    };
+    checkAmount(available, req.body.amountPaise);
+    scheme.positionVersion += 1;
+    scheme.version += 1;
+    positionVersion = scheme.positionVersion;
+    await scheme.save({ session });
+    intent = (
+      await PaymentIntent.create(
         [
           {
-            _id: createId("paymentLink"),
+            _id: createId("paymentIntent"),
             tenantId: scheme.tenantId,
             branchId: scheme.branchId,
             schemeId: scheme._id,
             customerId: scheme.customerId,
-            tokenHash: sha256(token),
-            amountPaise: req.body.amountPaise,
             targetCycle,
-            paymentIntentId: intent?._id,
+            amountPaise: req.body.amountPaise,
             positionVersion,
-            expiresAt,
-            createdBy: req.auth.id,
+            reservationExpiresAt: expiresAt,
           },
         ],
         { session },
       )
     )[0];
-    return {
-      id: link._id,
-      token,
-      url: `/pay/${token}`,
-      status: link.status,
-      expiresAt: link.expiresAt,
-      paymentIntentId: intent?._id,
-      positionVersion,
-    };
+  } else {
+    checkAmount(quote, req.body.amountPaise);
+  }
+  const link = (
+    await PaymentLink.create(
+      [
+        {
+          _id: createId("paymentLink"),
+          tenantId: scheme.tenantId,
+          branchId: scheme.branchId,
+          schemeId: scheme._id,
+          customerId: scheme.customerId,
+          tokenHash: sha256(token),
+          amountPaise: req.body.amountPaise,
+          targetCycle,
+          paymentIntentId: intent?._id,
+          positionVersion,
+          expiresAt,
+          createdBy: req.auth.id,
+        },
+      ],
+      { session },
+    )
+  )[0];
+  return {
+    id: link._id,
+    token,
+    url: `/pay/${token}`,
+    status: link.status,
+    expiresAt: link.expiresAt,
+    paymentIntentId: intent?._id,
+    positionVersion,
+  };
+}
+
+export async function createPaymentLink(req) {
+  return withTransaction((session) => reservePaymentLinkInSession(session, req));
+}
+
+export async function reservePaymentIntentInSession(session, req) {
+  const scheme = await Scheme.findOne({
+    _id: req.params?.schemeId ?? req.body.schemeId,
+    tenantId: req.auth.tenantId,
+    ...(req.auth.type === "CUSTOMER" ? { customerId: req.auth.id } : {}),
+    ...req.scope,
+  }).session(session);
+  if (!scheme) throw errors.notFound("Scheme");
+  if (scheme.paymentPattern !== "FLEXIBLE") {
+    throw errors.business(
+      "PAYMENT_INTENT_NOT_APPLICABLE",
+      "Payment intents apply only to flexible schemes.",
+    );
+  }
+  const quote = await payableRange(req, scheme.toObject());
+  const targetCycle = req.body.targetCycle ?? quote.targetCycle;
+  assertExpectedPositionVersion(scheme, quote, req.body);
+  await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
+  const reservations = await PaymentIntent.aggregate([
+    {
+      $match: {
+        tenantId: scheme.tenantId,
+        schemeId: scheme._id,
+        targetCycle,
+        status: PaymentIntentStatus.PENDING,
+        reservationExpiresAt: { $gt: new Date() },
+      },
+    },
+    { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
+  ]).session(session);
+  const reservedPaise = reservations[0]?.amountPaise ?? 0;
+  const availableQuote = {
+    ...quote,
+    maxPayablePaise: Math.max(0, quote.maxPayablePaise - reservedPaise),
+    reservedPaise,
+  };
+  checkAmount(availableQuote, req.body.amountPaise);
+  scheme.positionVersion += 1;
+  scheme.version += 1;
+  await scheme.save({ session });
+  const intent = (
+    await PaymentIntent.create(
+      [
+        {
+          _id: createId("paymentIntent"),
+          tenantId: scheme.tenantId,
+          branchId: scheme.branchId,
+          schemeId: scheme._id,
+          customerId: scheme.customerId,
+          targetCycle,
+          amountPaise: req.body.amountPaise,
+          positionVersion: scheme.positionVersion,
+          reservationExpiresAt: new Date(Date.now() + 30 * 60_000),
+        },
+      ],
+      { session },
+    )
+  )[0];
+  const pending = (
+    await Payment.create(
+      [
+        {
+          _id: createId("payment"),
+          tenantId: scheme.tenantId,
+          branchId: scheme.branchId,
+          schemeId: scheme._id,
+          customerId: scheme.customerId,
+          receiptNumber: `PENDING-${intent._id}`,
+          amountPaise: intent.amountPaise,
+          targetCycle,
+          mode: PaymentMode.ONLINE_GATEWAY,
+          status: PaymentStatus.PENDING,
+          source: PaymentSource.CUSTOMER_APP,
+          paidAt: new Date(),
+        },
+      ],
+      { session },
+    )
+  )[0];
+  intent.paymentId = pending._id;
+  await intent.save({ session });
+  return {
+    intent: intent.toObject(),
+    paymentId: pending._id,
+    tenantId: scheme.tenantId,
+  };
+}
+
+export async function initiateProviderForReservedIntent(req, reserved) {
+  const tenant = await Tenant.findById(reserved.tenantId).select("operations branding").lean();
+  assertCustomerPaymentsEnabled(tenant);
+  assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
+  const provider = await phonePeProvider.createPayment({
+    merchantOrderId: reserved.intent._id,
+    amountPaise: reserved.intent.amountPaise,
+    redirectUrl: req.body.redirectUrl,
+    credentials: await gatewayCredentials(reserved.tenantId),
+    tenantId: reserved.tenantId,
+    ...customerCheckoutPreference(),
   });
+  await Promise.all([
+    PaymentIntent.updateOne(
+      { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
+      { $set: { providerOrderId: provider.providerOrderId } },
+    ),
+    Payment.updateOne(
+      { _id: reserved.paymentId, status: PaymentStatus.PENDING },
+      { $set: { providerTransactionId: provider.providerOrderId } },
+    ),
+  ]);
+  return {
+    ...reserved.intent,
+    paymentId: reserved.paymentId,
+    providerOrderId: provider.providerOrderId,
+    redirectUrl: provider.redirectUrl,
+  };
 }
 export async function getPublicLink(token, markOpened = true) {
   const link = await PaymentLink.findOne({ tokenHash: sha256(token) });
@@ -1209,143 +1351,9 @@ export async function initiatePublicPayment(req) {
 export async function createPaymentIntent(req) {
   let reserved;
   await withTransaction(async (session) => {
-    const scheme = await Scheme.findOne({
-      _id: req.params.schemeId,
-      tenantId: req.auth.tenantId,
-      customerId: req.auth.id,
-    }).session(session);
-    if (!scheme) throw errors.notFound("Scheme");
-    if (scheme.paymentPattern !== "FLEXIBLE")
-      throw errors.business(
-        "PAYMENT_INTENT_NOT_APPLICABLE",
-        "Payment intents apply only to flexible schemes.",
-      );
-    const quote = await payableRange(req, scheme.toObject());
-    const targetCycle = req.body.targetCycle ?? quote.targetCycle;
-    assertExpectedPositionVersion(scheme, quote, req.body);
-    await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
-    const reservations = await PaymentIntent.aggregate([
-      {
-        $match: {
-          tenantId: scheme.tenantId,
-          schemeId: scheme._id,
-          targetCycle,
-          status: PaymentIntentStatus.PENDING,
-          reservationExpiresAt: { $gt: new Date() },
-        },
-      },
-      { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
-    ]).session(session);
-    const reservedPaise = reservations[0]?.amountPaise ?? 0;
-    const availableQuote = {
-      ...quote,
-      maxPayablePaise: Math.max(0, quote.maxPayablePaise - reservedPaise),
-      reservedPaise,
-    };
-    checkAmount(availableQuote, req.body.amountPaise);
-    scheme.positionVersion += 1;
-    scheme.version += 1;
-    await scheme.save({ session });
-    const intent = (
-      await PaymentIntent.create(
-        [
-          {
-            _id: createId("paymentIntent"),
-            tenantId: scheme.tenantId,
-            branchId: scheme.branchId,
-            schemeId: scheme._id,
-            customerId: scheme.customerId,
-            targetCycle,
-            amountPaise: req.body.amountPaise,
-            positionVersion: scheme.positionVersion,
-            reservationExpiresAt: new Date(Date.now() + 30 * 60_000),
-          },
-        ],
-        { session },
-      )
-    )[0];
-    const pending = (
-      await Payment.create(
-        [
-          {
-            _id: createId("payment"),
-            tenantId: scheme.tenantId,
-            branchId: scheme.branchId,
-            schemeId: scheme._id,
-            customerId: scheme.customerId,
-            receiptNumber: `PENDING-${intent._id}`,
-            amountPaise: intent.amountPaise,
-            targetCycle,
-            mode: PaymentMode.ONLINE_GATEWAY,
-            status: PaymentStatus.PENDING,
-            source: PaymentSource.CUSTOMER_APP,
-            paidAt: new Date(),
-          },
-        ],
-        { session },
-      )
-    )[0];
-    intent.paymentId = pending._id;
-    await intent.save({ session });
-    reserved = {
-      intent: intent.toObject(),
-      paymentId: pending._id,
-      tenantId: scheme.tenantId,
-    };
+    reserved = await reservePaymentIntentInSession(session, req);
   });
-  try {
-    const tenant = await Tenant.findById(reserved.tenantId).select("operations branding").lean();
-    assertCustomerPaymentsEnabled(tenant);
-    assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
-    const provider = await phonePeProvider.createPayment({
-      merchantOrderId: reserved.intent._id,
-      amountPaise: reserved.intent.amountPaise,
-      redirectUrl: req.body.redirectUrl,
-      credentials: await gatewayCredentials(reserved.tenantId),
-      tenantId: reserved.tenantId,
-      ...customerCheckoutPreference(),
-    });
-    await Promise.all([
-      PaymentIntent.updateOne(
-        { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
-        { $set: { providerOrderId: provider.providerOrderId } },
-      ),
-      Payment.updateOne(
-        { _id: reserved.paymentId, status: PaymentStatus.PENDING },
-        { $set: { providerTransactionId: provider.providerOrderId } },
-      ),
-    ]);
-    return {
-      ...reserved.intent,
-      paymentId: reserved.paymentId,
-      providerOrderId: provider.providerOrderId,
-      redirectUrl: provider.redirectUrl,
-    };
-  } catch (error) {
-    await withTransaction(async (session) => {
-      await PaymentIntent.updateOne(
-        { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
-        { $set: { status: PaymentIntentStatus.FAILED }, $inc: { version: 1 } },
-        { session },
-      );
-      await Payment.updateOne(
-        { _id: reserved.paymentId, status: PaymentStatus.PENDING },
-        {
-          $set: {
-            status: PaymentStatus.FAILED,
-            providerPayload: { initiationError: error.message },
-          },
-        },
-        { session },
-      );
-      await Scheme.updateOne(
-        { _id: reserved.intent.schemeId },
-        { $inc: { positionVersion: 1, version: 1 } },
-        { session },
-      );
-    });
-    throw error;
-  }
+  return initiateProviderForReservedIntent(req, reserved);
 }
 
 export async function createSdkPaymentIntent(req) {

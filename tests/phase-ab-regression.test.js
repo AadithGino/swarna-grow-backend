@@ -34,9 +34,13 @@ import {
   reconcilePaymentById,
 } from "../src/services/phonepe-reconcile.service.js";
 import { processWebhook } from "../src/workers/processors.js";
+import { connectRedis } from "../src/config/redis.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
-test.before(async () => { await startTestDb(); });
+test.before(async () => {
+  await connectRedis();
+  await startTestDb();
+});
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => {
   await resetTestDb();

@@ -39,7 +39,12 @@ import { processPhonePeRefundWebhook } from "../src/services/phonepe-refund.serv
 import { runPaymentExpiry } from "../src/services/payment-expiry.service.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
-test.before(async () => { await startTestDb(); });
+import { connectRedis } from "../src/config/redis.js";
+
+test.before(async () => {
+  await connectRedis();
+  await startTestDb();
+});
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => {
   await resetTestDb();

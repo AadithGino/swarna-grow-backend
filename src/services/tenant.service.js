@@ -1331,6 +1331,8 @@ export async function createStaff(req) {
   });
 }
 export async function setGoldRate(req) {
+  const { assertV1GoldPurity, V1_GOLD_PURITY } = await import("../lib/gold-rate-lookup.js");
+  assertV1GoldPurity(req.body.purity);
   return withTransaction(async (session) => {
     const rate = (
       await GoldRate.create(
@@ -1341,7 +1343,7 @@ export async function setGoldRate(req) {
             branchId: req.body.branchId ?? null,
             effectiveDate: req.body.effectiveDate,
             ratePerGramPaise: req.body.ratePerGramPaise,
-            purity: req.body.purity ?? "22K",
+            purity: V1_GOLD_PURITY,
             source: req.body.source,
             enteredBy: req.auth.id,
           },
@@ -1427,22 +1429,12 @@ export async function listGoldRateHistory(req) {
   return result;
 }
 export async function currentGoldRate(scope, date) {
-  return GoldRate.findOne({
-    tenantId: scope.tenantId,
-    effectiveDate: date,
-    $or: [{ branchId: scope.branchId ?? null }, { branchId: null }],
-  })
-    .sort({ branchId: -1, createdAt: -1 })
-    .lean();
+  const { currentGoldRate22K } = await import("../lib/gold-rate-lookup.js");
+  return currentGoldRate22K(scope, date);
 }
 export async function latestGoldRateOnOrBefore(scope, date) {
-  return GoldRate.findOne({
-    tenantId: scope.tenantId,
-    effectiveDate: { $lte: date },
-    $or: [{ branchId: scope.branchId ?? null }, { branchId: null }],
-  })
-    .sort({ effectiveDate: -1, branchId: -1, createdAt: -1 })
-    .lean();
+  const { latestGoldRate22KOnOrBefore } = await import("../lib/gold-rate-lookup.js");
+  return latestGoldRate22KOnOrBefore(scope, date);
 }
 export async function deactivateStaff(req) {
   return withTransaction(async (session) => {

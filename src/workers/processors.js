@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { once } from "node:events";
 import path from "node:path";
 import { PushOutcomeKind } from "../lib/fcm-outcomes.js";
-import { Alert, Customer, ExportJob, Message, OutboxEvent, PaymentIntent, PaymentLink, Tenant, WebhookEvent } from "../models/index.js";
+import { Alert, Customer, ExportJob, Message, OutboxEvent, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
 import { whatsappProvider } from "../integrations/whatsapp.provider.js";
 import { updateDelivery } from "../services/messaging.service.js";
 import { env } from "../config/env.js";
@@ -490,7 +490,37 @@ export async function processWebhook(job) {
 export async function processOutbox(job) {
   const event = await OutboxEvent.findById(job.data.outboxEventId);
   if (!event || event.status === "COMPLETED") return;
-  if (event.topic === "payment.succeeded") {
+  if (event.topic === "scheme.joined") {
+    const customer = await Customer.findOne({
+      _id: event.payload.customerId,
+      tenantId: event.tenantId,
+    }).select("mobile whatsappOptedOutAt").lean();
+    const scheme = await Scheme.findOne({
+      _id: event.payload.schemeId,
+      tenantId: event.tenantId,
+    }).select("enrollmentNumber planSnapshot").lean();
+    const exists = await Message.exists({
+      tenantId: event.tenantId,
+      schemeId: event.payload.schemeId,
+      type: "SCHEME_JOINED",
+    });
+    if (customer && scheme && !exists) {
+      const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
+      await queueCustomerNotification({
+        tenantId: event.tenantId,
+        branchId: event.payload.branchId,
+        customerId: event.payload.customerId,
+        schemeId: event.payload.schemeId,
+        type: "SCHEME_JOINED",
+        templateParams: {
+          mobile: customer.mobile,
+          enrollmentNumber: scheme.enrollmentNumber,
+          schemeName: scheme.planSnapshot?.displayName ?? scheme.planSnapshot?.name,
+          event: "ACTIVATION",
+        },
+      });
+    }
+  } else if (event.topic === "payment.succeeded") {
     const customer = await Customer.findOne({ _id: event.payload.customerId, tenantId: event.tenantId }).select("mobile whatsappOptedOutAt").lean();
     const exists = await Message.exists({ tenantId: event.tenantId, type: "PAYMENT_SUCCESS", "templateParams.paymentId": event.payload.paymentId });
     if (customer && !exists) {
@@ -733,6 +763,7 @@ export async function processScheduler(job) {
   const today = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const {
     runMaturityMaintenance,
+    runDueInstallmentMaintenance,
     runOverdueMaintenance,
     runDefaultingMaintenance,
     runExpireFlexibleCapacityMaintenance,
@@ -741,6 +772,7 @@ export async function processScheduler(job) {
   } = await import("../services/scheme-maintenance.service.js");
 
   if (job.name === "maturity") await runMaturityMaintenance({ today });
+  if (job.name === "due-installments") await runDueInstallmentMaintenance({ today });
   if (job.name === "overdue") await runOverdueMaintenance({ today });
   if (job.name === "payment-reminders") {
     const { runReminderScheduler } = await import("../services/reminder-scheduler.service.js");

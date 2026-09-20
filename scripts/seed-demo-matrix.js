@@ -54,10 +54,13 @@ async function openRedemption(ctx, schemeId, closureType, mode) {
       expectedVersion: scheme.version,
       modeDetails: {
         expectedFinalValuePaise: preview.settlementPaise,
+        ...(mode === RedemptionMode.PURCHASE_ADJUSTMENT
+          ? { billNumber: `SEED-BILL-${scheme.enrollmentNumber}` }
+          : {}),
         ...(closureType === ClosureType.PREMATURE_CLOSURE
           ? {
               acknowledgePenalty: preview.penaltyPaise > 0,
-              acknowledgeBenefitForfeit: true,
+              acknowledgeBenefitForfeit: preview.penalty?.benefitTreatment === "FORFEIT",
             }
           : {}),
       },
@@ -168,7 +171,7 @@ export function slabPlanBody() {
       prematureClosureAllowed: true,
       lockInMonths: 3,
       prematurePenalty: { mode: "PERCENT_OF_PAID", value: 2, benefitTreatment: "FORFEIT" },
-      allowedModes: ["CASH", "PURCHASE_ADJUSTMENT", "TRANSFER_TO_SCHEME"],
+      allowedModes: ["CASH", "PURCHASE_ADJUSTMENT"],
       redeemAtAnyBranch: true,
     },
     availability: { allBranches: true, branchIds: [], visibleInCustomerApp: true, customerSelfEnrolAllowed: true },

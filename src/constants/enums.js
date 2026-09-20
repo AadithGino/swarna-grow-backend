@@ -22,7 +22,16 @@ export const FirstInstallmentAction = makeEnum("RECORD_MANUAL_PAYMENT", "CREATE_
 export const BenefitType = makeEnum("FIXED_BONUS_AMOUNT", "ONE_FREE_INSTALLMENT", "TEXT_ONLY");
 export const BonusBasis = makeEnum("FLAT", "PERCENT_OF_PAID");
 export const SchemePlanStatus = makeEnum("DRAFT", "ACTIVE", "INACTIVE");
-export const SchemeStatus = makeEnum("ACTIVE", "LOCKED", "DEFAULTED", "MATURED", "REDEEMED", "CLOSED_PREMATURE");
+export const SchemeStatus = makeEnum(
+  "PENDING_PAYMENT",
+  "ENROLMENT_EXPIRED",
+  "ACTIVE",
+  "LOCKED",
+  "DEFAULTED",
+  "MATURED",
+  "REDEEMED",
+  "CLOSED_PREMATURE",
+);
 export const SchemeDisplayMode = makeEnum("FIXED", "FLEXIBLE_FREE_WINDOW", "FLEXIBLE_LOCK_WINDOW");
 export const FlexiblePhase = makeEnum("FLEXIBLE", "CAPPED");
 export const CycleStatus = makeEnum("UPCOMING", "PARTIALLY_PAID", "PAID", "EXPIRED");

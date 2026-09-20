@@ -7,7 +7,7 @@ import { withTransaction } from "../lib/transaction.js";
 import { errors } from "../lib/app-error.js";
 import { Alert, LedgerEntry, Payment, PaymentIntent, PaymentRefund, Scheme } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
-import { nextSequence } from "./sequence.service.js";
+import { nextSchemeLedgerSequence } from "./sequence.service.js";
 import { recordPhonePeRefundOutcome } from "../lib/ops-metrics.js";
 import { rebuildSchemeProjection } from "./scheme.service.js";
 
@@ -360,9 +360,9 @@ export async function processPhonePeRefundWebhook({
             tenantId: payment.tenantId,
           }).session(session);
           if (!scheme) throw errors.notFound("Scheme");
-          const sequence = await nextSequence(
+          const sequence = await nextSchemeLedgerSequence(
             payment.tenantId,
-            `ledger:${payment.schemeId}`,
+            payment.schemeId,
             session,
           );
           await LedgerEntry.create(

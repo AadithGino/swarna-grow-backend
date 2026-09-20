@@ -1,5 +1,11 @@
 import dayjs from "dayjs";
 import { addMonthsClamped } from "../lib/date.js";
+import { fixedMaturityDateFromFinalDueDate } from "../lib/calendar-cycle.js";
+
+export function resolveFixedSchemeMaturityDate(installmentRows) {
+  if (!installmentRows?.length) return null;
+  return fixedMaturityDateFromFinalDueDate(installmentRows[installmentRows.length - 1].dueDate);
+}
 
 function resolveFirstInstallmentDueDate(startDate, scheduleRules, firstInstallmentMode) {
   const start = dayjs(startDate);

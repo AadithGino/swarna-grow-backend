@@ -115,7 +115,7 @@ test("Phase F maintenance queries use indexed plans (explain evidence)", async (
       run: () =>
         explainFind(
           Scheme,
-          { status: { $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED] }, maturityDate: { $lte: today } },
+          { status: { $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED] }, maturityDate: { $lt: today } },
           { _id: 1 },
         ),
     },

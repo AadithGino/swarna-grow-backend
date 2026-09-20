@@ -13,7 +13,11 @@ import { moneyRef, weightRef } from "../lib/money.js";
 import { computeFlexibleCycleCapPaise } from "../lib/flexible-cap.js";
 import { buildAmountSummary } from "../lib/plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
-import { buildSchedulePreview } from "./schedule.service.js";
+import {
+  buildCalendarMonthCycles,
+  maturityDateFromCalendarCycles,
+} from "../lib/calendar-cycle.js";
+import { buildSchedulePreview, resolveFixedSchemeMaturityDate } from "./schedule.service.js";
 
 const ACTIVE_SCHEME_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED"];
 
@@ -300,11 +304,6 @@ async function buildPlanStatsPayload(tenantId, plan) {
   };
 }
 
-function previewDueOnMonth(iso, months, dueDay) {
-  const due = addMonthsClamped(iso, months);
-  return due.date(Math.min(dueDay, due.daysInMonth())).format("YYYY-MM-DD");
-}
-
 function computeIllustrativeFlexibleCap(installmentAmountPaise, flexRules) {
   const free = flexRules.flexiblePhaseCycles ?? 6;
   const illustrativeFreeTotalPaise = installmentAmountPaise * free;
@@ -328,24 +327,21 @@ export function buildFlexibleEnrolPreview(
   const freeMonths = flex.flexiblePhaseCycles ?? 6;
   const cappedCycles = flex.cappedPhaseCycles ?? 5;
   const firstInstallmentRequired = firstInstallmentMode === "COLLECT_NOW";
-  const layout = buildFlexiblePreviewSummary(plan, startDate);
   const { illustrativeFreeTotalPaise, capPaise } = computeIllustrativeFlexibleCap(
     installmentAmountPaise,
     flex,
   );
   const cappedTotalPaise = capPaise * cappedCycles;
-  const cycleRows = buildSchedulePreview({
+  const calendarCycles = buildCalendarMonthCycles({
     startDate,
-    durationMonths: plan.durationMonths,
-    installmentCount: plan.durationMonths,
-    scheduleRules: plan.scheduleRules ?? {},
+    cycleCount: plan.durationMonths,
     firstInstallmentMode,
   });
   const schedulePreview = [];
-  for (let i = 0; i < freeMonths && i < cycleRows.length; i += 1) {
+  for (let i = 0; i < freeMonths && i < calendarCycles.length; i += 1) {
     schedulePreview.push({
       installmentNumber: i + 1,
-      dueDate: cycleRows[i].dueDate,
+      dueDate: calendarCycles[i].expiresAt,
       amount: moneyRef(installmentAmountPaise),
       note:
         i === 0 && firstInstallmentRequired
@@ -353,10 +349,10 @@ export function buildFlexibleEnrolPreview(
           : "Free window (optional)",
     });
   }
-  for (let i = 0; i < cappedCycles && freeMonths + i < cycleRows.length; i += 1) {
+  for (let i = 0; i < cappedCycles && freeMonths + i < calendarCycles.length; i += 1) {
     schedulePreview.push({
       installmentNumber: freeMonths + i + 1,
-      dueDate: cycleRows[freeMonths + i].dueDate,
+      dueDate: calendarCycles[freeMonths + i].expiresAt,
       amount: moneyRef(capPaise),
       note: "Capped cycle (illustrative)",
     });
@@ -371,8 +367,8 @@ export function buildFlexibleEnrolPreview(
     totalPayable: moneyRef(illustrativeFreeTotalPaise + cappedTotalPaise),
     totalPayableNote:
       "Illustrative maximum if the reference amount is paid each free month. Actual cap is based on total free-phase contributions.",
-    firstDueDate: cycleRows[0]?.dueDate ?? startDate,
-    maturityDate: layout.maturityDate,
+    firstDueDate: calendarCycles[0]?.expiresAt ?? startDate,
+    maturityDate: maturityDateFromCalendarCycles(calendarCycles),
     benefit: benefit.displayLabel || benefit.type
       ? { type: benefit.type, displayLabel: benefit.displayLabel ?? benefit.type }
       : undefined,
@@ -380,29 +376,34 @@ export function buildFlexibleEnrolPreview(
   };
 }
 
-function buildFlexiblePreviewSummary(body, startDate) {
+function buildFlexiblePreviewSummary(body, startDate, firstInstallmentMode = "START_NEXT_CYCLE") {
   const flex = body.flexibleRules ?? {};
   const flexPhase = flex.flexiblePhase ?? {};
-  const scheduleRules = body.scheduleRules ?? {};
-  const dueDay = scheduleRules.dueDayOfMonth ?? 10;
   const freeMonths = flex.flexiblePhaseCycles ?? 6;
   const cappedCycles = flex.cappedPhaseCycles ?? 5;
   const benefit = body.benefit ?? {};
+  const calendarCycles = buildCalendarMonthCycles({
+    startDate,
+    cycleCount: body.durationMonths,
+    firstInstallmentMode,
+  });
+  const freeCal = calendarCycles.slice(0, freeMonths);
+  const cappedCal = calendarCycles.slice(freeMonths, freeMonths + cappedCycles);
   return {
     freeWindow: {
       months: freeMonths,
       from: startDate,
-      to: previewDueOnMonth(startDate, freeMonths, dueDay),
+      to: freeCal.length ? freeCal[freeCal.length - 1].cycleEnd : startDate,
       minPerPayment: moneyRef(Number(flexPhase.minimumPaymentPaise ?? 0)),
       maxPerPayment: moneyRef(Number(flexPhase.maximumPaymentPaise ?? 0)),
     },
     cappedPhase: {
       cycles: cappedCycles,
-      from: previewDueOnMonth(startDate, freeMonths, dueDay),
-      to: previewDueOnMonth(startDate, freeMonths + cappedCycles, dueDay),
+      from: cappedCal.length ? cappedCal[0].cycleStart : startDate,
+      to: cappedCal.length ? cappedCal[cappedCal.length - 1].cycleEnd : startDate,
       note: `Each of these ${cappedCycles} cycles is capped at the average of your first ${freeMonths} cycles' payments.`,
     },
-    maturityDate: previewDueOnMonth(startDate, freeMonths + cappedCycles, dueDay),
+    maturityDate: maturityDateFromCalendarCycles(calendarCycles),
     benefit: {
       type: benefit.type,
       displayLabel: benefit.displayLabel,
@@ -452,7 +453,7 @@ function buildFixedPreviewResponse(body) {
       installmentAmount: moneyRef(installmentAmountPaise),
       totalPayable: moneyRef(totalPaise),
       firstDueDate: schedule[0]?.dueDate,
-      maturityDate: schedule[schedule.length - 1]?.dueDate,
+      maturityDate: resolveFixedSchemeMaturityDate(rows),
       benefit: {
         type: benefit.type,
         displayLabel: benefit.displayLabel,
@@ -606,7 +607,12 @@ export async function updatePlan(req) {
   return withTransaction(async (session) => {
     const plan = await SchemePlan.findOne({ _id: req.params.planId, tenantId: req.auth.tenantId }).session(session); if (!plan) throw errors.notFound("Scheme plan");
     if (req.body.expectedVersion !== plan.version) throw new AppError("VERSION_CONFLICT", "This plan changed. Refresh and try again.", 409);
-    const activeCount = await Scheme.countDocuments({ tenantId: plan.tenantId, planId: plan._id, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } }).session(session);
+    const { ENROLMENT_CAPACITY_STATUSES } = await import("../lib/scheme-enrollment-status.js");
+    const activeCount = await Scheme.countDocuments({
+      tenantId: plan.tenantId,
+      planId: plan._id,
+      status: { $in: ENROLMENT_CAPACITY_STATUSES },
+    }).session(session);
     const immutable = ["valueBasis", "paymentPattern", "durationMonths", "installmentCount", "amountRules", "scheduleRules", "paymentRules", "flexibleRules", "benefit", "redemptionRules"];
     if (activeCount && immutable.some((key) => req.body[key] !== undefined)) throw new AppError("PLAN_HAS_ACTIVE_ENROLMENTS", "Financial rules cannot be changed while the plan has active enrolments.", 409);
     const before = plan.toObject();

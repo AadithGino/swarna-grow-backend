@@ -112,7 +112,19 @@ async function expireIntentReservation(intent, reconcileRunCache) {
   }
 
   const expired = await expireIntentOnly(intent);
+  if (expired) {
+    await afterGatewayReservationExpired({
+      tenantId: intent.tenantId,
+      schemeId: intent.schemeId,
+    });
+  }
   return { expired, reason: expired ? "INTENT_EXPIRED" : "INTENT_NOT_EXPIRED" };
+}
+
+async function afterGatewayReservationExpired({ tenantId, schemeId }) {
+  if (!schemeId) return;
+  const { expirePendingEnrolmentIfUnpaid } = await import("../lib/pending-enrolment-expiry.js");
+  await expirePendingEnrolmentIfUnpaid({ tenantId, schemeId });
 }
 
 async function expireLinkOnly(link) {
@@ -159,6 +171,12 @@ async function expireLinkReservation(link, reconcileRunCache) {
     }
   }
   const expired = await expireLinkOnly(link);
+  if (expired) {
+    await afterGatewayReservationExpired({
+      tenantId: link.tenantId,
+      schemeId: link.schemeId,
+    });
+  }
   return { expired, reason: expired ? "LINK_EXPIRED" : "LINK_NOT_EXPIRED" };
 }
 

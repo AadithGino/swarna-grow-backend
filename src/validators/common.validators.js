@@ -205,6 +205,13 @@ const prematurePenalty = z
     benefitTreatment: enumSchema(E.BenefitTreatment),
   })
   .superRefine((value, context) => {
+    if (value.benefitTreatment === "PRORATE") {
+      context.addIssue({
+        code: "custom",
+        path: ["benefitTreatment"],
+        message: "PRORATE is not supported. Use FORFEIT or FULL.",
+      });
+    }
     if (value.mode === E.PrematurePenaltyMode.PERCENT_OF_PAID) {
       if (value.value != null && value.value > 100) {
         context.addIssue({
@@ -447,7 +454,13 @@ export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(40
 export const whatsappOptBody = z.object({ optedIn: z.boolean() });
 export const kycSubmitBody = z.object({ type: enumSchema(E.KycType), number: z.string().min(4).max(32).optional(), numberMasked: z.string().max(32).optional(), frontUploadId: z.string().optional(), backUploadId: z.string().optional() });
 export const customerBlockBody = z.object({ reason: z.string().trim().min(3).max(500).optional() });
-export const goldRateBody = z.object({ branchId: z.string().nullable().optional(), ratePerGramPaise: positivePaise, effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), purity: z.string().default("22K"), source: z.string().max(120).optional() });
+export const goldRateBody = z.object({
+  branchId: z.string().nullable().optional(),
+  ratePerGramPaise: positivePaise,
+  effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  purity: z.literal("22K").default("22K"),
+  source: z.string().max(120).optional(),
+});
 export const grievanceBody = z.object({ category: enumSchema(E.GrievanceCategory), subject: z.string().min(5).max(140), description: z.string().min(10).max(4000), relatedEntity: z.object({ type: z.enum(["PAYMENT", "SCHEME", "REDEMPTION"]), id: z.string() }).optional(), attachmentUploadIds: z.array(z.string()).max(5).default([]) });
 export const messageBody = z.object({ body: z.string().min(1).max(4000), messageType: enumSchema(E.GrievanceMessageType).default(E.GrievanceMessageType.PUBLIC_REPLY), attachmentUploadIds: z.array(z.string()).max(5).default([]), expectedVersion: z.number().int().positive().optional() });
 export const handoverBody = z.object({ amountPaise: positivePaise, remarks: z.string().max(500).optional(), staffId: z.string().optional(), branchId: z.string().optional() });

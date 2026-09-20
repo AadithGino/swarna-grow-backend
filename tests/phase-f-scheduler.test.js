@@ -9,6 +9,7 @@ import {
 } from "../src/lib/reminder-daily-quota.js";
 import {
   runDefaultingBatch,
+  runDueInstallmentBatch,
   runMaturityTransitionBatch,
 } from "../src/services/scheme-maintenance.service.js";
 import { runReminderScheduler } from "../src/services/reminder-scheduler.service.js";
@@ -70,12 +71,43 @@ test("maturity batch is idempotent on rerun", async () => {
     paymentPattern: "FIXED",
     status: SchemeStatus.ACTIVE,
     startDate: "2026-01-01",
-    maturityDate: today,
+    maturityDate: "2026-09-18",
     installments: [],
   });
   const first = await runMaturityTransitionBatch({ today });
   assert.equal(first.processed, 1);
   const second = await runMaturityTransitionBatch({ today });
+  assert.equal(second.processed, 0);
+});
+
+test("due job transitions PENDING installments idempotently", async () => {
+  const { tenant, branch } = await seedTenantUser();
+  const today = "2026-09-19";
+  await Scheme.create({
+    _id: createId("scheme"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerId: createId("customer"),
+    planId: createId("schemePlan"),
+    enrollmentNumber: "ENR-DUE-1",
+    planSnapshot: { paymentPattern: "FIXED" },
+    valueBasis: "CASH",
+    paymentPattern: "FIXED",
+    status: SchemeStatus.ACTIVE,
+    startDate: "2026-01-01",
+    maturityDate: "2027-01-01",
+    installments: [
+      { number: 1, dueDate: "2026-09-01", amountPaise: 10000, paidPaise: 0, status: "PAID", graceEndsAt: "2026-09-05" },
+      { number: 2, dueDate: "2026-09-10", amountPaise: 10000, paidPaise: 0, status: "PENDING", graceEndsAt: "2026-09-15" },
+      { number: 3, dueDate: "2026-10-10", amountPaise: 10000, paidPaise: 0, status: "PENDING", graceEndsAt: "2026-10-15" },
+    ],
+  });
+  const first = await runDueInstallmentBatch({ today });
+  assert.equal(first.processed, 1);
+  const updated = await Scheme.findOne({ enrollmentNumber: "ENR-DUE-1" }).lean();
+  assert.equal(updated.installments[1].status, "DUE");
+  assert.equal(updated.installments[2].status, "PENDING");
+  const second = await runDueInstallmentBatch({ today });
   assert.equal(second.processed, 0);
 });
 
@@ -347,7 +379,7 @@ test("maintenance batches converge maturity, defaulting, and flexible expiry", a
       paymentPattern: "FIXED",
       status: SchemeStatus.ACTIVE,
       startDate: "2026-01-01",
-      maturityDate: today,
+      maturityDate: "2026-09-18",
       installments: [],
     },
     {

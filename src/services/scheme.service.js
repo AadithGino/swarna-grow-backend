@@ -2,7 +2,9 @@ import {
   AuditEntityType,
   FirstInstallmentMode,
   FlexiblePhase,
+  PaymentIntentStatus,
   PaymentPattern,
+  PaymentStatus,
   RedemptionStatus,
   SchemePlanStatus,
   SchemeStatus,
@@ -12,6 +14,7 @@ import {
   Customer,
   LedgerEntry,
   Payment,
+  PaymentIntent,
   Redemption,
   Scheme,
   SchemePlan,
@@ -20,7 +23,13 @@ import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
 import { computeFlexibleCycleCapPaise } from "../lib/flexible-cap.js";
-import { OPEN_ENROLLMENT_STATUSES } from "../lib/scheme-enrollment-status.js";
+import {
+  ENROLMENT_CAPACITY_STATUSES,
+  ONE_ACTIVE_SCHEME_CONFLICT_STATUSES,
+  OPEN_ENROLLMENT_STATUSES,
+} from "../lib/scheme-enrollment-status.js";
+import { computeFixedPaymentQuote } from "../lib/fixed-payment-policy.js";
+import { summarizeFreeWindowLedgerNet } from "../lib/flexible-free-window-net.js";
 import { withTransaction } from "../lib/transaction.js";
 import {
   assertAnalyticsPeriod,
@@ -36,7 +45,12 @@ import { dateMatch, calendarDateMatch, effectiveScope, searchRegex } from "../li
 import { moneyRef } from "../lib/money.js";
 import { generatedAtIst } from "./report-builders/report-envelope.js";
 import { buildFlexibleEnrolPreview } from "./plan.service.js";
-import { buildSchedulePreview } from "./schedule.service.js";
+import {
+  buildCalendarMonthCycles,
+  buildFlexibleSchemeCycleRows,
+  maturityDateFromCalendarCycles,
+} from "../lib/calendar-cycle.js";
+import { buildSchedulePreview, resolveFixedSchemeMaturityDate } from "./schedule.service.js";
 import { writeAudit } from "./audit.service.js";
 import { today, addMonthsClamped, monthKey } from "../lib/date.js";
 import { mapAdminLedgerEntry, paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
@@ -258,13 +272,26 @@ export async function validateEnrolment(req) {
   if (availability.enrolmentOpenTo && calendarToday > availability.enrolmentOpenTo) throw errors.business("PLAN_ENROLMENT_CLOSED", "The enrolment window for this plan has closed.");
   if (req.auth?.type === "CUSTOMER" && availability.customerSelfEnrolAllowed !== true) throw errors.business("PLAN_SELF_ENROL_DISABLED", "This plan requires branch-assisted enrolment.");
   if (availability.maxEnrolments != null) {
-    const enrolled = await Scheme.countDocuments({ tenantId: req.auth.tenantId, planId: plan._id });
+    const enrolled = await Scheme.countDocuments({
+      tenantId: req.auth.tenantId,
+      planId: plan._id,
+      status: { $in: ENROLMENT_CAPACITY_STATUSES },
+    });
     if (enrolled >= availability.maxEnrolments) throw errors.business("PLAN_ENROLMENT_LIMIT_REACHED", "This plan has reached its enrolment limit.");
   }
   if (plan.flexibleRules?.extensionMode === "EXTEND_FLEXIBLE_PHASE") throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "Flexible-phase extension is not supported and cannot be used in a plan.");
   if (customer.status !== "ACTIVE") throw errors.business("CUSTOMER_NOT_ACTIVE", "This customer is not active.");
   if (req.tenant.settings?.requireKycForEnrolment && customer.kyc?.status !== "VERIFIED") throw errors.business("KYC_REQUIRED", "Verified KYC is required before enrolment.");
-  if (req.tenant.settings?.oneActiveSchemePerCustomer && await Scheme.exists({ tenantId: req.auth.tenantId, customerId: customer._id, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } })) throw errors.business("ONE_SCHEME_POLICY", "This customer already has an active scheme.");
+  if (
+    req.tenant.settings?.oneActiveSchemePerCustomer
+    && await Scheme.exists({
+      tenantId: req.auth.tenantId,
+      customerId: customer._id,
+      status: { $in: ONE_ACTIVE_SCHEME_CONFLICT_STATUSES },
+    })
+  ) {
+    throw errors.business("ONE_SCHEME_POLICY", "This customer already has an active scheme.");
+  }
   const branchId = resolveEnrolBranchId(req, customer);
   await assertActiveEnrolBranch(req.auth.tenantId, branchId);
   assertPlanAvailableAtBranch(plan, branchId);
@@ -339,7 +366,7 @@ export async function validateEnrolmentResponse(req) {
       firstInstallmentMode,
     });
     const maturityDate = scheduleRows.length
-      ? scheduleRows[scheduleRows.length - 1].dueDate
+      ? resolveFixedSchemeMaturityDate(scheduleRows)
       : addMonthsClamped(startDate, plan.durationMonths).format("YYYY-MM-DD");
     const benefit = plan.benefit ?? {};
     return {
@@ -387,12 +414,54 @@ export async function enrol(req) {
   if (validation.installmentAmountPaise == null) {
     throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
   }
-  return withTransaction(async (session) => {
-    await SchemePlan.updateOne({ _id: validation.plan._id, tenantId: req.auth.tenantId }, { $inc: { version: 1 } }, { session });
+  return withTransaction(async (session) => createEnrolmentInSession(req, validation, session));
+}
+
+async function lockPlanForEnrolment(session, tenantId, planId) {
+  const planRow = await SchemePlan.findOne({ _id: planId, tenantId }).session(session);
+  if (!planRow) throw errors.notFound("Scheme plan");
+  const locked = await SchemePlan.findOneAndUpdate(
+    { _id: planId, tenantId, version: planRow.version },
+    { $inc: { version: 1 } },
+    { session, new: true },
+  );
+  if (!locked) {
+    throw errors.business(
+      "PLAN_VERSION_CONFLICT",
+      "This plan was updated during enrolment. Refresh and try again.",
+    );
+  }
+  return locked;
+}
+
+async function assertPlanEnrolmentCapacity(session, tenantId, planId, maxEnrolments) {
+  if (maxEnrolments == null) return;
+  const occupied = await Scheme.countDocuments({
+    tenantId,
+    planId,
+    status: { $in: ENROLMENT_CAPACITY_STATUSES },
+  }).session(session);
+  if (occupied >= maxEnrolments) {
+    throw errors.business("PLAN_ENROLMENT_LIMIT_REACHED", "This plan has reached its enrolment limit.");
+  }
+}
+
+export async function createEnrolmentInSession(req, validation, session) {
     const maxEnrolments = validation.plan.availability?.maxEnrolments;
-    if (maxEnrolments != null) {
-      const enrolled = await Scheme.countDocuments({ tenantId: req.auth.tenantId, planId: validation.plan._id }).session(session);
-      if (enrolled >= maxEnrolments) throw errors.business("PLAN_ENROLMENT_LIMIT_REACHED", "This plan has reached its enrolment limit.");
+    await lockPlanForEnrolment(session, req.auth.tenantId, validation.plan._id);
+    await assertPlanEnrolmentCapacity(
+      session,
+      req.auth.tenantId,
+      validation.plan._id,
+      maxEnrolments,
+    );
+    if (req.tenant.settings?.oneActiveSchemePerCustomer) {
+      const conflicts = await Scheme.countDocuments({
+        tenantId: req.auth.tenantId,
+        customerId: validation.customer._id,
+        status: { $in: ONE_ACTIVE_SCHEME_CONFLICT_STATUSES },
+      }).session(session);
+      if (conflicts > 0) throw errors.business("ONE_SCHEME_POLICY", "This customer already has an active scheme.");
     }
     const number = await nextSequence(req.auth.tenantId, "scheme", session); const startDate = today(); const maturityDate = addMonthsClamped(startDate, validation.plan.durationMonths).format("YYYY-MM-DD");
     const isFlexible = validation.plan.paymentPattern === PaymentPattern.FLEXIBLE;
@@ -405,11 +474,204 @@ export async function enrol(req) {
       firstInstallmentMode: validation.firstInstallmentMode,
     };
     const fixedInstallments = isFlexible ? [] : buildSchedulePreview(schedulePreviewArgs);
-    const maturityFromSchedule = fixedInstallments.length ? fixedInstallments[fixedInstallments.length - 1].dueDate : maturityDate;
-    const scheme = (await Scheme.create([{ _id: createId("scheme"), tenantId: req.auth.tenantId, branchId: validation.branchId, customerId: validation.customer._id, planId: validation.plan._id, enrollmentNumber: `ENR-${String(number).padStart(7, "0")}`, planSnapshot: validation.plan, valueBasis: validation.plan.valueBasis, paymentPattern: validation.plan.paymentPattern, startDate, maturityDate: maturityFromSchedule, installmentAmountPaise: validation.installmentAmountPaise, installments: fixedInstallments, cycles: isFlexible ? buildSchedulePreview({ startDate, durationMonths: validation.plan.durationMonths, installmentCount: validation.plan.durationMonths }).map((row) => ({ cycle: row.dueDate.slice(0, 7), capPaise: 0, paidPaise: 0, remainingPaise: 0, status: "UPCOMING", expiresAt: row.graceEndsAt })) : [], flexiblePhase: isFlexible ? FlexiblePhase.FLEXIBLE : undefined, positionVersion: 0, createdBy: req.auth.id }], { session }))[0];
-    const auditEventId = await writeAudit({ req, action: "SCHEME_ENROLLED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId, firstInstallmentRequired: validation.firstInstallmentRequired };
-  });
+    let persistedMaturityDate = maturityDate;
+    if (isFlexible) {
+      persistedMaturityDate = maturityDateFromCalendarCycles(buildCalendarMonthCycles({
+        startDate,
+        cycleCount: validation.plan.durationMonths,
+        firstInstallmentMode: validation.firstInstallmentMode,
+      })) ?? maturityDate;
+    } else if (fixedInstallments.length) {
+      persistedMaturityDate = resolveFixedSchemeMaturityDate(fixedInstallments) ?? maturityDate;
+    }
+    const flexibleCycles = isFlexible
+      ? buildFlexibleSchemeCycleRows({
+        startDate,
+        durationMonths: validation.plan.durationMonths,
+        firstInstallmentMode: validation.firstInstallmentMode,
+      })
+      : [];
+    const initialStatus = validation.firstInstallmentRequired
+      ? SchemeStatus.PENDING_PAYMENT
+      : SchemeStatus.ACTIVE;
+    const scheme = (await Scheme.create([{
+      _id: createId("scheme"),
+      tenantId: req.auth.tenantId,
+      branchId: validation.branchId,
+      customerId: validation.customer._id,
+      planId: validation.plan._id,
+      enrollmentNumber: `ENR-${String(number).padStart(7, "0")}`,
+      planSnapshot: validation.plan,
+      valueBasis: validation.plan.valueBasis,
+      paymentPattern: validation.plan.paymentPattern,
+      status: initialStatus,
+      startDate,
+      maturityDate: persistedMaturityDate,
+      installmentAmountPaise: validation.installmentAmountPaise,
+      installments: fixedInstallments,
+      cycles: flexibleCycles,
+      flexiblePhase: isFlexible ? FlexiblePhase.FLEXIBLE : undefined,
+      positionVersion: 0,
+      createdBy: req.auth.id,
+    }], { session }))[0];
+    if (req.tenant.settings?.oneActiveSchemePerCustomer) {
+      const conflicts = await Scheme.countDocuments({
+        tenantId: req.auth.tenantId,
+        customerId: validation.customer._id,
+        status: { $in: ONE_ACTIVE_SCHEME_CONFLICT_STATUSES },
+      }).session(session);
+      if (conflicts > 1) throw errors.business("ONE_SCHEME_POLICY", "This customer already has an active scheme.");
+    }
+    const auditEventId = await writeAudit({
+      req,
+      action: "SCHEME_ENROLLED",
+      entityType: AuditEntityType.SCHEME,
+      entityId: scheme._id,
+      after: scheme.toObject(),
+      session,
+    });
+    let activationPayment = null;
+    if (
+      req.body.firstInstallmentAction === "RECORD_MANUAL_PAYMENT"
+      && validation.firstInstallmentRequired
+      && req.body.payment
+    ) {
+      const { recordPayment } = await import("./payment.service.js");
+      activationPayment = await recordPayment(
+        {
+          ...req,
+          body: {
+            ...req.body.payment,
+            schemeId: scheme._id,
+            amountPaise: req.body.payment.amountPaise ?? validation.installmentAmountPaise,
+            expectedVersion: scheme.version,
+          },
+        },
+        { session, skipActivation: false },
+      );
+    }
+    return {
+      ...scheme.toObject(),
+      auditEventId,
+      firstInstallmentRequired: validation.firstInstallmentRequired,
+      activationPayment,
+    };
 }
+
+/** Re-use pending self-enrol checkout when PhonePe initiation failed after the local transaction committed. */
+async function tryResumeCustomerPendingEnrolCheckout(req) {
+  if (req.auth?.type !== "CUSTOMER" || req.body.payNow === false || !req.body.planId) return null;
+  const scheme = await Scheme.findOne({
+    tenantId: req.auth.tenantId,
+    customerId: req.auth.id,
+    planId: req.body.planId,
+    status: SchemeStatus.PENDING_PAYMENT,
+  }).lean();
+  if (!scheme) return null;
+  if (
+    req.body.installmentAmountPaise != null
+    && req.body.installmentAmountPaise !== scheme.installmentAmountPaise
+  ) {
+    return null;
+  }
+  const planActive = await SchemePlan.exists({
+    _id: req.body.planId,
+    tenantId: req.auth.tenantId,
+    status: SchemePlanStatus.ACTIVE,
+  });
+  if (!planActive) return null;
+
+  if (scheme.paymentPattern !== PaymentPattern.FLEXIBLE) return null;
+
+  const intent = await PaymentIntent.findOne({
+    tenantId: req.auth.tenantId,
+    schemeId: scheme._id,
+    customerId: req.auth.id,
+    status: PaymentIntentStatus.PENDING,
+    reservationExpiresAt: { $gt: new Date() },
+  }).sort({ createdAt: -1 }).lean();
+  if (!intent?.paymentId) return null;
+  const paymentPending = await Payment.exists({
+    _id: intent.paymentId,
+    tenantId: req.auth.tenantId,
+    status: PaymentStatus.PENDING,
+  });
+  if (!paymentPending) return null;
+
+  const { initiateProviderForReservedIntent } = await import("./payment.service.js");
+  const checkout = await initiateProviderForReservedIntent(
+    {
+      auth: req.auth,
+      tenant: req.tenant,
+      body: { redirectUrl: req.body.redirectUrl },
+    },
+    { intent, paymentId: intent.paymentId, tenantId: req.auth.tenantId },
+  );
+  return { enrolled: scheme, checkout, checkoutKind: "FLEXIBLE_PAYMENT_INTENT" };
+}
+
+/** Customer self-enrol: scheme + local checkout reservation in one transaction; PhonePe only after commit. */
+export async function customerEnrolWithCheckout(req) {
+  const resumed = await tryResumeCustomerPendingEnrolCheckout(req);
+  if (resumed) return resumed;
+
+  const validation = await validateEnrolment(req);
+  if (validation.installmentAmountPaise == null) {
+    throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
+  }
+  const needsCheckout =
+    req.body.payNow !== false && validation.firstInstallmentRequired;
+  let reservedIntent = null;
+  let reservedLink = null;
+  const enrolled = await withTransaction(async (session) => {
+    const scheme = await createEnrolmentInSession(req, validation, session);
+    if (!needsCheckout) return scheme;
+    const schemeId = scheme._id ?? scheme.id;
+    const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle ?? monthKey();
+    const payReq = {
+      auth: req.auth,
+      tenant: req.tenant,
+      baseUrl: req.baseUrl,
+      scope: { tenantId: req.auth.tenantId, customerId: req.auth.id },
+      params: { schemeId },
+      query: { ...(req.query ?? {}), targetCycle },
+      body: {
+        amountPaise: validation.installmentAmountPaise,
+        redirectUrl: req.body.redirectUrl,
+        schemeId,
+        targetCycle,
+        expectedPositionVersion: scheme.positionVersion ?? 0,
+      },
+    };
+    const {
+      reservePaymentIntentInSession,
+      reservePaymentLinkInSession,
+    } = await import("./payment.service.js");
+    if (scheme.paymentPattern === PaymentPattern.FLEXIBLE) {
+      reservedIntent = await reservePaymentIntentInSession(session, payReq);
+    } else {
+      reservedLink = await reservePaymentLinkInSession(session, payReq);
+    }
+    return scheme;
+  });
+  if (reservedIntent) {
+    const { initiateProviderForReservedIntent } = await import("./payment.service.js");
+    const checkout = await initiateProviderForReservedIntent(
+      {
+        auth: req.auth,
+        tenant: req.tenant,
+        body: { redirectUrl: req.body.redirectUrl },
+      },
+      reservedIntent,
+    );
+    return { enrolled, checkout, checkoutKind: "FLEXIBLE_PAYMENT_INTENT" };
+  }
+  if (reservedLink) {
+    return { enrolled, checkout: reservedLink, checkoutKind: "FIXED_PAYMENT_LINK" };
+  }
+  return { enrolled, checkout: null, checkoutKind: null };
+}
+
 /** Branch staff/collection agents: scheme is accessible when the customer belongs to their branch (scheme.branchId may differ). */
 export async function assertStaffCanAccessScheme(req, scheme, session) {
   if (req.auth.type === "CUSTOMER" || !req.scope?.branchId) return;
@@ -1031,33 +1293,30 @@ export async function getLedger(req) {
   return result;
 }
 export async function payableRange(req, schemeInput) {
-  const scheme = schemeInput ?? await getScheme(req); if (![SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED].includes(scheme.status)) throw new AppError("SCHEME_NOT_ACTIVE", "This scheme is not active.", 409);
+  const scheme = schemeInput ?? await getScheme(req);
+  const payableStatuses = [
+    SchemeStatus.PENDING_PAYMENT,
+    SchemeStatus.ACTIVE,
+    SchemeStatus.LOCKED,
+    SchemeStatus.DEFAULTED,
+  ];
+  if (!payableStatuses.includes(scheme.status)) {
+    throw new AppError("SCHEME_NOT_ACTIVE", "This scheme is not active.", 409);
+  }
   const plan = scheme.planSnapshot;
   const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle;
   if (scheme.paymentPattern === PaymentPattern.FIXED) {
-    const due = scheme.installments.find((row) => row.status !== "PAID" && row.status !== "WAIVED"); if (!due) return { minPayablePaise: 0, maxPayablePaise: 0, payable: false };
-    const remaining = due.amountPaise - due.paidPaise;
-    const advance = plan.paymentRules?.advancePaymentAllowed ? Math.max(1, plan.paymentRules.maxAdvanceInstallments ?? 1) : 1;
-    let maxPayablePaise =
-      remaining +
-      scheme.installments
-        .filter((row) => row.number > due.number && row.status === "PENDING")
-        .slice(0, advance - 1)
-        .reduce((sum, row) => sum + row.amountPaise, 0);
-    const perTxnCap = plan.paymentRules?.maxPaymentPerTransactionPaise;
-    if (perTxnCap != null) maxPayablePaise = Math.min(maxPayablePaise, perTxnCap);
-    const minPayablePaise = plan.paymentRules?.partialPaymentAllowed
-      ? Math.min(plan.paymentRules.minPaymentPaise || remaining, remaining)
-      : remaining;
+    const quote = computeFixedPaymentQuote(scheme, plan.paymentRules ?? {});
     return {
       model: "FIXED",
-      installmentNumber: due.number,
-      minPayablePaise,
-      maxPayablePaise,
+      installmentNumber: quote.installmentNumber,
+      minPayablePaise: quote.minPayablePaise,
+      maxPayablePaise: quote.maxPayablePaise,
+      allowedAmountsPaise: quote.allowedAmountsPaise ?? undefined,
       maxPaymentPerTransactionPaise: plan.paymentRules?.maxPaymentPerTransactionPaise ?? null,
-      suggestedPaise: remaining,
+      suggestedPaise: quote.suggestedPaise ?? quote.minPayablePaise,
       expectedVersion: scheme.version,
-      payable: true,
+      payable: quote.payable,
     };
   }
   if (scheme.flexiblePhase === FlexiblePhase.FLEXIBLE) {
@@ -1129,23 +1388,44 @@ export async function applyFlexibleLock(req) {
     const entries = await LedgerEntry.find({
       tenantId: scheme.tenantId,
       schemeId: scheme._id,
-      type: "FREE_WINDOW_PAYMENT",
+      type: { $in: ["FREE_WINDOW_PAYMENT", "REVERSAL"] },
     })
       .session(session)
       .lean();
     const rules = scheme.planSnapshot.flexibleRules;
-    const total = entries.reduce((sum, row) => sum + row.amountPaise, 0);
+    const flexPhase = rules.flexiblePhase ?? {};
+    const minTotalPaise = Number(flexPhase.minTotalPaise ?? 0);
+    const netSummary = summarizeFreeWindowLedgerNet(entries);
+    if (netSummary.anomalies.length) {
+      throw errors.business(
+        "FLEXIBLE_FREE_WINDOW_NET_NEGATIVE",
+        "A free-window payment reversal exceeds the original payment amount.",
+      );
+    }
+    const { netTotalPaise: total, netPositivePaymentCount } = netSummary;
     if (total === 0 && rules.capComputation.onZeroFlexiblePhaseTotal === "CLOSE_SCHEME") {
       scheme.status = SchemeStatus.CLOSED_PREMATURE;
       scheme.version += 1;
       await scheme.save({ session });
       return { ...scheme.toObject(), closeReason: "ZERO_FLEXIBLE_PHASE_TOTAL" };
     }
+    if (total > 0 && total < minTotalPaise && rules.capComputation.onBelowMinimumTotal === "CLOSE_SCHEME") {
+      scheme.status = SchemeStatus.CLOSED_PREMATURE;
+      scheme.version += 1;
+      await scheme.save({ session });
+      return { ...scheme.toObject(), closeReason: "BELOW_MINIMUM_FLEXIBLE_PHASE_TOTAL" };
+    }
     const cap = computeFlexibleCycleCapPaise({
       totalPaise: total,
-      freeWindowPaymentCount: entries.length,
+      freeWindowPaymentCount: netPositivePaymentCount,
       flexibleRules: rules,
     });
+    const capAudit = {
+      formula: rules.capComputation?.formula ?? "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
+      netFreeTotalPaise: total,
+      netPositivePaymentCount,
+      roundedCapPaise: cap,
+    };
     scheme.lockedAveragePaise = cap;
     scheme.flexiblePhase = FlexiblePhase.CAPPED;
     scheme.status = SchemeStatus.LOCKED;
@@ -1162,9 +1442,9 @@ export async function applyFlexibleLock(req) {
       action: "FLEXIBLE_LOCK_APPLIED",
       entityType: AuditEntityType.SCHEME,
       entityId: scheme._id,
-      after: scheme.toObject(),
+      after: { ...scheme.toObject(), flexibleLockComputation: capAudit },
       session,
     });
-    return { ...scheme.toObject(), auditEventId };
+    return { ...scheme.toObject(), auditEventId, flexibleLockComputation: capAudit };
   });
 }

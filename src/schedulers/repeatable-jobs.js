@@ -8,6 +8,7 @@ function job(queue, id, repeat, name, data = {}) {
 /** Repeatable job registrations (scheduler process). */
 export const schedulerRepeatableJobs = [
   job(QueueKind.SCHEDULER, "maturity-daily", { pattern: "5 0 * * *", tz: "Asia/Kolkata" }, "maturity"),
+  job(QueueKind.SCHEDULER, "due-installments-daily", { pattern: "8 0 * * *", tz: "Asia/Kolkata" }, "due-installments"),
   job(QueueKind.SCHEDULER, "overdue-daily", { pattern: "10 0 * * *", tz: "Asia/Kolkata" }, "overdue"),
   job(QueueKind.SCHEDULER, "payment-reminders-hourly", { pattern: "0 * * * *", tz: "Asia/Kolkata" }, "payment-reminders"),
   job(QueueKind.SCHEDULER, "expire-flexible-capacity", { pattern: "15 0 * * *", tz: "Asia/Kolkata" }, "expire-flexible-capacity"),

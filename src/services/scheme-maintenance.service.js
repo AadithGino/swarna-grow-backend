@@ -1,6 +1,6 @@
 import { AuditEntityType, SchemeStatus } from "../constants/enums.js";
 import { env } from "../config/env.js";
-import { addMonthsClamped } from "../lib/date.js";
+import { isFlexibleLockDueAfterFreePhase } from "../lib/calendar-cycle.js";
 import { incrementOpsMetric, OpsMetric } from "../lib/ops-metrics.js";
 import { Customer, Grievance, Message, Scheme } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
@@ -28,7 +28,7 @@ export async function runMaturityTransitionBatch({ today, cursor = null }) {
   const limit = batchSize();
   const query = {
     status: { $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED] },
-    maturityDate: { $lte: today },
+    maturityDate: { $lt: today },
     ...(cursor ? { _id: { $gt: cursor } } : {}),
   };
   const rows = await Scheme.find(query)
@@ -94,6 +94,57 @@ export async function runMaturityMaintenance({ today }) {
   let total = 0;
   for (let i = 0; i < maxBatchesPerRun(); i += 1) {
     const batch = await runMaturityTransitionBatch({ today, cursor });
+    total += batch.processed;
+    if (!batch.hasMore) break;
+    cursor = batch.cursor;
+  }
+  return { processed: total };
+}
+
+export async function runDueInstallmentBatch({ today, cursor = null }) {
+  const limit = batchSize();
+  const query = {
+    status: { $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED] },
+    paymentPattern: "FIXED",
+    installments: {
+      $elemMatch: {
+        dueDate: { $lte: today },
+        status: "PENDING",
+      },
+    },
+    ...(cursor ? { _id: { $gt: cursor } } : {}),
+  };
+  const rows = await Scheme.find(query).sort({ _id: 1 }).limit(limit).select("_id").lean();
+  let processed = 0;
+  for (const row of rows) {
+    const r = await Scheme.updateOne(
+      { _id: row._id },
+      {
+        $set: { "installments.$[inst].status": "DUE" },
+        $inc: { version: 1 },
+      },
+      {
+        arrayFilters: [{
+          "inst.dueDate": { $lte: today },
+          "inst.status": "PENDING",
+        }],
+      },
+    );
+    if (r.modifiedCount) processed += 1;
+  }
+  recordBatch(processed);
+  return {
+    processed,
+    cursor: rows.length ? rows[rows.length - 1]._id : cursor,
+    hasMore: rows.length === limit,
+  };
+}
+
+export async function runDueInstallmentMaintenance({ today }) {
+  let cursor = null;
+  let total = 0;
+  for (let i = 0; i < maxBatchesPerRun(); i += 1) {
+    const batch = await runDueInstallmentBatch({ today, cursor });
     total += batch.processed;
     if (!batch.hasMore) break;
     cursor = batch.cursor;
@@ -305,7 +356,7 @@ export async function runFlexibleLockBatch({ today, cursor = null, limit: limitO
   const schemes = await Scheme.find(query)
     .sort({ _id: 1 })
     .limit(limit)
-    .select("_id tenantId branchId customerId enrollmentNumber startDate planSnapshot")
+    .select("_id tenantId branchId customerId enrollmentNumber startDate planSnapshot cycles")
     .lean();
 
   let processed = 0;
@@ -320,8 +371,7 @@ export async function runFlexibleLockBatch({ today, cursor = null, limit: limitO
       skipped += 1;
       continue;
     }
-    const boundary = addMonthsClamped(scheme.startDate, freeCycles).format("YYYY-MM-DD");
-    if (today < boundary) {
+    if (!isFlexibleLockDueAfterFreePhase(today, scheme.cycles ?? [], freeCycles)) {
       skipped += 1;
       continue;
     }

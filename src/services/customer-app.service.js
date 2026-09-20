@@ -132,7 +132,7 @@ export async function buildHome(auth, tenant, query = {}) {
     Scheme.find({
       tenantId: auth.tenantId,
       customerId: auth.id,
-      status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED", "MATURED"] },
+      status: { $in: ["PENDING_PAYMENT", "ACTIVE", "LOCKED", "DEFAULTED", "MATURED"] },
     }).lean(),
     Scheme.find({
       tenantId: auth.tenantId,
@@ -220,7 +220,7 @@ export async function buildHome(auth, tenant, query = {}) {
       status: s.status,
     })),
     quickActions: [
-      { key: "PAY", label: "Pay instalment", enabled: activeSchemes.some((s) => s.status === "ACTIVE") },
+      { key: "PAY", label: "Pay instalment", enabled: activeSchemes.some((s) => ["PENDING_PAYMENT", "ACTIVE"].includes(s.status)) },
       { key: "ENROL", label: "Enrol in plan", enabled: true },
       { key: "PASSBOOK", label: "Passbook", enabled: activeSchemes.length > 0 },
     ],
@@ -376,8 +376,6 @@ async function goldTrend(auth, months) {
 
 async function paymentBlockForScheme(scheme) {
   if (scheme.valueBasis !== ValueBasis.GOLD_WEIGHT) return null;
-  const goldRules = scheme.planSnapshot?.goldRules ?? {};
-  if (goldRules.blockPaymentIfRateNotSet === false) return null;
   const rate = await currentGoldRate(
     { tenantId: scheme.tenantId, branchId: scheme.branchId },
     today(),

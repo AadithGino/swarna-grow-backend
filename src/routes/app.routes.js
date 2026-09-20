@@ -29,12 +29,8 @@ import { ClosureType, DevicePrincipalType } from "../constants/enums.js";
 import { registerFcmDevice, revokeFcmDevice } from "../services/device-registration.service.js";
 import { AppError } from "../lib/app-error.js";
 import { assertCustomerAppWritable, assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
-import { Customer } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
 import * as schemes from "../services/scheme.service.js";
-import * as payments from "../services/payment.service.js";
-import { PaymentPattern } from "../constants/enums.js";
-import { monthKey } from "../lib/date.js";
 export const appRouter = Router();
 const requireCustomerAppWrite = (req, _res, next) => {
   try {
@@ -117,65 +113,19 @@ appRouter.post(
   idempotent,
   asyncHandler(async (req, res) => {
     req.body.customerId = req.auth.id;
-    const enrolled = await schemes.enrol(req);
-    let payment = null;
-    if (req.body.payNow !== false && enrolled.firstInstallmentRequired) {
-      const schemeId = enrolled._id ?? enrolled.id;
-      const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle ?? monthKey();
-      const payReq = {
-        auth: req.auth,
-        tenant: req.tenant,
-        baseUrl: req.baseUrl,
-        scope: { tenantId: req.auth.tenantId, customerId: req.auth.id },
-        params: { schemeId },
-        query: { ...(req.query ?? {}), targetCycle },
-        body: {
-          amountPaise: enrolled.installmentAmountPaise,
-          redirectUrl: req.body.redirectUrl,
-          schemeId,
-          targetCycle,
-        },
-      };
-      if (enrolled.paymentPattern === PaymentPattern.FLEXIBLE) {
-        payReq.body.expectedPositionVersion = enrolled.positionVersion ?? 0;
-        const intent = await payments.createPaymentIntent(payReq);
-        payment = enrolPaymentResponse(
-          "FLEXIBLE_PAYMENT_INTENT",
-          paymentIntentAppDto(intent, intent),
-        );
-      } else {
-        const link = await payments.createPaymentLink(payReq);
-        payment = enrolPaymentResponse(
-          "FIXED_PAYMENT_LINK",
-          paymentLinkDto(link, link.token),
-        );
-      }
-    }
+    const { enrolled, checkout, checkoutKind } = await schemes.customerEnrolWithCheckout(req);
     const schemeId = enrolled._id ?? enrolled.id;
-    try {
-      const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
-      const customer = await Customer.findOne({
-        _id: req.auth.id,
-        tenantId: req.auth.tenantId,
-      })
-        .select("mobile whatsappOptedOutAt")
-        .lean();
-      if (customer) {
-        await queueCustomerNotification({
-          tenantId: req.auth.tenantId,
-          branchId: enrolled.branchId,
-          customerId: req.auth.id,
-          schemeId,
-          type: "SCHEME_JOINED",
-          templateParams: {
-            mobile: customer.mobile,
-            enrollmentNumber: enrolled.enrollmentNumber,
-            schemeName: enrolled.planSnapshot?.displayName ?? enrolled.planSnapshot?.name,
-          },
-        });
-      }
-    } catch {
-      // enrolment must succeed even if notification queue fails
+    let payment = null;
+    if (checkoutKind === "FLEXIBLE_PAYMENT_INTENT" && checkout) {
+      payment = enrolPaymentResponse(
+        "FLEXIBLE_PAYMENT_INTENT",
+        paymentIntentAppDto(checkout, checkout),
+      );
+    } else if (checkoutKind === "FIXED_PAYMENT_LINK" && checkout) {
+      payment = enrolPaymentResponse(
+        "FIXED_PAYMENT_LINK",
+        paymentLinkDto(checkout, checkout.token),
+      );
     }
     return sendSuccess(
       res,

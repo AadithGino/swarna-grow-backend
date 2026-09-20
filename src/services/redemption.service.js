@@ -18,11 +18,19 @@ import {
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
+import { computeConfiguredBenefitPaise } from "../lib/scheme-benefit.js";
+import { nextSchemeLedgerSequence } from "./sequence.service.js";
 import { ledgerTotals } from "./scheme.service.js";
 import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
 import { latestGoldRateOnOrBefore } from "./tenant.service.js";
-import { moneyToWeightMg, weightMgToMoneyPaise } from "../lib/money.js";
+import {
+  applyWeightPrecisionMg,
+  decimalRoundingMode,
+  moneyToWeightMg,
+  weightMgToMoneyPaise,
+} from "../lib/money.js";
+import { goldRateForExactDate } from "../lib/gold-rate-lookup.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, elapsedSchemeMonths, today } from "../lib/date.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
@@ -81,6 +89,12 @@ function installmentsPaidCount(scheme) {
 }
 
 function assertRedemptionModeAllowed(rules, mode) {
+  if (mode === RedemptionMode.TRANSFER_TO_SCHEME) {
+    throw errors.business(
+      "REDEMPTION_MODE_NOT_SUPPORTED",
+      "Transfer to a new scheme is not available in this version.",
+    );
+  }
   const allowed = rules?.allowedModes ?? ["CASH"];
   if (!allowed.includes(mode)) {
     throw errors.business(
@@ -180,27 +194,19 @@ export async function settlementPreview(req, closureType) {
     ((!eligibility?.requireAllInstallmentsPaid || requiredPaid) &&
       defaultCount <= (eligibility?.maxAllowedDefaults ?? Number.MAX_SAFE_INTEGER));
 
-  const cycleCap =
-    scheme.lockedAveragePaise ||
-    scheme.cycles?.find((cycle) => cycle.capPaise > 0)?.capPaise ||
-    0;
-
-  let benefitPaise = 0;
-  if (benefitEligible && benefitDef?.type === "FIXED_BONUS_AMOUNT") {
-    benefitPaise =
-      benefitDef.bonusBasis === "PERCENT_OF_PAID"
-        ? Math.floor((totals.amountPaidPaise * benefitDef.bonusValue) / 100)
-        : benefitDef.bonusValue;
-    if (benefitDef.maxBonusPaise) benefitPaise = Math.min(benefitPaise, benefitDef.maxBonusPaise);
-  }
-  if (benefitEligible && benefitDef?.type === "ONE_FREE_INSTALLMENT") {
-    benefitPaise =
-      scheme.paymentPattern === "FLEXIBLE"
-        ? cycleCap
-        : scheme.installmentAmountPaise;
-  }
-
   const penaltyRule = isPremature ? rules.prematurePenalty : null;
+  const prematureBenefitTreatment = penaltyRule?.benefitTreatment ?? "FORFEIT";
+  let benefitPaise = 0;
+  const includeMaturityBenefit =
+    benefitEligible
+    || (isPremature && prematureBenefitTreatment === "FULL");
+  if (includeMaturityBenefit) {
+    benefitPaise = computeConfiguredBenefitPaise(scheme, totals, benefitDef);
+  }
+  if (isPremature && prematureBenefitTreatment === "FORFEIT") {
+    benefitPaise = 0;
+  }
+
   const penaltyPaise = isPremature
     ? computePenaltyPaise(penaltyRule, totals.amountPaidPaise)
     : 0;
@@ -220,7 +226,25 @@ export async function settlementPreview(req, closureType) {
       });
     } else {
       benefitRatePerGramPaise = rate.ratePerGramPaise;
-      benefitWeightMg = moneyToWeightMg(benefitPaise, benefitRatePerGramPaise);
+      const goldRules = scheme.planSnapshot?.goldRules ?? {};
+      const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
+      benefitWeightMg = moneyToWeightMg(
+        benefitPaise,
+        benefitRatePerGramPaise,
+        rounding,
+      );
+      benefitWeightMg = applyWeightPrecisionMg(
+        benefitWeightMg,
+        goldRules.weightPrecisionMg,
+        rounding,
+      );
+      if (!(benefitWeightMg > 0)) {
+        blockers.push({
+          code: "GOLD_BENEFIT_ROUNDS_TO_ZERO",
+          message:
+            "The configured benefit rounds to zero gold weight at the applicable rate.",
+        });
+      }
     }
   }
 
@@ -245,14 +269,14 @@ export async function settlementPreview(req, closureType) {
     },
   ];
 
-  if (isPremature) {
+  if (isPremature && prematureBenefitTreatment === "FORFEIT") {
     lines.push({
       key: "BENEFIT",
       label: `${benefitLabel} — forfeited`,
       amount: moneyField(0),
       sign: "+",
       forfeited: true,
-      forfeitReason: "Benefit applies only on maturity",
+      forfeitReason: "Premature closure benefit treatment is forfeiture",
     });
   } else if (benefitDef?.type === "TEXT_ONLY") {
     // settlement lines exclude text-only benefit value
@@ -313,9 +337,7 @@ export async function settlementPreview(req, closureType) {
             : undefined,
   })).map((row) => ({
     ...row,
-    available:
-      row.mode !== RedemptionMode.GOLD_HANDOVER ||
-      scheme.valueBasis === ValueBasis.GOLD_WEIGHT,
+    available: allowedModeCodes.includes(row.mode),
   }));
 
   const tenant = await Tenant.findById(scheme.tenantId)
@@ -326,9 +348,13 @@ export async function settlementPreview(req, closureType) {
       tenant?.operations?.redemptionApprovalRequired,
   );
   const warningText = isPremature && eligible
-    ? penaltyPaise > 0
-      ? "Closing early forfeits the maturity benefit and applies a premature closure charge. This cannot be undone."
-      : "Closing early forfeits the maturity benefit. This cannot be undone."
+    ? prematureBenefitTreatment === "FORFEIT"
+      ? penaltyPaise > 0
+        ? "Closing early forfeits the maturity benefit and applies a premature closure charge. This cannot be undone."
+        : "Closing early forfeits the maturity benefit. This cannot be undone."
+      : penaltyPaise > 0
+        ? "Closing early applies a premature closure charge. The configured benefit is retained. This cannot be undone."
+        : "Closing early retains the configured benefit. This cannot be undone."
     : undefined;
 
   return {
@@ -427,6 +453,15 @@ export async function requestCustomerRedemption(req) {
       "A redemption request is already in progress for this scheme.",
     );
   }
+  if (req.body.preferredMode === RedemptionMode.PURCHASE_ADJUSTMENT) {
+    const billNumber = String(req.body.modeDetails?.billNumber ?? "").trim();
+    if (!billNumber || billNumber.length > 64) {
+      throw errors.business(
+        "BILL_NUMBER_REQUIRED",
+        "A valid purchase bill number is required for purchase adjustment.",
+      );
+    }
+  }
   const row = await Redemption.create({
     _id: createId("redemption"),
     tenantId: scheme.tenantId,
@@ -438,6 +473,9 @@ export async function requestCustomerRedemption(req) {
     modeDetails: {
       preferredDate: req.body.preferredDate,
       remarks: req.body.remarks,
+      ...(req.body.modeDetails?.billNumber
+        ? { billNumber: String(req.body.modeDetails.billNumber).trim() }
+        : {}),
       settlementSnapshot: {
         schemeVersion: scheme.version,
         principalPaise: preview.principalPaise,
@@ -517,12 +555,25 @@ export async function initiateRedemption(
         "Confirm the premature closure penalty before submitting.",
       );
     }
-    if (!modeDetails.acknowledgeBenefitForfeit) {
+    if (
+      preview.penalty?.benefitTreatment === "FORFEIT"
+      && !modeDetails.acknowledgeBenefitForfeit
+    ) {
       throw errors.business(
         "ACKNOWLEDGEMENT_REQUIRED",
         "Confirm that the maturity benefit is forfeited before submitting.",
       );
     }
+  }
+  if (req.body.mode === RedemptionMode.PURCHASE_ADJUSTMENT) {
+    const billNumber = String(req.body.modeDetails?.billNumber ?? "").trim();
+    if (!billNumber || billNumber.length > 64) {
+      throw errors.business(
+        "BILL_NUMBER_REQUIRED",
+        "A valid purchase bill number is required for purchase adjustment.",
+      );
+    }
+    req.body.modeDetails = { ...req.body.modeDetails, billNumber };
   }
   return withTransaction(async (session) => {
     const scheme = await Scheme.findOne({
@@ -632,6 +683,18 @@ export async function transitionRedemption(req, action) {
     if (action === "complete") {
       row.completedBy = req.auth.id;
       row.completedAt = new Date();
+      if (row.mode === RedemptionMode.PURCHASE_ADJUSTMENT) {
+        const billNumber = String(
+          req.body.modeDetails?.billNumber ?? row.modeDetails?.billNumber ?? "",
+        ).trim();
+        if (!billNumber || billNumber.length > 64) {
+          throw errors.business(
+            "BILL_NUMBER_REQUIRED",
+            "A valid purchase bill number is required for purchase adjustment.",
+          );
+        }
+        row.modeDetails = { ...(row.modeDetails ?? {}), billNumber };
+      }
       const scheme = await Scheme.findById(row.schemeId).session(session);
       const freshPreview = await settlementPreview(
         {
@@ -665,35 +728,72 @@ export async function transitionRedemption(req, action) {
       let ledgerDebitWeightMg;
       let ledgerDebitRatePaise = 0;
 
-      if (
-        row.mode === RedemptionMode.GOLD_HANDOVER &&
-        scheme.valueBasis === ValueBasis.GOLD_WEIGHT
-      ) {
-        const rate = await latestGoldRateOnOrBefore(
+      if (row.mode === RedemptionMode.GOLD_HANDOVER) {
+        const rate = await goldRateForExactDate(
           { tenantId: row.tenantId, branchId: row.branchId },
           completeDate,
         );
-        if (!rate) {
+        if (!rate || rate.effectiveDate !== completeDate) {
           throw errors.business(
             "GOLD_RATE_NOT_SET",
-            "Set today's gold rate before completing a gold handover.",
+            "Set today's 22K gold rate before completing a gold handover.",
           );
         }
+        const goldRules = scheme.planSnapshot?.goldRules ?? {};
+        const tenantOps = await Tenant.findById(row.tenantId)
+          .select("operations")
+          .session(session)
+          .lean();
+        const rounding = decimalRoundingMode(
+          goldRules.weightRoundingMode
+            ?? tenantOps?.operations?.weightRoundingMode
+            ?? "HALF_UP",
+        );
+        const precisionMg = goldRules.weightPrecisionMg ?? 1;
         row.handoverRatePerGramPaise = rate.ratePerGramPaise;
         row.handoverRateEffectiveDate = rate.effectiveDate;
-        row.handoverValuePaise = weightMgToMoneyPaise(
-          row.weightMg ?? 0,
-          rate.ratePerGramPaise,
-        );
         row.cashOutPaise = 0;
-        ledgerDebitAmountPaise = row.handoverValuePaise;
-        ledgerDebitWeightMg = row.weightMg ?? 0;
+        if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
+          row.handoverValuePaise = weightMgToMoneyPaise(
+            row.weightMg ?? 0,
+            rate.ratePerGramPaise,
+            rounding,
+          );
+          ledgerDebitAmountPaise = row.handoverValuePaise;
+          ledgerDebitWeightMg = row.weightMg ?? 0;
+        } else {
+          let handoverWeightMg = moneyToWeightMg(
+            row.settlementPaise ?? 0,
+            rate.ratePerGramPaise,
+            rounding,
+          );
+          handoverWeightMg = applyWeightPrecisionMg(
+            handoverWeightMg,
+            precisionMg,
+            rounding,
+          );
+          if (!(handoverWeightMg > 0)) {
+            throw errors.business(
+              "GOLD_WEIGHT_ROUNDS_TO_ZERO",
+              "Settlement rounds to zero gold weight at today's rate.",
+            );
+          }
+          row.weightMg = handoverWeightMg;
+          row.handoverValuePaise = weightMgToMoneyPaise(
+            handoverWeightMg,
+            rate.ratePerGramPaise,
+            rounding,
+          );
+          ledgerDebitAmountPaise = row.settlementPaise ?? 0;
+          ledgerDebitWeightMg = handoverWeightMg;
+        }
         ledgerDebitRatePaise = rate.ratePerGramPaise;
-      } else if (row.mode === RedemptionMode.GOLD_HANDOVER) {
+      } else if (row.mode === RedemptionMode.PURCHASE_ADJUSTMENT) {
         row.cashOutPaise = 0;
-        row.handoverValuePaise = row.settlementPaise ?? 0;
+        row.handoverValuePaise = 0;
         ledgerDebitAmountPaise = row.settlementPaise ?? 0;
-        ledgerDebitWeightMg = 0;
+        ledgerDebitWeightMg =
+          scheme.valueBasis === ValueBasis.GOLD_WEIGHT ? (row.weightMg ?? 0) : 0;
       } else {
         row.cashOutPaise = row.settlementPaise ?? 0;
         row.handoverValuePaise = 0;
@@ -704,10 +804,9 @@ export async function transitionRedemption(req, action) {
           scheme.valueBasis === ValueBasis.GOLD_WEIGHT ? (row.weightMg ?? 0) : 0;
       }
 
-      let sequence =
-        (await LedgerEntry.countDocuments({ schemeId: scheme._id }).session(
-          session,
-        )) + 1;
+      const nextLedgerSequence = () =>
+        nextSchemeLedgerSequence(row.tenantId, row.schemeId, session);
+      let sequence = await nextLedgerSequence();
       if (row.benefitPaise > 0 || row.benefitWeightMg > 0) {
         await LedgerEntry.create(
           [
@@ -730,7 +829,7 @@ export async function transitionRedemption(req, action) {
           ],
           { session },
         );
-        sequence += 1;
+        sequence = await nextLedgerSequence();
       }
       if (row.penaltyPaise > 0) {
         await LedgerEntry.create(
@@ -752,8 +851,14 @@ export async function transitionRedemption(req, action) {
           ],
           { session },
         );
-        sequence += 1;
+        sequence = await nextLedgerSequence();
       }
+      const redemptionDescription =
+        row.mode === RedemptionMode.PURCHASE_ADJUSTMENT
+          ? "Purchase adjustment completed"
+          : row.mode === RedemptionMode.GOLD_HANDOVER
+            ? "Gold handover completed"
+            : "Cash redemption completed";
       await LedgerEntry.create(
         [
           {
@@ -770,10 +875,10 @@ export async function transitionRedemption(req, action) {
             ratePerGramPaise: ledgerDebitRatePaise,
             actorType: "USER",
             actorId: req.auth.id,
-            description:
-              row.mode === RedemptionMode.GOLD_HANDOVER
-                ? "Gold handover completed"
-                : "Cash redemption completed",
+            description: redemptionDescription,
+            metadata: row.modeDetails?.billNumber
+              ? { billNumber: row.modeDetails.billNumber }
+              : undefined,
           },
         ],
         { session },
