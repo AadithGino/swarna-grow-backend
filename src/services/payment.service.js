@@ -26,12 +26,12 @@ import {
   PaymentLink,
   Scheme,
   Tenant,
-  WebhookEvent,
 } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
+import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { withTransaction } from "../lib/transaction.js";
 import { applyWeightPrecisionMg, decimalRoundingMode, moneyToWeightMg } from "../lib/money.js";
 import { today } from "../lib/date.js";
@@ -46,7 +46,7 @@ import {
 import { currentGoldRate } from "./tenant.service.js";
 import { paginate } from "../lib/pagination.js";
 import { phonePeProvider } from "../integrations/phonepe.provider.js";
-import { nextSequence, nextSequenceFromBlock } from "./sequence.service.js";
+import { nextSequence } from "./sequence.service.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import {
   paymentListScope,
@@ -301,12 +301,11 @@ async function assertMaxPaymentsPerCycle({ scheme, targetCycle, session }) {
     );
 }
 
-async function nextReceipt(tenantId, _session) {
-  const number = await nextSequenceFromBlock(
-    tenantId,
-    `receipt:${new Date().getFullYear()}`,
-  );
-  return `RCP-${new Date().getFullYear()}-${String(number).padStart(7, "0")}`;
+/** Allocates inside the caller Mongo session — rolled back if the payment transaction aborts (no gapless guarantee across failed txns). */
+async function nextReceipt(tenantId, session) {
+  const year = new Date().getFullYear();
+  const number = await nextSequence(tenantId, `receipt:${year}`, session);
+  return `RCP-${year}-${String(number).padStart(7, "0")}`;
 }
 async function gatewayCredentials(tenantId) {
   const tenant = await Tenant.findById(tenantId)
@@ -324,51 +323,19 @@ export async function maybeCompleteMockGatewayPayment({ tenantId, link, intent, 
   const source = intent ?? link;
   if (!source) return payment;
 
-  const fakeReq = {
-    auth: { id: "mock-gateway", tenantId, type: "WEBHOOK" },
-    scope: { tenantId },
-    body: {
-      schemeId: source.schemeId,
-      amountPaise: source.amountPaise,
-      mode: PaymentMode.ONLINE_GATEWAY,
-      targetCycle: source.targetCycle,
-      positionVersion: source.positionVersion,
-    },
-    query: { targetCycle: source.targetCycle },
-    baseUrl: "/mock",
-    traceId: `mock_${payment._id}`,
-    ip: "mock",
-    headers: {},
-  };
-
-  const completed = await recordPayment(fakeReq, {
-    gateway: true,
-    source: "MOCK_GATEWAY",
-    actorType: "WEBHOOK",
-    existingPaymentId: payment._id,
-    providerTransactionId: payment.providerTransactionId ?? `mock_${payment._id}`,
+  const { finalizeGatewaySuccess } = await import("./finalize-gateway-success.service.js");
+  const reference = intent?._id ?? link?._id;
+  const providerTransactionId = payment.providerTransactionId ?? `mock_${payment._id}`;
+  await finalizeGatewaySuccess({
+    tenantId,
+    reference,
+    transactionId: providerTransactionId,
+    amountPaise: source.amountPaise,
     providerPayload: { mode: "mock", simulated: true },
-    gatewayCompletedAt: new Date(),
+    webhookEventId: `mock_${payment._id}`,
+    intent,
+    link,
   });
-
-  if (intent?.status === PaymentIntentStatus.PENDING) {
-    await PaymentIntent.updateOne(
-      { _id: intent._id },
-      { $set: { status: "SUCCEEDED", paymentId: completed._id }, $inc: { version: 1 } },
-    );
-  }
-  if (link && link.status !== LinkStatus.PAID) {
-    await PaymentLink.updateOne(
-      { _id: link._id },
-      { $set: { status: LinkStatus.PAID, paidAt: new Date() } },
-    );
-    if (link.paymentIntentId) {
-      await PaymentIntent.updateOne(
-        { _id: link.paymentIntentId, status: PaymentIntentStatus.PENDING },
-        { $set: { status: "SUCCEEDED", paymentId: completed._id }, $inc: { version: 1 } },
-      );
-    }
-  }
 
   return Payment.findById(payment._id).lean();
 }
@@ -383,7 +350,13 @@ export async function recordPayment(req, override = {}) {
       "Online gateway and legacy modes cannot be recorded manually.",
       422,
     );
-  return withTransaction(async (session) => {
+  if (override.session) {
+    return recordPaymentInSession(override.session, req, override);
+  }
+  return withTransaction((session) => recordPaymentInSession(session, req, override));
+}
+
+async function recordPaymentInSession(session, req, override) {
     const scheme = await Scheme.findOne({
       _id: req.body.schemeId,
       tenantId: req.auth.tenantId,
@@ -538,6 +511,7 @@ export async function recordPayment(req, override = {}) {
         ? "NO_PAYABLE_POSITION_AVAILABLE"
         : undefined;
       await payment.save({ session });
+      gatewayTxFaultCheckpoint("recordPayment:payment-saved");
     } else {
       const paymentDoc = {
         _id: createId("payment"),
@@ -563,6 +537,7 @@ export async function recordPayment(req, override = {}) {
       if (override.providerTransactionId)
         paymentDoc.providerTransactionId = override.providerTransactionId;
       payment = (await Payment.create([paymentDoc], { session }))[0];
+      gatewayTxFaultCheckpoint("recordPayment:payment-saved");
     }
     const type = !quote
       ? LedgerEntryType.UNALLOCATED_PAYMENT
@@ -597,6 +572,7 @@ export async function recordPayment(req, override = {}) {
       ],
       { session },
     );
+    gatewayTxFaultCheckpoint("recordPayment:ledger-created");
     if (quote && scheme.paymentPattern === "FIXED") {
       let remaining = payment.amountPaise;
       for (const installment of scheme.installments) {
@@ -635,6 +611,7 @@ export async function recordPayment(req, override = {}) {
     }
     scheme.version += 1;
     await scheme.save({ session });
+    gatewayTxFaultCheckpoint("recordPayment:scheme-saved");
     await OutboxEvent.create(
       [
         {
@@ -651,6 +628,7 @@ export async function recordPayment(req, override = {}) {
       ],
       { session },
     );
+    gatewayTxFaultCheckpoint("recordPayment:outbox-created");
     const auditEventId = await writeAudit({
       req,
       action: "PAYMENT_RECORDED",
@@ -660,13 +638,13 @@ export async function recordPayment(req, override = {}) {
       actorType: override.actorType,
       session,
     });
+    gatewayTxFaultCheckpoint("recordPayment:audit-written");
     return {
       ...payment.toObject(),
       auditEventId,
       schemeVersion: scheme.version,
       positionVersion: scheme.positionVersion,
     };
-  });
 }
 export async function listPayments(req) {
   const filters = {};
@@ -1174,6 +1152,7 @@ export async function initiatePublicPayment(req) {
       amountPaise: link.amountPaise,
       redirectUrl: req.body.redirectUrl,
       credentials: await gatewayCredentials(link.tenantId),
+      tenantId: link.tenantId,
       ...customerCheckoutPreference(),
     });
     const pending = await Payment.create({
@@ -1323,6 +1302,7 @@ export async function createPaymentIntent(req) {
       amountPaise: reserved.intent.amountPaise,
       redirectUrl: req.body.redirectUrl,
       credentials: await gatewayCredentials(reserved.tenantId),
+      tenantId: reserved.tenantId,
       ...customerCheckoutPreference(),
     });
     await Promise.all([
@@ -1464,6 +1444,7 @@ export async function createSdkPaymentIntent(req) {
       amountPaise: reserved.intent.amountPaise,
       redirectUrl: req.body.redirectUrl,
       credentials: await gatewayCredentials(reserved.tenantId),
+      tenantId: reserved.tenantId,
     });
     await Promise.all([
       PaymentIntent.updateOne(
@@ -1659,26 +1640,15 @@ export async function resendPaymentLink(req) {
   );
   return { id: created.id ?? created._id, queued: true };
 }
-export async function persistWebhook({
-  tenantId,
-  provider,
-  providerEventId,
-  signature,
-  rawBody,
-  payload,
-}) {
-  try {
-    return await WebhookEvent.create({
-      _id: createId("webhook"),
-      tenantId,
-      provider,
-      providerEventId,
-      signature,
-      rawBody,
-      payload,
-    });
-  } catch (error) {
-    if (error.code === 11000) return null;
-    throw error;
-  }
+/** @deprecated use persistVerifiedWebhook from webhook-event.service.js */
+export async function persistWebhook(args) {
+  const { persistVerifiedWebhook } = await import("./webhook-event.service.js");
+  return persistVerifiedWebhook({
+    tenantId: args.tenantId,
+    provider: args.provider,
+    providerEventId: args.providerEventId,
+    signatureHeader: args.signature,
+    rawBody: args.rawBody,
+    payload: args.payload,
+  });
 }

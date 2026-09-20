@@ -1,6 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PutObjectCommand, GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env.js";
 
@@ -44,6 +50,14 @@ export const storageProvider = {
     }
     const response = await client.send(new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: objectKey }));
     return Buffer.from(await response.Body.transformToByteArray());
+  },
+  async deleteObject(objectKey) {
+    if (env.PROVIDER_MODE === "mock") {
+      const { filePath } = resolveMockPath(objectKey);
+      await fs.unlink(filePath).catch(() => {});
+      return;
+    }
+    await client.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: objectKey }));
   },
   async headObject(objectKey) {
     if (env.PROVIDER_MODE === "mock") {

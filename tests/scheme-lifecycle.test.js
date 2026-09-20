@@ -2,15 +2,33 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AuditEvent, Customer, Scheme } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
-import { processMaintenance } from "../src/workers/processors.js";
+import { processScheduler } from "../src/workers/processors.js";
 import { recordPayment } from "../src/services/payment.service.js";
 import { applyFlexibleLock } from "../src/services/scheme.service.js";
 import { FlexiblePhase, SchemeStatus, TenantRole } from "../src/constants/enums.js";
+import { connectRedis, disconnectRedis } from "../src/config/redis.js";
+import {
+  MaintenanceScanStream,
+  clearMaintenanceScanCursor,
+  clearMaintenanceScanLease,
+} from "../src/lib/maintenance-scan-cursor.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
-test.before(async () => { await startTestDb(); });
-test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => { await resetTestDb(); });
+test.before(async () => {
+  await connectRedis();
+  await startTestDb();
+});
+test.after(async () => {
+  await stopTestDb();
+  await disconnectRedis().catch(() => {});
+});
+test.beforeEach(async () => {
+  await resetTestDb();
+  await clearMaintenanceScanCursor(MaintenanceScanStream.DEFAULTING);
+  await clearMaintenanceScanCursor(MaintenanceScanStream.FLEXIBLE_LOCK);
+  await clearMaintenanceScanLease(MaintenanceScanStream.DEFAULTING);
+  await clearMaintenanceScanLease(MaintenanceScanStream.FLEXIBLE_LOCK);
+});
 
 async function seedFixedSchemeWithOverdues({ maxAllowedDefaults = 2, overdueCount = 2 }) {
   const { tenant, branch, user } = await seedTenantUser({
@@ -73,17 +91,18 @@ async function seedFixedSchemeWithOverdues({ maxAllowedDefaults = 2, overdueCoun
 }
 
 test("defaulting job transitions scheme when overdue threshold met", async () => {
-  const { scheme } = await seedFixedSchemeWithOverdues({ maxAllowedDefaults: 2, overdueCount: 2 });
-  await processMaintenance({ name: "defaulting", data: {} });
+  // Default when overdue count *exceeds* maxAllowedDefaults (see processScheduler defaulting job).
+  const { scheme } = await seedFixedSchemeWithOverdues({ maxAllowedDefaults: 1, overdueCount: 2 });
+  await processScheduler({ name: "defaulting", data: {} });
   const updated = await Scheme.findById(scheme._id).lean();
   assert.equal(updated.status, SchemeStatus.DEFAULTED);
 });
 
 test("defaulting job is idempotent", async () => {
   const { scheme } = await seedFixedSchemeWithOverdues({ maxAllowedDefaults: 1, overdueCount: 2 });
-  await processMaintenance({ name: "defaulting", data: {} });
+  await processScheduler({ name: "defaulting", data: {} });
   const auditsBefore = await AuditEvent.countDocuments({ entityId: scheme._id, action: "SCHEME_DEFAULTED" });
-  await processMaintenance({ name: "defaulting", data: {} });
+  await processScheduler({ name: "defaulting", data: {} });
   const auditsAfter = await AuditEvent.countDocuments({ entityId: scheme._id, action: "SCHEME_DEFAULTED" });
   assert.equal(auditsBefore, 1);
   assert.equal(auditsAfter, 1);
@@ -142,7 +161,7 @@ test("apply-flexible-locks job applies cap after free window", async () => {
     version: 1,
     createdBy: user._id,
   });
-  await processMaintenance({ name: "apply-flexible-locks", data: {} });
+  await processScheduler({ name: "apply-flexible-locks", data: {} });
   const locked = await Scheme.findById(scheme._id).lean();
   assert.equal(locked.flexiblePhase, FlexiblePhase.CAPPED);
   assert.ok(locked.lockedAveragePaise > 0);

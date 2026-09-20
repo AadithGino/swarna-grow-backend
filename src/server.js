@@ -7,9 +7,14 @@ import { connectRedis, disconnectRedis } from "./config/redis.js";
 import { closeQueues } from "./queues/index.js";
 import { startDispatcher, stopDispatcher } from "./queues/dispatcher.js";
 import { assertOtpProviderReady } from "./integrations/otp.provider.js";
+import { assertProductionTenantPhonePe } from "./lib/production-boot-checks.js";
+import { assertFcmQuotaConfiguration } from "./lib/fcm-quota-chunk.js";
 
 assertOtpProviderReady();
-await connectDatabase(); const queueAvailable = await connectRedis(); if (queueAvailable) startDispatcher();
+assertFcmQuotaConfiguration();
+await connectDatabase();
+await assertProductionTenantPhonePe();
+const queueAvailable = await connectRedis(); if (queueAvailable) startDispatcher();
 const server = createServer(createApp()); server.keepAliveTimeout = 65_000; server.headersTimeout = 66_000; server.requestTimeout = 30_000;
 server.listen(env.PORT, () => logger.info({ port: env.PORT, apiPrefix: env.API_PREFIX, queueAvailable }, "SwarnaGrow API listening"));
 let shuttingDown = false;

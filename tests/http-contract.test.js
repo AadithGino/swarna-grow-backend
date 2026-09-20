@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { startTestDb, stopTestDb } from "./helpers/db.js";
 
 const app = createApp();
+
+test.before(async () => { await startTestDb(); });
+test.after(async () => { await stopTestDb(); });
 
 test("health and public app config use the standard success envelope", async () => {
   const health = await request(app).get("/health").expect(200);

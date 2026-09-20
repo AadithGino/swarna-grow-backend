@@ -33,6 +33,11 @@ test("production parse fails when REDIS_REQUIRED is false or unset", () => {
   assert.match(message, /REDIS_REQUIRED/);
 });
 
+const validFcmServiceAccount = JSON.stringify({
+  client_email: "firebase-adminsdk@test-project.iam.gserviceaccount.com",
+  private_key: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
+});
+
 const validProductionEnv = {
   NODE_ENV: "production",
   JWT_ACCESS_SECRET: "production-access-secret-value-32chars-min",
@@ -40,7 +45,12 @@ const validProductionEnv = {
   INTEGRATION_ENCRYPTION_KEY: "production-integration-key-32chars-min",
   SEED_PLATFORM_PASSWORD: "9876",
   REDIS_REQUIRED: "true",
+  RATE_LIMIT_ENABLED: "true",
   PROVIDER_MODE: "live",
+  PHONEPE_ENV: "PRODUCTION",
+  FCM_SHARED_PROJECT_ENABLED: "true",
+  FCM_PROJECT_ID: "test-firebase-project",
+  FCM_SERVICE_ACCOUNT_JSON: validFcmServiceAccount,
   S3_BUCKET: "prod-bucket",
   S3_ACCESS_KEY_ID: "prod-access-key",
   S3_SECRET_ACCESS_KEY: "prod-secret-key",
@@ -74,4 +84,41 @@ test("production parse fails when CORS_ORIGINS uses localhost defaults", () => {
   });
   assert.equal(result.success, false);
   assert.match(result.error.issues.map((issue) => issue.message).join(" "), /CORS_ORIGINS/);
+});
+
+test("production parse fails when RATE_LIMIT_ENABLED is false", () => {
+  const result = parseEnv({ ...validProductionEnv, RATE_LIMIT_ENABLED: "false" });
+  assert.equal(result.success, false);
+  assert.match(result.error.issues.map((issue) => issue.message).join(" "), /RATE_LIMIT_ENABLED/);
+});
+
+test("production parse fails when PHONEPE_ENV is SANDBOX", () => {
+  const result = parseEnv({ ...validProductionEnv, PHONEPE_ENV: "SANDBOX" });
+  assert.equal(result.success, false);
+  assert.match(result.error.issues.map((issue) => issue.message).join(" "), /PHONEPE_ENV/);
+});
+
+test("production parse fails when FCM credentials are missing", () => {
+  const result = parseEnv({
+    ...validProductionEnv,
+    FCM_PROJECT_ID: "",
+    FCM_SERVICE_ACCOUNT_JSON: "",
+  });
+  assert.equal(result.success, false);
+  const message = result.error.issues.map((issue) => issue.message).join(" ");
+  assert.match(message, /FCM_PROJECT_ID/);
+});
+
+test("production parse fails when PUBLIC_BASE_URL is not HTTPS", () => {
+  const result = parseEnv({ ...validProductionEnv, PUBLIC_BASE_URL: "http://api.example.com" });
+  assert.equal(result.success, false);
+  assert.match(result.error.issues.map((issue) => issue.message).join(" "), /PUBLIC_BASE_URL/);
+});
+
+test("bounded env defaults apply in development", () => {
+  const result = parseEnv({ NODE_ENV: "development" });
+  assert.equal(result.success, true);
+  assert.equal(result.data.FCM_REQUEST_TIMEOUT_MS, 15_000);
+  assert.equal(result.data.WEBHOOK_MAX_BODY_BYTES, 2_097_152);
+  assert.equal(result.data.REPORT_EXPORT_MAX_ROWS, 200_000);
 });

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import {
+  GatewayRefundStatus,
   LateSuccessDetection,
   LinkStatus,
   PaymentIntentStatus,
@@ -48,10 +49,24 @@ const paymentSchema = new mongoose.Schema(
     delayMinutes: integerField(),
     requiresReview: { type: Boolean, default: false },
     reviewReason: String,
+    gatewayReconcileAttempts: { type: Number, default: 0 },
+    gatewayReconcileNextAt: Date,
+    gatewayReconcileLeaseOwner: String,
+    gatewayReconcileLeaseExpiresAt: Date,
+    gatewayLastReconcileAt: Date,
+    gatewayLastReconcileOutcome: String,
+    gatewayLastReconcileError: String,
+    gatewayLastProviderState: String,
   },
   baseOptions,
 );
 paymentSchema.index({ tenantId: 1, receiptNumber: 1 }, { unique: true });
+paymentSchema.index({
+  status: 1,
+  mode: 1,
+  gatewayReconcileNextAt: 1,
+  _id: 1,
+});
 // Sparse still indexes explicit nulls; only index real provider txn ids.
 paymentSchema.index(
   { tenantId: 1, providerTransactionId: 1 },
@@ -114,8 +129,50 @@ paymentIntentSchema.index({
   targetCycle: 1,
   status: 1,
 });
+paymentIntentSchema.index({
+  status: 1,
+  reservationExpiresAt: 1,
+  _id: 1,
+});
+
+const paymentRefundSchema = new mongoose.Schema(
+  {
+    _id: stringId("pref"),
+    tenantId: tenantField,
+    paymentId: { type: String, required: true, index: true },
+    providerRefundId: String,
+    providerEventId: String,
+    amountPaise: integerField({ required: true, min: 1 }),
+    status: enumField(GatewayRefundStatus, { default: GatewayRefundStatus.PENDING }),
+    providerPayload: mongoose.Schema.Types.Mixed,
+    completedAt: Date,
+    failedAt: Date,
+    requiresReview: { type: Boolean, default: false },
+    reviewReason: String,
+  },
+  baseOptions,
+);
+paymentRefundSchema.index(
+  { tenantId: 1, providerEventId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      providerEventId: { $type: "string", $gt: "" },
+    },
+  },
+);
+paymentRefundSchema.index(
+  { tenantId: 1, providerRefundId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      providerRefundId: { $type: "string", $gt: "" },
+    },
+  },
+);
 
 export const Payment = mongoose.model("Payment", paymentSchema);
+export const PaymentRefund = mongoose.model("PaymentRefund", paymentRefundSchema);
 export const PaymentLink = mongoose.model("PaymentLink", paymentLinkSchema);
 export const PaymentIntent = mongoose.model(
   "PaymentIntent",

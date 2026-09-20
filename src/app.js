@@ -21,7 +21,8 @@ export function createApp() {
     const { ready, data } = await getReadinessState();
     res.status(ready ? 200 : 503).json({ success: ready, data });
   });
-  app.use(`${env.API_PREFIX}/webhooks`, express.raw({ type: "application/json", limit: "2mb" }), (req, _res, next) => { req.rawBody = Buffer.from(req.body); next(); }, webhookRouter);
+  const webhookBodyLimit = `${env.WEBHOOK_MAX_BODY_BYTES}b`;
+  app.use(`${env.API_PREFIX}/webhooks`, express.raw({ type: "application/json", limit: webhookBodyLimit }), (req, _res, next) => { req.rawBody = Buffer.from(req.body); next(); }, webhookRouter);
   app.use(
     "/mock-storage",
     express.raw({ type: () => true, limit: "10mb" }),

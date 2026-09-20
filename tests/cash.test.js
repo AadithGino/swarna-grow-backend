@@ -168,9 +168,10 @@ test("resolved handover shortfall creates cash adjustment", async () => {
   const adjustment = await CashAdjustment.findOne({ staffId: user._id }).lean();
   assert.ok(adjustment);
   assert.equal(adjustment.amountPaise, 10000);
-  assert.equal(adjustment.direction, "DEBIT");
+  // Shortfall: less cash accepted than declared — restore the difference to staff (see cash.service).
+  assert.equal(adjustment.direction, "CREDIT");
   const balance = await cashBalance({ tenantId: tenant._id, branchId: branch._id, staffId: user._id });
-  assert.equal(balance.adjustmentPaise, -10000);
+  assert.equal(balance.adjustmentPaise, 10000);
 });
 
 test("cash payment reverse with pending handover does not create a cash adjustment", async () => {

@@ -132,7 +132,7 @@ async function dbChecks(token, label, user = null) {
       ]),
     ]);
     const apiCustomers = d?.customers?.active ?? d?.summary?.customers?.active;
-    const apiSchemes = d?.schemes?.active ?? d?.summary?.schemes?.active;
+    const apiSchemes = d?.schemes?.open ?? d?.schemes?.active ?? d?.summary?.schemes?.open ?? d?.summary?.schemes?.active;
     const apiTodayCount = d?.today?.count ?? d?.summary?.today?.count;
     const dbTodayCount = dbTodayPayments[0]?.count ?? 0;
     if (apiCustomers != null && apiCustomers !== dbActiveCustomers) {

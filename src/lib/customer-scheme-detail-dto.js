@@ -154,6 +154,7 @@ export function mapCustomerPaymentListItem(payment, scheme) {
     targetCycle: payment.targetCycle ?? null,
     valueBasis: scheme.valueBasis ?? scheme.planSnapshot?.valueBasis ?? "CASH",
     goldAccrual,
+    transactionId: payment.providerTransactionId ? String(payment.providerTransactionId) : undefined,
   };
 }
 

@@ -1,17 +1,43 @@
 import { connectRedis, disconnectRedis } from "../config/redis.js";
+import { env } from "../config/env.js";
 import { getQueue, closeQueues } from "../queues/index.js";
 import { logger } from "../config/logger.js";
+import { requiredWorkerRolesReady } from "../lib/worker-heartbeat.js";
+import { QueueKind } from "../lib/queue-retry-policy.js";
+import { schedulerRepeatableJobs } from "./repeatable-jobs.js";
 
 if (!(await connectRedis())) throw new Error("Redis is required for the scheduler");
-const maintenance = getQueue("maintenance");
-await Promise.all([
-  maintenance.upsertJobScheduler("maturity-daily", { pattern: "5 0 * * *", tz: "Asia/Kolkata" }, { name: "maturity", data: {} }),
-  maintenance.upsertJobScheduler("overdue-daily", { pattern: "10 0 * * *", tz: "Asia/Kolkata" }, { name: "overdue", data: {} }),
-  maintenance.upsertJobScheduler("payment-reminders-daily", { pattern: "30 9 * * *", tz: "Asia/Kolkata" }, { name: "payment-reminders", data: {} }),
-  maintenance.upsertJobScheduler("expire-flexible-capacity", { pattern: "15 0 * * *", tz: "Asia/Kolkata" }, { name: "expire-flexible-capacity", data: {} }),
-  maintenance.upsertJobScheduler("defaulting-daily", { pattern: "20 0 * * *", tz: "Asia/Kolkata" }, { name: "defaulting", data: {} }),
-  maintenance.upsertJobScheduler("apply-flexible-locks-daily", { pattern: "25 0 * * *", tz: "Asia/Kolkata" }, { name: "apply-flexible-locks", data: {} }),
-  maintenance.upsertJobScheduler("grievance-close-hourly", { pattern: "0 * * * *", tz: "Asia/Kolkata" }, { name: "grievance-auto-close", data: {} }),
-  maintenance.upsertJobScheduler("expire-payments", { every: 60_000 }, { name: "expire-payments", data: {} }),
-]);
-logger.info("Schedulers registered"); await closeQueues(); await disconnectRedis();
+
+async function assertWorkersBeforeSchedulerRegistration() {
+  if (env.NODE_ENV !== "production" && env.SCHEDULER_REQUIRE_WORKER_ROLES !== "true") {
+    return;
+  }
+  const ready = await requiredWorkerRolesReady(["scheduler", "payments"]);
+  if (!ready) {
+    throw new Error(
+      "SCHEDULER_REGISTRATION_BLOCKED: scheduler and payments workers must heartbeat before repeatable jobs are registered",
+    );
+  }
+}
+
+await assertWorkersBeforeSchedulerRegistration();
+
+const queueByKind = {
+  [QueueKind.SCHEDULER]: getQueue("scheduler"),
+  [QueueKind.PAYMENTS]: getQueue("payments"),
+  [QueueKind.MAINTENANCE]: getQueue("maintenance"),
+};
+
+await Promise.all(
+  schedulerRepeatableJobs.map((def) => {
+    const queue = queueByKind[def.queue];
+    return queue.upsertJobScheduler(
+      def.id,
+      def.repeat,
+      { name: def.name, data: def.data, opts: def.opts },
+    );
+  }),
+);
+logger.info("Schedulers registered");
+await closeQueues();
+await disconnectRedis();

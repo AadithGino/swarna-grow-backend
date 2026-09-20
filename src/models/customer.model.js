@@ -58,6 +58,7 @@ const customerSchema = new mongoose.Schema(
       type: [
         {
           tokenHash: String,
+          tokenSealed: { type: String, select: false },
           deviceId: String,
           platform: String,
           updatedAt: Date,
@@ -75,6 +76,10 @@ const customerSchema = new mongoose.Schema(
   baseOptions,
 );
 customerSchema.index({ tenantId: 1, mobile: 1 }, { unique: true });
+customerSchema.index(
+  { tenantId: 1, branchId: 1, status: 1 },
+  { partialFilterExpression: { "fcmTokens.0": { $exists: true } } },
+);
 customerSchema.index({ tenantId: 1, customerNumber: 1 }, { unique: true });
 customerSchema.index(
   { tenantId: 1, passbookNumber: 1 },

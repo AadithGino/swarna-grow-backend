@@ -9,10 +9,76 @@ import {
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { AppError } from "../lib/app-error.js";
-import { unseal } from "../lib/crypto.js";
+import { sha256, unseal } from "../lib/crypto.js";
 
+const CLIENT_CACHE_MAX = 64;
 /** @type {Map<string, StandardCheckoutClient>} */
 const clientCache = new Map();
+
+export function phonePeClientCacheKey(credentials, tenantId) {
+  if (!tenantId) {
+    throw new AppError(
+      "PHONEPE_TENANT_CONTEXT_REQUIRED",
+      "tenantId is required for PhonePe SDK client cache keys.",
+      500,
+    );
+  }
+  const version = credentials?.credentialVersion ?? credentials?.clientVersion ?? 1;
+  const clientId = credentials?.clientId ?? "unknown";
+  const environment = credentials?.environment ?? env.PHONEPE_ENV;
+  const secretFingerprint = credentials?.clientSecret
+    ? sha256(String(credentials.clientSecret)).slice(0, 16)
+    : "none";
+  return `${tenantId}:${clientId}:${environment}:v${version}:s${secretFingerprint}`;
+}
+
+export function invalidatePhonePeClientCache(tenantId) {
+  if (!tenantId) {
+    clientCache.clear();
+    return;
+  }
+  for (const key of [...clientCache.keys()]) {
+    if (key.startsWith(`${tenantId}:`)) clientCache.delete(key);
+  }
+}
+
+function cacheClient(cacheKey, client) {
+  if (clientCache.size >= CLIENT_CACHE_MAX) {
+    const oldest = clientCache.keys().next().value;
+    clientCache.delete(oldest);
+  }
+  clientCache.set(cacheKey, client);
+  applyPhonePeClientTimeout(client);
+  return client;
+}
+
+export function applyPhonePeClientTimeout(client) {
+  const timeoutMs = env.PHONEPE_REQUEST_TIMEOUT_MS ?? 20_000;
+  const axios =
+    client?.httpClient
+    ?? client?._httpClient
+    ?? client?.apiClient
+    ?? client?.client
+    ?? client?._client;
+  if (axios?.defaults) axios.defaults.timeout = timeoutMs;
+  if (axios?.interceptors?.request && !axios.__swarnagrowTimeoutHook) {
+    axios.interceptors.request.use((config) => {
+      config.timeout ??= timeoutMs;
+      return config;
+    });
+    axios.__swarnagrowTimeoutHook = true;
+  }
+}
+
+function isRestrictedModeValidationError(error) {
+  const message = String(error?.message ?? error ?? "").toLowerCase();
+  return (
+    message.includes("payment mode")
+    || message.includes("not supported")
+    || message.includes("invalid payment")
+    || message.includes("restricted")
+  );
+}
 
 function looksSealed(value) {
   if (!value || typeof value !== "string") return false;
@@ -53,6 +119,7 @@ export function resolvePhonePeCredentials(tenant) {
     clientId: config.clientId,
     clientSecret: unsealOrRaw(config.clientSecret),
     clientVersion: Number(config.clientVersion ?? 1),
+    credentialVersion: Number(config.credentialVersion ?? 1),
     environment: config.environment ?? env.PHONEPE_ENV,
     webhookUsername: config.webhookUsername ?? "",
     webhookPassword: config.webhookPassword
@@ -61,21 +128,18 @@ export function resolvePhonePeCredentials(tenant) {
   };
 }
 
-export function getClientFor(credentials) {
+export function getClientFor(credentials, tenantId) {
   const { clientId, clientSecret, clientVersion, environment } = credentials;
-  const cacheKey = `${clientId}:${environment}`;
+  const cacheKey = phonePeClientCacheKey(credentials, tenantId);
   if (clientCache.has(cacheKey)) return clientCache.get(cacheKey);
   const sdkEnv = environment === "PRODUCTION" ? Env.PRODUCTION : Env.SANDBOX;
-  // SDK getInstance is a process-wide singleton (throws on different credentials).
-  // Direct construction supports one cached client per tenant merchant account.
   const client = new StandardCheckoutClient(
     clientId,
     clientSecret,
     Number(clientVersion),
     sdkEnv,
   );
-  clientCache.set(cacheKey, client);
-  return client;
+  return cacheClient(cacheKey, client);
 }
 
 function assertLiveCredentials(credentials) {
@@ -117,6 +181,7 @@ export const phonePeProvider = {
     amountPaise,
     redirectUrl,
     credentials,
+    tenantId,
     preferUpiIntentOnly = false,
     upiApps = env.PHONEPE_UPI_APPS,
     upiFlows = env.PHONEPE_UPI_FLOWS,
@@ -129,7 +194,7 @@ export const phonePeProvider = {
       };
     }
     assertLiveCredentials(credentials);
-    const client = getClientFor(credentials);
+    const client = getClientFor(credentials, tenantId);
     const standardRequest = StandardCheckoutPayRequest.builder()
       .merchantOrderId(merchantOrderId)
       .amount(amountPaise)
@@ -148,6 +213,7 @@ export const phonePeProvider = {
       try {
         response = await client.pay(intentRequest);
       } catch (error) {
+        if (!isRestrictedModeValidationError(error)) throw error;
         logger.warn(
           {
             merchantOrderId,
@@ -155,7 +221,7 @@ export const phonePeProvider = {
             upiApps,
             upiFlows,
           },
-          "PhonePe restricted UPI checkout failed; retrying with standard checkout",
+          "PhonePe restricted UPI checkout rejected; retrying with standard checkout",
         );
         response = await client.pay(standardRequest);
       }
@@ -170,7 +236,7 @@ export const phonePeProvider = {
     };
   },
 
-  async createSdkOrder({ merchantOrderId, amountPaise, redirectUrl, credentials }) {
+  async createSdkOrder({ merchantOrderId, amountPaise, redirectUrl, credentials, tenantId }) {
     if (env.PROVIDER_MODE === "mock") {
       return {
         providerOrderId: `mock_${merchantOrderId}`,
@@ -179,7 +245,7 @@ export const phonePeProvider = {
       };
     }
     assertLiveCredentials(credentials);
-    const client = getClientFor(credentials);
+    const client = getClientFor(credentials, tenantId);
     const request = CreateSdkOrderRequest.StandardCheckoutBuilder()
       .merchantOrderId(merchantOrderId)
       .amount(amountPaise)
@@ -194,16 +260,83 @@ export const phonePeProvider = {
     };
   },
 
-  async getOrderStatus(merchantOrderId, credentials) {
+  async getOrderStatus(merchantOrderId, credentials, tenantId) {
     if (env.PROVIDER_MODE === "mock") {
-      return { state: "PENDING", merchantOrderId };
+      const id = String(merchantOrderId ?? "");
+      if (id.includes("__mock_completed_49000__")) {
+        return {
+          state: "COMPLETED",
+          merchantOrderId: id,
+          amount: 49_000,
+          orderId: `mock_order_${id}`,
+          paymentDetails: [
+            {
+              state: "COMPLETED",
+              transactionId: `mock_txn_${id}`,
+              amount: 49_000,
+            },
+          ],
+        };
+      }
+      if (id.includes("__mock_completed__")) {
+        return {
+          state: "COMPLETED",
+          merchantOrderId: id,
+          amount: 50_000,
+          orderId: `mock_order_${id}`,
+          paymentDetails: [
+            {
+              state: "COMPLETED",
+              transactionId: `mock_txn_${id}`,
+              amount: 50_000,
+            },
+          ],
+        };
+      }
+      if (id.includes("__mock_failed__")) {
+        return {
+          state: "FAILED",
+          merchantOrderId: id,
+          amount: 50_000,
+          orderId: `mock_order_${id}`,
+          paymentDetails: [{ state: "FAILED", transactionId: `mock_txn_${id}`, amount: 50_000 }],
+        };
+      }
+      if (id.includes("__mock_completed_no_txn__")) {
+        return {
+          state: "COMPLETED",
+          merchantOrderId: id,
+          amount: 50_000,
+          orderId: `mock_order_${id}`,
+          paymentDetails: [{ state: "PENDING", transactionId: "", amount: 50_000 }],
+        };
+      }
+      if (id.includes("__mock_completed_zero__")) {
+        return {
+          state: "COMPLETED",
+          merchantOrderId: id,
+          amount: 0,
+          orderId: `mock_order_${id}`,
+          paymentDetails: [{ state: "COMPLETED", transactionId: `mock_txn_zero_${id}`, amount: 0 }],
+        };
+      }
+      if (id.includes("__mock_transient__")) {
+        throw new Error("mock transient provider error");
+      }
+      return {
+        state: "PENDING",
+        merchantOrderId: id,
+        amount: 0,
+        orderId: `mock_order_${id}`,
+        paymentDetails: [],
+      };
     }
     assertLiveCredentials(credentials);
-    const client = getClientFor(credentials);
+    const client = getClientFor(credentials, tenantId);
     return client.getOrderStatus(merchantOrderId);
   },
 
-  verifyCallback(rawBody, authorizationHeader, credentials) {
+  verifyCallback(rawBody, authorizationHeader, credentials, tenantId) {
     assertLiveCredentials(credentials);
     if (!credentials.webhookUsername || !credentials.webhookPassword) {
       throw new AppError(
@@ -212,7 +345,7 @@ export const phonePeProvider = {
         422,
       );
     }
-    const client = getClientFor(credentials);
+    const client = getClientFor(credentials, tenantId);
     const raw = Buffer.isBuffer(rawBody) ? rawBody.toString() : String(rawBody ?? "");
     return client.validateCallback(
       credentials.webhookUsername,
@@ -222,12 +355,12 @@ export const phonePeProvider = {
     );
   },
 
-  async verifyCredentials(credentials) {
+  async verifyCredentials(credentials, tenantId) {
     if (env.PROVIDER_MODE === "mock") return { verified: true, mode: "mock" };
     assertLiveCredentials(credentials);
     const probeId = `verify_${Date.now()}`;
     try {
-      await phonePeProvider.getOrderStatus(probeId, credentials);
+      await phonePeProvider.getOrderStatus(probeId, credentials, tenantId);
       return { verified: true };
     } catch (error) {
       if (error instanceof ResourceNotFound) return { verified: true };
@@ -248,10 +381,13 @@ export function isPhonePeCheckoutCompleted(type) {
 
 export function isPhonePeCheckoutFailed(type) {
   const key = callbackTypeKey(type);
+  return key === "CHECKOUT_ORDER_FAILED" || key === "PG_ORDER_FAILED";
+}
+
+export function isPhonePeTransactionAttemptFailed(type) {
+  const key = callbackTypeKey(type);
   return (
-    key === "CHECKOUT_ORDER_FAILED"
-    || key === "PG_ORDER_FAILED"
-    || key === "CHECKOUT_TRANSACTION_ATTEMPT_FAILED"
+    key === "CHECKOUT_TRANSACTION_ATTEMPT_FAILED"
     || key === "PG_TRANSACTION_ATTEMPT_FAILED"
   );
 }

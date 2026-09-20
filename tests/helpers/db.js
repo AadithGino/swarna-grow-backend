@@ -33,10 +33,28 @@ export async function startTestDb() {
 }
 
 export async function stopTestDb() {
-  if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
+  const { clearIdempotencyHeartbeatsForTests } = await import("../../src/middlewares/idempotency.middleware.js");
+  const { clearRateLimitStoresForTests } = await import("../../src/middlewares/security.middleware.js");
+  const { disconnectRedis } = await import("../../src/config/redis.js");
+  clearIdempotencyHeartbeatsForTests();
+  await clearRateLimitStoresForTests();
+  await disconnectRedis().catch(() => {});
+
+  const disconnect = mongoose.connection.readyState !== 0
+    ? mongoose.disconnect()
+    : Promise.resolve();
+  await Promise.race([
+    disconnect,
+    new Promise((resolve) => setTimeout(resolve, 8000)),
+  ]);
+
   if (replSet) {
-    try { await replSet.stop({ doCleanup: true, force: true }); } catch { /* ignore */ }
+    const instance = replSet;
     replSet = undefined;
+    await Promise.race([
+      instance.stop({ doCleanup: true, force: true }),
+      new Promise((resolve) => setTimeout(resolve, 8000)),
+    ]).catch(() => {});
   }
 }
 

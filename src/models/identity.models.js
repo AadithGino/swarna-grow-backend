@@ -18,6 +18,7 @@ const integrationSecretsSchema = new mongoose.Schema({
     clientId: String,
     clientSecret: String,
     clientVersion: Number,
+    credentialVersion: { type: Number, default: 1 },
     webhookUsername: String,
     webhookPassword: String,
     environment: String,
@@ -25,6 +26,12 @@ const integrationSecretsSchema = new mongoose.Schema({
     verificationStatus: String,
   },
   whatsapp: { provider: String, phoneNumberId: String, businessAccountId: String, accessToken: String, appSecret: String, verifyToken: String, environment: String, callbackUrlOverride: String, verifiedAt: Date, verificationStatus: String },
+  fcm: {
+    projectId: String,
+    serviceAccountJsonSealed: { type: String, select: false },
+    credentialVersion: { type: Number, default: 1 },
+    updatedAt: Date,
+  },
 }, { _id: false });
 
 const tenantAddressSchema = new mongoose.Schema(
@@ -61,7 +68,15 @@ const tenantSchema = new mongoose.Schema({
   displayName: String, supportNumber: String,
   address: { type: tenantAddressSchema, default: undefined },
   branding: { logoUploadId: String, primaryColor: String, accentColor: String, displayName: String },
-  settings: { timezone: { type: String, default: "Asia/Kolkata" }, currency: { type: String, default: "INR" }, requireKycForEnrolment: { type: Boolean, default: false }, requireKycForRedemption: { type: Boolean, default: true }, oneActiveSchemePerCustomer: { type: Boolean, default: false }, customerAppMaintenance: { type: Boolean, default: false } },
+  settings: {
+    timezone: { type: String, default: "Asia/Kolkata" },
+    currency: { type: String, default: "INR" },
+    requireKycForEnrolment: { type: Boolean, default: false },
+    requireKycForRedemption: { type: Boolean, default: true },
+    oneActiveSchemePerCustomer: { type: Boolean, default: false },
+    customerAppMaintenance: { type: Boolean, default: false },
+    reminderConfig: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  },
   operations: { type: tenantOperationsSchema, default: () => ({}) },
   subscription: { type: subscriptionSchema, default: () => ({}) }, featureFlags: { type: Map, of: Boolean, default: {} },
   integrationSecrets: { type: integrationSecretsSchema, select: false },
@@ -87,7 +102,7 @@ const userSchema = new mongoose.Schema({
   mobile: { type: String, required: function requiredMobile() { return this.type !== UserType.PLATFORM_USER; } },
   email: String,
   passwordHash: { type: String, select: false }, status: enumField(UserStatus, { default: UserStatus.ACTIVE }), permissions: { type: [String], default: [] }, permissionOverrides: { type: [String], default: [] },
-  mustSetPassword: { type: Boolean, default: false }, mfaEnabled: { type: Boolean, default: false }, fcmTokens: { type: [{ tokenHash: String, deviceId: String, platform: String, updatedAt: Date }], select: false, default: [] }, lastSeenAt: Date, securityVersion: integerField({ min: 0 }), version: versionField,
+  mustSetPassword: { type: Boolean, default: false }, mfaEnabled: { type: Boolean, default: false }, fcmTokens: { type: [{ tokenHash: String, tokenSealed: { type: String, select: false }, deviceId: String, platform: String, updatedAt: Date }], select: false, default: [] }, lastSeenAt: Date, securityVersion: integerField({ min: 0 }), version: versionField,
 }, baseOptions);
 userSchema.index({ tenantId: 1, mobile: 1, type: 1 }, { unique: true });
 

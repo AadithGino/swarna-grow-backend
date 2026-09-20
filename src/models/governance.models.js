@@ -15,11 +15,55 @@ const grievanceSchema = new mongoose.Schema({
   firstResponseDueAt: { type: Date, required: true }, firstResponseAt: Date, resolvedAt: Date, closedAt: Date, messages: { type: [grievanceMessageSchema], default: [] }, version: versionField,
 }, baseOptions);
 grievanceSchema.index({ tenantId: 1, ticketNumber: 1 }, { unique: true }); grievanceSchema.index({ tenantId: 1, branchId: 1, status: 1, priority: 1, createdAt: -1 });
+grievanceSchema.index({ status: 1, resolvedAt: 1, _id: 1 });
 
-const webhookEventSchema = new mongoose.Schema({ _id: stringId("whk"), tenantId: tenantField, provider: enumField(WebhookProvider, { required: true }), providerEventId: { type: String, required: true }, signature: String, rawBody: Buffer, payload: mongoose.Schema.Types.Mixed, status: enumField(JobStatus, { default: JobStatus.QUEUED }), attempts: Number, error: String, processedAt: Date }, baseOptions);
-webhookEventSchema.index({ provider: 1, providerEventId: 1 }, { unique: true });
-const outboxEventSchema = new mongoose.Schema({ tenantId: tenantField, topic: { type: String, required: true }, key: String, payload: mongoose.Schema.Types.Mixed, status: enumField(JobStatus, { default: JobStatus.QUEUED }), availableAt: { type: Date, default: Date.now }, attempts: { type: Number, default: 0 }, lockedAt: Date, processedAt: Date, error: String }, baseOptions);
-outboxEventSchema.index({ status: 1, availableAt: 1 });
+const webhookEventSchema = new mongoose.Schema({
+  _id: stringId("whk"),
+  tenantId: tenantField,
+  provider: enumField(WebhookProvider, { required: true }),
+  providerEventId: { type: String, required: true },
+  /** @deprecated prefer signatureDigest */
+  signature: String,
+  signatureDigest: String,
+  bodyDigest: String,
+  rawBody: Buffer,
+  payload: mongoose.Schema.Types.Mixed,
+  status: enumField(JobStatus, { default: JobStatus.QUEUED }),
+  attempts: { type: Number, default: 0 },
+  enqueuedAt: Date,
+  dispatchState: String,
+  dispatchLeaseOwner: String,
+  dispatchLeaseExpiresAt: Date,
+  dispatchAttemptCount: { type: Number, default: 0 },
+  lastDispatchAttemptAt: Date,
+  dispatchedAt: Date,
+  lockedAt: Date,
+  leaseOwner: String,
+  leaseExpiresAt: Date,
+  error: String,
+  processedAt: Date,
+  purgeAt: Date,
+}, baseOptions);
+webhookEventSchema.index(
+  { tenantId: 1, provider: 1, providerEventId: 1 },
+  { unique: true },
+);
+webhookEventSchema.index({ status: 1, createdAt: 1 });
+webhookEventSchema.index({ status: 1, enqueuedAt: 1, createdAt: 1 });
+webhookEventSchema.index({ status: 1, dispatchState: 1, dispatchLeaseExpiresAt: 1, createdAt: 1 });
+webhookEventSchema.index({ status: 1, dispatchState: 1, dispatchedAt: 1 });
+webhookEventSchema.index({ status: 1, leaseExpiresAt: 1 });
+webhookEventSchema.index({ status: 1, leaseExpiresAt: 1, _id: 1 });
+webhookEventSchema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
+const outboxEventSchema = new mongoose.Schema({ tenantId: tenantField, topic: { type: String, required: true }, key: String, payload: mongoose.Schema.Types.Mixed, status: enumField(JobStatus, { default: JobStatus.QUEUED }), availableAt: { type: Date, default: Date.now }, attempts: { type: Number, default: 0 }, lockedAt: Date, processedAt: Date, enqueuedAt: Date, dispatchState: String, dispatchLeaseOwner: String, dispatchLeaseExpiresAt: Date, dispatchAttemptCount: { type: Number, default: 0 }, lastDispatchAttemptAt: Date, dispatchedAt: Date, error: String }, baseOptions);
+outboxEventSchema.index({ status: 1, availableAt: 1, createdAt: 1 });
+outboxEventSchema.index({ status: 1, enqueuedAt: 1, createdAt: 1 });
+outboxEventSchema.index({ status: 1, dispatchState: 1, dispatchLeaseExpiresAt: 1, availableAt: 1, createdAt: 1 });
+outboxEventSchema.index({ status: 1, dispatchState: 1, dispatchedAt: 1 });
+outboxEventSchema.index(
+  { tenantId: 1, topic: 1, key: 1 },
+  { unique: true, partialFilterExpression: { key: { $type: "string" } } },
+);
 const idempotencySchema = new mongoose.Schema({ tenantId: { type: String, index: true }, actorId: String, endpoint: String, key: String, bodyHash: String, state: enumField(IdempotencyState, { default: IdempotencyState.PROCESSING }), responseStatus: Number, responseBody: mongoose.Schema.Types.Mixed, expiresAt: Date, leaseOwner: String, leaseExpiresAt: Date, heartbeatAt: Date }, baseOptions);
 idempotencySchema.index({ tenantId: 1, actorId: 1, endpoint: 1, key: 1 }, { unique: true }); idempotencySchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 const errorLogSchema = new mongoose.Schema({ _id: stringId("err"), tenantId: { type: String, default: null, index: true }, actorId: String, method: String, path: String, code: String, message: String, statusCode: Number, traceId: String, stack: String, occurredAt: { type: Date, default: Date.now, index: true } }, { ...baseOptions, timestamps: false });

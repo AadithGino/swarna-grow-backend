@@ -25,8 +25,8 @@ import {
   grievanceReopenBody,
 } from "../validators/common.validators.js";
 import { enrolPaymentResponse, paymentIntentAppDto, paymentLinkDto } from "../lib/customer-app-dto.js";
-import { ClosureType } from "../constants/enums.js";
-import { sha256 } from "../lib/crypto.js";
+import { ClosureType, DevicePrincipalType } from "../constants/enums.js";
+import { registerFcmDevice, revokeFcmDevice } from "../services/device-registration.service.js";
 import { AppError } from "../lib/app-error.js";
 import { assertCustomerAppWritable, assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
 import { Customer } from "../models/index.js";
@@ -151,10 +151,36 @@ appRouter.post(
         );
       }
     }
+    const schemeId = enrolled._id ?? enrolled.id;
+    try {
+      const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
+      const customer = await Customer.findOne({
+        _id: req.auth.id,
+        tenantId: req.auth.tenantId,
+      })
+        .select("mobile whatsappOptedOutAt")
+        .lean();
+      if (customer) {
+        await queueCustomerNotification({
+          tenantId: req.auth.tenantId,
+          branchId: enrolled.branchId,
+          customerId: req.auth.id,
+          schemeId,
+          type: "SCHEME_JOINED",
+          templateParams: {
+            mobile: customer.mobile,
+            enrollmentNumber: enrolled.enrollmentNumber,
+            schemeName: enrolled.planSnapshot?.displayName ?? enrolled.planSnapshot?.name,
+          },
+        });
+      }
+    } catch {
+      // enrolment must succeed even if notification queue fails
+    }
     return sendSuccess(
       res,
       {
-        scheme: { id: enrolled._id ?? enrolled.id, schemeNumber: enrolled.enrollmentNumber },
+        scheme: { id: schemeId, schemeNumber: enrolled.enrollmentNumber },
         ...payment,
       },
       {},
@@ -228,23 +254,14 @@ appRouter.post(
   idempotent,
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
-    await Customer.updateOne(
-      { _id: req.auth.id, tenantId: req.auth.tenantId },
-      { $pull: { fcmTokens: { deviceId } } },
-    );
-    await Customer.updateOne(
-      { _id: req.auth.id, tenantId: req.auth.tenantId },
-      {
-        $push: {
-          fcmTokens: {
-            tokenHash: sha256(req.body.fcmToken),
-            deviceId,
-            platform: req.body.platform,
-            updatedAt: new Date(),
-          },
-        },
-      },
-    );
+    await registerFcmDevice({
+      tenantId: req.auth.tenantId,
+      principalType: DevicePrincipalType.CUSTOMER,
+      principalId: req.auth.id,
+      deviceId,
+      platform: req.body.platform,
+      fcmToken: req.body.fcmToken,
+    });
     sendSuccess(res, {
       registered: true,
       deviceId,
@@ -258,7 +275,12 @@ appRouter.delete(
   validate({ body: fcmDeleteBody }),
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
-    await Customer.updateOne({ _id: req.auth.id, tenantId: req.auth.tenantId }, { $pull: { fcmTokens: { deviceId } } });
+    await revokeFcmDevice({
+      tenantId: req.auth.tenantId,
+      principalType: DevicePrincipalType.CUSTOMER,
+      principalId: req.auth.id,
+      deviceId,
+    });
     const { Session } = await import("../models/index.js");
     await Session.updateMany(
       { customerId: req.auth.id, tenantId: req.auth.tenantId, deviceId },

@@ -2,22 +2,29 @@ import fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { once } from "node:events";
 import path from "node:path";
-import { AuditEntityType } from "../constants/enums.js";
-import { Alert, Customer, ExportJob, Grievance, Message, OutboxEvent, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
-import { writeAudit } from "../services/audit.service.js";
-import { addMonthsClamped } from "../lib/date.js";
+import { PushOutcomeKind } from "../lib/fcm-outcomes.js";
+import { Alert, Customer, ExportJob, Message, OutboxEvent, PaymentIntent, PaymentLink, Tenant, WebhookEvent } from "../models/index.js";
 import { whatsappProvider } from "../integrations/whatsapp.provider.js";
-import { recordPayment } from "../services/payment.service.js";
-import { queueMessage, updateDelivery } from "../services/messaging.service.js";
+import { updateDelivery } from "../services/messaging.service.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { unseal } from "../lib/crypto.js";
 import { AppError } from "../lib/app-error.js";
+import { PhonePeCallbackClass } from "../lib/phonepe-callback-classification.js";
 import { normalizePhonePeWebhookEvent } from "../lib/phonepe-webhook-payload.js";
 import { isPhonePeRefundCallback } from "../integrations/phonepe.provider.js";
+import { validatePhonePeCompletedIdentifiers } from "../lib/phonepe-completed-identifiers.js";
+import { upsertGatewayWebhookInvalidCompletedAlert } from "../lib/gateway-webhook-invalid-completed.js";
+import { finalizeGatewaySuccess } from "../services/finalize-gateway-success.service.js";
+import { applyTerminalGatewayFailure } from "../services/gateway-terminal-failure.service.js";
 import { buildReportExportRows, exportReportKey, isRawExportType } from "../lib/report-export.js";
 import PDFDocument from "pdfkit";
+import {
+  recordExportRun,
+  recordMessageStatusTransition,
+  recordPhonePeWebhookOutOfOrder,
+} from "../lib/ops-metrics.js";
 
 const csvCell = (value) => {
   let text = String(typeof value === "object" && value !== null ? JSON.stringify(value) : value ?? "");
@@ -25,192 +32,460 @@ const csvCell = (value) => {
   return `"${text.replaceAll('"', '""')}"`;
 };
 
+const TERMINAL_MESSAGE_STATUSES = new Set(["DELIVERED", "SENT", "READ"]);
+
 export async function processMessage(job) {
-  const message = await Message.findById(job.data.messageId); if (!message || message.status === "DELIVERED") return;
-  try { const templateName = message.templateKey === "PAYMENT_SUCCESS_MEDIA" && !message.templateParams?.passbookImageUrl ? "PAYMENT_SUCCESS_TEXT_FALLBACK" : message.templateKey; const tenant = await Tenant.findById(message.tenantId).select("+integrationSecrets").lean(); const config = tenant?.integrationSecrets?.whatsapp; const credentials = config ? { phoneNumberId: config.phoneNumberId, accessToken: config.accessToken ? unseal(config.accessToken) : undefined } : {}; const result = await whatsappProvider.sendTemplate({ to: message.templateParams?.mobile, templateName, components: templateName === "PAYMENT_SUCCESS_TEXT_FALLBACK" ? message.templateParams?.textComponents : message.templateParams?.components, credentials }); message.status = result.status; if (env.PROVIDER_MODE === "mock" && message.status === "SENT") { message.status = "DELIVERED"; message.deliveredAt = new Date(); } message.templateKey = templateName; message.providerMessageId = result.providerMessageId; message.lastAttemptAt = new Date(); message.attemptCount += 1; await message.save(); }
-  catch (error) { message.status = "FAILED"; message.failureMessage = error.message; message.failedAt = new Date(); message.attemptCount += 1; await message.save(); throw error; }
+  const message = await Message.findById(job.data.messageId);
+  if (!message || TERMINAL_MESSAGE_STATUSES.has(message.status)) return;
+  try {
+    if (message.channel === "PUSH") {
+      const { pushProvider } = await import("../integrations/push.provider.js");
+      const { buildPushPayload } = await import("../lib/push-payload.js");
+      const { Customer, Payment, Scheme } = await import("../models/index.js");
+      const {
+        resolvePushDevicesForCustomer,
+        invalidateDeviceRegistrations,
+        markDeviceSuccess,
+        markDeviceFailure,
+      } = await import("../services/device-registration.service.js");
+      const {
+        ensurePushDeliveries,
+        listDeliveriesToSend,
+        claimDeliveriesForProcessing,
+        applyPushOutcomes,
+        reclaimStaleProcessingDeliveries,
+        releaseDeferredDeliveries,
+        releaseOwnedClaimsOnError,
+        summarizePushDeliveries,
+        casFinalizePushMessageFromSummary,
+        casFailPushMessageNoDevices,
+        PushDeliveryApplyResult,
+      } = await import("../services/push-delivery.service.js");
+      const { PushDeviceDeliveryStatus } = await import("../constants/enums.js");
+      const { FcmSendDeferredError } = await import("../lib/fcm-push-errors.js");
+      const { retryDelayMs } = await import("../integrations/push.provider.js");
+      const { DelayedError } = await import("bullmq");
+      const [customer, scheme, payment, tenant] = await Promise.all([
+        Customer.findOne({ _id: message.customerId, tenantId: message.tenantId })
+          .select("+fcmTokens")
+          .lean(),
+        message.schemeId
+          ? Scheme.findById(message.schemeId).lean()
+          : null,
+        message.templateParams?.paymentId
+          ? Payment.findById(message.templateParams.paymentId).lean()
+          : null,
+        Tenant.findById(message.tenantId).select("name displayName +integrationSecrets").lean(),
+      ]);
+      const devices = await resolvePushDevicesForCustomer({
+        tenantId: message.tenantId,
+        customerId: message.customerId,
+        legacyFcmTokens: customer?.fcmTokens,
+      });
+      await ensurePushDeliveries({
+        tenantId: message.tenantId,
+        messageId: message._id,
+        devices,
+      });
+      await reclaimStaleProcessingDeliveries({
+        tenantId: message.tenantId,
+        messageId: message._id,
+      });
+      const pendingDeliveries = await listDeliveriesToSend(message._id, message.tenantId);
+      const pendingKeys = new Set(pendingDeliveries.map((row) => row.deviceRegistrationId));
+      const devicesToSend = devices.filter((device) => {
+        const key = device.deviceRegistrationId ?? `legacy:${device.tokenHash}`;
+        return pendingKeys.has(key);
+      }).map((device) => {
+        const pending = pendingDeliveries.find(
+          (row) => row.deviceRegistrationId === (device.deviceRegistrationId ?? `legacy:${device.tokenHash}`),
+        );
+        return {
+          ...device,
+          _deliveryAttempt: (pending?.attemptCount ?? 0) + 1,
+        };
+      });
+      const payload = buildPushPayload({ message, scheme, payment, tenant });
+      const { resolveFcmImageUrl } = await import("../services/upload.service.js");
+      const imageUrl = message.templateParams?.pushImageUrl
+        ?? await resolveFcmImageUrl(message.templateParams?.imageUploadId);
+      if (!devicesToSend.length) {
+        if (TERMINAL_MESSAGE_STATUSES.has(message.status)) return;
+        const summaryBeforeSend = await summarizePushDeliveries({
+          tenantId: message.tenantId,
+          messageId: message._id,
+        });
+        if (summaryBeforeSend.processingActive > 0) return;
+        const pendingStill = await listDeliveriesToSend(message._id, message.tenantId);
+        if (pendingStill.length) return;
+        if (!devices.length) {
+          const failResult = await casFailPushMessageNoDevices({
+            tenantId: message.tenantId,
+            messageId: message._id,
+          });
+          if (failResult.applied) recordMessageStatusTransition("FAILED");
+        }
+        return;
+      }
+      const registrationIds = devicesToSend.map(
+        (d) => d.deviceRegistrationId ?? `legacy:${d.tokenHash}`,
+      );
+      const claimed = await claimDeliveriesForProcessing({
+        tenantId: message.tenantId,
+        messageId: message._id,
+        deviceRegistrationIds: registrationIds,
+      });
+      const claimByRegistration = new Map(
+        claimed.map((row) => [row.deviceRegistrationId, row.claimToken]),
+      );
+      const sendList = devicesToSend.filter((device) => {
+        const key = device.deviceRegistrationId ?? `legacy:${device.tokenHash}`;
+        return claimByRegistration.has(key);
+      });
+      const ownedClaims = claimed.map((row) => ({
+        deviceRegistrationId: row.deviceRegistrationId,
+        claimToken: row.claimToken,
+      }));
+      if (!sendList.length) {
+        const activeSummary = await summarizePushDeliveries({
+          tenantId: message.tenantId,
+          messageId: message._id,
+        });
+        if (activeSummary.processingActive > 0) return;
+        return;
+      }
+
+      let result;
+      try {
+        result = await pushProvider.send({
+          tenant,
+          tenantId: message.tenantId,
+          devices: sendList,
+          title: payload.title,
+          body: payload.body,
+          data: payload.data,
+          imageUrl: imageUrl ?? undefined,
+          messageType: message.type,
+          collapseKey: message._id,
+        });
+      } catch (error) {
+        if (error instanceof FcmSendDeferredError) {
+          await releaseDeferredDeliveries({
+            tenantId: message.tenantId,
+            messageId: message._id,
+            claims: ownedClaims,
+          });
+          const delayMs = error.retryAfterMs;
+          await job.moveToDelayed(Date.now() + delayMs, job.token);
+          throw new DelayedError();
+        }
+        await releaseOwnedClaimsOnError({
+          tenantId: message.tenantId,
+          messageId: message._id,
+          claims: ownedClaims,
+        });
+        throw error;
+      }
+      const applyResults = await applyPushOutcomes({
+        tenantId: message.tenantId,
+        messageId: message._id,
+        outcomes: result.outcomes.map((row) => ({
+          ...row,
+          claimToken: claimByRegistration.get(
+            row.deviceRegistrationId ?? (row.tokenHash ? `legacy:${row.tokenHash}` : ""),
+          ),
+        })),
+      });
+      const applyByRegistration = new Map(
+        applyResults
+          .filter((row) => row.deviceRegistrationId)
+          .map((row) => [row.deviceRegistrationId, row]),
+      );
+      const applied = applyResults.filter(
+        (row) => row.result === PushDeliveryApplyResult.APPLIED,
+      );
+      const successIds = applied
+        .filter((row) => row.resultingStatus === PushDeviceDeliveryStatus.SUCCEEDED)
+        .map((row) => row.deviceRegistrationId)
+        .filter(Boolean);
+      const failedIds = applied
+        .filter((row) => row.resultingStatus !== PushDeviceDeliveryStatus.SUCCEEDED
+          && row.resultingStatus !== PushDeviceDeliveryStatus.RETRYABLE_FAILED)
+        .map((row) => row.deviceRegistrationId)
+        .filter(Boolean);
+      await markDeviceSuccess(message.tenantId, successIds);
+      await markDeviceFailure(message.tenantId, failedIds);
+
+      const invalidFromApplied = [];
+      const appliedInvalidPlainTokens = new Set();
+      for (let i = 0; i < result.outcomes.length; i += 1) {
+        const outcome = result.outcomes[i];
+        const regKey = outcome.deviceRegistrationId
+          ?? (outcome.tokenHash ? `legacy:${outcome.tokenHash}` : null);
+        const applyRow = applyByRegistration.get(regKey);
+        if (applyRow?.result !== PushDeliveryApplyResult.APPLIED) continue;
+        if (outcome.kind !== PushOutcomeKind.PERMANENT_INVALID_TOKEN) continue;
+        if (outcome.token) appliedInvalidPlainTokens.add(outcome.token);
+        const invalidEntry = result.invalidRegistrationIds?.find(
+          (row) => (row.id ?? row) && (row.tokenHash === outcome.tokenHash || row.id === outcome.deviceRegistrationId),
+        );
+        if (invalidEntry) {
+          invalidFromApplied.push({
+            id: invalidEntry.id ?? invalidEntry,
+            expectedTokenHash: invalidEntry.tokenHash ?? outcome.tokenHash,
+            registrationVersion: invalidEntry.registrationVersion,
+          });
+        } else if (outcome.deviceRegistrationId) {
+          invalidFromApplied.push({
+            id: outcome.deviceRegistrationId,
+            expectedTokenHash: outcome.tokenHash,
+          });
+        }
+      }
+      if (invalidFromApplied.length) {
+        await invalidateDeviceRegistrations(
+          message.tenantId,
+          invalidFromApplied,
+          "FCM_UNREGISTERED",
+        );
+        if (customer?._id && appliedInvalidPlainTokens.size) {
+          const { decryptFcmTokens } = await import("../lib/fcm-tokens.js");
+          const sealedInvalid = decryptFcmTokens(customer.fcmTokens ?? [])
+            .filter((row) => appliedInvalidPlainTokens.has(row.token))
+            .map((row) => row.tokenHash);
+          if (sealedInvalid.length) {
+            await Customer.updateOne(
+              { _id: customer._id, tenantId: message.tenantId },
+              { $pull: { fcmTokens: { tokenHash: { $in: sealedInvalid } } } },
+            );
+          }
+        }
+      }
+
+      const stillRetryable = await listDeliveriesToSend(message._id, message.tenantId);
+      if (stillRetryable.length) {
+        const retryableOutcome = result.outcomes.find(
+          (row) => row.kind === PushOutcomeKind.TRANSIENT,
+        );
+        const delayMs = retryDelayMs(
+          message.attemptCount ?? 1,
+          env.FCM_RETRY_BASE_MS ?? 500,
+          retryableOutcome?.retryAfterMs ?? null,
+        );
+        await job.moveToDelayed(Date.now() + delayMs, job.token);
+        throw new DelayedError();
+      }
+
+      const deliverySummary = await summarizePushDeliveries({
+        tenantId: message.tenantId,
+        messageId: message._id,
+      });
+      if (deliverySummary.processingActive > 0) return;
+      if (deliverySummary.queued > 0 || deliverySummary.retryableFailed > 0) return;
+
+      let providerMessageId;
+      for (const outcome of result.outcomes) {
+        const regKey = outcome.deviceRegistrationId
+          ?? (outcome.tokenHash ? `legacy:${outcome.tokenHash}` : null);
+        const applyRow = applyByRegistration.get(regKey);
+        if (applyRow?.result === PushDeliveryApplyResult.APPLIED && outcome.providerMessageId) {
+          providerMessageId = outcome.providerMessageId;
+          break;
+        }
+      }
+      const finalize = await casFinalizePushMessageFromSummary({
+        tenantId: message.tenantId,
+        messageId: message._id,
+        deliverySummary,
+        providerMessageId,
+      });
+      if (finalize.applied && finalize.status) {
+        recordMessageStatusTransition(finalize.status);
+      }
+      return;
+    }
+    const templateName = message.templateKey === "PAYMENT_SUCCESS_MEDIA" && !message.templateParams?.passbookImageUrl ? "PAYMENT_SUCCESS_TEXT_FALLBACK" : message.templateKey;
+    const tenant = await Tenant.findById(message.tenantId).select("+integrationSecrets").lean();
+    const config = tenant?.integrationSecrets?.whatsapp;
+    const credentials = config ? { phoneNumberId: config.phoneNumberId, accessToken: config.accessToken ? unseal(config.accessToken) : undefined } : {};
+    const result = await whatsappProvider.sendTemplate({ to: message.templateParams?.mobile, templateName, components: templateName === "PAYMENT_SUCCESS_TEXT_FALLBACK" ? message.templateParams?.textComponents : message.templateParams?.components, credentials });
+    message.status = result.status;
+    if (env.PROVIDER_MODE === "mock" && message.status === "SENT") {
+      message.status = "DELIVERED";
+      message.deliveredAt = new Date();
+    }
+    message.templateKey = templateName;
+    message.providerMessageId = result.providerMessageId;
+    message.lastAttemptAt = new Date();
+    message.attemptCount = (message.attemptCount ?? 0) + 1;
+    await message.save();
+    recordMessageStatusTransition(message.status);
+  } catch (error) {
+    if (error?.name === "DelayedError") throw error;
+    if (!TERMINAL_MESSAGE_STATUSES.has(message.status)) {
+      message.status = "FAILED";
+      message.failureMessage = error.message;
+      message.failedAt = new Date();
+      message.attemptCount = (message.attemptCount ?? 0) + 1;
+      await message.save();
+      recordMessageStatusTransition("FAILED");
+    }
+    throw error;
+  }
 }
 export async function processWebhook(job) {
-  const event = await WebhookEvent.findById(job.data.webhookEventId); if (!event || event.status === "COMPLETED") return;
-  event.status = "PROCESSING"; event.attempts = (event.attempts ?? 0) + 1; await event.save();
+  const eventId = job.data.webhookEventId;
+  const existing = await WebhookEvent.findById(eventId).lean();
+  if (!existing || existing.status === "COMPLETED") return;
+  const { claimWebhookForProcessing, finalizeWebhookStorage } = await import("../services/webhook-event.service.js");
+  const { incrementWebhookMetric, observeWebhookProcessingMs, WebhookMetric } = await import("../lib/webhook-metrics.js");
+  const leaseOwner = String(job.id ?? job.name ?? "worker");
+  const event = await claimWebhookForProcessing(eventId, leaseOwner);
+  if (!event) return;
+  const started = Date.now();
   try {
     if (event.provider === "PHONEPE") {
       const normalized = normalizePhonePeWebhookEvent(event.payload);
       const { reference, payload, transactionId } = normalized;
       if (normalized.refund || isPhonePeRefundCallback(event.payload?.type)) {
-        logger.info(
-          { type: event.payload?.type, orderId: payload?.orderId },
-          "Refund webhook received — refund handling not yet implemented",
-        );
-        // TODO(refund): build out in a later pass
-      } else if (normalized.completed) {
-        const intent = await PaymentIntent.findOne({
+        const { processPhonePeRefundWebhook } = await import("../services/phonepe-refund.service.js");
+        await processPhonePeRefundWebhook({
           tenantId: event.tenantId,
-          $or: [{ _id: reference }, { providerOrderId: reference }],
-          status: { $ne: "SUCCEEDED" },
+          type: event.payload?.type,
+          payload,
+          providerEventId: event.providerEventId,
         });
-        const link = intent
-          ? null
-          : await PaymentLink.findOne({
+      } else if (
+        normalized.completed
+        || normalized.classification === PhonePeCallbackClass.ORDER_COMPLETED
+      ) {
+        const intent = reference
+          ? await PaymentIntent.findOne({
             tenantId: event.tenantId,
-            _id: reference,
-            status: { $ne: "PAID" },
+            $or: [{ _id: reference }, { providerOrderId: reference }],
+          })
+          : null;
+        const link = !intent && reference
+          ? await PaymentLink.findOne({ tenantId: event.tenantId, _id: reference })
+          : null;
+        const verified = validatePhonePeCompletedIdentifiers({
+          merchantOrderId: reference,
+          normalized: {
+            transactionId,
+            amount: normalized.amount,
+          },
+        });
+        if (!verified.ok) {
+          await upsertGatewayWebhookInvalidCompletedAlert({
+            tenantId: event.tenantId,
+            entityId: reference ?? event._id,
+            code: verified.code,
+            reference,
+            webhookEventId: event._id,
           });
-        const source = intent ?? link;
-        if (source) {
-          if (Number(normalized.amount) !== Number(source.amountPaise)) {
-            const { Payment } = await import("../models/index.js");
-            await Payment.updateOne(
-              { _id: source.paymentId },
-              {
-                $set: {
-                  status: "AMOUNT_MISMATCH_PENDING_REVIEW",
-                  requiresReview: true,
-                  reviewReason: "GATEWAY_AMOUNT_MISMATCH",
-                  providerPayload: payload,
-                },
-              },
-            );
+        } else {
+          const finalized = await finalizeGatewaySuccess({
+            tenantId: event.tenantId,
+            reference,
+            transactionId: verified.transactionId,
+            amountPaise: verified.amountPaise,
+            providerPayload: payload,
+            webhookEventId: event._id,
+            intent,
+            link,
+          });
+          if (
+            finalized.outcome !== "SUCCESS"
+            && finalized.outcome !== "ALREADY_SUCCESS"
+            && !intent
+            && !link
+          ) {
             await Alert.findOneAndUpdate(
               {
                 tenantId: event.tenantId,
-                type: "GATEWAY_AMOUNT_MISMATCH",
-                entityId: source.paymentId,
+                type: "GATEWAY_WEBHOOK_UNMATCHED",
+                entityId: reference ?? event._id,
                 status: "OPEN",
               },
               {
                 $setOnInsert: {
-                  branchId: source.branchId,
                   severity: "CRITICAL",
-                  title: "Gateway amount mismatch",
-                  message: "A verified gateway callback amount did not match the reserved payment amount.",
-                  entityType: "PAYMENT",
+                  title: "Unmatched gateway webhook",
+                  message: "A completed gateway callback did not match any payment intent or link.",
+                  entityType: "WEBHOOK",
                   metadata: {
-                    expectedPaise: source.amountPaise,
-                    receivedPaise: normalized.amount,
+                    provider: event.provider,
+                    reference,
                   },
                 },
               },
               { upsert: true },
             );
-            if (intent?.status === "PENDING") {
-              intent.status = "FAILED";
-              intent.version += 1;
-              await intent.save();
-              await Scheme.updateOne(
-                { _id: intent.schemeId },
-                { $inc: { positionVersion: 1, version: 1 } },
-              );
-            }
-            event.status = "COMPLETED";
-            event.processedAt = new Date();
-            await event.save();
-            return;
           }
-          const lateSuccess = intent
-            ? intent.status !== "PENDING"
-            : !["CREATED", "SENT", "OPENED"].includes(link.status);
-          const fakeReq = {
-            auth: { id: "phonepe", tenantId: event.tenantId, type: "WEBHOOK" },
-            scope: { tenantId: event.tenantId },
-            body: {
-              schemeId: source.schemeId,
-              amountPaise: source.amountPaise,
-              mode: "ONLINE_GATEWAY",
-              targetCycle: source.targetCycle,
-              positionVersion: source.positionVersion,
-            },
-            query: { targetCycle: source.targetCycle },
-            baseUrl: "/webhooks",
-            traceId: event._id,
-            ip: "provider",
-            headers: {},
-          };
-          const payment = await recordPayment(fakeReq, {
-            gateway: true,
-            source: "WEBHOOK",
-            actorType: "WEBHOOK",
-            existingPaymentId: source.paymentId,
-            providerTransactionId: transactionId,
-            providerPayload: payload,
-            lateSuccess,
-            lateSuccessDetectedVia: lateSuccess ? "WEBHOOK" : undefined,
-            gatewayCompletedAt: new Date(),
-          });
-          if (intent) {
-            intent.status = "SUCCEEDED";
-            intent.paymentId = payment._id;
-            await intent.save();
-          }
-          if (link) {
-            link.status = "PAID";
-            link.paidAt = new Date();
-            await link.save();
-            if (link.paymentIntentId) {
-              await PaymentIntent.updateOne(
-                { _id: link.paymentIntentId },
-                { $set: { status: "SUCCEEDED", paymentId: payment._id }, $inc: { version: 1 } },
-              );
-            }
-          }
-        } else {
-          await Alert.findOneAndUpdate(
-            {
-              tenantId: event.tenantId,
-              type: "GATEWAY_WEBHOOK_UNMATCHED",
-              entityId: reference ?? event._id,
-              status: "OPEN",
-            },
-            {
-              $setOnInsert: {
-                severity: "CRITICAL",
-                title: "Unmatched gateway webhook",
-                message: "A completed gateway callback did not match any payment intent or link.",
-                entityType: "WEBHOOK",
-                metadata: {
-                  provider: event.provider,
-                  reference,
-                  amount: normalized.amount,
-                },
-              },
-            },
-            { upsert: true },
-          );
         }
-      } else if (normalized.failed) {
-        const pending = await (await import("../models/index.js")).Payment.findOneAndUpdate(
+      } else if (normalized.attemptFailed) {
+        logger.info(
           {
-            tenantId: event.tenantId,
-            $or: [
-              { providerTransactionId: reference },
-              { providerTransactionId: transactionId },
-              { receiptNumber: `PENDING-${reference}` },
-            ],
-            status: "PENDING",
+            type: normalized.type,
+            reference,
+            transactionId,
+            classification: normalized.classification,
           },
-          { $set: { status: "FAILED", providerPayload: payload } },
-          { new: true },
+          "PhonePe transaction attempt failed — order remains non-terminal",
         );
-        if (pending) {
-          const intent = await PaymentIntent.findOneAndUpdate(
-            { tenantId: event.tenantId, paymentId: pending._id, status: "PENDING" },
-            { $set: { status: "FAILED" }, $inc: { version: 1 } },
-            { new: true },
+      } else if (
+        normalized.failed
+        || normalized.classification === PhonePeCallbackClass.ORDER_TERMINAL_FAILED
+      ) {
+        const result = await applyTerminalGatewayFailure({
+          tenantId: event.tenantId,
+          transactionId,
+          reference,
+          providerPayload: payload,
+        });
+        if (result.skipped && result.reason === "ALREADY_SUCCESS") {
+          recordPhonePeWebhookOutOfOrder();
+          logger.info(
+            { reference, transactionId, type: normalized.type },
+            "Ignoring terminal PhonePe failure after payment already succeeded",
           );
-          if (intent) {
-            await Scheme.updateOne(
-              { _id: intent.schemeId },
-              { $inc: { positionVersion: 1, version: 1 } },
-            );
-          }
         }
       }
     } else if (event.provider === "WHATSAPP") {
       const status = event.payload?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
       if (status) await updateDelivery(status.id, status.status?.toUpperCase(), status.errors?.[0]);
     }
-    event.status = "COMPLETED"; event.processedAt = new Date(); await event.save();
-  } catch (error) { event.status = job.attemptsMade >= 4 ? "DEAD_LETTER" : "FAILED"; event.error = error.message; await event.save(); if (event.status === "DEAD_LETTER") await Alert.findOneAndUpdate({ tenantId: event.tenantId, type: "WEBHOOK_FAILURE", entityId: event._id, status: "OPEN" }, { $setOnInsert: { severity: "CRITICAL", title: "Webhook processing failed", message: error.message, entityType: "WEBHOOK", metadata: { provider: event.provider } } }, { upsert: true }); throw error; }
+    event.status = "COMPLETED";
+    event.processedAt = new Date();
+    await event.save();
+    await finalizeWebhookStorage(event._id);
+    incrementWebhookMetric(WebhookMetric.PROCESSING_COMPLETED);
+    observeWebhookProcessingMs(Date.now() - started);
+  } catch (error) {
+    event.status = job.attemptsMade >= 4 ? "DEAD_LETTER" : "FAILED";
+    event.error = error.message;
+    await event.save();
+    if (event.status === "DEAD_LETTER") {
+      incrementWebhookMetric(WebhookMetric.DEAD_LETTER);
+      await Alert.findOneAndUpdate(
+        { tenantId: event.tenantId, type: "WEBHOOK_FAILURE", entityId: event._id, status: "OPEN" },
+        {
+          $setOnInsert: {
+            severity: "CRITICAL",
+            title: "Webhook processing failed",
+            message: error.message,
+            entityType: "WEBHOOK",
+            metadata: { provider: event.provider },
+          },
+        },
+        { upsert: true },
+      );
+    } else {
+      incrementWebhookMetric(WebhookMetric.PROCESSING_FAILED);
+    }
+    observeWebhookProcessingMs(Date.now() - started);
+    throw error;
+  }
 }
 export async function processOutbox(job) {
   const event = await OutboxEvent.findById(job.data.outboxEventId);
@@ -218,12 +493,53 @@ export async function processOutbox(job) {
   if (event.topic === "payment.succeeded") {
     const customer = await Customer.findOne({ _id: event.payload.customerId, tenantId: event.tenantId }).select("mobile whatsappOptedOutAt").lean();
     const exists = await Message.exists({ tenantId: event.tenantId, type: "PAYMENT_SUCCESS", "templateParams.paymentId": event.payload.paymentId });
-    if (customer && !customer.whatsappOptedOutAt && !exists) {
-      await queueMessage(
-        { auth: { id: "outbox-worker", tenantId: event.tenantId, type: "SYSTEM" }, scope: { tenantId: event.tenantId, branchId: event.payload.branchId }, headers: {}, ip: "worker" },
-        { branchId: event.payload.branchId, customerId: event.payload.customerId, schemeId: event.payload.schemeId, type: "PAYMENT_SUCCESS", templateKey: "PAYMENT_SUCCESS_MEDIA", templateParams: { paymentId: event.payload.paymentId, mobile: customer.mobile, passbookImageUrl: null, textComponents: [] } },
-      );
+    if (customer && !exists) {
+      const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
+      if (!customer.whatsappOptedOutAt) {
+        await queueCustomerNotification({
+          tenantId: event.tenantId,
+          branchId: event.payload.branchId,
+          customerId: event.payload.customerId,
+          schemeId: event.payload.schemeId,
+          type: "PAYMENT_SUCCESS",
+          templateKey: "PAYMENT_SUCCESS_MEDIA",
+          templateParams: {
+            paymentId: event.payload.paymentId,
+            mobile: customer.mobile,
+            passbookImageUrl: null,
+            textComponents: [],
+          },
+        });
+      } else {
+        await queueCustomerNotification({
+          tenantId: event.tenantId,
+          branchId: event.payload.branchId,
+          customerId: event.payload.customerId,
+          schemeId: event.payload.schemeId,
+          type: "PAYMENT_SUCCESS",
+          pushOnly: true,
+          templateParams: {
+            paymentId: event.payload.paymentId,
+            mobile: customer.mobile,
+          },
+        });
+      }
     }
+  } else if (event.topic === "payment.gateway.failed") {
+    // Durable signal for gateway terminal failure; no customer fan-out.
+  } else if (event.topic === "message.send") {
+    const messageId = event.payload?.messageId ?? event.key;
+    const exists = messageId
+      ? await Message.exists({ _id: messageId, tenantId: event.tenantId })
+      : false;
+    if (!exists) {
+      event.status = "COMPLETED";
+      event.processedAt = new Date();
+      event.error = "LEGACY_MESSAGE_SEND_ORPHAN";
+      await event.save();
+      return;
+    }
+    event.error = null;
   } else if (event.topic !== "message.send") {
     event.status = "DEAD_LETTER";
     event.error = `Unhandled outbox topic: ${event.topic}`;
@@ -303,16 +619,38 @@ async function writePdf(tempFile, title, headers, rows) {
 }
 
 async function writeRawModelPdf(record, tempFile) {
+  const { maxExportRows } = await import("../lib/report-limits.js");
   const models = await import("../models/index.js");
   const model = record.type === "AUDIT" ? models.AuditEvent : record.type === "CUSTOMER" ? models.Customer : models.Scheme;
   const dateField = record.type === "AUDIT" ? "occurredAt" : "createdAt";
   const query = { tenantId: record.tenantId };
-  for (const key of ["branchId", "status", "customerId", "schemeId", "mode"]) if (record.filters?.[key]) query[key] = record.filters[key];
-  if (record.filters?.from || record.filters?.to) query[dateField] = { ...(record.filters.from ? { $gte: new Date(`${record.filters.from}T00:00:00+05:30`) } : {}), ...(record.filters.to ? { $lte: new Date(`${record.filters.to}T23:59:59.999+05:30`) } : {}) };
-  const rows = await model.find(query).lean();
-  const headers = rows.length ? Object.keys(rows[0]) : ["No records"];
-  await writePdf(tempFile, `${record.type} export`, headers, rows.map((row) => headers.map((key) => typeof row[key] === "object" ? JSON.stringify(row[key]) : row[key])));
-  return rows.length;
+  for (const key of ["branchId", "status", "customerId", "schemeId", "mode"]) {
+    if (record.filters?.[key]) query[key] = record.filters[key];
+  }
+  if (record.filters?.from || record.filters?.to) {
+    query[dateField] = {
+      ...(record.filters.from ? { $gte: new Date(`${record.filters.from}T00:00:00+05:30`) } : {}),
+      ...(record.filters.to ? { $lte: new Date(`${record.filters.to}T23:59:59.999+05:30`) } : {}),
+    };
+  }
+  const max = maxExportRows();
+  let rowCount = 0;
+  let headers = null;
+  const pdfRows = [];
+  for await (const row of model.find(query).lean().cursor()) {
+    if (!headers) headers = Object.keys(row);
+    pdfRows.push(headers.map((key) => (typeof row[key] === "object" ? JSON.stringify(row[key]) : row[key])));
+    rowCount += 1;
+    if (rowCount > max) {
+      throw new AppError(
+        "EXPORT_TOO_LARGE",
+        "Export exceeds the maximum allowed row count.",
+        422,
+      );
+    }
+  }
+  await writePdf(tempFile, `${record.type} export`, headers ?? ["No records"], pdfRows);
+  return rowCount;
 }
 
 export async function processExport(job) {
@@ -320,6 +658,13 @@ export async function processExport(job) {
   if (!record) return;
   record.status = "PROCESSING";
   await record.save();
+  const started = Date.now();
+  const {
+    assertExportRowCount,
+    maxExportBytes,
+    maxExportRuntimeMs,
+  } = await import("../lib/report-limits.js");
+  const { exportDownloadExpiresAt } = await import("../services/export-expiry.service.js");
   try {
     const directory = path.resolve("exports");
     await fs.mkdir(directory, { recursive: true });
@@ -344,6 +689,22 @@ export async function processExport(job) {
       );
     }
 
+    assertExportRowCount(rowCount);
+    if (Date.now() - started > maxExportRuntimeMs()) {
+      throw new AppError(
+        "EXPORT_RUNTIME_EXCEEDED",
+        "Export generation exceeded the allowed runtime.",
+        422,
+      );
+    }
+    const fileStat = await fs.stat(tempFile);
+    if (fileStat.size > maxExportBytes()) {
+      throw new AppError(
+        "EXPORT_TOO_LARGE",
+        "Export file exceeds the maximum allowed size.",
+        422,
+      );
+    }
     const objectKey = `exports/${record.tenantId}/${record._id}.${extension}`;
     const body = await fs.readFile(tempFile);
     await storageProvider.uploadFile({ objectKey, body, contentType: format === "PDF" ? "application/pdf" : "text/csv; charset=utf-8" });
@@ -351,79 +712,80 @@ export async function processExport(job) {
     record.objectKey = objectKey;
     record.rowCount = rowCount;
     record.status = "READY";
-    record.downloadExpiresAt = new Date(Date.now() + 15 * 60_000);
+    record.downloadExpiresAt = exportDownloadExpiresAt();
     await record.save();
+    recordExportRun({
+      success: true,
+      rowCount,
+      bytes: fileStat.size,
+      durationMs: Date.now() - started,
+    });
   } catch (error) {
     record.status = "FAILED";
-    record.error = error.message;
+    record.error = error.message?.slice(0, 500) ?? "Export failed";
     await record.save();
+    recordExportRun({ success: false, durationMs: Date.now() - started });
     throw error;
   }
 }
-export async function processMaintenance(job) {
-  const now = new Date(); const today = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-  if (job.name === "maturity") await Scheme.updateMany({ status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] }, maturityDate: { $lte: today } }, { $set: { status: "MATURED" }, $inc: { version: 1 } });
-  if (job.name === "overdue") await Scheme.updateMany({ status: "ACTIVE", paymentPattern: "FIXED", installments: { $elemMatch: { graceEndsAt: { $lt: today }, status: { $in: ["DUE", "PARTIALLY_PAID"] } } } }, { $set: { "installments.$[row].status": "OVERDUE" }, $inc: { version: 1 } }, { arrayFilters: [{ "row.graceEndsAt": { $lt: today }, "row.status": { $in: ["DUE", "PARTIALLY_PAID"] } }] });
+export async function processScheduler(job) {
+  const now = new Date();
+  const today = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const {
+    runMaturityMaintenance,
+    runOverdueMaintenance,
+    runDefaultingMaintenance,
+    runExpireFlexibleCapacityMaintenance,
+    runFlexibleLockMaintenance,
+    runGrievanceAutoCloseMaintenance,
+  } = await import("../services/scheme-maintenance.service.js");
+
+  if (job.name === "maturity") await runMaturityMaintenance({ today });
+  if (job.name === "overdue") await runOverdueMaintenance({ today });
   if (job.name === "payment-reminders") {
-    const schemes = await Scheme.find({ paymentPattern: "FIXED", status: { $in: ["ACTIVE", "DEFAULTED"] }, installments: { $elemMatch: { $or: [{ dueDate: today, status: { $in: ["DUE", "PARTIALLY_PAID"] } }, { status: "OVERDUE" }] } } }).lean();
-    for (const scheme of schemes) {
-      const overdue = scheme.installments.some((row) => row.status === "OVERDUE");
-      const customer = await Customer.findOne({ _id: scheme.customerId, tenantId: scheme.tenantId }).select("mobile whatsappOptedOutAt").lean();
-      if (!customer || customer.whatsappOptedOutAt) continue;
-      const type = overdue ? "PAYMENT_OVERDUE" : "PAYMENT_DUE";
-      const exists = await Message.exists({ tenantId: scheme.tenantId, schemeId: scheme._id, type, "templateParams.reminderDate": today });
-      if (!exists) await queueMessage(
-        { auth: { id: "reminder-worker", tenantId: scheme.tenantId, type: "SYSTEM" }, scope: { tenantId: scheme.tenantId, branchId: scheme.branchId }, headers: {}, ip: "worker" },
-        { branchId: scheme.branchId, customerId: scheme.customerId, schemeId: scheme._id, type, templateKey: type, templateParams: { mobile: customer.mobile, reminderDate: today, enrollmentNumber: scheme.enrollmentNumber } },
-      );
-    }
+    const { runReminderScheduler } = await import("../services/reminder-scheduler.service.js");
+    await runReminderScheduler(now);
   }
-  if (job.name === "expire-flexible-capacity") await Scheme.updateMany({ paymentPattern: "FLEXIBLE", cycles: { $elemMatch: { expiresAt: { $lt: today }, status: { $in: ["UPCOMING", "PARTIALLY_PAID"] } } } }, { $set: { "cycles.$[row].status": "EXPIRED", "cycles.$[row].remainingPaise": 0 }, $inc: { positionVersion: 1, version: 1 } }, { arrayFilters: [{ "row.expiresAt": { $lt: today }, "row.status": { $in: ["UPCOMING", "PARTIALLY_PAID"] } }] });
-  if (job.name === "defaulting") {
-    const candidates = await Scheme.find({ status: "ACTIVE", paymentPattern: "FIXED" }).lean();
-    for (const scheme of candidates) {
-      const threshold = scheme.planSnapshot?.benefit?.eligibility?.maxAllowedDefaults;
-      if (threshold == null) continue;
-      const overdueCount = (scheme.installments ?? []).filter((row) => row.status === "OVERDUE").length;
-      if (overdueCount === 0 || overdueCount <= threshold) continue;
-      const updated = await Scheme.findOneAndUpdate(
-        { _id: scheme._id, status: "ACTIVE" },
-        { $set: { status: "DEFAULTED" }, $inc: { version: 1 } },
-        { new: true },
-      );
-      if (!updated) continue;
-      await writeAudit({
-        req: { auth: { id: "scheduler", tenantId: scheme.tenantId, type: "SYSTEM" }, headers: {}, ip: "scheduler" },
-        action: "SCHEME_DEFAULTED",
-        entityType: AuditEntityType.SCHEME,
-        entityId: scheme._id,
-        before: scheme,
-        after: updated.toObject(),
-        actorType: "SYSTEM",
-      });
-    }
+  if (job.name === "expire-flexible-capacity") {
+    await runExpireFlexibleCapacityMaintenance({ today });
   }
-  if (job.name === "apply-flexible-locks") {
-    const { applyFlexibleLock } = await import("../services/scheme.service.js");
-    const schemes = await Scheme.find({ paymentPattern: "FLEXIBLE", flexiblePhase: "FLEXIBLE", status: { $in: ["ACTIVE", "LOCKED"] } }).lean();
-    for (const scheme of schemes) {
-      const freeCycles = scheme.planSnapshot?.flexibleRules?.flexiblePhaseCycles ?? 0;
-      if (!freeCycles) continue;
-      const boundary = addMonthsClamped(scheme.startDate, freeCycles).format("YYYY-MM-DD");
-      if (today < boundary) continue;
-      try {
-        await applyFlexibleLock({
-          auth: { id: "scheduler", tenantId: scheme.tenantId, type: "SYSTEM" },
-          scope: { tenantId: scheme.tenantId, branchId: scheme.branchId },
-          params: { schemeId: scheme._id },
-          headers: {},
-          ip: "scheduler",
-        });
-      } catch (error) {
-        if (error?.code !== "LOCK_ALREADY_APPLIED") logger.warn({ schemeId: scheme._id, err: error.message }, "Flexible lock job skipped scheme");
-      }
-    }
+  if (job.name === "defaulting") await runDefaultingMaintenance();
+  if (job.name === "apply-flexible-locks") await runFlexibleLockMaintenance({ today });
+  if (job.name === "grievance-auto-close") await runGrievanceAutoCloseMaintenance(now);
+}
+
+export async function processPaymentsMaintenance(job) {
+  const now = new Date();
+  if (job.name === "expire-payments") {
+    const { runPaymentExpiry } = await import("../services/payment-expiry.service.js");
+    await runPaymentExpiry(now);
   }
-  if (job.name === "grievance-auto-close") await Grievance.updateMany({ status: "RESOLVED", resolvedAt: { $lt: new Date(Date.now() - 7 * 86_400_000) } }, { $set: { status: "CLOSED", closedAt: now }, $inc: { version: 1 } });
-  if (job.name === "expire-payments") { const intents = await PaymentIntent.find({ status: "PENDING", reservationExpiresAt: { $lt: now } }).lean(); for (const intent of intents) { const claimed = await PaymentIntent.findOneAndUpdate({ _id: intent._id, status: "PENDING" }, { $set: { status: "EXPIRED" }, $inc: { version: 1 } }, { new: true }); if (claimed) { if (intent.paymentId) await (await import("../models/index.js")).Payment.updateOne({ _id: intent.paymentId, status: "PENDING" }, { $set: { status: "FAILED", providerPayload: { expirationReason: "INTENT_TTL" } } }); await Scheme.updateOne({ _id: intent.schemeId }, { $inc: { positionVersion: 1, version: 1 } }); } } await PaymentLink.updateMany({ status: { $in: ["CREATED", "SENT", "OPENED"] }, expiresAt: { $lt: now } }, { $set: { status: "EXPIRED" } }); }
+  if (job.name === "phonepe-reconcile") {
+    const { runPhonePeReconciliation } = await import("../services/phonepe-reconcile.service.js");
+    await runPhonePeReconciliation(String(job.id ?? "worker"));
+  }
+}
+
+export async function processMaintenance(job) {
+  const now = new Date();
+  if (job.name === "push-broadcast-fanout") {
+    const { processPushBroadcastFanout } = await import("../services/push-broadcast.service.js");
+    await processPushBroadcastFanout(job.data.broadcastId, String(job.id ?? "worker"));
+  }
+  if (job.name === "push-broadcast-recover") {
+    const { processPushBroadcastFanoutRecovery } = await import("../services/push-broadcast.service.js");
+    await processPushBroadcastFanoutRecovery();
+  }
+  if (job.name === "webhook-reclaim") {
+    const { reclaimExpiredWebhookLeases } = await import("../services/webhook-event.service.js");
+    await reclaimExpiredWebhookLeases();
+  }
+  if (job.name === "dispatch-reclaim") {
+    const { runDispatchLeaseReclamation } = await import("../services/dispatch-reclaim.service.js");
+    await runDispatchLeaseReclamation();
+  }
+  if (job.name === "export-artifact-cleanup") {
+    const { purgeExpiredExportArtifacts } = await import("../services/export-expiry.service.js");
+    await purgeExpiredExportArtifacts(now);
+  }
 }

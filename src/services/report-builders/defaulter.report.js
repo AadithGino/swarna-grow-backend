@@ -1,5 +1,7 @@
 import { Customer, Scheme } from "../../models/index.js";
 import { moneyRef } from "../../lib/money.js";
+import { forEachSchemeBatch } from "../../lib/scheme-batch-loader.js";
+import { recoveryTotalsByBranch, sumPaidTotalFromSchemes } from "../../lib/scheme-portfolio-stats.js";
 import { paginate } from "../../lib/pagination.js";
 import {
   baseEnvelope,
@@ -17,17 +19,36 @@ const COLUMNS = [
   { key: "recoveryValue", label: "Recovery value", type: "currency", align: "right", emphasis: true },
 ];
 
+async function loadAllDefaultedSchemes(scope, planId) {
+  const schemes = [];
+  await forEachSchemeBatch({
+    model: Scheme,
+    filter: {
+      ...scope,
+      status: "DEFAULTED",
+      paymentPattern: "FIXED",
+      ...(planId ? { planId } : {}),
+    },
+    projection: "_id branchId installments",
+    handler: (rows) => {
+      schemes.push(...rows);
+    },
+  });
+  return schemes;
+}
+
 export async function buildDefaulterReport(req) {
   const envelope = baseEnvelope(req, "DEFAULTER", "Defaulter report");
   const asOfYmd = envelope.period.to ?? envelope.period.from ?? new Date().toISOString().slice(0, 10);
 
   const scope = reportDataScope(req);
+  const planId = req.query.planId;
   const page = await paginate(Scheme, {
     scope,
     filters: {
       status: "DEFAULTED",
       paymentPattern: "FIXED",
-      ...(req.query.planId ? { planId: req.query.planId } : {}),
+      ...(planId ? { planId } : {}),
     },
     cursor: req.query.cursor,
     limit: req.query.limit ?? 50,
@@ -42,7 +63,7 @@ export async function buildDefaulterReport(req) {
     ...scope,
     status: "DEFAULTED",
     paymentPattern: "FIXED",
-    ...(req.query.planId ? { planId: req.query.planId } : {}),
+    ...(planId ? { planId } : {}),
   };
 
   const [customers, branchNames, branchRecovery, allDefaulted] =
@@ -55,15 +76,12 @@ export async function buildDefaulterReport(req) {
         { $match: defaulterFilter },
         { $group: { _id: "$branchId", count: { $sum: 1 } } },
       ]),
-      Scheme.find(defaulterFilter).select("installments").lean(),
+      loadAllDefaultedSchemes(scope, planId),
     ]);
 
   const customerMap = new Map(customers.map((c) => [c._id, c]));
-  const totalRecovery = allDefaulted.reduce(
-    (sum, scheme) =>
-      sum + schemeInstallmentStats(scheme, asOfYmd).paidTotal,
-    0,
-  );
+  const totalRecovery = sumPaidTotalFromSchemes(allDefaulted, asOfYmd);
+  const recoveryByBranchMap = recoveryTotalsByBranch(allDefaulted, asOfYmd);
 
   const rows = page.data.map((scheme) => {
     const stats = schemeInstallmentStats(scheme, asOfYmd);
@@ -82,23 +100,16 @@ export async function buildDefaulterReport(req) {
     };
   });
 
-  const recoveryByBranch = await Promise.all(
-    branchRecovery.map(async (row) => {
-      const schemes = await Scheme.find({
-        ...scope,
-        status: "DEFAULTED",
-        branchId: row._id,
-      })
-        .select("installments")
-        .lean();
-      let recovery = 0;
-      for (const scheme of schemes) {
-        recovery += schemeInstallmentStats(scheme, asOfYmd).paidTotal;
-      }
-      const name = (await branchNameMap(req.auth.tenantId, [row._id])).get(row._id) ?? row._id;
-      return { x: name, y: recovery, yDisplay: moneyRef(recovery).amountDisplay };
-    }),
+  const branchNameLookup = await branchNameMap(
+    req.auth.tenantId,
+    [...recoveryByBranchMap.keys()].filter((id) => id !== "__none__"),
   );
+  const recoveryByBranch = [...recoveryByBranchMap.entries()].map(([branchKey, recovery]) => {
+    const name = branchKey === "__none__"
+      ? "—"
+      : branchNameLookup.get(branchKey) ?? branchKey;
+    return { x: name, y: recovery, yDisplay: moneyRef(recovery).amountDisplay };
+  });
 
   const defaulterCount = branchRecovery.reduce((sum, row) => sum + row.count, 0);
 

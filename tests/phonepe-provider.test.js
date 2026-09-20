@@ -4,17 +4,26 @@ import { CallbackType } from "@phonepe-pg/pg-sdk-node";
 import {
   callbackTypeKey,
   getClientFor,
+  invalidatePhonePeClientCache,
   isPhonePeCheckoutCompleted,
   isPhonePeCheckoutFailed,
   isPhonePeRefundCallback,
+  isPhonePeTransactionAttemptFailed,
   phonePeCallbackReference,
   phonePeCallbackTransactionId,
+  phonePeClientCacheKey,
   phonePeProvider,
   resolvePhonePeCredentials,
 } from "../src/integrations/phonepe.provider.js";
+import {
+  classifyPhonePeCallback,
+  PhonePeCallbackClass,
+} from "../src/lib/phonepe-callback-classification.js";
+import { buildPhonePeWebhookEventId } from "../src/lib/phonepe-webhook-identity.js";
 import { normalizePhonePeWebhookEvent } from "../src/lib/phonepe-webhook-payload.js";
 
 test("getClientFor returns the same instance for repeated calls with same tenant credentials", async () => {
+  const tenantId = "tenant_cache_a";
   const credentials = {
     clientId: "TEST-CLIENT-ID",
     clientSecret: "test-secret-value",
@@ -23,9 +32,11 @@ test("getClientFor returns the same instance for repeated calls with same tenant
     webhookUsername: "user",
     webhookPassword: "pass",
   };
-  const first = getClientFor(credentials);
-  const second = getClientFor(credentials);
+  const first = getClientFor(credentials, tenantId);
+  const second = getClientFor(credentials, tenantId);
   assert.equal(first, second);
+  assert.match(phonePeClientCacheKey(credentials, tenantId), /^tenant_cache_a:TEST-CLIENT-ID:/);
+  assert.doesNotMatch(phonePeClientCacheKey(credentials, tenantId), /test-secret-value/);
 });
 
 test("getClientFor returns different instances for different client ids", async () => {
@@ -36,9 +47,28 @@ test("getClientFor returns different instances for different client ids", async 
     webhookUsername: "user",
     webhookPassword: "pass",
   };
-  const first = getClientFor({ ...base, clientId: "CLIENT-A" });
-  const second = getClientFor({ ...base, clientId: "CLIENT-B" });
+  const first = getClientFor({ ...base, clientId: "CLIENT-A" }, "tenant_a");
+  const second = getClientFor({ ...base, clientId: "CLIENT-B" }, "tenant_a");
   assert.notEqual(first, second);
+});
+
+test("tenants with identical clientId but different secrets do not share SDK clients", () => {
+  const shared = {
+    clientId: "SHARED-CLIENT",
+    clientVersion: 1,
+    environment: "SANDBOX",
+    webhookUsername: "user",
+    webhookPassword: "pass",
+  };
+  const tenantA = "tenant_shared_a";
+  const tenantB = "tenant_shared_b";
+  const clientA = getClientFor({ ...shared, clientSecret: "secret-a" }, tenantA);
+  const clientB = getClientFor({ ...shared, clientSecret: "secret-b" }, tenantB);
+  assert.notEqual(clientA, clientB);
+  invalidatePhonePeClientCache(tenantA);
+  const clientA2 = getClientFor({ ...shared, clientSecret: "secret-a" }, tenantA);
+  assert.notEqual(clientA, clientA2);
+  assert.equal(getClientFor({ ...shared, clientSecret: "secret-b" }, tenantB), clientB);
 });
 
 test("createPayment mock mode does not require SDK credentials", async () => {
@@ -68,6 +98,62 @@ test("callback helpers classify sdk callback types", () => {
   assert.equal(isPhonePeCheckoutFailed(CallbackType.CHECKOUT_ORDER_FAILED), true);
   assert.equal(isPhonePeRefundCallback(CallbackType.PG_REFUND_COMPLETED), true);
   assert.equal(callbackTypeKey(CallbackType.CHECKOUT_ORDER_COMPLETED), "CHECKOUT_ORDER_COMPLETED");
+});
+
+test("transaction attempt failed is not terminal checkout failure", () => {
+  assert.equal(
+    isPhonePeTransactionAttemptFailed(CallbackType.CHECKOUT_TRANSACTION_ATTEMPT_FAILED),
+    true,
+  );
+  assert.equal(
+    isPhonePeCheckoutFailed(CallbackType.CHECKOUT_TRANSACTION_ATTEMPT_FAILED),
+    false,
+  );
+  assert.equal(
+    classifyPhonePeCallback(CallbackType.CHECKOUT_TRANSACTION_ATTEMPT_FAILED),
+    PhonePeCallbackClass.TRANSACTION_ATTEMPT_FAILED,
+  );
+});
+
+test("normalizePhonePeWebhookEvent marks attempt failure separately from order failure", () => {
+  const normalized = normalizePhonePeWebhookEvent({
+    type: CallbackType.CHECKOUT_TRANSACTION_ATTEMPT_FAILED,
+    payload: {
+      originalMerchantOrderId: "intent_retry",
+      amount: 50000,
+      paymentDetails: [{ state: "FAILED", transactionId: "txn_attempt_1" }],
+    },
+  });
+  assert.equal(normalized.attemptFailed, true);
+  assert.equal(normalized.failed, false);
+  assert.equal(normalized.completed, false);
+  assert.equal(normalized.classification, PhonePeCallbackClass.TRANSACTION_ATTEMPT_FAILED);
+});
+
+test("webhook event ids differ for attempt failure vs order completion on same order", () => {
+  const tenantId = "tenant_abc";
+  const basePayload = {
+    originalMerchantOrderId: "order_1",
+    amount: 10000,
+  };
+  const attemptId = buildPhonePeWebhookEventId({
+    tenantId,
+    type: CallbackType.CHECKOUT_TRANSACTION_ATTEMPT_FAILED,
+    payload: {
+      ...basePayload,
+      paymentDetails: [{ state: "FAILED", transactionId: "txn_a" }],
+    },
+  });
+  const successId = buildPhonePeWebhookEventId({
+    tenantId,
+    type: CallbackType.CHECKOUT_ORDER_COMPLETED,
+    payload: {
+      ...basePayload,
+      paymentDetails: [{ state: "COMPLETED", transactionId: "txn_b" }],
+    },
+  });
+  assert.notEqual(attemptId, successId);
+  assert.match(attemptId, /^pe:tenant_abc:/);
 });
 
 test("normalizePhonePeWebhookEvent maps sdk checkout completion payload", () => {

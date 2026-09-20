@@ -18,4 +18,13 @@ export async function connectRedis() {
 }
 
 export const redisReady = () => Boolean(redis && redis.status === "ready");
-export async function disconnectRedis() { if (redis) await redis.quit(); }
+export async function disconnectRedis() {
+  if (!redis) return;
+  try {
+    if (redis.status === "ready" || redis.status === "connect") await redis.quit();
+    else redis.disconnect();
+  } catch {
+    try { redis.disconnect(); } catch { /* ignore */ }
+  }
+  redis = undefined;
+}

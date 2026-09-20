@@ -3,7 +3,12 @@ import { RedisStore } from "rate-limit-redis";
 import { env } from "../config/env.js";
 import { getRedis, redisReady } from "../config/redis.js";
 
-const skipRateLimit = () => !env.RATE_LIMIT_ENABLED;
+const PUBLIC_DEDICATED_LIMITER_PATHS = new Set([
+  "/auth/otp/request",
+  "/auth/otp/verify",
+  "/auth/login-password",
+  "/tenants/resolve",
+]);
 
 function otpRateLimitKey(prefix, req) {
   const ip = ipKeyGenerator(req.ip ?? "127.0.0.1");
@@ -11,37 +16,128 @@ function otpRateLimitKey(prefix, req) {
   return `${prefix}:${ip}:${mobile}`;
 }
 
+const testRateLimitIntervals = new Set();
+const registeredRateLimitStores = new Set();
+
+/** Stops rate-limit window sweeps and pending Redis store inits for clean test exit. */
+export async function clearRateLimitStoresForTests() {
+  for (const interval of testRateLimitIntervals) clearInterval(interval);
+  testRateLimitIntervals.clear();
+  await Promise.all(
+    [...registeredRateLimitStores].map((store) => store.shutdownForTests()),
+  );
+}
+
 // Limiters are constructed at module load before connectRedis() runs; pick the store per request.
 class RedisOrMemoryStore {
   constructor(prefix) {
+    this.prefix = prefix;
     this.memory = new MemoryStore();
-    this.redis = new RedisStore({
-      prefix: `rl:${prefix}:`,
-      sendCommand: (command, ...args) => getRedis().call(command, ...args),
-    });
+    this.redis = null;
+    this.redisInitPromise = null;
+    this.rateLimitOptions = null;
+    registeredRateLimitStores.add(this);
   }
+
+  ensureRedisStore() {
+    if (!this.redis) {
+      this.redis = new RedisStore({
+        prefix: `rl:${this.prefix}:`,
+        sendCommand: (command, ...args) => getRedis().call(command, ...args),
+      });
+    }
+    return this.redis;
+  }
+
   init(options) {
+    this.rateLimitOptions = options;
     this.memory.init(options);
-    return this.redis.init(options);
+    if (this.memory.interval) testRateLimitIntervals.add(this.memory.interval);
+    if (redisReady()) {
+      this.redisInitPromise = this.ensureRedisStore().init(options);
+      return this.redisInitPromise;
+    }
+    return Promise.resolve();
   }
+
+  async ensureRedisReadyForOps() {
+    if (!redisReady()) return false;
+    if (!this.redisInitPromise && this.rateLimitOptions) {
+      this.redisInitPromise = this.ensureRedisStore().init(this.rateLimitOptions);
+    }
+    if (this.redisInitPromise) {
+      try {
+        await this.redisInitPromise;
+      } catch {
+        return false;
+      }
+    }
+    return Boolean(this.redis);
+  }
+
   increment(key) {
-    if (redisReady()) return this.redis.increment(key);
+    if (redisReady()) {
+      const run = async () => {
+        const ok = await this.ensureRedisReadyForOps();
+        if (!ok) {
+          if (env.NODE_ENV === "production") throw new Error("RATE_LIMIT_STORE_UNAVAILABLE");
+          return this.memory.increment(key);
+        }
+        return this.ensureRedisStore().increment(key);
+      };
+      return run();
+    }
     if (env.NODE_ENV === "production") return Promise.reject(new Error("RATE_LIMIT_STORE_UNAVAILABLE"));
     return this.memory.increment(key);
   }
+
   decrement(key) {
-    if (redisReady()) return this.redis.decrement(key);
+    if (redisReady()) {
+      const run = async () => {
+        const ok = await this.ensureRedisReadyForOps();
+        if (!ok) {
+          if (env.NODE_ENV === "production") throw new Error("RATE_LIMIT_STORE_UNAVAILABLE");
+          return this.memory.decrement(key);
+        }
+        return this.ensureRedisStore().decrement(key);
+      };
+      return run();
+    }
     if (env.NODE_ENV === "production") return Promise.reject(new Error("RATE_LIMIT_STORE_UNAVAILABLE"));
     return this.memory.decrement(key);
   }
+
   resetKey(key) {
-    if (redisReady()) return this.redis.resetKey(key);
+    if (redisReady()) {
+      const run = async () => {
+        const ok = await this.ensureRedisReadyForOps();
+        if (!ok) {
+          if (env.NODE_ENV === "production") throw new Error("RATE_LIMIT_STORE_UNAVAILABLE");
+          return this.memory.resetKey(key);
+        }
+        return this.ensureRedisStore().resetKey(key);
+      };
+      return run();
+    }
     if (env.NODE_ENV === "production") return Promise.reject(new Error("RATE_LIMIT_STORE_UNAVAILABLE"));
     return this.memory.resetKey(key);
   }
+
+  async shutdownForTests() {
+    if (this.redisInitPromise) {
+      try {
+        await this.redisInitPromise;
+      } catch {
+        /* ignore closed Redis during teardown */
+      }
+    }
+    this.redisInitPromise = null;
+    this.redis = null;
+    registeredRateLimitStores.delete(this);
+  }
 }
 
-function sharedStore(prefix) {
+export function createRateLimitStore(prefix) {
   return new RedisOrMemoryStore(prefix);
 }
 
@@ -50,8 +146,8 @@ export const publicRateLimit = rateLimit({
   limit: 60,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimit,
-  store: sharedStore("public"),
+  skip: (req) => !env.RATE_LIMIT_ENABLED || PUBLIC_DEDICATED_LIMITER_PATHS.has(req.path),
+  store: createRateLimitStore("public"),
 });
 
 /** Send OTP — keyed per IP + mobile so verify attempts do not consume this bucket. */
@@ -60,9 +156,9 @@ export const otpRequestRateLimit = rateLimit({
   limit: 5,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimit,
+  skip: () => !env.RATE_LIMIT_ENABLED,
   keyGenerator: (req) => otpRateLimitKey("otp:req", req),
-  store: sharedStore("otp-req"),
+  store: createRateLimitStore("otp-req"),
   message: {
     success: false,
     error: {
@@ -78,9 +174,9 @@ export const otpVerifyRateLimit = rateLimit({
   limit: 30,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimit,
+  skip: () => !env.RATE_LIMIT_ENABLED,
   keyGenerator: (req) => otpRateLimitKey("otp:verify", req),
-  store: sharedStore("otp-verify"),
+  store: createRateLimitStore("otp-verify"),
   message: {
     success: false,
     error: {
@@ -97,8 +193,8 @@ export const loginRateLimit = rateLimit({
   limit: 10,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimit,
-  store: sharedStore("login"),
+  skip: () => !env.RATE_LIMIT_ENABLED,
+  store: createRateLimitStore("login"),
   message: {
     success: false,
     error: {
@@ -112,8 +208,8 @@ export const tenantResolveRateLimit = rateLimit({
   limit: 60,
   standardHeaders: "draft-8",
   legacyHeaders: false,
-  skip: skipRateLimit,
-  store: sharedStore("tenant-resolve"),
+  skip: () => !env.RATE_LIMIT_ENABLED,
+  store: createRateLimitStore("tenant-resolve"),
   message: {
     success: false,
     error: {

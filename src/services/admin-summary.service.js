@@ -38,8 +38,13 @@ export async function schemePortfolioSummary(req, listFilters = {}) {
       count(SchemeStatus.CLOSED_PREMATURE),
     ]);
 
+  const activeAndLocked = activeOnly + locked;
+  const open = activeAndLocked + defaulted;
   return {
-    active: activeOnly + locked,
+    activeAndLocked,
+    open,
+    /** @deprecated use activeAndLocked */
+    active: activeAndLocked,
     locked,
     defaulted,
     matured,
@@ -198,7 +203,7 @@ export function installmentInDateRange(inst, dates) {
   return true;
 }
 
-function installmentRemainingPaise(inst) {
+export function installmentRemainingPaise(inst) {
   return Math.max(0, (inst.amountPaise ?? 0) - (inst.paidPaise ?? 0));
 }
 

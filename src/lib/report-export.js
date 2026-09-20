@@ -1,5 +1,6 @@
 import { buildAdminReport } from "../services/report-builders/index.js";
 import { AppError } from "./app-error.js";
+import { assertExportRowCount, maxExportRows } from "./report-limits.js";
 import { Customer, Scheme } from "../models/index.js";
 
 export const EXPORT_REPORT_TYPE_MAP = Object.freeze({
@@ -49,26 +50,65 @@ function reportCellValue(value) {
   return JSON.stringify(value);
 }
 
-export async function buildReportExportRows(record) {
-  if (["DUE", "OVERDUE"].includes(record.type)) {
-    const wanted = record.type === "OVERDUE" ? new Set(["OVERDUE"]) : new Set(["DUE", "PARTIALLY_PAID"]);
-    const schemes = await Scheme.find({ tenantId: record.tenantId, paymentPattern: "FIXED", ...(record.filters?.branchId ? { branchId: record.filters.branchId } : {}) }).select("_id customerId enrollmentNumber branchId installments").lean();
-    const customerIds = [...new Set(schemes.map((row) => row.customerId))];
-    const customers = await Customer.find({ tenantId: record.tenantId, _id: { $in: customerIds } }).select("_id name mobile customerNumber").lean();
-    const customerMap = new Map(customers.map((row) => [row._id, row]));
-    const from = record.filters?.from;
-    const to = record.filters?.to;
-    const rows = [];
-    for (const scheme of schemes) {
-      for (const installment of scheme.installments ?? []) {
-        if (!wanted.has(installment.status)) continue;
-        if (from && installment.dueDate < from) continue;
-        if (to && installment.dueDate > to) continue;
-        const customer = customerMap.get(scheme.customerId);
-        rows.push([customer?.customerNumber ?? "", customer?.name ?? "", customer?.mobile ?? "", scheme.enrollmentNumber, scheme.branchId ?? "", installment.number, installment.dueDate, installment.status, installment.amountPaise ?? 0, installment.paidPaise ?? 0, Math.max(0, (installment.amountPaise ?? 0) - (installment.paidPaise ?? 0))]);
+async function buildDueOverdueExportRows(record) {
+  const wanted = record.type === "OVERDUE" ? new Set(["OVERDUE"]) : new Set(["DUE", "PARTIALLY_PAID"]);
+  const from = record.filters?.from;
+  const to = record.filters?.to;
+  const headers = [
+    "Customer ID", "Customer", "Mobile", "Scheme", "Branch",
+    "Installment", "Due date", "Status", "Amount paise", "Paid paise", "Balance paise",
+  ];
+  const rows = [];
+  const customerCache = new Map();
+  const query = {
+    tenantId: record.tenantId,
+    paymentPattern: "FIXED",
+    ...(record.filters?.branchId ? { branchId: record.filters.branchId } : {}),
+  };
+
+  for await (const scheme of Scheme.find(query).select("_id customerId enrollmentNumber branchId installments").lean().cursor()) {
+    let customer = customerCache.get(scheme.customerId);
+    if (!customer) {
+      customer = await Customer.findOne({
+        tenantId: record.tenantId,
+        _id: scheme.customerId,
+      })
+        .select("_id name mobile customerNumber")
+        .lean();
+      if (customer) customerCache.set(scheme.customerId, customer);
+    }
+    for (const installment of scheme.installments ?? []) {
+      if (!wanted.has(installment.status)) continue;
+      if (from && installment.dueDate < from) continue;
+      if (to && installment.dueDate > to) continue;
+      rows.push([
+        customer?.customerNumber ?? "",
+        customer?.name ?? "",
+        customer?.mobile ?? "",
+        scheme.enrollmentNumber,
+        scheme.branchId ?? "",
+        installment.number,
+        installment.dueDate,
+        installment.status,
+        installment.amountPaise ?? 0,
+        installment.paidPaise ?? 0,
+        Math.max(0, (installment.amountPaise ?? 0) - (installment.paidPaise ?? 0)),
+      ]);
+      if (rows.length > maxExportRows()) {
+        throw new AppError(
+          "EXPORT_TOO_LARGE",
+          "Export exceeds the maximum allowed row count.",
+          422,
+        );
       }
     }
-    return { headers: ["Customer ID", "Customer", "Mobile", "Scheme", "Branch", "Installment", "Due date", "Status", "Amount paise", "Paid paise", "Balance paise"], keys: [], rows };
+  }
+  return { headers, keys: [], rows };
+}
+
+export async function buildReportExportRows(record) {
+  if (["DUE", "OVERDUE"].includes(record.type)) {
+    return buildDueOverdueExportRows(record);
   }
   const reportKey = exportReportKey(record.type);
   if (!reportKey) {
@@ -90,6 +130,7 @@ export async function buildReportExportRows(record) {
   }
   const columns = report.columns ?? [];
   const rows = report.rows ?? [];
+  assertExportRowCount(rows.length);
   return {
     headers: columns.map((column) => column.label ?? column.key),
     keys: columns.map((column) => column.key),

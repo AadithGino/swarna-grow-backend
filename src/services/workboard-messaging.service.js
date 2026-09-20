@@ -5,7 +5,7 @@ import {
   installmentRemainingPaise,
   pickWorkboardInstallment,
 } from "./admin-summary.service.js";
-import { queueMessage } from "./messaging.service.js";
+import { queueCustomerNotification } from "./customer-notification.service.js";
 import * as payments from "./payment.service.js";
 
 function istTodayYmd() {
@@ -68,7 +68,8 @@ async function queueWorkboardReminder(req, scheme, boardKind) {
     body: { schemeId: scheme._id, amountPaise: remaining },
   });
 
-  await queueMessage(req, {
+  await queueCustomerNotification({
+    tenantId: scheme.tenantId,
     branchId: scheme.branchId,
     customerId: scheme.customerId,
     schemeId: scheme._id,

@@ -35,15 +35,16 @@ export const PaymentSource = makeEnum("PORTAL", "STAFF_APP", "CUSTOMER_APP", "WE
 export const LinkStatus = makeEnum("CREATED", "SENT", "OPENED", "PAID", "EXPIRED", "CANCELLED");
 export const LedgerEntryType = makeEnum("INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "UNALLOCATED_PAYMENT", "BENEFIT_CREDIT", "REVERSAL", "CLOSURE_PENALTY", "REDEMPTION_DEBIT", "ADJUSTMENT");
 export const LateSuccessDetection = makeEnum("WEBHOOK", "RECONCILIATION_JOB");
+export const GatewayRefundStatus = makeEnum("PENDING", "ACCEPTED", "COMPLETED", "FAILED");
 export const RedemptionMode = makeEnum("CASH", "GOLD_HANDOVER", "PURCHASE_ADJUSTMENT", "TRANSFER_TO_SCHEME");
 export const RedemptionStatus = makeEnum("REQUESTED", "PENDING_APPROVAL", "APPROVED", "COMPLETED", "REJECTED");
 export const ClosureType = makeEnum("MATURITY_REDEMPTION", "PREMATURE_CLOSURE");
-export const MessageType = makeEnum("OTP", "SCHEME_JOINED", "PAYMENT_DUE", "PAYMENT_OVERDUE", "PAYMENT_SUCCESS", "FLEXI_LOCK_APPLIED", "SCHEME_MATURED", "SCHEME_CLOSED", "CUSTOMER_STATEMENT");
+export const MessageType = makeEnum("OTP", "SCHEME_JOINED", "PAYMENT_DUE", "PAYMENT_OVERDUE", "PAYMENT_SUCCESS", "FLEXI_LOCK_APPLIED", "SCHEME_MATURED", "SCHEME_CLOSED", "CUSTOMER_STATEMENT", "MANUAL_PUSH");
 export const MessageTemplateKey = makeEnum("PAYMENT_SUCCESS_MEDIA", "PAYMENT_SUCCESS_TEXT_FALLBACK");
 export const MessageStatus = makeEnum("QUEUED", "SENT", "DELIVERED", "READ", "FAILED");
 export const CashHandoverStatus = makeEnum("PENDING", "ACCEPTED", "DISCREPANCY", "REJECTED", "CANCELLED");
 export const HandoverInitiator = makeEnum("STAFF", "ADMIN");
-export const ExportStatus = makeEnum("QUEUED", "PROCESSING", "READY", "FAILED");
+export const ExportStatus = makeEnum("QUEUED", "PROCESSING", "READY", "FAILED", "EXPIRED");
 export const NomineeRelationship = makeEnum("SPOUSE", "PARENT", "CHILD", "SIBLING", "RELATIVE", "FRIEND", "OTHER");
 export const GrievanceCategory = makeEnum("PAYMENT", "RECEIPT", "SCHEME_RULE", "GOLD_CREDIT", "MATURITY", "REDEMPTION", "KYC", "WHATSAPP", "STAFF_SERVICE", "OTHER");
 export const GrievancePriority = makeEnum("LOW", "NORMAL", "HIGH", "URGENT");
@@ -55,14 +56,26 @@ export const PhaseMode = makeEnum("SINGLE", "FLEXIBLE_THEN_CAPPED");
 export const CapMode = makeEnum("NONE", "FLEXIBLE_PHASE_AVERAGE");
 export const CarryForwardMode = makeEnum("NONE");
 export const ExportType = makeEnum("DUE", "OVERDUE", "DEFAULTER", "MATURITY", "COLLECTION", "OUTSTANDING", "GOLD_ACCRUAL", "STAFF_PERFORMANCE", "CUSTOMER", "SCHEME", "AUDIT");
-export const UploadPurpose = makeEnum("TENANT_LOGO", "KYC_DOCUMENT", "GRIEVANCE_ATTACHMENT");
+export const UploadPurpose = makeEnum("TENANT_LOGO", "KYC_DOCUMENT", "GRIEVANCE_ATTACHMENT", "PUSH_BROADCAST_IMAGE");
 export const WebhookProvider = makeEnum("PHONEPE", "WHATSAPP");
 export const JobStatus = makeEnum("QUEUED", "PROCESSING", "COMPLETED", "FAILED", "SIGNATURE_FAILED", "DEAD_LETTER");
+/** Queue dispatch lifecycle (messages, outbox, webhooks) — separate from worker JobStatus. */
+export const DispatchState = makeEnum("PENDING", "DISPATCHING", "DISPATCHED");
 export const BillingCycle = makeEnum("MONTHLY", "ANNUAL");
 export const SubscriptionExtensionType = makeEnum("SUBSCRIPTION", "GRACE");
 export const InvoiceStatus = makeEnum("DRAFT", "ISSUED", "PAID", "VOID");
 export const SignupStatus = makeEnum("OTP_PENDING", "OTP_VERIFIED", "PLAN_SELECTED", "PAYMENT_PENDING", "PROVISIONED", "EXPIRED");
 export const MessageChannel = makeEnum("WHATSAPP", "SMS", "PUSH", "EMAIL");
+export const DevicePrincipalType = makeEnum("CUSTOMER", "USER");
+export const DeviceRegistrationStatus = makeEnum("ACTIVE", "INVALIDATED", "REVOKED");
+export const PushDeviceDeliveryStatus = makeEnum(
+  "QUEUED",
+  "PROCESSING",
+  "SUCCEEDED",
+  "PERMANENT_FAILED",
+  "RETRYABLE_FAILED",
+  "DEAD_LETTER",
+);
 export const UploadStatus = makeEnum("PENDING", "UPLOADED", "ATTACHED", "EXPIRED");
 export const IdempotencyState = makeEnum("PROCESSING", "COMPLETED");
 export const GrievanceRelatedEntityType = makeEnum("PAYMENT", "SCHEME", "REDEMPTION");

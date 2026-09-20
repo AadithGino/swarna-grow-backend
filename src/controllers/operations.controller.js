@@ -252,18 +252,68 @@ export const templatePreview = async (req, res) => {
         : null,
   });
 };
-export const reminderConfig = async (req, res) =>
-  sendSuccess(res, {
-    paymentDueOffsets: req.tenant.settings?.paymentDueOffsets ?? [-3, 0],
-    overdueOffsets: req.tenant.settings?.overdueOffsets ?? [7, 14],
-    enabled: true,
+export const reminderConfig = async (req, res) => {
+  const { reminderConfigForAdmin } = await import("../lib/reminder-config.js");
+  const { getMessagingSummaryForAdmin } = await import("../services/messaging.service.js");
+  let quotaMeta;
+  try {
+    const summary = await getMessagingSummaryForAdmin({
+      ...req,
+      query: { from: new Date().toISOString().slice(0, 10) },
+    });
+    quotaMeta = {
+      quota: {
+        used: summary.quotaUsed ?? 0,
+        limit: summary.quotaLimit ?? 0,
+        percent: summary.quotaUsedPercent ?? 0,
+        resetsOn: summary.resetsOn,
+        status:
+          (summary.quotaUsedPercent ?? 0) >= 100
+            ? "EXCEEDED"
+            : (summary.quotaUsedPercent ?? 0) >= 85
+              ? "NEAR_LIMIT"
+              : "OK",
+      },
+    };
+  } catch {
+    quotaMeta = undefined;
+  }
+  return sendSuccess(res, reminderConfigForAdmin(req.tenant, quotaMeta ?? {}));
+};
+export const pushBroadcastAudiencePreview = async (req, res) => {
+  const pushBroadcast = await import("../services/push-broadcast.service.js");
+  return sendSuccess(res, await pushBroadcast.countPushAudience(req, req.body ?? {}));
+};
+export const createPushBroadcast = async (req, res) => {
+  const pushBroadcast = await import("../services/push-broadcast.service.js");
+  return sendSuccess(res, await pushBroadcast.createPushBroadcast(req), {}, 202);
+};
+export const listPushBroadcasts = async (req, res) =>
+  sendList(res, await (await import("../services/push-broadcast.service.js")).listPushBroadcasts(req));
+export const pushBroadcastDetail = async (req, res) => {
+  const pushBroadcast = await import("../services/push-broadcast.service.js");
+  return sendSuccess(res, await pushBroadcast.getPushBroadcast(req));
+};
+export const updateReminderConfig = async (req, res) => {
+  const { reminderConfigForAdmin } = await import("../lib/reminder-config.js");
+  const { getReminderConfig } = await import("../lib/reminder-config.js");
+  const patch = { ...req.body };
+  const expectedVersion = patch.expectedVersion ?? patch.audit?.version;
+  delete patch.expectedVersion;
+  delete patch.audit;
+  delete patch.quota;
+  const reminderConfig = {
+    ...getReminderConfig(req.tenant),
+    ...patch,
+    ...(patch.offsets ? { offsets: patch.offsets } : {}),
+    ...(patch.push ? { push: { ...getReminderConfig(req.tenant).push, ...patch.push } } : {}),
+    ...(patch.transactional
+      ? { transactional: { ...getReminderConfig(req.tenant).transactional, ...patch.transactional } }
+      : {}),
+  };
+  const updated = await tenant.updateTenantSettings(req, "settings", {
+    reminderConfig,
+    expectedVersion,
   });
-export const updateReminderConfig = async (req, res) =>
-  sendSuccess(
-    res,
-    await tenant.updateTenantSettings(req, "settings", {
-      paymentDueOffsets: req.body.paymentDueOffsets,
-      overdueOffsets: req.body.overdueOffsets,
-      expectedVersion: req.body.expectedVersion,
-    }),
-  );
+  return sendSuccess(res, reminderConfigForAdmin(updated));
+};

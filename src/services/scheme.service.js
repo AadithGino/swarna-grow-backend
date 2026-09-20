@@ -19,6 +19,7 @@ import {
 import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
+import { OPEN_ENROLLMENT_STATUSES } from "../lib/scheme-enrollment-status.js";
 import { withTransaction } from "../lib/transaction.js";
 import {
   assertAnalyticsPeriod,
@@ -647,7 +648,7 @@ export async function schemeAnalytics(req) {
     },
     {
       key: "ACTIVE_ENROLLMENTS",
-      label: "Active enrollments",
+      label: "Active & capped enrollments",
       value: activeEnrolments,
       valueType: "count",
       note: "Current snapshot",
@@ -796,6 +797,8 @@ export async function schemeAnalytics(req) {
     totals: {
       allEnrollments: total,
       activeEnrollments: activeEnrolments,
+      activeAndLockedEnrollments: activeEnrolments,
+      openEnrollments: activeEnrolments + defaulted,
       lockedEnrollments: locked,
       defaultedEnrollments: defaulted,
       maturedEnrollments: matured,
@@ -819,6 +822,7 @@ export async function listSchemes(req) {
   const filters = {};
   if (req.query.status) filters.status = req.query.status;
   if (req.query.group === "PAST") filters.status = { $in: [SchemeStatus.REDEEMED, SchemeStatus.CLOSED_PREMATURE] };
+  else if (req.query.group === "OPEN") filters.status = { $in: OPEN_ENROLLMENT_STATUSES };
   else if (req.auth.type === "CUSTOMER" && !req.query.status) {
     filters.status = {
       $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED, SchemeStatus.MATURED],

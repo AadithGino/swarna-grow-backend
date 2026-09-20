@@ -16,6 +16,21 @@ const upiFlowsString = z.string().default("INTENT").transform((value) => {
   return parsed.length ? parsed : ["INTENT"];
 });
 
+const boundedInt = (min, max, fallback) =>
+  z.coerce.number().int().min(min).max(max).default(fallback);
+
+export function fcmEnvConfigured(source) {
+  const projectId = String(source.FCM_PROJECT_ID ?? "").trim();
+  const raw = String(source.FCM_SERVICE_ACCOUNT_JSON ?? "").trim();
+  if (!projectId || !raw) return false;
+  try {
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed?.client_email && parsed?.private_key);
+  } catch {
+    return false;
+  }
+}
+
 export const SECRET_DEFAULTS = Object.freeze({
   JWT_ACCESS_SECRET: "REPLACE_ME_JWT_ACCESS_SECRET_DO_NOT_SHIP",
   JWT_REFRESH_SECRET: "REPLACE_ME_JWT_REFRESH_SECRET_DO_NOT_SHIP",
@@ -50,7 +65,83 @@ export function parseEnv(source = process.env) {
     WHATSAPP_BASE_URL: z.string().default(""), WHATSAPP_ACCESS_TOKEN: z.string().default(""), WHATSAPP_APP_SECRET: z.string().default(""),
     OTP_PROVIDER: z.enum(["mock", "msg91"]).default("mock"), OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
-    S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""), FCM_PROJECT_ID: z.string().default(""),
+    S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""),     FCM_PROJECT_ID: z.string().default(""),
+    FCM_SERVICE_ACCOUNT_JSON: z.string().default(""),
+    FCM_SHARED_PROJECT_ENABLED: booleanString,
+    FCM_SEND_CONCURRENCY: z.coerce.number().int().positive().default(32),
+    FCM_MULTICAST_BATCH_SIZE: boundedInt(1, 500, 500),
+    FCM_RATE_LIMIT_GLOBAL_PER_SEC: boundedInt(1, 10_000, 200),
+    FCM_RATE_LIMIT_GLOBAL_BURST: boundedInt(1, 50_000, 400),
+    FCM_RATE_LIMIT_TENANT_PER_SEC: boundedInt(1, 10_000, 80),
+    FCM_RATE_LIMIT_TENANT_BURST: boundedInt(1, 50_000, 160),
+    FCM_RATE_LIMIT_KEY_TTL_SEC: boundedInt(60, 86_400, 3600),
+    FCM_RATE_LIMIT_REDIS_UNAVAILABLE_MS: boundedInt(500, 300_000, 5000),
+    FCM_DELIVERY_CLAIM_MS: boundedInt(10_000, 600_000, 120_000),
+    FCM_REQUEST_TIMEOUT_MS: boundedInt(1_000, 120_000, 15_000),
+    FCM_MAX_ATTEMPTS: boundedInt(1, 10, 3),
+    FCM_RETRY_BASE_MS: boundedInt(100, 60_000, 500),
+    FCM_MAX_DEVICES_PER_PRINCIPAL: boundedInt(1, 50, 10),
+    PHONEPE_REQUEST_TIMEOUT_MS: boundedInt(1_000, 120_000, 20_000),
+    PHONEPE_RECONCILE_BATCH_SIZE: boundedInt(1, 500, 50),
+    PHONEPE_RECONCILE_STALE_SECONDS: boundedInt(60, 86_400, 900),
+    PHONEPE_RECONCILE_MAX_ATTEMPTS: boundedInt(1, 20, 5),
+    PHONEPE_RECONCILE_LEASE_MS: boundedInt(10_000, 600_000, 120_000),
+    WEBHOOK_MAX_BODY_BYTES: boundedInt(1_024, 10_485_760, 2_097_152),
+    WEBHOOK_RATE_LIMIT_WINDOW_MS: boundedInt(1_000, 900_000, 60_000),
+    WEBHOOK_RATE_LIMIT_PER_TENANT: boundedInt(10, 50_000, 600),
+    WEBHOOK_RATE_LIMIT_PER_IP: boundedInt(10, 100_000, 1200),
+    WEBHOOK_PROCESSING_LEASE_MS: boundedInt(30_000, 900_000, 300_000),
+    WEBHOOK_SIGNATURE_FAILURE_RETENTION_SEC: boundedInt(3_600, 2_592_000, 86_400),
+    WEBHOOK_RAW_RETENTION_SEC: boundedInt(3_600, 2_592_000, 604_800),
+    WEBHOOK_COMPLETED_RETENTION_SEC: boundedInt(86_400, 31_536_000, 2_592_000),
+    MESSAGE_DISPATCH_BATCH_SIZE: z.coerce.number().int().positive().default(250),
+    MESSAGE_DISPATCH_TENANT_BATCH_SIZE: boundedInt(1, 500, 50),
+    MESSAGE_DISPATCH_TENANT_PAGE_SIZE: boundedInt(1, 256, 32),
+    MESSAGE_DISPATCH_TENANT_QUERY_CONCURRENCY: boundedInt(1, 16, 4),
+    SCHEDULER_REQUIRE_WORKER_ROLES: booleanString,
+    MESSAGE_DISPATCH_STALE_MS: boundedInt(60_000, 3_600_000, 900_000),
+    MESSAGE_DISPATCH_LEASE_MS: boundedInt(5_000, 600_000, 120_000),
+    MESSAGE_DISPATCH_DISPATCHED_STALE_MS: boundedInt(60_000, 3_600_000, 900_000),
+    DISPATCH_RECLAIM_BATCH_SIZE: boundedInt(10, 2000, 200),
+    LEGACY_MESSAGE_SEND_OUTBOX_BATCH_SIZE: boundedInt(10, 2000, 200),
+    SCHEME_MAINTENANCE_BATCH_SIZE: boundedInt(10, 2000, 200),
+    SCHEME_MAINTENANCE_MAX_BATCHES_PER_RUN: boundedInt(1, 500, 50),
+    REMINDER_SCHEDULER_MAX_TENANT_BATCHES_PER_RUN: boundedInt(1, 500, 20),
+    MESSAGE_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(40),
+    PUSH_BROADCAST_CHUNK_SIZE: z.coerce.number().int().positive().default(400),
+    PUSH_BROADCAST_LEASE_MS: boundedInt(10_000, 600_000, 120_000),
+    PUSH_BROADCAST_MAX_CHUNK_ATTEMPTS: boundedInt(1, 50, 12),
+    FCM_DEFAULT_TTL_SEC: boundedInt(60, 604_800, 86_400),
+    REMINDER_SCHEME_BATCH_SIZE: boundedInt(10, 500, 100),
+    REMINDER_TENANT_BATCH_SIZE: boundedInt(1, 200, 50),
+    REMINDER_SCHEDULER_LEASE_MS: boundedInt(30_000, 900_000, 300_000),
+    REMINDER_MAX_SCHEME_BATCHES_PER_TENANT_PER_RUN: boundedInt(1, 500, 5),
+    REMINDER_MAX_SCHEMES_PER_TENANT_PER_RUN: boundedInt(10, 50_000, 500),
+    PAYMENT_EXPIRY_BATCH_SIZE: boundedInt(10, 1000, 100),
+    PAYMENT_EXPIRY_MAX_BATCHES_PER_RUN: boundedInt(1, 500, 20),
+    MAINTENANCE_CURSOR_TTL_SEC: boundedInt(3_600, 2_592_000, 604_800),
+    MAINTENANCE_SCAN_LEASE_MS: boundedInt(5_000, 900_000, 120_000),
+    SCHEDULER_JOB_ATTEMPTS: boundedInt(1, 20, 3),
+    SCHEDULER_JOB_BACKOFF_MS: boundedInt(1_000, 600_000, 30_000),
+    PAYMENTS_JOB_ATTEMPTS: boundedInt(1, 20, 5),
+    PAYMENTS_JOB_BACKOFF_MS: boundedInt(1_000, 600_000, 15_000),
+    MAINTENANCE_JOB_ATTEMPTS: boundedInt(1, 20, 5),
+    MAINTENANCE_JOB_BACKOFF_MS: boundedInt(1_000, 600_000, 15_000),
+    WEBHOOK_RECLAIM_BATCH_SIZE: boundedInt(10, 2000, 100),
+    WEBHOOK_RECLAIM_MAX_BATCHES_PER_RUN: boundedInt(1, 500, 10),
+    /** Optional platform safety cap; 0 = no cap (use tenant plan limit only). */
+    PUSH_BROADCAST_MAX_RECIPIENTS: z.coerce.number().int().min(0).default(0),
+    REPORT_MAX_SYNC_ROWS: boundedInt(100, 100_000, 5_000),
+    REPORT_EXPORT_MAX_ROWS: boundedInt(1_000, 2_000_000, 200_000),
+    REPORT_EXPORT_MAX_BYTES: boundedInt(64_000, 524_288_000, 52_428_800),
+    REPORT_EXPORT_MAX_RUNTIME_MS: boundedInt(30_000, 3_600_000, 600_000),
+    REPORT_EXPORT_MAX_CONCURRENT_PER_TENANT: boundedInt(1, 20, 3),
+    REPORT_EXPORT_DOWNLOAD_TTL_MS: boundedInt(60_000, 86_400_000, 900_000),
+    REPORT_EXPORT_ARTIFACT_RETENTION_MS: boundedInt(86_400_000, 2_592_000_000, 604_800_000),
+    READINESS_MESSAGE_QUEUE_LAG_MS: boundedInt(60_000, 3_600_000, 300_000),
+    READINESS_WEBHOOK_QUEUE_WAITING_MAX: boundedInt(10, 50_000, 500),
+    READINESS_WEBHOOK_EVENT_BACKLOG_MAX: boundedInt(10, 100_000, 1_000),
+    READINESS_WEBHOOK_DEAD_LETTER_MAX: boundedInt(0, 10_000, 50),
     MALWARE_SCAN_URL: z.string().url().optional(), MALWARE_SCAN_API_KEY: z.string().default(""),
     EXPORT_BASE_URL: z.string().url().default("http://localhost:4000"),
     PUBLIC_BASE_URL: z.string().url().default("http://localhost:4000"),
@@ -67,8 +158,16 @@ export function parseEnv(source = process.env) {
     }
     const redisRequired = source.REDIS_REQUIRED ?? "false";
     if (redisRequired !== "true") offending.push("REDIS_REQUIRED");
+    const rateLimitEnabled = source.RATE_LIMIT_ENABLED ?? "true";
+    if (rateLimitEnabled !== "true") offending.push("RATE_LIMIT_ENABLED");
     const providerMode = source.PROVIDER_MODE ?? "mock";
     if (providerMode !== "live") offending.push("PROVIDER_MODE");
+    const phonePeEnv = source.PHONEPE_ENV ?? "SANDBOX";
+    if (phonePeEnv !== "PRODUCTION") offending.push("PHONEPE_ENV");
+    const sharedFcm = source.FCM_SHARED_PROJECT_ENABLED ?? "false";
+    if (sharedFcm === "true" && !fcmEnvConfigured(source)) {
+      offending.push("FCM_PROJECT_ID", "FCM_SERVICE_ACCOUNT_JSON");
+    }
     for (const key of ["S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]) {
       const raw = source[key];
       if (raw == null || String(raw).trim() === "") offending.push(key);

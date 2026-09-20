@@ -9,6 +9,7 @@ import { malwareScanProvider } from "../integrations/malware-scan.provider.js";
 
 const RULES = Object.freeze({
   TENANT_LOGO: { max: 2_000_000, types: ["image/png", "image/jpeg", "image/webp"] },
+  PUSH_BROADCAST_IMAGE: { max: 2_000_000, types: ["image/png", "image/jpeg", "image/webp"] },
   KYC_DOCUMENT: { max: 5_000_000, types: ["image/jpeg", "image/png", "application/pdf"] },
   GRIEVANCE_ATTACHMENT: { max: 5_000_000, types: ["image/jpeg", "image/png", "application/pdf"] },
 });
@@ -140,9 +141,30 @@ export async function getUploadDownload(req) {
   };
 }
 
+/** HTTPS URL FCM can fetch at send time (short-lived presigned URL). */
+export async function resolveFcmImageUrl(uploadId) {
+  if (!uploadId) return null;
+  const upload = await Upload.findById(uploadId).lean();
+  if (!upload) return null;
+  if (
+    upload.purpose !== UploadPurpose.PUSH_BROADCAST_IMAGE
+    && upload.purpose !== UploadPurpose.TENANT_LOGO
+  ) {
+    return null;
+  }
+  if (upload.status === UploadStatus.PENDING || upload.status === UploadStatus.EXPIRED) {
+    return null;
+  }
+  return storageProvider.presignDownload(upload.objectKey);
+}
+
 export async function getPublicUploadDownload(uploadId) {
   const upload = await Upload.findById(uploadId).lean();
-  if (!upload || upload.purpose !== UploadPurpose.TENANT_LOGO) {
+  if (
+    !upload
+    || (upload.purpose !== UploadPurpose.TENANT_LOGO
+      && upload.purpose !== UploadPurpose.PUSH_BROADCAST_IMAGE)
+  ) {
     throw errors.notFound("Upload");
   }
   if (upload.status === UploadStatus.PENDING || upload.status === UploadStatus.EXPIRED) {

@@ -1,5 +1,6 @@
 import { Customer, LedgerEntry, Scheme } from "../../models/index.js";
 import { moneyRef, weightRef } from "../../lib/money.js";
+import { forEachSchemeBatch } from "../../lib/scheme-batch-loader.js";
 import { paginate } from "../../lib/pagination.js";
 import {
   baseEnvelope,
@@ -27,21 +28,62 @@ const STATUS_LABELS = {
   CLOSED_PREMATURE: "Closed early",
 };
 
-function summarizePortfolio(schemes, weightMap, asOfYmd) {
+async function summarizePortfolioBatched(scope, filters, asOfYmd, tenantId) {
   let portfolioOutstanding = 0;
-  let portfolioGrams = 0;
   let activeCount = 0;
+  await forEachSchemeBatch({
+    model: Scheme,
+    filter: { ...scope, ...filters },
+    projection: "_id status installments",
+    handler: (rows) => {
+      for (const scheme of rows) {
+        const stats = schemeInstallmentStats(scheme, asOfYmd);
+        const paid = stats.paidTotal;
+        portfolioOutstanding +=
+          stats.overdueAmount + Math.max(0, stats.expectedToDate - paid);
+        if (["ACTIVE", "LOCKED"].includes(scheme.status)) activeCount += 1;
+      }
+    },
+  });
 
-  for (const scheme of schemes) {
-    const stats = schemeInstallmentStats(scheme, asOfYmd);
-    const paid = stats.paidTotal;
-    portfolioOutstanding +=
-      stats.overdueAmount + Math.max(0, stats.expectedToDate - paid);
-    portfolioGrams += weightMap.get(scheme._id) ?? 0;
-    if (["ACTIVE", "LOCKED"].includes(scheme.status)) activeCount += 1;
+  const ledgerPipeline = [
+    { $match: { tenantId, weightMg: { $gt: 0 } } },
+  ];
+  if (scope.branchId) {
+    ledgerPipeline.push(
+      {
+        $lookup: {
+          from: "schemes",
+          localField: "schemeId",
+          foreignField: "_id",
+          as: "scheme",
+        },
+      },
+      { $unwind: "$scheme" },
+      { $match: { "scheme.branchId": scope.branchId, ...(filters.planId ? { "scheme.planId": filters.planId } : {}) } },
+    );
+  } else if (filters.planId) {
+    ledgerPipeline.push(
+      {
+        $lookup: {
+          from: "schemes",
+          localField: "schemeId",
+          foreignField: "_id",
+          as: "scheme",
+        },
+      },
+      { $unwind: "$scheme" },
+      { $match: { "scheme.planId": filters.planId } },
+    );
   }
+  ledgerPipeline.push({ $group: { _id: null, weightMg: { $sum: "$weightMg" } } });
+  const [gramsRow] = await LedgerEntry.aggregate(ledgerPipeline);
 
-  return { portfolioOutstanding, portfolioGrams, activeCount };
+  return {
+    portfolioOutstanding,
+    portfolioGrams: gramsRow?.weightMg ?? 0,
+    activeCount,
+  };
 }
 
 export async function buildSchemeRegisterReport(req) {
@@ -56,7 +98,7 @@ export async function buildSchemeRegisterReport(req) {
     ...(req.query.planId ? { planId: req.query.planId } : {}),
   };
 
-  const [page, portfolioSchemes, statusCounts] = await Promise.all([
+  const [page, statusCounts, portfolioTotals, totalSchemes] = await Promise.all([
     paginate(Scheme, {
       scope,
       filters,
@@ -66,50 +108,36 @@ export async function buildSchemeRegisterReport(req) {
       projection:
         "_id enrollmentNumber customerId planId planSnapshot status installments",
     }),
-    Scheme.find({ ...scope, ...filters })
-      .select("_id status installments")
-      .lean(),
     Scheme.aggregate([
       { $match: { ...scope, ...filters } },
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]),
+    summarizePortfolioBatched(scope, filters, asOfYmd, req.auth.tenantId),
+    Scheme.countDocuments({ ...scope, ...filters }),
   ]);
 
-  const portfolioSchemeIds = portfolioSchemes.map((s) => s._id);
   const pageSchemeIds = page.data.map((s) => s._id);
   const customerIds = [...new Set(page.data.map((s) => s.customerId))];
 
-  const [customers, pageWeights, portfolioWeights] = await Promise.all([
+  const [customers, pageWeights] = await Promise.all([
     Customer.find({ _id: { $in: customerIds } }).select("_id name").lean(),
-    LedgerEntry.aggregate([
-      {
-        $match: {
-          tenantId: req.auth.tenantId,
-          schemeId: { $in: pageSchemeIds },
-          weightMg: { $gt: 0 },
+    pageSchemeIds.length
+      ? LedgerEntry.aggregate([
+        {
+          $match: {
+            tenantId: req.auth.tenantId,
+            schemeId: { $in: pageSchemeIds },
+            weightMg: { $gt: 0 },
+          },
         },
-      },
-      { $group: { _id: "$schemeId", weightMg: { $sum: "$weightMg" } } },
-    ]),
-    LedgerEntry.aggregate([
-      {
-        $match: {
-          tenantId: req.auth.tenantId,
-          schemeId: { $in: portfolioSchemeIds },
-          weightMg: { $gt: 0 },
-        },
-      },
-      { $group: { _id: "$schemeId", weightMg: { $sum: "$weightMg" } } },
-    ]),
+        { $group: { _id: "$schemeId", weightMg: { $sum: "$weightMg" } } },
+      ])
+      : [],
   ]);
 
   const customerMap = new Map(customers.map((c) => [c._id, c]));
   const pageWeightMap = new Map(pageWeights.map((w) => [w._id, w.weightMg]));
-  const portfolioWeightMap = new Map(
-    portfolioWeights.map((w) => [w._id, w.weightMg]),
-  );
-  const { portfolioOutstanding, portfolioGrams, activeCount } =
-    summarizePortfolio(portfolioSchemes, portfolioWeightMap, asOfYmd);
+  const { portfolioOutstanding, portfolioGrams, activeCount } = portfolioTotals;
 
   const rows = page.data.map((scheme) => {
     const stats = schemeInstallmentStats(scheme, asOfYmd);
@@ -180,7 +208,7 @@ export async function buildSchemeRegisterReport(req) {
     rows,
     meta: {
       ...page.meta,
-      total: portfolioSchemes.length,
+      total: totalSchemes,
     },
   };
 }

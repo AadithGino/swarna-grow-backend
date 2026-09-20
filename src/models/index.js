@@ -6,3 +6,6 @@ export * from "./operations.models.js";
 export * from "./governance.models.js";
 export * from "./platform.models.js";
 export * from "./counter.model.js";
+export * from "./device-registration.model.js";
+export * from "./push-device-delivery.model.js";
+export * from "./reminder-daily-quota.model.js";

@@ -16,6 +16,10 @@ import { createId } from "../lib/ids.js";
 import { getQueue } from "../queues/index.js";
 import { AppError } from "../lib/app-error.js";
 import { listAuditEvents } from "./audit.service.js";
+import {
+  ACTIVE_AND_LOCKED_STATUSES,
+  OPEN_ENROLLMENT_STATUSES,
+} from "../lib/scheme-enrollment-status.js";
 import { collectionSummary } from "./collection-summary.js";
 import { buildAdminReport } from "./report-builders/index.js";
 import {
@@ -91,9 +95,22 @@ export async function dashboard(req) {
   const period = String(req.query.period ?? "THIS_MONTH");
   const periodLabels = { TODAY: "Today", THIS_WEEK: "This week", THIS_MONTH: "This month", LAST_MONTH: "Last month" };
   const periodRange = resolveQueryDateRange(req.query);
-  const [todayPayments, activeCustomers, activeSchemes, overdue, maturities, handovers, grievances, openRedemptions, redemptions] = await Promise.all([
+  const [
+    todayPayments,
+    activeCustomers,
+    openSchemes,
+    activeAndLockedSchemes,
+    overdue,
+    maturities,
+    handovers,
+    grievances,
+    openRedemptions,
+    redemptions,
+  ] = await Promise.all([
     Payment.aggregate([{ $match: { ...scope, status: "SUCCESS", paidAt: { $gte: start } } }, { $group: { _id: "$mode", amountPaise: { $sum: "$amountPaise" }, count: { $sum: 1 } } }]),
-    Customer.countDocuments({ ...scope, status: "ACTIVE" }), Scheme.countDocuments({ ...scope, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] } }),
+    Customer.countDocuments({ ...scope, status: "ACTIVE" }),
+    Scheme.countDocuments({ ...scope, status: { $in: OPEN_ENROLLMENT_STATUSES } }),
+    Scheme.countDocuments({ ...scope, status: { $in: ACTIVE_AND_LOCKED_STATUSES } }),
     Scheme.countDocuments({ ...scope, "installments.status": "OVERDUE" }), Scheme.countDocuments({ ...scope, status: "MATURED" }), CashHandover.countDocuments({ ...scope, status: "PENDING" }),
     (await import("../models/index.js")).Grievance.countDocuments({ ...scope, status: { $in: ["OPEN", "IN_PROGRESS"] } }),
     Redemption.countDocuments({ ...scope, status: { $in: OPEN_REDEMPTION_STATUSES } }),
@@ -104,7 +121,14 @@ export async function dashboard(req) {
   return {
     today: { amountPaise: todayAmount, count: todayCount, byMode: fillModes(todayPayments) },
     customers: { active: activeCustomers },
-    schemes: { active: activeSchemes, overdue, matured: maturities },
+    schemes: {
+      open: openSchemes,
+      activeAndLocked: activeAndLockedSchemes,
+      /** @deprecated use schemes.open */
+      active: openSchemes,
+      overdue,
+      matured: maturities,
+    },
     attention: { pendingCashHandovers: handovers, openGrievances: grievances, openRedemptions },
     redemptions,
     defaultCharts: ["collection-trend", "collection-by-mode", "scheme-status-distribution"],
@@ -302,7 +326,40 @@ export function toExportJobDto(job) {
   return dto;
 }
 
-export async function createExport(req) { const format = req.body.format ?? "CSV"; if (!["CSV", "PDF"].includes(format)) throw new AppError("EXPORT_FORMAT_NOT_SUPPORTED", `Export format ${format} is not supported.`, 422, { supported: ["CSV", "PDF"] }); const { from, to } = req.body.filters ?? {}; if (from && to) { const rangeMs = new Date(`${to}T23:59:59Z`) - new Date(`${from}T00:00:00Z`); if (rangeMs < 0 || rangeMs > 5 * 366 * 86_400_000) throw new AppError("EXPORT_RANGE_TOO_LARGE", "Export date range cannot exceed five years.", 422); } const job = await ExportJob.create({ _id: createId("export"), tenantId: req.auth.tenantId, requestedBy: req.auth.id, type: req.body.type, filters: { ...req.body.filters, format } }); const queue = getQueue("exports"); await queue?.add("generate", { exportId: job._id }, { jobId: job._id, attempts: 3, backoff: { type: "exponential", delay: 5000 } }); return toExportJobDto(job.toObject()); }
+export async function createExport(req) {
+  const format = req.body.format ?? "CSV";
+  if (!["CSV", "PDF"].includes(format)) {
+    throw new AppError(
+      "EXPORT_FORMAT_NOT_SUPPORTED",
+      `Export format ${format} is not supported.`,
+      422,
+      { supported: ["CSV", "PDF"] },
+    );
+  }
+  const { from, to } = req.body.filters ?? {};
+  if (from && to) {
+    const rangeMs = new Date(`${to}T23:59:59Z`) - new Date(`${from}T00:00:00Z`);
+    if (rangeMs < 0 || rangeMs > 5 * 366 * 86_400_000) {
+      throw new AppError("EXPORT_RANGE_TOO_LARGE", "Export date range cannot exceed five years.", 422);
+    }
+  }
+  const { assertExportConcurrency } = await import("../lib/report-limits.js");
+  await assertExportConcurrency(req.auth.tenantId);
+  const job = await ExportJob.create({
+    _id: createId("export"),
+    tenantId: req.auth.tenantId,
+    requestedBy: req.auth.id,
+    type: req.body.type,
+    filters: { ...req.body.filters, format },
+  });
+  const queue = getQueue("exports");
+  await queue?.add(
+    "generate",
+    { exportId: job._id },
+    { jobId: job._id, attempts: 3, backoff: { type: "exponential", delay: 5000 } },
+  );
+  return toExportJobDto(job.toObject());
+}
 export async function getExport(req) { const job = await ExportJob.findOne({ _id: req.params.exportId ?? req.params.id, tenantId: req.auth.tenantId }).lean(); return job ? toExportJobDto(job) : null; }
 
 export async function downloadExportFile(req, res) {

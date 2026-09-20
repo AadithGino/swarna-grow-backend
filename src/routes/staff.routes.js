@@ -24,7 +24,8 @@ import {
   paymentBody,
   paymentLinkBody,
 } from "../validators/common.validators.js";
-import { sha256 } from "../lib/crypto.js";
+import { DevicePrincipalType } from "../constants/enums.js";
+import { registerFcmDevice, revokeFcmDevice } from "../services/device-registration.service.js";
 import * as audit from "../services/audit.service.js";
 
 /** Staff-facing operational reminders — not customer WhatsApp receipts or branch-wide message feed. */
@@ -181,23 +182,14 @@ staffRouter.post(
   idempotent,
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
-    await User.updateOne(
-      { _id: req.auth.id, tenantId: req.auth.tenantId },
-      { $pull: { fcmTokens: { deviceId } } },
-    );
-    await User.updateOne(
-      { _id: req.auth.id, tenantId: req.auth.tenantId },
-      {
-        $push: {
-          fcmTokens: {
-            tokenHash: sha256(req.body.fcmToken),
-            deviceId,
-            platform: req.body.platform,
-            updatedAt: new Date(),
-          },
-        },
-      },
-    );
+    await registerFcmDevice({
+      tenantId: req.auth.tenantId,
+      principalType: DevicePrincipalType.USER,
+      principalId: req.auth.id,
+      deviceId,
+      platform: req.body.platform,
+      fcmToken: req.body.fcmToken,
+    });
     return sendSuccess(res, { registered: true, deviceId });
   }),
 );
@@ -206,10 +198,12 @@ staffRouter.delete(
   validate({ body: fcmDeleteBody }),
   asyncHandler(async (req, res) => {
     const deviceId = req.body.deviceId ?? req.auth.deviceId;
-    await User.updateOne(
-      { _id: req.auth.id, tenantId: req.auth.tenantId },
-      { $pull: { fcmTokens: { deviceId } } },
-    );
+    await revokeFcmDevice({
+      tenantId: req.auth.tenantId,
+      principalType: DevicePrincipalType.USER,
+      principalId: req.auth.id,
+      deviceId,
+    });
     const { Session } = await import("../models/index.js");
     await Session.updateMany(
       { userId: req.auth.id, tenantId: req.auth.tenantId, deviceId },

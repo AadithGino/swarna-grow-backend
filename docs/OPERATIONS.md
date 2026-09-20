@@ -38,6 +38,8 @@
 
 ## Monitoring signals
 
+See [OPERATIONS_OBSERVABILITY.md](./OPERATIONS_OBSERVABILITY.md) for readiness fields, queue thresholds, worker separation, DLQ replay, and `npm run ops:inspect`.
+
 - `/health/ready` status and latency
 - HTTP error rate by `error.code` and route
 - MongoDB transaction retries/failures and connection pool saturation

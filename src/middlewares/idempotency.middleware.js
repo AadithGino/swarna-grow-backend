@@ -2,6 +2,14 @@ import { asyncHandler } from "../lib/async-handler.js";
 import { AppError } from "../lib/app-error.js";
 import { abandonIdempotency, beginIdempotency, completeIdempotency, renewIdempotencyLease } from "../services/idempotency.service.js";
 
+const activeHeartbeats = new Set();
+
+/** Clears lease heartbeats left open when integration tests end abruptly. */
+export function clearIdempotencyHeartbeatsForTests() {
+  for (const heartbeat of activeHeartbeats) clearInterval(heartbeat);
+  activeHeartbeats.clear();
+}
+
 export const idempotent = asyncHandler(async (req, res, next) => {
   const key = req.headers["x-idempotency-key"];
   if (!key) throw new AppError("IDEMPOTENCY_KEY_REQUIRED", "X-Idempotency-Key is required for this request.", 400);
@@ -11,7 +19,11 @@ export const idempotent = asyncHandler(async (req, res, next) => {
   req.idempotencyRecord = context.record;
   const heartbeat = globalThis.setInterval(() => void renewIdempotencyLease(context.record), 30_000);
   heartbeat.unref?.();
-  const stopHeartbeat = () => globalThis.clearInterval(heartbeat);
+  activeHeartbeats.add(heartbeat);
+  const stopHeartbeat = () => {
+    globalThis.clearInterval(heartbeat);
+    activeHeartbeats.delete(heartbeat);
+  };
   const originalJson = res.json.bind(res);
   res.json = (body) => {
     const statusCode = res.statusCode;

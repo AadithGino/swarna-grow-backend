@@ -1,5 +1,7 @@
 import { Customer, Payment, Scheme } from "../../models/index.js";
 import { moneyRef } from "../../lib/money.js";
+import { forEachSchemeBatch } from "../../lib/scheme-batch-loader.js";
+import { portfolioStatsFromSchemes } from "../../lib/scheme-portfolio-stats.js";
 import {
   bucketAsOfYmd,
   formatTrendBucketLabel,
@@ -27,37 +29,33 @@ const COLUMNS = [
   { key: "lastPaymentAt", label: "Last paid", type: "date" },
 ];
 
-async function aggregatePortfolio(req, asOfYmd) {
-  const scope = reportDataScope(req);
-  const schemes = await Scheme.find({
-    ...scope,
-    paymentPattern: "FIXED",
-    status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] },
-    ...(req.query.planId ? { planId: req.query.planId } : {}),
-  })
-    .select("_id installments")
-    .lean();
+const FIXED_ACTIVE_FILTER = {
+  paymentPattern: "FIXED",
+  status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] },
+};
 
-  let expectedToDate = 0;
-  let collectedToDate = 0;
-  let futureExpected = 0;
-  for (const scheme of schemes) {
-    const stats = schemeInstallmentStats(scheme, asOfYmd);
-    expectedToDate += stats.expectedToDate;
-    collectedToDate += stats.collectedToDate;
-    futureExpected += stats.futureExpected;
-  }
-  const outstanding = Math.max(0, expectedToDate - collectedToDate);
-  const efficiency = expectedToDate ? Math.round((collectedToDate / expectedToDate) * 1000) / 10 : 100;
-  return { expectedToDate, collectedToDate, outstanding, futureExpected, efficiency };
+async function loadPortfolioSchemes(scope, planId) {
+  const schemes = [];
+  await forEachSchemeBatch({
+    model: Scheme,
+    filter: {
+      ...scope,
+      ...FIXED_ACTIVE_FILTER,
+      ...(planId ? { planId } : {}),
+    },
+    projection: "_id installments",
+    handler: (rows) => {
+      schemes.push(...rows);
+    },
+  });
+  return schemes;
 }
 
-async function efficiencyTrend(req, from, to) {
-  const groupBy = reportTrendGroupBy(from, to, req.query);
+function efficiencyTrendFromSchemes(schemes, from, to, groupBy) {
   const points = [];
   for (const key of iteratePeriodBuckets(from, to, groupBy)) {
     const asOfYmd = bucketAsOfYmd(key, groupBy, to);
-    const { efficiency } = await aggregatePortfolio(req, asOfYmd);
+    const { efficiency } = portfolioStatsFromSchemes(schemes, asOfYmd);
     points.push({
       x: key,
       xDisplay: formatTrendBucketLabel(key, groupBy),
@@ -74,11 +72,12 @@ export async function buildOutstandingReport(req) {
   const asOfYmd = to ?? from ?? new Date().toISOString().slice(0, 10);
 
   const scope = reportDataScope(req);
+  const planId = req.query.planId;
   const overdueSchemes = await Scheme.find({
     ...scope,
     paymentPattern: "FIXED",
     "installments.status": "OVERDUE",
-    ...(req.query.planId ? { planId: req.query.planId } : {}),
+    ...(planId ? { planId } : {}),
   })
     .select("_id enrollmentNumber branchId customerId installments")
     .lean();
@@ -87,14 +86,20 @@ export async function buildOutstandingReport(req) {
   const schemeIds = overdueSchemes.map((s) => s._id);
   const branchIds = [...new Set(overdueSchemes.map((s) => s.branchId).filter(Boolean))];
 
-  const [customers, lastPayments, branchNames, portfolio] = await Promise.all([
-    Customer.find({ _id: { $in: customerIds } }).select("_id name mobile passbookNumber").lean(),
-    Payment.aggregate([
-      { $match: { tenantId: req.auth.tenantId, schemeId: { $in: schemeIds }, status: "SUCCESS" } },
-      { $group: { _id: "$schemeId", paidAt: { $max: "$paidAt" } } },
-    ]),
+  const portfolioSchemes = await loadPortfolioSchemes(scope, planId);
+  const portfolio = portfolioStatsFromSchemes(portfolioSchemes, asOfYmd);
+
+  const [customers, lastPayments, branchNames] = await Promise.all([
+    customerIds.length
+      ? Customer.find({ _id: { $in: customerIds } }).select("_id name mobile passbookNumber").lean()
+      : [],
+    schemeIds.length
+      ? Payment.aggregate([
+        { $match: { tenantId: req.auth.tenantId, schemeId: { $in: schemeIds }, status: "SUCCESS" } },
+        { $group: { _id: "$schemeId", paidAt: { $max: "$paidAt" } } },
+      ])
+      : [],
     branchNameMap(req.auth.tenantId, branchIds),
-    aggregatePortfolio(req, asOfYmd),
   ]);
 
   const customerMap = new Map(customers.map((c) => [c._id, c]));
@@ -172,7 +177,12 @@ export async function buildOutstandingReport(req) {
           {
             key: "EFFICIENCY",
             name: "Efficiency",
-            data: await efficiencyTrend(req, from, to),
+            data: efficiencyTrendFromSchemes(
+              portfolioSchemes,
+              from,
+              to,
+              reportTrendGroupBy(from, to, req.query),
+            ),
           },
         ],
       },

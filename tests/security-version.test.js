@@ -5,23 +5,15 @@ import { authenticate } from "../src/middlewares/auth.middleware.js";
 import { User } from "../src/models/index.js";
 import { UserStatus, UserType } from "../src/constants/enums.js";
 import { createId } from "../src/lib/ids.js";
-import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import { bearerFor, resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => { await resetTestDb(); });
 
 test("access token is rejected after securityVersion bump", async () => {
-  const { tenant, branch, user } = await seedTenantUser();
-  const token = signAccessToken({
-    id: user._id,
-    type: UserType.TENANT_USER,
-    tenantId: tenant._id,
-    branchId: branch._id,
-    role: user.role,
-    permissions: ["*"],
-    securityVersion: 0,
-  });
+  const { user } = await seedTenantUser();
+  const token = bearerFor(user, ["*"]);
   const req = {
     headers: { authorization: `Bearer ${token}` },
     auth: undefined,

@@ -2,13 +2,12 @@ import {
   Counter,
   Customer,
   Message,
-  OutboxEvent,
   Payment,
-  Scheme,
   Tenant,
 } from "../models/index.js";
 import { MessageStatus } from "../constants/enums.js";
 import { createId } from "../lib/ids.js";
+import { dispatchPriorityForMessageType } from "../lib/message-dispatch-priority.js";
 import { paginate } from "../lib/pagination.js";
 import { withTransaction } from "../lib/transaction.js";
 import { writeAudit } from "./audit.service.js";
@@ -23,23 +22,19 @@ import {
 } from "./report-builders/report-envelope.js";
 
 export async function messageBranchScope(req) {
-  const scope = { tenantId: req.auth.tenantId };
-  const branchId = req.scope.branchId;
-  if (!branchId) return scope;
+  const tenantId = req.auth.tenantId;
+  const branchId = req.scope?.branchId;
+  if (!branchId) return { tenantId };
 
-  const [customerRows, schemeRows] = await Promise.all([
-    Customer.find({ tenantId: req.auth.tenantId, branchId })
-      .select("_id")
-      .lean(),
-    Scheme.find({ tenantId: req.auth.tenantId, branchId }).select("_id").lean(),
-  ]);
-  const customerIds = customerRows.map((row) => row._id);
-  const schemeIds = schemeRows.map((row) => row._id);
-  const or = [{ branchId }];
-  if (customerIds.length) or.push({ customerId: { $in: customerIds } });
-  if (schemeIds.length) or.push({ schemeId: { $in: schemeIds } });
-  scope.$or = or;
-  return scope;
+  // Indexed branchId on messages; legacy rows without branchId remain visible via null branch.
+  return {
+    tenantId,
+    $or: [
+      { branchId },
+      { branchId: null },
+      { branchId: { $exists: false } },
+    ],
+  };
 }
 
 async function messageMatch(req) {
@@ -180,8 +175,9 @@ export async function queueMessage(req, payload) {
       .select("subscription")
       .session(session)
       .lean();
+    const channel = payload.channel ?? "WHATSAPP";
     const limit = Number(tenant?.subscription?.limits?.whatsappMessages ?? 0);
-    if (limit > 0) {
+    if (channel === "WHATSAPP" && limit > 0) {
       const period = dayjs().format("YYYY-MM");
       const counterId = `whatsapp:${req.auth.tenantId}:${period}`;
       const claimed = await Counter.findOneAndUpdate(
@@ -206,24 +202,14 @@ export async function queueMessage(req, payload) {
             tenantId: req.auth.tenantId,
             branchId,
             status: MessageStatus.QUEUED,
-            channel: "WHATSAPP",
+            channel: payload.channel ?? "WHATSAPP",
+            dispatchPriority: dispatchPriorityForMessageType(payload.type),
             ...payload,
           },
         ],
         { session },
       )
     )[0];
-    await OutboxEvent.create(
-      [
-        {
-          tenantId: req.auth.tenantId,
-          topic: "message.send",
-          key: message._id,
-          payload: { messageId: message._id, branchId: message.branchId },
-        },
-      ],
-      { session },
-    );
     const auditEventId = await writeAudit({
       req,
       action: "MESSAGE_QUEUED",
@@ -238,6 +224,9 @@ export async function queueMessage(req, payload) {
 export async function listMessages(req) {
   const filters = {};
   for (const key of ["status", "type", "customerId", "schemeId", "channel"]) if (req.query[key]) filters[key] = req.query[key];
+  if (req.query.broadcastId) {
+    filters["templateParams.broadcastId"] = String(req.query.broadcastId);
+  }
   Object.assign(filters, dateMatch("createdAt", req.query));
   const pattern = searchRegex(req.query.q);
   if (pattern) {

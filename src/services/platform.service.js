@@ -13,6 +13,11 @@ import { escaped } from "../lib/query-filters.js";
 import { withTransaction } from "../lib/transaction.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { seal } from "../lib/crypto.js";
+
+function isSealedSecret(value) {
+  const parts = String(value ?? "").split(".");
+  return parts.length === 3 && parts[0].length >= 8;
+}
 import { moneyRef } from "../lib/money.js";
 import { generateTemporaryPassword } from "../lib/password-generator.js";
 import {
@@ -415,6 +420,13 @@ export async function tenantDetail(id) {
         verificationStatus: secrets?.integrationSecrets?.whatsapp?.verificationStatus
           ?? (secrets?.integrationSecrets?.whatsapp?.verifiedAt ? "VERIFIED" : "NOT_VERIFIED"),
       },
+      fcm: {
+        configured: Boolean(secrets?.integrationSecrets?.fcm?.projectId
+          && secrets?.integrationSecrets?.fcm?.serviceAccountJsonSealed),
+        projectId: secrets?.integrationSecrets?.fcm?.projectId ?? null,
+        credentialVersion: secrets?.integrationSecrets?.fcm?.credentialVersion ?? null,
+        updatedAt: secrets?.integrationSecrets?.fcm?.updatedAt ?? null,
+      },
       paymentGateway: {
         configured: Boolean(secrets?.integrationSecrets?.phonepe?.clientId),
         clientCredentialsConfigured: Boolean(
@@ -766,6 +778,51 @@ export async function setOwnerCredentials(id, body, req) {
 
 export async function setIntegration(id, kind, body, req) {
   const before = await Tenant.findById(id).select("+integrationSecrets").lean();
+  const integrationKey = kind === "phonepe" ? "phonepe" : kind;
+  if (kind === "fcm") {
+    const existingBucket = before?.integrationSecrets?.fcm ?? {};
+    const { invalidateFcmAuthCache } = await import("../lib/fcm-config.js");
+    const value = {
+      ...existingBucket,
+      projectId: body.projectId ?? existingBucket.projectId,
+      credentialVersion: body.serviceAccountJson !== undefined
+        ? Number(existingBucket.credentialVersion ?? 0) + 1
+        : Number(existingBucket.credentialVersion ?? 1),
+      updatedAt: new Date(),
+    };
+    if (body.serviceAccountJson !== undefined) {
+      value.serviceAccountJsonSealed = seal(
+        typeof body.serviceAccountJson === "string"
+          ? body.serviceAccountJson
+          : JSON.stringify(body.serviceAccountJson),
+      );
+    }
+    const row = await Tenant.findByIdAndUpdate(
+      id,
+      { $set: { "integrationSecrets.fcm": value }, $inc: { version: 1 } },
+      { new: true },
+    ).select("_id version");
+    if (!row) throw errors.notFound("Tenant");
+    invalidateFcmAuthCache(id);
+    const after = await Tenant.findById(id).select("+integrationSecrets").lean();
+    if (req) {
+      await auditPlatformMutation({
+        req,
+        action: "PLATFORM_FCM_INTEGRATION_UPDATED",
+        entityType: AuditEntityType.TENANT,
+        entityId: id,
+        tenantId: id,
+        before: before?.integrationSecrets?.fcm,
+        after: after?.integrationSecrets?.fcm,
+      });
+    }
+    return {
+      configured: Boolean(value.projectId && value.serviceAccountJsonSealed),
+      projectId: value.projectId ?? null,
+      credentialVersion: value.credentialVersion,
+      version: row.version,
+    };
+  }
   const allowed = kind === "whatsapp"
     ? ["phoneNumberId", "businessAccountId", "accessToken", "appSecret", "verifyToken", "environment", "callbackUrlOverride"]
     : [
@@ -777,7 +834,7 @@ export async function setIntegration(id, kind, body, req) {
       "environment",
       "provider",
     ];
-  const existingBucket = before?.integrationSecrets?.[kind === "phonepe" ? "phonepe" : kind] ?? {};
+  const existingBucket = before?.integrationSecrets?.[integrationKey] ?? {};
   const value = {
     ...existingBucket,
     provider: body.provider ?? existingBucket.provider ?? (kind === "whatsapp" ? "META_CLOUD" : "PHONEPE"),
@@ -785,12 +842,24 @@ export async function setIntegration(id, kind, body, req) {
   const sealedKeys = new Set(["accessToken", "appSecret", "verifyToken", "clientSecret", "webhookPassword"]);
   for (const key of allowed) if (body[key] !== undefined) {
     value[key] = sealedKeys.has(key)
-      ? seal(body[key])
+      ? (isSealedSecret(body[key]) ? body[key] : seal(body[key]))
       : key === "clientVersion"
         ? Number(body[key])
         : body[key];
   }
-  const row = await Tenant.findByIdAndUpdate(id, { $set: { [`integrationSecrets.${kind === "phonepe" ? "phonepe" : kind}`]: value }, $inc: { version: 1 } }, { new: true }).select("_id version");
+  if (
+    integrationKey === "phonepe"
+    && (body.clientSecret !== undefined
+      || body.webhookPassword !== undefined
+      || body.clientId !== undefined)
+  ) {
+    value.credentialVersion = Number(existingBucket.credentialVersion ?? 0) + 1;
+  }
+  const row = await Tenant.findByIdAndUpdate(id, { $set: { [`integrationSecrets.${integrationKey}`]: value }, $inc: { version: 1 } }, { new: true }).select("_id version");
+  if (integrationKey === "phonepe") {
+    const { invalidatePhonePeClientCache } = await import("../integrations/phonepe.provider.js");
+    invalidatePhonePeClientCache(id);
+  }
   if (!row) throw errors.notFound("Tenant");
   const after = await Tenant.findById(id).select("+integrationSecrets").lean();
   if (req) {
@@ -831,7 +900,7 @@ export async function verifyIntegration(id, kind, body = {}, req) {
       throw errors.business("INTEGRATION_INCOMPLETE", "The phonepe integration is incomplete.");
     }
     const { phonePeProvider, resolvePhonePeCredentials } = await import("../integrations/phonepe.provider.js");
-    await phonePeProvider.verifyCredentials(resolvePhonePeCredentials(tenant));
+    await phonePeProvider.verifyCredentials(resolvePhonePeCredentials(tenant), tenant._id);
   } else {
     const required = ["phoneNumberId", "accessToken", "appSecret"];
     if (required.some((key) => !bucket[key])) throw errors.business("INTEGRATION_INCOMPLETE", `The ${kind} integration is incomplete.`);
