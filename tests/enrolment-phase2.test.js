@@ -30,6 +30,7 @@ import {
   validateEnrolment,
 } from "../src/services/scheme.service.js";
 import { finalizeGatewaySuccess } from "../src/services/finalize-gateway-success.service.js";
+import { customer360 } from "../src/services/customer.service.js";
 import {
   ENROLMENT_CAPACITY_STATUSES,
   ONE_ACTIVE_SCHEME_CONFLICT_STATUSES,
@@ -592,8 +593,32 @@ test("late gateway success after enrolment expiry routes to manual review once",
     paymentId,
   });
   const pay = await Payment.findById(paymentId).lean();
+  assert.notEqual(pay.status, PaymentStatus.FAILED);
   assert.equal(pay.status, PaymentStatus.UNALLOCATED_PENDING_REVIEW);
+  assert.equal(pay.allocatedAmountPaise, 0);
+  assert.equal(await Payment.countDocuments({ tenantId: tenant._id, schemeId: enrolled._id }), 1);
+  assert.equal(
+    await LedgerEntry.countDocuments({ tenantId: tenant._id, schemeId: enrolled._id, type: "UNALLOCATED_PAYMENT" }),
+    1,
+  );
+  assert.equal(
+    await LedgerEntry.countDocuments({ tenantId: tenant._id, schemeId: enrolled._id, type: "INSTALLMENT_PAYMENT" }),
+    0,
+  );
+  assert.equal(
+    await OutboxEvent.countDocuments({ tenantId: tenant._id, topic: "scheme.joined", key: enrolled._id }),
+    0,
+  );
   assert.equal((await Scheme.findById(enrolled._id).lean()).status, SchemeStatus.ENROLMENT_EXPIRED);
+  const reviewAlert = await Alert.findOne({ tenantId: tenant._id, entityId: paymentId, type: "PAYMENT_REVIEW" }).lean();
+  assert.ok(reviewAlert);
+  assert.equal(reviewAlert.status, "OPEN");
+  const profile = await customer360({
+    params: { customerId: customer._id },
+    auth: { tenantId: tenant._id, type: "TENANT_USER" },
+    scope: { tenantId: tenant._id },
+  });
+  assert.equal(profile.summary.lifetimePaidPaise, 0);
   assert.equal(await Alert.countDocuments({ tenantId: tenant._id, entityId: paymentId, type: "PAYMENT_REVIEW" }), 1);
   assert.equal(
     await OutboxEvent.countDocuments({ tenantId: tenant._id, topic: "payment.unallocated.enrolment_expired", key: paymentId }),

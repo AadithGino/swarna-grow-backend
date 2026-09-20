@@ -71,6 +71,16 @@ const customerSchema = new mongoose.Schema(
     profileCompletedAt: Date,
     createdBy: String,
     securityVersion: { type: Number, default: 0, validate: { validator: (value) => value == null || Number.isSafeInteger(value), message: "{PATH} must be a safe integer" } },
+    /** Internal mutex for one-active-scheme enrolment — not customer profile version. */
+    enrolmentSerializationVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+      validate: {
+        validator: (value) => value == null || Number.isSafeInteger(value),
+        message: "{PATH} must be a safe integer",
+      },
+    },
     version: versionField,
   },
   baseOptions,

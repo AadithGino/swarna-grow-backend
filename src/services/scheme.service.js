@@ -30,7 +30,7 @@ import {
 } from "../lib/scheme-enrollment-status.js";
 import { computeFixedPaymentQuote } from "../lib/fixed-payment-policy.js";
 import { summarizeFreeWindowLedgerNet } from "../lib/flexible-free-window-net.js";
-import { withTransaction } from "../lib/transaction.js";
+import { withTransaction, withTransientTransactionRetry } from "../lib/transaction.js";
 import {
   assertAnalyticsPeriod,
   buildAnalyticsScope,
@@ -423,7 +423,9 @@ export async function enrol(req) {
   if (validation.installmentAmountPaise == null) {
     throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
   }
-  return withTransaction(async (session) => createEnrolmentInSession(req, validation, session));
+  return withTransientTransactionRetry(async (session) =>
+    createEnrolmentInSession(req, validation, session),
+  );
 }
 
 async function lockPlanForEnrolment(session, tenantId, planId) {
@@ -634,7 +636,7 @@ export async function customerEnrolWithCheckout(req) {
     req.body.payNow !== false && validation.firstInstallmentRequired;
   let reservedIntent = null;
   let reservedLink = null;
-  const enrolled = await withTransaction(async (session) => {
+  const enrolled = await withTransientTransactionRetry(async (session) => {
     const scheme = await createEnrolmentInSession(req, validation, session);
     if (!needsCheckout) return scheme;
     const schemeId = scheme._id ?? scheme.id;

@@ -36,6 +36,7 @@ const ACTION_LABELS = {
   CUSTOMER_NOMINEE_REMOVED: "Nominee removed",
   CUSTOMER_NOTE_ADDED: "Note added",
   SCHEME_ENROLLED: "Scheme enrolled",
+  SCHEME_ENROLMENT_EXPIRED: "Scheme enrolment expired",
   SCHEME_PROJECTION_RECOMPUTED: "Scheme projection recomputed",
   PAYMENT_RECORDED: "Payment recorded",
   PAYMENT_REVERSED: "Payment reversed",

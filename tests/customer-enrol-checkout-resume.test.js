@@ -38,6 +38,30 @@ async function seedFlexibleSelfEnrolPlan(tenantId) {
       firstInstallmentModeDefault: "COLLECT_NOW",
       firstInstallmentModeEditable: false,
     },
+    paymentRules: {
+      partialPaymentAllowed: true,
+      advancePaymentAllowed: false,
+      minPaymentPaise: 100_000,
+    },
+    redemptionRules: {
+      prematureClosureAllowed: false,
+      lockInMonths: 0,
+      prematurePenalty: { mode: "NONE", value: 0, benefitTreatment: "FORFEIT" },
+      allowedModes: ["CASH"],
+      redeemAtAnyBranch: false,
+    },
+    benefit: {
+      type: "FIXED_BONUS_AMOUNT",
+      bonusBasis: "FLAT",
+      bonusValue: 50_000,
+      displayLabel: "Bonus",
+      eligibility: {
+        requireAllInstallmentsPaid: true,
+        maxAllowedDefaults: 0,
+        minMonthsCompleted: 0,
+      },
+    },
+    version: 1,
     availability: {
       allBranches: true,
       branchIds: [],

@@ -34,7 +34,15 @@ export const idempotent = asyncHandler(async (req, res, next) => {
     }
     return originalJson(body);
   };
-  res.on("finish", stopHeartbeat);
-  res.on("close", () => { stopHeartbeat(); if (!res.writableEnded) void abandonIdempotency(context.record); });
+  res.on("finish", () => {
+    stopHeartbeat();
+    if (!res.locals.idempotencyComplete && res.statusCode >= 500) {
+      void abandonIdempotency(context.record);
+    }
+  });
+  res.on("close", () => {
+    stopHeartbeat();
+    if (!res.writableEnded && !res.locals.idempotencyComplete) void abandonIdempotency(context.record);
+  });
   next();
 });
