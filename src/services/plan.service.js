@@ -13,6 +13,7 @@ import { moneyRef, weightRef } from "../lib/money.js";
 import { computeFlexibleCycleCapPaise } from "../lib/flexible-cap.js";
 import { buildAmountSummary } from "../lib/plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
+import { mergePlanPatch, validateCompletePlan } from "../lib/plan-merge.js";
 import {
   buildCalendarMonthCycles,
   maturityDateFromCalendarCycles,
@@ -626,8 +627,20 @@ export async function updatePlan(req) {
     delete patch.expectedVersion;
     if (patch.status === undefined) delete patch.status;
     normalizePlanFinancialRules(patch);
-    Object.assign(plan, patch);
-    normalizePlanFinancialRules(plan);
+    const merged = mergePlanPatch(before, patch);
+    normalizePlanFinancialRules(merged);
+    rejectUnsupportedPlan(merged);
+    const tenantRow = req.tenant ?? await Tenant.findById(req.auth.tenantId).session(session);
+    if (merged.paymentPattern === PaymentPattern.FLEXIBLE) {
+      assertFeatureEntitled(tenantRow, "flexibleScheme", "Flexible schemes are not included in your plan.");
+    }
+    if (merged.valueBasis === "GOLD_WEIGHT") {
+      assertFeatureEntitled(tenantRow, "goldWeightScheme", "Gold-weight schemes are not included in your plan.");
+    }
+    const validated = validateCompletePlan(merged);
+    for (const key of Object.keys(validated)) {
+      plan.set(key, validated[key]);
+    }
     plan.version += 1;
     await plan.save({ session });
     const auditEventId = await writeAudit({ req, action: "PLAN_UPDATED", entityType: AuditEntityType.PLAN, entityId: plan._id, before, after: plan.toObject(), session }); return { ...plan.toObject(), auditEventId };

@@ -395,10 +395,7 @@ export const planPatchBody = z
     availability: availability.partial().optional(),
     /** No `.default(DRAFT)` — optional()+default on PATCH was resetting Active plans on every save. */
     status: enumSchema(E.SchemePlanStatus).optional(),
-  })
-  .superRefine((value, context) =>
-    refinePlanCrossFields(value, context, { requireComplete: false }),
-  );
+  });
 
 const previewScheduleExtras = {
   planId: z.string().min(4).max(80).optional(),
