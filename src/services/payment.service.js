@@ -1386,7 +1386,7 @@ export async function createSdkPaymentIntent(req) {
         "SDK payment orders apply only to flexible schemes.",
       );
     const quote = await payableRange(req, scheme.toObject());
-    const targetCycle = req.body.targetCycle ?? quote.targetCycle;
+    const targetCycle = quote.targetCycle;
     assertExpectedPositionVersion(scheme, quote, req.body);
     await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
     const reservations = await PaymentIntent.aggregate([

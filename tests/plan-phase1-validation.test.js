@@ -6,8 +6,10 @@ import {
   redemptionBody,
   tenantOperationsPatchBody,
 } from "../src/validators/common.validators.js";
-import { RedemptionMode } from "../src/constants/enums.js";
+import { PlanTier, RedemptionMode, TenantRole } from "../src/constants/enums.js";
+import { SchemePlan, Tenant } from "../src/models/index.js";
 import { setGoldRate } from "../src/services/tenant.service.js";
+import { createPlan } from "../src/services/plan.service.js";
 import { AppError } from "../src/lib/app-error.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
@@ -107,6 +109,90 @@ test("flexible plan rejects when phase cycles do not sum to durationMonths", () 
   assert.ok(
     parsed.error?.issues.some((issue) => issue.path.join(".") === "flexibleRules"),
   );
+});
+
+function flexiblePlanForCapValidation(roundingMode) {
+  return {
+    ...planBase,
+    code: `FXCAP${roundingMode.slice(0, 3)}`,
+    paymentPattern: "FLEXIBLE",
+    durationMonths: 12,
+    installmentCount: 12,
+    amountRules: {
+      amountMode: "CUSTOMER_CHOSEN",
+      minInstallmentPaise: 10_000,
+      maxInstallmentPaise: 2_500_000,
+      multipleOfPaise: 1_000,
+    },
+    scheduleRules: {
+      dueDateRule: "JOIN_ANNIVERSARY",
+      firstInstallmentModeDefault: "COLLECT_NOW",
+    },
+    paymentRules: { partialPaymentAllowed: true, minPaymentPaise: 10_000 },
+    flexibleRules: {
+      phaseMode: "FLEXIBLE_THEN_CAPPED",
+      capMode: "FLEXIBLE_PHASE_AVERAGE",
+      carryForwardMode: "NONE",
+      flexiblePhaseCycles: 6,
+      cappedPhaseCycles: 6,
+      averagingDivisor: 6,
+      frequencyMode: "MULTIPLE",
+      flexiblePhase: {
+        minimumPaymentPaise: 10_000,
+        maximumPaymentPaise: 2_500_000,
+        paymentIncrementPaise: 1_000,
+        minTotalPaise: 0,
+        paymentsRequiredPerCycle: 0,
+      },
+      capComputation: {
+        formula: "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
+        roundingMode,
+        roundToNearestPaise: 10_000,
+        minCycleCapPaise: 50_000,
+        maxCycleCapPaise: 10_000_000,
+        onZeroFlexiblePhaseTotal: "CLOSE_SCHEME",
+        onBelowMinimumTotal: "USE_MINIMUM",
+      },
+      cappedPhase: {
+        minimumPaymentPaise: 10_000,
+        paymentIncrementPaise: 1_000,
+        allowFinalRemainderBelowMinimum: true,
+        allowFutureCyclePayment: false,
+        maxAdvanceCycles: 0,
+      },
+    },
+  };
+}
+
+test("planBody rejects ROUND_DOWN flexible cap rounding mode", () => {
+  const parsed = planBody.safeParse(flexiblePlanForCapValidation("ROUND_DOWN"));
+  assert.equal(parsed.success, false);
+  assert.ok(
+    parsed.error?.issues.some((issue) => issue.path.join(".").includes("roundingMode")),
+  );
+});
+
+test("planBody rejects HALF_UP flexible cap rounding mode", () => {
+  const parsed = planBody.safeParse(flexiblePlanForCapValidation("HALF_UP"));
+  assert.equal(parsed.success, false);
+});
+
+test("createPlan service rejects ROUND_DOWN before Mongoose persistence", async () => {
+  const { tenant, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
+  await Tenant.updateOne({ _id: tenant._id }, { $set: { "subscription.tier": PlanTier.GROWTH } });
+  const tenantRow = await Tenant.findById(tenant._id).lean();
+  const body = flexiblePlanForCapValidation("ROUND_DOWN");
+  await assert.rejects(
+    () => createPlan({
+      auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
+      tenant: tenantRow,
+      headers: { "user-agent": "test" },
+      ip: "127.0.0.1",
+      body,
+    }),
+    (error) => error instanceof AppError && error.code === "VALIDATION_FAILED",
+  );
+  assert.equal(await SchemePlan.countDocuments({ tenantId: tenant._id }), 0);
 });
 
 test("plan validation rejects PRORATE benefit treatment enum", () => {

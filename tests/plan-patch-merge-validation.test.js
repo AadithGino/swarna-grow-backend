@@ -396,9 +396,7 @@ test("flexible plan rejects ROUND_DOWN cap rounding mode", async () => {
   };
   await assert.rejects(
     () => createPlan({ ...planReq(tenant, user, undefined, body), body }),
-    (error) =>
-      (error instanceof AppError && error.code === "VALIDATION_FAILED")
-      || error?.name === "ValidationError",
+    (error) => error instanceof AppError && error.code === "VALIDATION_FAILED",
   );
 });
 
@@ -411,9 +409,7 @@ test("flexible plan rejects HALF_UP cap rounding mode", async () => {
   };
   await assert.rejects(
     () => createPlan({ ...planReq(tenant, user, undefined, body), body }),
-    (error) =>
-      (error instanceof AppError && error.code === "VALIDATION_FAILED")
-      || error?.name === "ValidationError",
+    (error) => error instanceof AppError && error.code === "VALIDATION_FAILED",
   );
 });
 
