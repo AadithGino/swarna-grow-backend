@@ -4,7 +4,8 @@ import { computeFlexibleCycleCapPaise } from "../src/lib/flexible-cap.js";
 import { summarizeFreeWindowLedgerNet } from "../src/lib/flexible-free-window-net.js";
 import { applyFlexibleLock } from "../src/services/scheme.service.js";
 import { buildFlexibleEnrolPreview } from "../src/services/plan.service.js";
-import { LedgerEntry, Scheme, SchemePlan } from "../src/models/index.js";
+import { buildFlexibleSchemeCycleRows } from "../src/lib/calendar-cycle.js";
+import { AuditEvent, LedgerEntry, Scheme, SchemePlan } from "../src/models/index.js";
 import { FlexiblePhase, SchemeStatus, TenantRole } from "../src/constants/enums.js";
 import { createId } from "../src/lib/ids.js";
 import { resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
@@ -56,12 +57,13 @@ async function seedFlexibleSchemeForLock({ ledgerEntries, rules = flexRulesBase,
     paymentPattern: "FLEXIBLE",
     flexiblePhase: FlexiblePhase.FLEXIBLE,
     status: SchemeStatus.ACTIVE,
-    startDate: "2026-01-01",
-    maturityDate: "2026-06-01",
-    cycles: [
-      { cycle: "2026-01", capPaise: 0, paidPaise: 0, remainingPaise: 0, status: "UPCOMING" },
-      { cycle: "2026-02", capPaise: 0, paidPaise: 0, remainingPaise: 0, status: "UPCOMING" },
-    ],
+    startDate: "2020-01-01",
+    maturityDate: "2020-06-01",
+    cycles: buildFlexibleSchemeCycleRows({
+      startDate: "2020-01-01",
+      durationMonths: (rules.flexiblePhaseCycles ?? 2) + (rules.cappedPhaseCycles ?? 3),
+      firstInstallmentMode: "COLLECT_NOW",
+    }),
     version: 1,
     createdBy: user._id,
     ...overrides,
@@ -226,4 +228,22 @@ test("parallel lock attempts: one applies cap once", async () => {
   assert.equal(fulfilled.length, 1);
   assert.equal(rejected.length, 1);
   assert.equal(rejected[0].reason?.code, "LOCK_ALREADY_APPLIED");
+});
+
+test("zero net close writes premature-close audit not flex lock audit", async () => {
+  const { scheme, lockReq } = await seedFlexibleSchemeForLock({
+    ledgerEntries: [
+      { type: "FREE_WINDOW_PAYMENT", paymentId: "pay_1", amountPaise: 50000 },
+      { type: "REVERSAL", reversalOf: "pay_1", amountPaise: 50000 },
+    ],
+  });
+  await applyFlexibleLock(lockReq);
+  assert.equal(
+    await AuditEvent.countDocuments({ tenantId: scheme.tenantId, entityId: scheme._id, action: "SCHEME_CLOSED_PREMATURE" }),
+    1,
+  );
+  assert.equal(
+    await AuditEvent.countDocuments({ tenantId: scheme.tenantId, entityId: scheme._id, action: "FLEXIBLE_LOCK_APPLIED" }),
+    0,
+  );
 });

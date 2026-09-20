@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AppError } from "../src/lib/app-error.js";
+import { calendarMonthBoundsFromKey } from "../src/lib/calendar-cycle.js";
 import { monthKey } from "../src/lib/date.js";
 import { recordPayment } from "../src/services/payment.service.js";
 import { Customer, Scheme } from "../src/models/index.js";
@@ -30,6 +31,8 @@ async function seedFlexibleScheme({ positionVersion = 0, remainingPaise = 250000
       valueBasis: "CASH",
       paymentPattern: "FLEXIBLE",
       flexibleRules: {
+        flexiblePhaseCycles: 2,
+        cappedPhaseCycles: 2,
         flexiblePhase: { minimumPaymentPaise: 10000, maximumPaymentPaise: 2500000, paymentIncrementPaise: 1000, minTotalPaise: 0, maxPaymentsPerCycle, paymentsRequiredPerCycle: 0 },
         cappedPhase: { minimumPaymentPaise: 10000, paymentIncrementPaise: 1000, allowFinalRemainderBelowMinimum: true, allowFutureCyclePayment: false, maxAdvanceCycles: 0 },
       },
@@ -38,8 +41,15 @@ async function seedFlexibleScheme({ positionVersion = 0, remainingPaise = 250000
     paymentPattern: "FLEXIBLE",
     status: "ACTIVE",
     startDate: `${cycle}-01`,
-    maturityDate: `${cycle}-28`,
-    cycles: [{ cycle, capPaise: paidPaise + remainingPaise, paidPaise, remainingPaise, status: remainingPaise ? "UPCOMING" : "PAID" }],
+    maturityDate: calendarMonthBoundsFromKey(cycle).cycleEnd,
+    cycles: [{
+      cycle,
+      capPaise: paidPaise + remainingPaise,
+      paidPaise,
+      remainingPaise,
+      status: remainingPaise ? "UPCOMING" : "PAID",
+      expiresAt: calendarMonthBoundsFromKey(cycle).expiresAt,
+    }],
     flexiblePhase: "FLEXIBLE",
     positionVersion,
     createdBy: user._id,

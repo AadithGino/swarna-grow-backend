@@ -22,14 +22,15 @@ import {
 import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
-import { computeFlexibleCycleCapPaise } from "../lib/flexible-cap.js";
+import { computeFlexibleLockCapDetails } from "../lib/flexible-cap.js";
 import {
   ENROLMENT_CAPACITY_STATUSES,
   ONE_ACTIVE_SCHEME_CONFLICT_STATUSES,
   OPEN_ENROLLMENT_STATUSES,
 } from "../lib/scheme-enrollment-status.js";
 import { computeFixedPaymentQuote } from "../lib/fixed-payment-policy.js";
-import { summarizeFreeWindowLedgerNet } from "../lib/flexible-free-window-net.js";
+import { analyzeFreeWindowLedgerForCap } from "../lib/flexible-free-window-net.js";
+import { applySystemFlexLockClosure } from "../lib/flexible-lock-settlement.js";
 import { withTransaction, withTransientTransactionRetry } from "../lib/transaction.js";
 import {
   assertAnalyticsPeriod,
@@ -48,7 +49,9 @@ import { buildFlexibleEnrolPreview } from "./plan.service.js";
 import {
   buildCalendarMonthCycles,
   buildFlexibleSchemeCycleRows,
+  isFlexibleLockDueAfterFreePhase,
   maturityDateFromCalendarCycles,
+  resolveAuthoritativeFreePhaseTargetCycle,
 } from "../lib/calendar-cycle.js";
 import { buildSchedulePreview, resolveFixedSchemeMaturityDate } from "./schedule.service.js";
 import { writeAudit } from "./audit.service.js";
@@ -1333,13 +1336,19 @@ export async function payableRange(req, schemeInput) {
     };
   }
   if (scheme.flexiblePhase === FlexiblePhase.FLEXIBLE) {
-    const rules = plan.flexibleRules?.flexiblePhase;
+    const flexRules = plan.flexibleRules;
+    const rules = flexRules?.flexiblePhase;
     if (!rules) throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "This plan is missing flexible payment rules.");
+    const authoritativeCycle = resolveAuthoritativeFreePhaseTargetCycle({
+      cycles: scheme.cycles,
+      freeCycleCount: flexRules.flexiblePhaseCycles,
+      suppliedCycle: targetCycle,
+    });
     return {
       model: "FLEXIBLE",
       phase: "FLEXIBLE",
       contributionIsOptional: true,
-      targetCycle: targetCycle ?? monthKey(),
+      targetCycle: authoritativeCycle,
       minPayablePaise: rules.minimumPaymentPaise,
       maxPayablePaise: rules.maximumPaymentPaise,
       paymentIncrementPaise: rules.paymentIncrementPaise ?? 1,
@@ -1391,12 +1400,39 @@ export async function payableRange(req, schemeInput) {
     nextCycleAction,
   };
 }
-export async function applyFlexibleLock(req) {
+const FLEXIBLE_LOCK_ELIGIBLE_STATUSES = new Set([
+  SchemeStatus.ACTIVE,
+  SchemeStatus.LOCKED,
+  SchemeStatus.DEFAULTED,
+]);
+
+export async function applyFlexibleLock(req, internal = {}) {
   return withTransaction(async (session) => {
     const scheme = await Scheme.findOne({ _id: req.params.schemeId, ...req.scope }).session(session);
     if (!scheme) throw errors.notFound("Scheme");
+    if (!FLEXIBLE_LOCK_ELIGIBLE_STATUSES.has(scheme.status)) {
+      throw errors.business(
+        "FLEXIBLE_LOCK_NOT_APPLICABLE",
+        "Flexible lock cannot be applied to this scheme in its current state.",
+      );
+    }
     if (scheme.flexiblePhase !== FlexiblePhase.FLEXIBLE) {
       throw new AppError("LOCK_ALREADY_APPLIED", "The flexible lock has already been applied.", 409);
+    }
+    const freeCycles = scheme.planSnapshot?.flexibleRules?.flexiblePhaseCycles ?? 0;
+    const lockReferenceDate = internal.referenceDate ?? today();
+    if (
+      !isFlexibleLockDueAfterFreePhase(
+        lockReferenceDate,
+        scheme.cycles ?? [],
+        freeCycles,
+      )
+    ) {
+      throw new AppError(
+        "FLEXIBLE_LOCK_NOT_DUE",
+        "The flexible free phase has not ended yet.",
+        422,
+      );
     }
     const entries = await LedgerEntry.find({
       tenantId: scheme.tenantId,
@@ -1408,41 +1444,46 @@ export async function applyFlexibleLock(req) {
     const rules = scheme.planSnapshot.flexibleRules;
     const flexPhase = rules.flexiblePhase ?? {};
     const minTotalPaise = Number(flexPhase.minTotalPaise ?? 0);
-    const netSummary = summarizeFreeWindowLedgerNet(entries);
+    const netSummary = analyzeFreeWindowLedgerForCap(entries);
     if (netSummary.anomalies.length) {
       throw errors.business(
         "FLEXIBLE_FREE_WINDOW_NET_NEGATIVE",
         "A free-window payment reversal exceeds the original payment amount.",
       );
     }
-    const { netTotalPaise: total, netPositivePaymentCount } = netSummary;
+    const total = netSummary.netFreeTotalPaise;
+    const freePhaseBoundary = scheme.cycles?.[freeCycles - 1]?.expiresAt ?? null;
     if (total === 0 && rules.capComputation.onZeroFlexiblePhaseTotal === "CLOSE_SCHEME") {
-      scheme.status = SchemeStatus.CLOSED_PREMATURE;
-      scheme.version += 1;
-      await scheme.save({ session });
-      return { ...scheme.toObject(), closeReason: "ZERO_FLEXIBLE_PHASE_TOTAL" };
+      return applySystemFlexLockClosure({
+        session,
+        req,
+        scheme,
+        closeReason: "ZERO_FLEXIBLE_PHASE_TOTAL",
+        netFreeTotalPaise: total,
+        minTotalPaise,
+      });
     }
     if (total > 0 && total < minTotalPaise && rules.capComputation.onBelowMinimumTotal === "CLOSE_SCHEME") {
-      scheme.status = SchemeStatus.CLOSED_PREMATURE;
-      scheme.version += 1;
-      await scheme.save({ session });
-      return { ...scheme.toObject(), closeReason: "BELOW_MINIMUM_FLEXIBLE_PHASE_TOTAL" };
+      return applySystemFlexLockClosure({
+        session,
+        req,
+        scheme,
+        closeReason: "BELOW_MINIMUM_FLEXIBLE_PHASE_TOTAL",
+        netFreeTotalPaise: total,
+        minTotalPaise,
+      });
     }
-    const cap = computeFlexibleCycleCapPaise({
-      totalPaise: total,
-      freeWindowPaymentCount: netPositivePaymentCount,
+    const lockTimestamp = new Date();
+    const { capPaise: cap, audit: capAudit } = computeFlexibleLockCapDetails({
+      netSummary,
       flexibleRules: rules,
+      freePhaseBoundary,
+      lockedAt: lockTimestamp,
     });
-    const capAudit = {
-      formula: rules.capComputation?.formula ?? "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
-      netFreeTotalPaise: total,
-      netPositivePaymentCount,
-      roundedCapPaise: cap,
-    };
     scheme.lockedAveragePaise = cap;
     scheme.flexiblePhase = FlexiblePhase.CAPPED;
     scheme.status = SchemeStatus.LOCKED;
-    scheme.lockedAt = new Date();
+    scheme.lockedAt = lockTimestamp;
     scheme.positionVersion += 1;
     scheme.version += 1;
     scheme.cycles.slice(rules.flexiblePhaseCycles).forEach((cycle) => {

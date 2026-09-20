@@ -557,6 +557,37 @@ export async function processOutbox(job) {
     }
   } else if (event.topic === "payment.gateway.failed") {
     // Durable signal for gateway terminal failure; no customer fan-out.
+  } else if (event.topic === "scheme.flex_policy.closed") {
+    const customer = await Customer.findOne({
+      _id: event.payload.customerId,
+      tenantId: event.tenantId,
+    }).select("mobile whatsappOptedOutAt").lean();
+    const scheme = await Scheme.findOne({
+      _id: event.payload.schemeId,
+      tenantId: event.tenantId,
+    }).select("enrollmentNumber planSnapshot").lean();
+    const exists = await Message.exists({
+      tenantId: event.tenantId,
+      schemeId: event.payload.schemeId,
+      type: "SCHEME_CLOSED",
+    });
+    if (customer && scheme && !exists) {
+      const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
+      await queueCustomerNotification({
+        tenantId: event.tenantId,
+        branchId: event.payload.branchId,
+        customerId: event.payload.customerId,
+        schemeId: event.payload.schemeId,
+        type: "SCHEME_CLOSED",
+        templateParams: {
+          mobile: customer.mobile,
+          enrollmentNumber: scheme.enrollmentNumber,
+          schemeName: scheme.planSnapshot?.displayName ?? scheme.planSnapshot?.name,
+          event: "FLEX_POLICY_CLOSED",
+          closeReason: event.payload.closeReason,
+        },
+      });
+    }
   } else if (event.topic === "message.send") {
     const messageId = event.payload?.messageId ?? event.key;
     const exists = messageId

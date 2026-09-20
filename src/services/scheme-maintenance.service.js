@@ -405,7 +405,7 @@ export async function runFlexibleLockBatch({ today, cursor = null, limit: limitO
         });
       }
     } catch (error) {
-      if (error?.code === "LOCK_ALREADY_APPLIED") {
+      if (error?.code === "LOCK_ALREADY_APPLIED" || error?.code === "FLEXIBLE_LOCK_NOT_DUE") {
         skipped += 1;
       } else {
         conflicted += 1;

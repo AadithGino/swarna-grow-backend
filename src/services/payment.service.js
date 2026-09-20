@@ -391,7 +391,7 @@ async function recordPaymentInSession(session, req, override) {
       if (!gatewayLateSuccess) throw error;
       quote = null;
     }
-    req.body.targetCycle ??= quote?.targetCycle;
+    if (quote?.targetCycle) req.body.targetCycle = quote.targetCycle;
     if (quote) {
       try {
         checkAmount(quote, req.body.amountPaise);
@@ -944,7 +944,7 @@ export async function reservePaymentLinkInSession(
   }).session(session);
   if (!scheme) throw errors.notFound("Scheme");
   const quote = await payableRange(req, scheme.toObject());
-  const targetCycle = req.body.targetCycle ?? quote.targetCycle;
+  const targetCycle = quote.targetCycle;
   let intent;
   let positionVersion = quote.positionVersion;
   if (scheme.paymentPattern === "FLEXIBLE") {
@@ -1046,7 +1046,7 @@ export async function reservePaymentIntentInSession(session, req) {
     );
   }
   const quote = await payableRange(req, scheme.toObject());
-  const targetCycle = req.body.targetCycle ?? quote.targetCycle;
+  const targetCycle = quote.targetCycle;
   assertExpectedPositionVersion(scheme, quote, req.body);
   await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
   const reservations = await PaymentIntent.aggregate([

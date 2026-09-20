@@ -34,6 +34,7 @@ import { goldRateForExactDate } from "../lib/gold-rate-lookup.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, elapsedSchemeMonths, today } from "../lib/date.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
+import { isFlexSystemPolicyClosure } from "../lib/flexible-lock-settlement.js";
 
 const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.REQUESTED,
@@ -129,6 +130,108 @@ export async function settlementPreview(req, closureType) {
   const rules = scheme.planSnapshot?.redemptionRules ?? {};
   const benefitDef = scheme.planSnapshot?.benefit ?? null;
   const isPremature = closureType === ClosureType.PREMATURE_CLOSURE;
+
+  if (isFlexSystemPolicyClosure(scheme)) {
+    const blockers = [];
+    const isCustomer = req.auth?.type === "CUSTOMER";
+    if (isCustomer) {
+      blockers.push({
+        code: "SETTLEMENT_STAFF_REQUIRED",
+        message: "Staff must complete settlement for this scheme.",
+      });
+    }
+    if (!scheme.settlementRequired) {
+      blockers.push({
+        code: "SETTLEMENT_NOT_REQUIRED",
+        message: "This scheme does not require principal settlement.",
+      });
+    }
+    if (scheme.settlementCompletedAt) {
+      blockers.push({
+        code: "SETTLEMENT_ALREADY_COMPLETED",
+        message: "Settlement has already been completed for this scheme.",
+      });
+    }
+    const principalPaise = Math.max(
+      0,
+      Number(scheme.settlementPrincipalPaise ?? totals.amountPaidPaise ?? 0),
+    );
+    if (scheme.settlementRequired && principalPaise <= 0) {
+      blockers.push({
+        code: "SETTLEMENT_PRINCIPAL_ZERO",
+        message: "No refundable principal remains for settlement.",
+      });
+    }
+    const settlementPaise = principalPaise;
+    const paidCount = installmentsPaidCount(scheme);
+    const lines = [
+      {
+        key: "TOTAL_PAID",
+        label: `Total paid (${paidCount} installment${paidCount === 1 ? "" : "s"})`,
+        amount: moneyField(principalPaise),
+        sign: "+",
+      },
+      {
+        key: "PENALTY",
+        label: "Premature closure charge",
+        amount: moneyField(0),
+        sign: "-",
+      },
+    ];
+    const allowedModeCodes = rules.allowedModes ?? ["CASH"];
+    const allowedModes = allowedModeCodes.map((mode) => ({
+      mode,
+      label: REDEMPTION_MODE_LABELS[mode] ?? mode,
+      available: allowedModeCodes.includes(mode),
+    }));
+    return {
+      type: ClosureType.PREMATURE_CLOSURE,
+      eligible: blockers.length === 0,
+      blockers,
+      scheme: {
+        id: scheme._id,
+        schemeNumber: scheme.enrollmentNumber,
+        planName: scheme.planSnapshot?.name,
+        valueBasis: scheme.valueBasis,
+        status: scheme.status,
+        maturityDate: scheme.maturityDate,
+        closureReason: scheme.closureReason,
+        settlementRequired: scheme.settlementRequired,
+      },
+      customer: customer
+        ? {
+          id: customer._id,
+          name: customer.name,
+          mobile: customer.mobile,
+          passbookNumber: customer.passbookNumber ?? customer.customerNumber,
+        }
+        : undefined,
+      computation: {
+        lines,
+        finalValue: moneyField(settlementPaise),
+        goldWeight: totals.goldWeightMg
+          ? { weightMg: totals.goldWeightMg, weightDisplay: `${(totals.goldWeightMg / 1000).toFixed(3)} g` }
+          : null,
+      },
+      benefit: null,
+      textBenefits: [],
+      penalty: null,
+      allowedModes,
+      approvalRequired: false,
+      flexSystemPolicyClosure: true,
+      closureType,
+      schemeId: scheme._id,
+      principalPaise,
+      goldWeightMg: totals.goldWeightMg,
+      benefitEligible: false,
+      benefitPaise: 0,
+      benefitWeightMg: 0,
+      benefitRatePerGramPaise: 0,
+      penaltyPaise: 0,
+      settlementPaise,
+      maxSettlementPaise: principalPaise,
+    };
+  }
   const paidCount = installmentsPaidCount(scheme);
   const monthsCompleted = elapsedSchemeMonths(scheme.startDate, today());
   const lockInMonths = rules.lockInMonths ?? 0;
@@ -513,9 +616,18 @@ export async function initiateRedemption(
     ...(req.auth.type === "CUSTOMER" ? { customerId: req.auth.id } : req.scope),
   }).lean();
   if (!schemeRow) throw errors.notFound("Scheme");
+  if (customerRequest && isFlexSystemPolicyClosure(schemeRow)) {
+    throw errors.business(
+      "SETTLEMENT_STAFF_REQUIRED",
+      "Staff must complete settlement for this scheme.",
+    );
+  }
   assertRedemptionModeAllowed(schemeRow.planSnapshot?.redemptionRules, req.body.mode);
   assertRedemptionBranchAllowed(schemeRow, req);
-  if (closureType === ClosureType.PREMATURE_CLOSURE) {
+  if (
+    closureType === ClosureType.PREMATURE_CLOSURE
+    && !isFlexSystemPolicyClosure(schemeRow)
+  ) {
     assertFeatureEntitled(
       req.tenant ?? await Tenant.findById(req.auth.tenantId).lean(),
       "prematureRedemption",
@@ -541,7 +653,7 @@ export async function initiateRedemption(
       { preview },
     );
   }
-  if (closureType === ClosureType.PREMATURE_CLOSURE) {
+  if (closureType === ClosureType.PREMATURE_CLOSURE && !preview.flexSystemPolicyClosure) {
     if (preview.penaltyPaise > 0 && !modeDetails.acknowledgePenalty) {
       throw errors.business(
         "ACKNOWLEDGEMENT_REQUIRED",
@@ -557,6 +669,16 @@ export async function initiateRedemption(
         "Confirm that the maturity benefit is forfeited before submitting.",
       );
     }
+  }
+  if (
+    preview.flexSystemPolicyClosure
+    && preview.maxSettlementPaise != null
+    && Number(req.body.settlementPaise ?? preview.settlementPaise) > Number(preview.maxSettlementPaise)
+  ) {
+    throw errors.business(
+      "SETTLEMENT_EXCEEDS_PRINCIPAL",
+      "Settlement cannot exceed the refundable principal.",
+    );
   }
   if (req.body.mode === RedemptionMode.PURCHASE_ADJUSTMENT) {
     const billNumber = String(req.body.modeDetails?.billNumber ?? "").trim();
@@ -877,10 +999,15 @@ export async function transitionRedemption(req, action) {
         { session },
       );
       const schemeBefore = scheme.toObject();
-      scheme.status =
-        row.closureType === ClosureType.PREMATURE_CLOSURE
-          ? SchemeStatus.CLOSED_PREMATURE
-          : SchemeStatus.REDEEMED;
+      if (isFlexSystemPolicyClosure(scheme)) {
+        scheme.settlementRequired = false;
+        scheme.settlementCompletedAt = new Date();
+      } else {
+        scheme.status =
+          row.closureType === ClosureType.PREMATURE_CLOSURE
+            ? SchemeStatus.CLOSED_PREMATURE
+            : SchemeStatus.REDEEMED;
+      }
       scheme.version += 1;
       await scheme.save({ session });
       await writeAudit({

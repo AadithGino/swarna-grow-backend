@@ -56,6 +56,7 @@ const ACTION_LABELS = {
   REDEMPTION_COMPLETED: "Redemption completed",
   SCHEME_REDEEMED: "Scheme marked redeemed",
   SCHEME_CLOSED_PREMATURE: "Scheme closed prematurely",
+  FLEXIBLE_LOCK_APPLIED: "Flexible lock applied",
 };
 
 function formatScalar(value) {

@@ -10,7 +10,10 @@ import { effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, today } from "../lib/date.js";
 import { iteratePeriodBuckets } from "../lib/analytics-period.js";
 import { moneyRef, weightRef } from "../lib/money.js";
-import { computeFlexibleCycleCapPaise } from "../lib/flexible-cap.js";
+import {
+  buildIllustrativeFreeWindowNetSummary,
+  computeFlexibleLockCapDetails,
+} from "../lib/flexible-cap.js";
 import { buildAmountSummary } from "../lib/plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { mergePlanPatch, validateCompletePlan } from "../lib/plan-merge.js";
@@ -307,14 +310,19 @@ async function buildPlanStatsPayload(tenantId, plan) {
 
 function computeIllustrativeFlexibleCap(installmentAmountPaise, flexRules) {
   const free = flexRules.flexiblePhaseCycles ?? 6;
-  const illustrativeFreeTotalPaise = installmentAmountPaise * free;
-  const illustrativePaymentCount = free;
-  const capPaise = computeFlexibleCycleCapPaise({
-    totalPaise: illustrativeFreeTotalPaise,
-    freeWindowPaymentCount: illustrativePaymentCount,
+  const netSummary = buildIllustrativeFreeWindowNetSummary({
+    installmentAmountPaise,
+    flexiblePhaseCycles: free,
+  });
+  const { capPaise, audit } = computeFlexibleLockCapDetails({
+    netSummary,
     flexibleRules: flexRules,
   });
-  return { illustrativeFreeTotalPaise, capPaise };
+  return {
+    illustrativeFreeTotalPaise: netSummary.netFreeTotalPaise,
+    capPaise,
+    capAudit: audit,
+  };
 }
 
 /** Enrolment preview for flexible-then-capped plans (not fixed × installment count). */

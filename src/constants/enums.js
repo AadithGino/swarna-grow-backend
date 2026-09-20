@@ -95,14 +95,14 @@ export const CapFormula = makeEnum(
   "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
   "FLEXIBLE_PHASE_TOTAL_DIV_PAYMENT_COUNT",
 );
-export const CapRoundingMode = makeEnum("ROUND_UP");
+export const CapRoundingMode = makeEnum("ROUND_UP", "ROUND_DOWN", "HALF_UP");
 export const ZeroFlexibleTotalAction = makeEnum("CLOSE_SCHEME", "USE_MINIMUM");
 export const BelowMinimumTotalAction = makeEnum("USE_MINIMUM", "CLOSE_SCHEME");
 export const GoldRateSource = makeEnum("TENANT_DAILY_RATE");
 export const WeightRoundingMode = makeEnum("HALF_UP", "ROUND_DOWN", "ROUND_UP");
 export const AlertSeverity = makeEnum("INFO", "WARNING", "CRITICAL");
 export const AlertStatus = makeEnum("OPEN", "DISMISSED", "RESOLVED");
-export const AlertType = makeEnum("MISSING_GOLD_RATE", "GATEWAY_AMOUNT_MISMATCH", "GATEWAY_WEBHOOK_UNMATCHED", "WEBHOOK_FAILURE", "MESSAGE_FAILURE", "PAYMENT_REVIEW", "SYSTEM_ERROR");
+export const AlertType = makeEnum("MISSING_GOLD_RATE", "GATEWAY_AMOUNT_MISMATCH", "GATEWAY_WEBHOOK_UNMATCHED", "WEBHOOK_FAILURE", "MESSAGE_FAILURE", "PAYMENT_REVIEW", "FLEX_SETTLEMENT_REQUIRED", "SYSTEM_ERROR");
 export const CashAdjustmentDirection = makeEnum("CREDIT", "DEBIT");
 
 export const enumValues = (enumeration) => Object.values(enumeration);
