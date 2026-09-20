@@ -19,7 +19,6 @@ const REDEMPTION_MODE_LABELS = {
   CASH: "Cash payout",
   GOLD_HANDOVER: "Take as gold",
   PURCHASE_ADJUSTMENT: "Adjust against purchase",
-  TRANSFER_TO_SCHEME: "Start a new scheme",
 };
 
 function payButtonState(scheme, actions, paymentBlock) {

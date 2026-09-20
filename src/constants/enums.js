@@ -45,7 +45,7 @@ export const LinkStatus = makeEnum("CREATED", "SENT", "OPENED", "PAID", "EXPIRED
 export const LedgerEntryType = makeEnum("INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "UNALLOCATED_PAYMENT", "BENEFIT_CREDIT", "REVERSAL", "CLOSURE_PENALTY", "REDEMPTION_DEBIT", "ADJUSTMENT");
 export const LateSuccessDetection = makeEnum("WEBHOOK", "RECONCILIATION_JOB");
 export const GatewayRefundStatus = makeEnum("PENDING", "ACCEPTED", "COMPLETED", "FAILED");
-export const RedemptionMode = makeEnum("CASH", "GOLD_HANDOVER", "PURCHASE_ADJUSTMENT", "TRANSFER_TO_SCHEME");
+export const RedemptionMode = makeEnum("CASH", "GOLD_HANDOVER", "PURCHASE_ADJUSTMENT");
 export const RedemptionStatus = makeEnum("REQUESTED", "PENDING_APPROVAL", "APPROVED", "COMPLETED", "REJECTED");
 export const ClosureType = makeEnum("MATURITY_REDEMPTION", "PREMATURE_CLOSURE");
 export const MessageType = makeEnum("OTP", "SCHEME_JOINED", "PAYMENT_DUE", "PAYMENT_OVERDUE", "PAYMENT_SUCCESS", "FLEXI_LOCK_APPLIED", "SCHEME_MATURED", "SCHEME_CLOSED", "CUSTOMER_STATEMENT", "MANUAL_PUSH");
@@ -89,7 +89,7 @@ export const UploadStatus = makeEnum("PENDING", "UPLOADED", "ATTACHED", "EXPIRED
 export const IdempotencyState = makeEnum("PROCESSING", "COMPLETED");
 export const GrievanceRelatedEntityType = makeEnum("PAYMENT", "SCHEME", "REDEMPTION");
 export const PrematurePenaltyMode = makeEnum("NONE", "FLAT", "PERCENT_OF_PAID");
-export const BenefitTreatment = makeEnum("FORFEIT", "PRORATE", "FULL");
+export const BenefitTreatment = makeEnum("FORFEIT", "FULL");
 export const FlexibleFrequencyMode = makeEnum("MULTIPLE");
 export const CapFormula = makeEnum(
   "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",

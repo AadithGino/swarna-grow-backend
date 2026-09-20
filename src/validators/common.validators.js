@@ -205,13 +205,6 @@ const prematurePenalty = z
     benefitTreatment: enumSchema(E.BenefitTreatment),
   })
   .superRefine((value, context) => {
-    if (value.benefitTreatment === "PRORATE") {
-      context.addIssue({
-        code: "custom",
-        path: ["benefitTreatment"],
-        message: "PRORATE is not supported. Use FORFEIT or FULL.",
-      });
-    }
     if (value.mode === E.PrematurePenaltyMode.PERCENT_OF_PAID) {
       if (value.value != null && value.value > 100) {
         context.addIssue({
@@ -266,6 +259,22 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
       path: ["flexibleRules"],
       message: "Fixed plans must not define flexibleRules.",
     });
+  }
+  if (
+    pattern === E.PaymentPattern.FLEXIBLE
+    && value.flexibleRules
+    && value.durationMonths != null
+  ) {
+    const flexMonths = value.flexibleRules.flexiblePhaseCycles ?? 0;
+    const cappedMonths = value.flexibleRules.cappedPhaseCycles ?? 0;
+    if (flexMonths + cappedMonths !== value.durationMonths) {
+      context.addIssue({
+        code: "custom",
+        path: ["flexibleRules"],
+        message:
+          "flexiblePhaseCycles + cappedPhaseCycles must equal durationMonths.",
+      });
+    }
   }
   const basis = value.valueBasis;
   if (basis === E.ValueBasis.GOLD_WEIGHT) {
@@ -454,6 +463,29 @@ export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(40
 export const whatsappOptBody = z.object({ optedIn: z.boolean() });
 export const kycSubmitBody = z.object({ type: enumSchema(E.KycType), number: z.string().min(4).max(32).optional(), numberMasked: z.string().max(32).optional(), frontUploadId: z.string().optional(), backUploadId: z.string().optional() });
 export const customerBlockBody = z.object({ reason: z.string().trim().min(3).max(500).optional() });
+export const tenantOperationsPatchBody = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    multiSchemePerCustomer: z.boolean().optional(),
+    kycMandatory: z.boolean().optional(),
+    kycAllowedTypes: z.array(z.string()).optional(),
+    customerSelfEnrolEnabled: z.boolean().optional(),
+    customerSelfRegistrationEnabled: z.boolean().optional(),
+    customerLoginMode: enumSchema(E.CustomerLoginMode).optional(),
+    customerAppWriteEnabled: z.boolean().optional(),
+    customerAppPaymentsEnabled: z.boolean().optional(),
+    receiptPrefix: z.string().optional(),
+    receiptNumberFormat: z.string().optional(),
+    passbookNumberFormat: z.string().optional(),
+    schemeNumberFormat: z.string().optional(),
+    goldPurity: z.literal("22K").optional(),
+    weightRoundingMode: enumSchema(E.WeightRoundingMode).optional(),
+    paymentReversalWindowHours: z.number().int().positive().optional(),
+    redemptionApprovalRequired: z.boolean().optional(),
+    termsAndConditions: z.string().optional(),
+  })
+  .strict();
+
 export const goldRateBody = z.object({
   branchId: z.string().nullable().optional(),
   ratePerGramPaise: positivePaise,

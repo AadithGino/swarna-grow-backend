@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { AlertSeverity, AlertStatus, AlertType, CashAdjustmentDirection, CashHandoverStatus, ClosureType, ExportStatus, ExportType, HandoverInitiator, JobStatus, MessageChannel, MessageStatus, MessageType, RedemptionMode, RedemptionStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
 import { baseOptions, branchField, enumField, immutablePlugin, integerField, stringId, tenantField, versionField } from "./schema-helpers.js";
 
-const goldRateSchema = new mongoose.Schema({ _id: stringId("grt"), tenantId: tenantField, branchId: branchField, ratePerGramPaise: integerField({ required: true, min: 1 }), effectiveDate: { type: String, required: true }, purity: { type: String, default: "22K" }, source: String, enteredBy: String, version: versionField }, baseOptions);
+const goldRateSchema = new mongoose.Schema({ _id: stringId("grt"), tenantId: tenantField, branchId: branchField, ratePerGramPaise: integerField({ required: true, min: 1 }), effectiveDate: { type: String, required: true }, purity: { type: String, enum: ["22K"], default: "22K" }, source: String, enteredBy: String, version: versionField }, baseOptions);
 // Multiple publishes per day are kept as immutable history; lookups take the latest by createdAt.
 goldRateSchema.index({ tenantId: 1, branchId: 1, effectiveDate: 1, createdAt: -1 });
 goldRateSchema.index({ tenantId: 1, effectiveDate: -1, createdAt: -1 });

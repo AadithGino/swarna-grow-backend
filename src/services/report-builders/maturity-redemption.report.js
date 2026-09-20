@@ -15,7 +15,6 @@ const MODE_LABEL = {
   CASH: "Cash",
   GOLD_HANDOVER: "Jewellery",
   PURCHASE_ADJUSTMENT: "Purchase adjustment",
-  TRANSFER_TO_SCHEME: "Transfer to scheme",
 };
 
 const CLOSURE_LABEL = {

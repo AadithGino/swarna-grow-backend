@@ -3005,7 +3005,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }
@@ -3563,7 +3563,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }
@@ -3587,7 +3587,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }
@@ -3613,7 +3613,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }
@@ -3752,7 +3752,7 @@ null
 - **Request body:**
 ```json
 {
-  "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+  "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
   "modeDetails": {},
   "expectedVersion": 1
 }
@@ -3765,7 +3765,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }
@@ -3799,7 +3799,7 @@ null
 - **Request body:**
 ```json
 {
-  "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+  "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
   "modeDetails": {},
   "expectedVersion": 1
 }
@@ -3812,7 +3812,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }
@@ -4304,7 +4304,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }
@@ -6532,7 +6532,7 @@ null
 - **Request body:**
 ```json
 {
-  "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+  "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
   "modeDetails": {},
   "expectedVersion": 1
 }
@@ -6545,7 +6545,7 @@ null
     "_id": "red_...",
     "schemeId": "sch_...",
     "closureType": "MATURITY_REDEMPTION|PREMATURE_CLOSURE",
-    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT|TRANSFER_TO_SCHEME",
+    "mode": "CASH|GOLD_HANDOVER|PURCHASE_ADJUSTMENT",
     "status": "REQUESTED|PENDING_APPROVAL|APPROVED|COMPLETED|REJECTED",
     "settlementPaise": 0
   }

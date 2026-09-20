@@ -45,7 +45,6 @@ const REDEMPTION_MODE_LABELS = {
   CASH: "Cash payout",
   GOLD_HANDOVER: "Take as gold",
   PURCHASE_ADJUSTMENT: "Adjust against purchase",
-  TRANSFER_TO_SCHEME: "Start a new scheme",
 };
 
 function moneyField(paise) {
@@ -89,12 +88,6 @@ function installmentsPaidCount(scheme) {
 }
 
 function assertRedemptionModeAllowed(rules, mode) {
-  if (mode === RedemptionMode.TRANSFER_TO_SCHEME) {
-    throw errors.business(
-      "REDEMPTION_MODE_NOT_SUPPORTED",
-      "Transfer to a new scheme is not available in this version.",
-    );
-  }
   const allowed = rules?.allowedModes ?? ["CASH"];
   if (!allowed.includes(mode)) {
     throw errors.business(

@@ -14,7 +14,6 @@ import {
   TenantRole,
 } from "../src/constants/enums.js";
 import { assertV1GoldPurity, currentGoldRate22K } from "../src/lib/gold-rate-lookup.js";
-import { planBody } from "../src/validators/common.validators.js";
 import {
   decimalRoundingMode,
   moneyToWeightMg,
@@ -98,25 +97,48 @@ test("setGoldRate rejects non-22K purity", async () => {
   );
 });
 
-test("operational rate lookup ignores non-22K historical rows", async () => {
+test("mongoose GoldRate create rejects non-22K purity", async () => {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
-  await GoldRate.create({
-    _id: createId("grt"),
+  await assert.rejects(
+    () => GoldRate.create({
+      _id: createId("grt"),
+      tenantId: tenant._id,
+      branchId: branch._id,
+      effectiveDate: today(),
+      ratePerGramPaise: 999999,
+      purity: "24K",
+      enteredBy: user._id,
+    }),
+    (error) => /22K|enum/i.test(String(error.message ?? error)),
+  );
+});
+
+test("operational rate lookup ignores legacy non-22K rows in Mongo", async () => {
+  const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
+  const day = today();
+  const legacyId = createId("grt");
+  await GoldRate.collection.insertOne({
+    _id: legacyId,
     tenantId: tenant._id,
     branchId: branch._id,
-    effectiveDate: today(),
+    effectiveDate: day,
     ratePerGramPaise: 999999,
     purity: "24K",
     enteredBy: user._id,
+    version: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
   });
   await setGoldRate({
     auth: { id: user._id, tenantId: tenant._id },
     headers: { "user-agent": "test" },
-    body: { effectiveDate: today(), ratePerGramPaise: 550000 },
+    body: { effectiveDate: day, ratePerGramPaise: 550000, branchId: branch._id },
   });
-  const rate = await currentGoldRate22K({ tenantId: tenant._id, branchId: branch._id }, today());
+  const rate = await currentGoldRate22K({ tenantId: tenant._id, branchId: branch._id }, day);
   assert.equal(rate.ratePerGramPaise, 550000);
   assert.equal(rate.purity, "22K");
+  const legacyOnly = await GoldRate.findOne({ _id: legacyId }).lean();
+  assert.equal(legacyOnly.purity, "24K");
 });
 
 test("cash-plan gold handover uses exact handover-day 22K rate and weight", async () => {
@@ -469,25 +491,6 @@ test("premature FORFEIT settlement preview excludes benefit", async () => {
   assert.notEqual(bonus, 0);
 });
 
-test("transfer-to-scheme mode rejected for new redemptions", async () => {
-  const { customer, scheme } = await seedCashMaturedWithGoldHandover();
-  await assert.rejects(
-    () => requestCustomerRedemption({
-      auth: { id: customer._id, tenantId: scheme.tenantId, type: "CUSTOMER" },
-      scope: { tenantId: scheme.tenantId },
-      params: { schemeId: scheme._id },
-      body: {
-        preferredMode: RedemptionMode.TRANSFER_TO_SCHEME,
-        expectedVersion: scheme.version,
-      },
-      query: {},
-      headers: {},
-      ip: "127.0.0.1",
-    }),
-    (error) => error.code === "REDEMPTION_MODE_NOT_SUPPORTED",
-  );
-});
-
 test("purchase adjustment requires bill number", async () => {
   const { customer, scheme } = await seedCashMaturedWithGoldHandover({
     settlementPaise: 300000,
@@ -519,43 +522,6 @@ test("purchase adjustment requires bill number", async () => {
       ip: "127.0.0.1",
     }),
     (error) => error.code === "BILL_NUMBER_REQUIRED",
-  );
-});
-
-test("plan validation rejects PRORATE premature benefit treatment", () => {
-  const parsed = planBody.safeParse({
-    name: "Fixed plan",
-    code: "FXPRORATE",
-    valueBasis: "CASH",
-    paymentPattern: "FIXED",
-    durationMonths: 12,
-    installmentCount: 12,
-    amountRules: { amountMode: "FIXED", fixedAmountPaise: 100000 },
-    scheduleRules: {
-      dueDateRule: "FIXED_DAY_OF_MONTH",
-      dueDayOfMonth: 5,
-      firstInstallmentModeDefault: "START_NEXT_CYCLE",
-    },
-    paymentRules: { partialPaymentAllowed: false, minPaymentPaise: 100000 },
-    redemptionRules: {
-      prematureClosureAllowed: true,
-      lockInMonths: 0,
-      prematurePenalty: { mode: "NONE", value: 0, benefitTreatment: "PRORATE" },
-      allowedModes: [RedemptionMode.CASH],
-      redeemAtAnyBranch: false,
-    },
-    availability: {
-      allBranches: true,
-      branchIds: [],
-      visibleInCustomerApp: true,
-      customerSelfEnrolAllowed: true,
-    },
-  });
-  assert.equal(parsed.success, false);
-  assert.ok(
-    parsed.error?.issues.some(
-      (issue) => issue.path.join(".") === "redemptionRules.prematurePenalty.benefitTreatment",
-    ),
   );
 });
 
@@ -617,29 +583,6 @@ test("purchase adjustment completion has zero cash out and bill on ledger", asyn
   assert.equal(debit.amountPaise, settlementPaise);
   assert.equal(debit.description, "Purchase adjustment completed");
   assert.equal(debit.metadata?.billNumber, billNumber);
-});
-
-test("legacy transfer redemption record remains readable", async () => {
-  const { tenant, branch, user, customer, scheme } = await seedCashMaturedWithGoldHandover();
-  const legacyId = createId("redemption");
-  await Redemption.create({
-    _id: legacyId,
-    tenantId: tenant._id,
-    branchId: branch._id,
-    schemeId: scheme._id,
-    customerId: customer._id,
-    closureType: ClosureType.MATURITY_REDEMPTION,
-    mode: RedemptionMode.TRANSFER_TO_SCHEME,
-    status: "COMPLETED",
-    settlementPaise: 100000,
-    cashOutPaise: 0,
-    requestedBy: user._id,
-    requestedAt: now(),
-    completedAt: now(),
-  });
-  const row = await Redemption.findById(legacyId).lean();
-  assert.equal(row.mode, RedemptionMode.TRANSFER_TO_SCHEME);
-  assert.equal(row.status, "COMPLETED");
 });
 
 test("gold-weight payment rejected when amount rounds to zero weight", async () => {

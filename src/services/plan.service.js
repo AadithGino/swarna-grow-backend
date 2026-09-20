@@ -453,7 +453,13 @@ function buildFixedPreviewResponse(body) {
       installmentAmount: moneyRef(installmentAmountPaise),
       totalPayable: moneyRef(totalPaise),
       firstDueDate: schedule[0]?.dueDate,
-      maturityDate: resolveFixedSchemeMaturityDate(rows),
+      maturityDate:
+        resolveFixedSchemeMaturityDate({
+          startDate,
+          durationMonths: body.durationMonths,
+          firstInstallmentMode,
+        })
+        ?? null,
       benefit: {
         type: benefit.type,
         displayLabel: benefit.displayLabel,

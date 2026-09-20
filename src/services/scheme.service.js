@@ -365,9 +365,13 @@ export async function validateEnrolmentResponse(req) {
       scheduleRules: plan.scheduleRules ?? {},
       firstInstallmentMode,
     });
-    const maturityDate = scheduleRows.length
-      ? resolveFixedSchemeMaturityDate(scheduleRows)
-      : addMonthsClamped(startDate, plan.durationMonths).format("YYYY-MM-DD");
+    const maturityDate =
+      resolveFixedSchemeMaturityDate({
+        startDate,
+        durationMonths: plan.durationMonths,
+        firstInstallmentMode,
+      })
+      ?? addMonthsClamped(startDate, plan.durationMonths).format("YYYY-MM-DD");
     const benefit = plan.benefit ?? {};
     return {
       canEnrol: true,
@@ -482,7 +486,13 @@ export async function createEnrolmentInSession(req, validation, session) {
         firstInstallmentMode: validation.firstInstallmentMode,
       })) ?? maturityDate;
     } else if (fixedInstallments.length) {
-      persistedMaturityDate = resolveFixedSchemeMaturityDate(fixedInstallments) ?? maturityDate;
+      persistedMaturityDate =
+        resolveFixedSchemeMaturityDate({
+          startDate,
+          durationMonths: validation.plan.durationMonths,
+          firstInstallmentMode: validation.firstInstallmentMode,
+        })
+        ?? maturityDate;
     }
     const flexibleCycles = isFlexible
       ? buildFlexibleSchemeCycleRows({

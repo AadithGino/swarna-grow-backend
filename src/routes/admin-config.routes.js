@@ -6,7 +6,11 @@ import { sendSuccess } from "../lib/response.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
-import { goldRateBody, uploadBody } from "../validators/common.validators.js";
+import {
+  goldRateBody,
+  tenantOperationsPatchBody,
+  uploadBody,
+} from "../validators/common.validators.js";
 import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
 
@@ -16,7 +20,15 @@ adminConfigRouter.get("/settings/branding", ...guarded(Permission.SETTINGS_READ,
 adminConfigRouter.get("/settings/operations", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.settingsOperations)));
 adminConfigRouter.patch("/settings/profile", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.patchSettingsProfile)));
 adminConfigRouter.patch("/settings/branding", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.patchSettingsBranding)));
-adminConfigRouter.patch("/settings/operations", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.patchSettingsOperations)));
+adminConfigRouter.patch(
+  "/settings/operations",
+  ...guarded(
+    Permission.SETTINGS_WRITE,
+    validate({ body: tenantOperationsPatchBody }),
+    idempotent,
+    asyncHandler(controller.patchSettingsOperations),
+  ),
+);
 adminConfigRouter.get("/branches", ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branches)));
 adminConfigRouter.post("/branches", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.createBranch)));
 adminConfigRouter.get(

@@ -53,7 +53,7 @@ const tenantOperationsSchema = new mongoose.Schema(
     receiptNumberFormat: { type: String, default: "{prefix}/{branchCode}/{year}/{seq:6}" },
     passbookNumberFormat: { type: String, default: "{branchCode}/{year}/{seq:5}" },
     schemeNumberFormat: { type: String, default: "{branchCode}/{planCode}/{year}/{seq:5}" },
-    goldPurity: { type: String, default: "22K" },
+    goldPurity: { type: String, enum: ["22K"], default: "22K" },
     weightRoundingMode: { type: String, default: "HALF_UP" },
     paymentReversalWindowHours: { type: Number, default: 48 },
     redemptionApprovalRequired: { type: Boolean, default: true },

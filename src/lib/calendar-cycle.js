@@ -54,9 +54,21 @@ export function maturityDateFromCalendarCycles(cycles) {
   return cycles[cycles.length - 1].cycleEnd;
 }
 
-/** Fixed schemes mature on the last calendar day of the final installment due month. */
-export function fixedMaturityDateFromFinalDueDate(finalDueDate) {
-  return inTz(finalDueDate).endOf("month").format("YYYY-MM-DD");
+/** Fixed scheme maturity: last calendar day of the final duration month (not last installment due). */
+export function fixedMaturityDateFromDuration({
+  startDate,
+  durationMonths,
+  firstInstallmentMode = "START_NEXT_CYCLE",
+}) {
+  const count = Number(durationMonths);
+  if (!Number.isFinite(count) || count < 1) return null;
+  return maturityDateFromCalendarCycles(
+    buildCalendarMonthCycles({
+      startDate,
+      cycleCount: count,
+      firstInstallmentMode,
+    }),
+  );
 }
 
 /** True when `today` is strictly after the last free flexible calendar cycle has closed. */

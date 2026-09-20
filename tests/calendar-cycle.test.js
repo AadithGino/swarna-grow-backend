@@ -4,7 +4,7 @@ import {
   buildCalendarMonthCycles,
   buildFlexibleSchemeCycleRows,
   firstCalendarCycleMonthKey,
-  fixedMaturityDateFromFinalDueDate,
+  fixedMaturityDateFromDuration,
   isFlexibleLockDueAfterFreePhase,
   maturityDateFromCalendarCycles,
 } from "../src/lib/calendar-cycle.js";
@@ -49,8 +49,15 @@ test("December to January year rollover", () => {
   assert.equal(cycles[1].expiresAt, "2026-01-31");
 });
 
-test("fixed maturity uses last day of final due month", () => {
-  assert.equal(fixedMaturityDateFromFinalDueDate("2027-08-10"), "2027-08-31");
+test("fixed maturity from duration uses last day of final calendar month", () => {
+  assert.equal(
+    fixedMaturityDateFromDuration({
+      startDate: "2026-01-10",
+      durationMonths: 12,
+      firstInstallmentMode: "COLLECT_NOW",
+    }),
+    "2026-12-31",
+  );
 });
 
 test("flexible scheme cycles use calendar month expiry", () => {
