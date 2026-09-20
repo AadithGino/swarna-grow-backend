@@ -28,7 +28,21 @@ test("two simultaneous enrolments for the final plan slot: one succeeds, one cap
       dueDateRule: "JOIN_ANNIVERSARY",
       firstInstallmentModeDefault: "START_NEXT_CYCLE",
     },
-    availability: { allBranches: true, maxEnrolments: 1 },
+    availability: { allBranches: true, maxEnrolments: 1, visibleInCustomerApp: true, customerSelfEnrolAllowed: true },
+    paymentRules: { partialPaymentAllowed: false, minPaymentPaise: 100_000 },
+    redemptionRules: {
+      prematureClosureAllowed: false,
+      lockInMonths: 0,
+      prematurePenalty: { mode: "NONE", value: 0, benefitTreatment: "FORFEIT" },
+      allowedModes: ["CASH"],
+      redeemAtAnyBranch: false,
+    },
+    benefit: {
+      type: "TEXT_ONLY",
+      displayLabel: "Benefit",
+      eligibility: { requireAllInstallmentsPaid: true, maxAllowedDefaults: 0, minMonthsCompleted: 0 },
+    },
+    version: 1,
   });
   const customerA = await seedCustomer({
     tenantId: tenant._id,
@@ -46,7 +60,12 @@ test("two simultaneous enrolments for the final plan slot: one succeeds, one cap
     tenant,
     headers: {},
     ip: "127.0.0.1",
-    body: { planId, branchId: branch._id },
+    body: {
+      planId,
+      branchId: branch._id,
+      installmentAmountPaise: 100_000,
+      firstInstallmentMode: "START_NEXT_CYCLE",
+    },
   };
   const results = await Promise.allSettled([
     enrol({ ...baseReq, body: { ...baseReq.body, customerId: customerA._id } }),

@@ -1,4 +1,5 @@
-import { AuditEntityType, LinkStatus, PaymentStatus } from "../constants/enums.js";
+import { AuditEntityType, LinkStatus, PaymentStatus, SchemeStatus } from "../constants/enums.js";
+import { expirePendingEnrolmentInSession } from "../lib/pending-enrolment-expiry.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { withTransaction } from "../lib/transaction.js";
 import { OutboxEvent, Payment, PaymentIntent, PaymentLink, Scheme } from "../models/index.js";
@@ -99,11 +100,31 @@ export async function applyTerminalGatewayFailure({
     gatewayTxFaultCheckpoint("terminalFailure:link-updated");
 
     if (failedIntent?.schemeId) {
-      await Scheme.updateOne(
-        { _id: failedIntent.schemeId, tenantId },
-        { $inc: { positionVersion: 1, version: 1 } },
-        { session },
-      );
+      const schemeRow = await Scheme.findOne({
+        _id: failedIntent.schemeId,
+        tenantId,
+      })
+        .select("status")
+        .session(session)
+        .lean();
+      if (schemeRow?.status === SchemeStatus.PENDING_PAYMENT) {
+        await expirePendingEnrolmentInSession({
+          session,
+          tenantId,
+          schemeId: failedIntent.schemeId,
+          req: {
+            auth: { id: "phonepe", tenantId, type: "WEBHOOK" },
+            headers: {},
+            ip: "provider",
+          },
+        });
+      } else {
+        await Scheme.updateOne(
+          { _id: failedIntent.schemeId, tenantId },
+          { $inc: { positionVersion: 1, version: 1 } },
+          { session },
+        );
+      }
     }
     gatewayTxFaultCheckpoint("terminalFailure:scheme-updated");
 

@@ -1,4 +1,4 @@
-import { AuditEntityType, LinkStatus, PaymentStatus } from "../constants/enums.js";
+import { AuditEntityType, LinkStatus, PaymentIntentStatus, PaymentStatus } from "../constants/enums.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { recordPhonePeDriftRepaired } from "../lib/ops-metrics.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -224,12 +224,15 @@ export async function finalizeGatewaySuccess({
   webhookEventId,
   intent = null,
   link = null,
+  paymentId: explicitPaymentId = null,
 }) {
   if (transactionId) {
     const existing = await Payment.findOne({
       tenantId,
       providerTransactionId: transactionId,
-      status: PaymentStatus.SUCCESS,
+      status: {
+        $in: [PaymentStatus.SUCCESS, PaymentStatus.UNALLOCATED_PENDING_REVIEW],
+      },
     }).lean();
     if (existing) {
       const repaired = await repairDriftTransactional({
@@ -262,16 +265,48 @@ export async function finalizeGatewaySuccess({
     return { outcome: GatewayFinalizeOutcome.AMOUNT_MISMATCH };
   }
 
-  const lateSuccess = intent
-    ? intent.status !== "PENDING"
-    : !["CREATED", "SENT", "OPENED"].includes(link.status);
-
   const payment = await withTransaction(async (session) => {
-    const recorded = await recordPayment(buildGatewayReq({ tenantId, source, webhookEventId }), {
+    let resolvedSource = source;
+    if (intent?._id) {
+      const freshIntent = await PaymentIntent.findOne({
+        _id: intent._id,
+        tenantId,
+      })
+        .session(session)
+        .lean();
+      if (freshIntent) resolvedSource = freshIntent;
+    } else if (link?._id) {
+      const freshLink = await PaymentLink.findOne({
+        _id: link._id,
+        tenantId,
+      })
+        .session(session)
+        .lean();
+      if (freshLink) resolvedSource = freshLink;
+    }
+    const lateSuccess = intent
+      ? resolvedSource.status !== PaymentIntentStatus.PENDING
+      : !["CREATED", "SENT", "OPENED"].includes(resolvedSource.status);
+
+    let resolvedPaymentId = explicitPaymentId ?? resolvedSource.paymentId;
+    if (!resolvedPaymentId && resolvedSource.schemeId) {
+      const reserved = await Payment.findOne({
+        tenantId,
+        schemeId: resolvedSource.schemeId,
+        status: { $in: [PaymentStatus.PENDING, PaymentStatus.FAILED] },
+      })
+        .sort({ createdAt: -1 })
+        .select("_id")
+        .session(session)
+        .lean();
+      resolvedPaymentId = reserved?._id ?? null;
+    }
+
+    const recorded = await recordPayment(buildGatewayReq({ tenantId, source: resolvedSource, webhookEventId }), {
       gateway: true,
       source: "WEBHOOK",
       actorType: "WEBHOOK",
-      existingPaymentId: source.paymentId,
+      existingPaymentId: resolvedPaymentId,
       providerTransactionId: transactionId,
       providerPayload,
       lateSuccess,

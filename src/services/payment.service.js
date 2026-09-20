@@ -372,6 +372,9 @@ async function recordPaymentInSession(session, req, override) {
       tenantId: req.auth.tenantId,
     }).session(session);
     if (!scheme) throw errors.notFound("Scheme");
+    const gatewayLateSuccess =
+      override.lateSuccess
+      || (override.gateway && scheme.status === SchemeStatus.ENROLMENT_EXPIRED);
     await assertStaffCanAccessScheme(req, scheme, session);
     const customerRow = await Customer.findOne({
       _id: scheme.customerId,
@@ -385,7 +388,7 @@ async function recordPaymentInSession(session, req, override) {
     try {
       quote = await payableRange(req, scheme.toObject());
     } catch (error) {
-      if (!override.lateSuccess) throw error;
+      if (!gatewayLateSuccess) throw error;
       quote = null;
     }
     req.body.targetCycle ??= quote?.targetCycle;
@@ -393,7 +396,7 @@ async function recordPaymentInSession(session, req, override) {
       try {
         checkAmount(quote, req.body.amountPaise);
       } catch (error) {
-        if (!override.lateSuccess) throw error;
+        if (!gatewayLateSuccess) throw error;
         quote = null;
       }
     }
@@ -434,7 +437,7 @@ async function recordPaymentInSession(session, req, override) {
         );
     }
     if (
-      !override.lateSuccess &&
+      !gatewayLateSuccess &&
       quote?.expectedVersion &&
       req.body.expectedVersion &&
       quote.expectedVersion !== req.body.expectedVersion
@@ -444,9 +447,9 @@ async function recordPaymentInSession(session, req, override) {
         "The payable position changed. Refresh and try again.",
         409,
       );
-    if (!override.lateSuccess && quote)
+    if (!gatewayLateSuccess && quote)
       assertExpectedPositionVersion(scheme, quote, req.body);
-    if (!override.lateSuccess && quote && scheme.paymentPattern === "FLEXIBLE")
+    if (!gatewayLateSuccess && quote && scheme.paymentPattern === "FLEXIBLE")
       await assertMaxPaymentsPerCycle({
         scheme,
         targetCycle: req.body.targetCycle,
@@ -491,7 +494,7 @@ async function recordPaymentInSession(session, req, override) {
         _id: override.existingPaymentId,
         tenantId: scheme.tenantId,
         status: {
-          $in: override.lateSuccess
+          $in: gatewayLateSuccess
             ? [PaymentStatus.PENDING, PaymentStatus.FAILED]
             : [PaymentStatus.PENDING],
         },
@@ -515,10 +518,10 @@ async function recordPaymentInSession(session, req, override) {
         payment.providerTransactionId = override.providerTransactionId;
       payment.providerPayload = override.providerPayload;
       payment.paidAt = override.paidAt ?? new Date();
-      payment.isLateSuccess = Boolean(override.lateSuccess);
+      payment.isLateSuccess = Boolean(gatewayLateSuccess);
       payment.lateSuccessDetectedVia = override.lateSuccessDetectedVia;
       payment.gatewayCompletedAt = override.gatewayCompletedAt;
-      payment.delayMinutes = override.lateSuccess
+      payment.delayMinutes = gatewayLateSuccess
         ? Math.max(
             0,
             Math.floor(
@@ -630,6 +633,18 @@ async function recordPaymentInSession(session, req, override) {
         payment,
         session,
         req,
+      });
+    }
+    if (
+      gatewayLateSuccess
+      && payment.status === PaymentStatus.UNALLOCATED_PENDING_REVIEW
+    ) {
+      const { recordLateSuccessOnExpiredEnrolment } = await import("../lib/late-enrolment-payment-review.js");
+      await recordLateSuccessOnExpiredEnrolment({
+        session,
+        tenantId: scheme.tenantId,
+        scheme,
+        payment,
       });
     }
     await OutboxEvent.create(

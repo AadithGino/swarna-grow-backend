@@ -57,6 +57,11 @@ import { mapAdminLedgerEntry, paymentGoldAccrualDto } from "../lib/payment-gold-
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { nextSequence } from "./sequence.service.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
+import { serializeCustomerEnrolment } from "../lib/enrolment-customer-serialization.js";
+import {
+  assertOneActiveSchemePolicy,
+  revalidateLockedPlanForEnrolment,
+} from "../lib/enrolment-in-transaction-validation.js";
 
 function validateAmount(plan, amount) {
   normalizePlanFinancialRules(plan);
@@ -438,67 +443,68 @@ async function lockPlanForEnrolment(session, tenantId, planId) {
   return locked;
 }
 
-async function assertPlanEnrolmentCapacity(session, tenantId, planId, maxEnrolments) {
-  if (maxEnrolments == null) return;
-  const occupied = await Scheme.countDocuments({
-    tenantId,
-    planId,
-    status: { $in: ENROLMENT_CAPACITY_STATUSES },
-  }).session(session);
-  if (occupied >= maxEnrolments) {
-    throw errors.business("PLAN_ENROLMENT_LIMIT_REACHED", "This plan has reached its enrolment limit.");
-  }
-}
-
 export async function createEnrolmentInSession(req, validation, session) {
-    const maxEnrolments = validation.plan.availability?.maxEnrolments;
-    await lockPlanForEnrolment(session, req.auth.tenantId, validation.plan._id);
-    await assertPlanEnrolmentCapacity(
+    const oneActivePolicy = req.tenant.settings?.oneActiveSchemePerCustomer === true;
+    if (oneActivePolicy) {
+      await serializeCustomerEnrolment(
+        session,
+        req.auth.tenantId,
+        validation.customer._id,
+      );
+      await assertOneActiveSchemePolicy(
+        session,
+        req.auth.tenantId,
+        validation.customer._id,
+      );
+    }
+    const lockedPlan = await lockPlanForEnrolment(
       session,
       req.auth.tenantId,
       validation.plan._id,
-      maxEnrolments,
     );
-    if (req.tenant.settings?.oneActiveSchemePerCustomer) {
-      const conflicts = await Scheme.countDocuments({
-        tenantId: req.auth.tenantId,
-        customerId: validation.customer._id,
-        status: { $in: ONE_ACTIVE_SCHEME_CONFLICT_STATUSES },
-      }).session(session);
-      if (conflicts > 0) throw errors.business("ONE_SCHEME_POLICY", "This customer already has an active scheme.");
-    }
-    const number = await nextSequence(req.auth.tenantId, "scheme", session); const startDate = today(); const maturityDate = addMonthsClamped(startDate, validation.plan.durationMonths).format("YYYY-MM-DD");
-    const isFlexible = validation.plan.paymentPattern === PaymentPattern.FLEXIBLE;
+    const plan = lockedPlan.toObject();
+    const txValidation = await revalidateLockedPlanForEnrolment(req, session, {
+      plan,
+      customer: validation.customer,
+      branchId: validation.branchId,
+      installmentAmountPaise: validation.installmentAmountPaise,
+      firstInstallmentMode: validation.firstInstallmentMode,
+      validateAmount,
+      assertPlanAvailableAtBranch,
+      assertActiveEnrolBranch,
+    });
+    const number = await nextSequence(req.auth.tenantId, "scheme", session); const startDate = today(); const maturityDate = addMonthsClamped(startDate, txValidation.plan.durationMonths).format("YYYY-MM-DD");
+    const isFlexible = txValidation.plan.paymentPattern === PaymentPattern.FLEXIBLE;
     const schedulePreviewArgs = {
       startDate,
-      installmentAmountPaise: validation.installmentAmountPaise,
-      durationMonths: validation.plan.durationMonths,
-      installmentCount: validation.plan.installmentCount,
-      scheduleRules: validation.plan.scheduleRules ?? {},
-      firstInstallmentMode: validation.firstInstallmentMode,
+      installmentAmountPaise: txValidation.installmentAmountPaise,
+      durationMonths: txValidation.plan.durationMonths,
+      installmentCount: txValidation.plan.installmentCount,
+      scheduleRules: txValidation.plan.scheduleRules ?? {},
+      firstInstallmentMode: txValidation.firstInstallmentMode,
     };
     const fixedInstallments = isFlexible ? [] : buildSchedulePreview(schedulePreviewArgs);
     let persistedMaturityDate = maturityDate;
     if (isFlexible) {
       persistedMaturityDate = maturityDateFromCalendarCycles(buildCalendarMonthCycles({
         startDate,
-        cycleCount: validation.plan.durationMonths,
-        firstInstallmentMode: validation.firstInstallmentMode,
+        cycleCount: txValidation.plan.durationMonths,
+        firstInstallmentMode: txValidation.firstInstallmentMode,
       })) ?? maturityDate;
     } else if (fixedInstallments.length) {
       persistedMaturityDate =
         resolveFixedSchemeMaturityDate({
           startDate,
-          durationMonths: validation.plan.durationMonths,
-          firstInstallmentMode: validation.firstInstallmentMode,
+          durationMonths: txValidation.plan.durationMonths,
+          firstInstallmentMode: txValidation.firstInstallmentMode,
         })
         ?? maturityDate;
     }
     const flexibleCycles = isFlexible
       ? buildFlexibleSchemeCycleRows({
         startDate,
-        durationMonths: validation.plan.durationMonths,
-        firstInstallmentMode: validation.firstInstallmentMode,
+        durationMonths: txValidation.plan.durationMonths,
+        firstInstallmentMode: txValidation.firstInstallmentMode,
       })
       : [];
     const initialStatus = validation.firstInstallmentRequired
@@ -507,31 +513,23 @@ export async function createEnrolmentInSession(req, validation, session) {
     const scheme = (await Scheme.create([{
       _id: createId("scheme"),
       tenantId: req.auth.tenantId,
-      branchId: validation.branchId,
-      customerId: validation.customer._id,
-      planId: validation.plan._id,
+      branchId: txValidation.branchId,
+      customerId: txValidation.customer._id,
+      planId: txValidation.plan._id,
       enrollmentNumber: `ENR-${String(number).padStart(7, "0")}`,
-      planSnapshot: validation.plan,
-      valueBasis: validation.plan.valueBasis,
-      paymentPattern: validation.plan.paymentPattern,
+      planSnapshot: txValidation.plan,
+      valueBasis: txValidation.plan.valueBasis,
+      paymentPattern: txValidation.plan.paymentPattern,
       status: initialStatus,
       startDate,
       maturityDate: persistedMaturityDate,
-      installmentAmountPaise: validation.installmentAmountPaise,
+      installmentAmountPaise: txValidation.installmentAmountPaise,
       installments: fixedInstallments,
       cycles: flexibleCycles,
       flexiblePhase: isFlexible ? FlexiblePhase.FLEXIBLE : undefined,
       positionVersion: 0,
       createdBy: req.auth.id,
     }], { session }))[0];
-    if (req.tenant.settings?.oneActiveSchemePerCustomer) {
-      const conflicts = await Scheme.countDocuments({
-        tenantId: req.auth.tenantId,
-        customerId: validation.customer._id,
-        status: { $in: ONE_ACTIVE_SCHEME_CONFLICT_STATUSES },
-      }).session(session);
-      if (conflicts > 1) throw errors.business("ONE_SCHEME_POLICY", "This customer already has an active scheme.");
-    }
     const auditEventId = await writeAudit({
       req,
       action: "SCHEME_ENROLLED",
@@ -553,15 +551,18 @@ export async function createEnrolmentInSession(req, validation, session) {
           body: {
             ...req.body.payment,
             schemeId: scheme._id,
-            amountPaise: req.body.payment.amountPaise ?? validation.installmentAmountPaise,
+            amountPaise: req.body.payment.amountPaise ?? txValidation.installmentAmountPaise,
             expectedVersion: scheme.version,
           },
         },
         { session, skipActivation: false },
       );
     }
+    const persistedScheme = activationPayment
+      ? await Scheme.findById(scheme._id).session(session).lean()
+      : scheme.toObject();
     return {
-      ...scheme.toObject(),
+      ...persistedScheme,
       auditEventId,
       firstInstallmentRequired: validation.firstInstallmentRequired,
       activationPayment,
