@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { PlanTier, RedemptionMode, TenantRole } from "../src/constants/enums.js";
 import { SchemePlan, Tenant } from "../src/models/index.js";
 import { AppError } from "../src/lib/app-error.js";
-import { createPlan, updatePlan } from "../src/services/plan.service.js";
+import {
+  buildIllustrativeFreeWindowNetSummary,
+  computeFlexibleLockCapDetails,
+} from "../src/lib/flexible-cap.js";
+import { buildFlexibleEnrolPreview, createPlan, updatePlan } from "../src/services/plan.service.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
 test.before(async () => { await startTestDb(); });
@@ -372,4 +376,102 @@ test("PATCH FIXED to FLEXIBLE with complete flexibleRules accepts", async () => 
   assert.equal(updated.paymentPattern, "FLEXIBLE");
   assert.equal(updated.flexibleRules.flexiblePhaseCycles, 3);
   assert.equal(updated.flexibleRules.cappedPhaseCycles, 9);
+});
+
+test("flexible plan create accepts ROUND_UP cap rounding mode", async () => {
+  const { tenant, user } = await seedGrowthTenantUser();
+  const created = await createPlan({
+    ...planReq(tenant, user, undefined, flexiblePlanBody(6, 6)),
+    body: flexiblePlanBody(6, 6),
+  });
+  assert.equal(created.flexibleRules.capComputation.roundingMode, "ROUND_UP");
+});
+
+test("flexible plan rejects ROUND_DOWN cap rounding mode", async () => {
+  const { tenant, user } = await seedGrowthTenantUser();
+  const body = flexiblePlanBody(6, 6);
+  body.flexibleRules = {
+    ...body.flexibleRules,
+    capComputation: { ...body.flexibleRules.capComputation, roundingMode: "ROUND_DOWN" },
+  };
+  await assert.rejects(
+    () => createPlan({ ...planReq(tenant, user, undefined, body), body }),
+    (error) =>
+      (error instanceof AppError && error.code === "VALIDATION_FAILED")
+      || error?.name === "ValidationError",
+  );
+});
+
+test("flexible plan rejects HALF_UP cap rounding mode", async () => {
+  const { tenant, user } = await seedGrowthTenantUser();
+  const body = flexiblePlanBody(6, 6);
+  body.flexibleRules = {
+    ...body.flexibleRules,
+    capComputation: { ...body.flexibleRules.capComputation, roundingMode: "HALF_UP" },
+  };
+  await assert.rejects(
+    () => createPlan({ ...planReq(tenant, user, undefined, body), body }),
+    (error) =>
+      (error instanceof AppError && error.code === "VALIDATION_FAILED")
+      || error?.name === "ValidationError",
+  );
+});
+
+test("PATCH rejects invalid cap rounding mode on merged flexible config", async () => {
+  const { tenant, user } = await seedGrowthTenantUser();
+  const created = await createPlan({
+    ...planReq(tenant, user, undefined, flexiblePlanBody(6, 6)),
+    body: flexiblePlanBody(6, 6),
+  });
+  await assert.rejects(
+    () => updatePlan(planReq(tenant, user, created._id, {
+      expectedVersion: created.version,
+      flexibleRules: {
+        ...flexibleRules(6, 6),
+        capComputation: {
+          ...flexibleRules(6, 6).capComputation,
+          roundingMode: "HALF_UP",
+        },
+      },
+    })),
+    (error) => error instanceof AppError && error.code === "VALIDATION_FAILED",
+  );
+});
+
+test("PATCH updates roundToNearestPaise on merged flexible cap config", async () => {
+  const { tenant, user } = await seedGrowthTenantUser();
+  const created = await createPlan({
+    ...planReq(tenant, user, undefined, flexiblePlanBody(6, 6)),
+    body: flexiblePlanBody(6, 6),
+  });
+  const updated = await updatePlan(planReq(tenant, user, created._id, {
+    expectedVersion: created.version,
+    flexibleRules: {
+      ...flexibleRules(6, 6),
+      capComputation: {
+        ...flexibleRules(6, 6).capComputation,
+        roundToNearestPaise: 5_000,
+      },
+    },
+  }));
+  assert.equal(updated.flexibleRules.capComputation.roundToNearestPaise, 5_000);
+  assert.equal(updated.flexibleRules.capComputation.roundingMode, "ROUND_UP");
+});
+
+test("enrol preview cap matches shared helper for PATCH roundToNearestPaise", async () => {
+  const rules = flexibleRules(6, 6);
+  rules.capComputation.roundToNearestPaise = 5_000;
+  const plan = {
+    paymentPattern: "FLEXIBLE",
+    durationMonths: 12,
+    flexibleRules: rules,
+  };
+  const netSummary = buildIllustrativeFreeWindowNetSummary({
+    installmentAmountPaise: 50_000,
+    flexiblePhaseCycles: 6,
+  });
+  const expected = computeFlexibleLockCapDetails({ netSummary, flexibleRules: rules }).capPaise;
+  const preview = buildFlexibleEnrolPreview(plan, 50_000, "2026-01-01", "COLLECT_NOW");
+  assert.equal(preview.illustrativeCapPerCycle.amountPaise, expected);
+  assert.equal(expected, 50_000);
 });

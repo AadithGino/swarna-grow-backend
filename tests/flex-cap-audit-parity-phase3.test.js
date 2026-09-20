@@ -20,6 +20,7 @@ test.beforeEach(async () => {
   await resetTestDb();
   resetCalendarDateOverrideForTests();
 });
+test.afterEach(() => { resetCalendarDateOverrideForTests(); });
 
 const flexRules = {
   flexiblePhaseCycles: 3,
@@ -166,7 +167,7 @@ test("lock audit includes every required field with ledger ids", async () => {
   assertFullCapAudit(auditRow.after.flexibleLockComputation);
 });
 
-test("ROUND_DOWN and HALF_UP rounding modes", async () => {
+test("ROUND_UP with different roundToNearestPaise increments", async () => {
   const baseNet = {
     netFreeTotalPaise: 125_000,
     netPositivePaymentCount: 2,
@@ -174,20 +175,31 @@ test("ROUND_DOWN and HALF_UP rounding modes", async () => {
     totalReversalAmountPaise: 0,
     originalPositivePaymentCount: 2,
   };
-  const down = computeFlexibleLockCapDetails({
+  const coarse = computeFlexibleLockCapDetails({
     netSummary: baseNet,
     flexibleRules: {
       ...flexRules,
-      capComputation: { ...flexRules.capComputation, roundingMode: "ROUND_DOWN", minCycleCapPaise: 0, maxCycleCapPaise: 1_000_000 },
+      capComputation: {
+        ...flexRules.capComputation,
+        roundToNearestPaise: 10_000,
+        minCycleCapPaise: 0,
+        maxCycleCapPaise: 1_000_000,
+      },
     },
   });
-  const half = computeFlexibleLockCapDetails({
+  const fine = computeFlexibleLockCapDetails({
     netSummary: baseNet,
     flexibleRules: {
       ...flexRules,
-      capComputation: { ...flexRules.capComputation, roundingMode: "HALF_UP", minCycleCapPaise: 0, maxCycleCapPaise: 1_000_000 },
+      capComputation: {
+        ...flexRules.capComputation,
+        roundToNearestPaise: 1_000,
+        minCycleCapPaise: 0,
+        maxCycleCapPaise: 1_000_000,
+      },
     },
   });
-  assert.equal(down.capPaise, 30_000);
-  assert.equal(half.capPaise, 30_000);
+  assert.equal(coarse.audit.roundingMode, "ROUND_UP");
+  assert.equal(coarse.capPaise, 40_000);
+  assert.equal(fine.capPaise, 32_000);
 });

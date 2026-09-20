@@ -3,19 +3,9 @@ import { flexibleCapDivisor } from "./flexible-cap-divisor.js";
 
 export { flexibleCapDivisor } from "./flexible-cap-divisor.js";
 
-function roundCapQuotient(unroundedCapPaise, nearest, roundingMode) {
+function roundCapQuotient(unroundedCapPaise, nearest) {
   const increment = Math.max(1, nearest);
-  const quotient = unroundedCapPaise / increment;
-  if (roundingMode === CapRoundingMode.ROUND_UP || roundingMode === "ROUND_UP") {
-    return Math.ceil(quotient) * increment;
-  }
-  if (roundingMode === "ROUND_DOWN") {
-    return Math.floor(quotient) * increment;
-  }
-  if (roundingMode === "HALF_UP") {
-    return Math.round(quotient) * increment;
-  }
-  return Math.ceil(quotient) * increment;
+  return Math.ceil(unroundedCapPaise / increment) * increment;
 }
 
 /**
@@ -43,11 +33,7 @@ export function computeFlexibleLockCapDetails({
   const netPositivePaymentCount = netSummary.netPositivePaymentCount ?? 0;
   const actualDivisor = flexibleCapDivisor(flexibleRules, netPositivePaymentCount);
   const unroundedQuotient = actualDivisor > 0 ? netFreeTotalPaise / actualDivisor : 0;
-  let roundedBeforeClamp = roundCapQuotient(
-    unroundedQuotient,
-    roundToNearestPaise,
-    roundingMode,
-  );
+  let roundedBeforeClamp = roundCapQuotient(unroundedQuotient, roundToNearestPaise);
   const minTotal = flexibleRules?.flexiblePhase?.minTotalPaise;
   if (
     minTotal != null

@@ -9,10 +9,16 @@ let calendarDateOverride = null;
 
 /** @internal Test-only calendar override (YYYY-MM-DD). */
 export function setCalendarDateOverrideForTests(value) {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("Calendar date override is only available in test environment.");
+  }
   calendarDateOverride = value;
 }
 
 export function resetCalendarDateOverrideForTests() {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("Calendar date override is only available in test environment.");
+  }
   calendarDateOverride = null;
 }
 
