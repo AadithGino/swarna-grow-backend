@@ -2035,6 +2035,8 @@ null
 - **Path params:** `schemeId`
 - **Query:** `type` (`MATURITY_REDEMPTION`|`PREMATURE_CLOSURE`, optional). `mode` (`CASH`|`GOLD_HANDOVER`|`PURCHASE_ADJUSTMENT`, optional for cash plans; **required** for `GOLD_WEIGHT` schemes).
 - **Idempotent:** no
+- **System-policy closure:** persisted `CLOSED_PREMATURE` + `settlementRequired` + flex closure reason → principal-only preview; `systemPolicyClosure` and `closureReason` in response/snapshot (not client-supplied).
+- **Premature penalty/benefit:** `FORFEIT`|`FULL` only; modes exclude `TRANSFER_TO_SCHEME`.
 - **Request body:**
 ```json
 null
@@ -2044,10 +2046,14 @@ null
 {
   "success": true,
   "data": {
+    "eligible": true,
+    "systemPolicyClosure": false,
+    "closureReason": "",
     "principalPaise": 0,
     "benefitPaise": 0,
     "penaltyPaise": 0,
-    "settlementPaise": 0
+    "settlementPaise": 0,
+    "blockers": []
   }
 }
 ```

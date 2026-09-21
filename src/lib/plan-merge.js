@@ -124,11 +124,18 @@ function zodIssuesToDetails(issues) {
   }));
 }
 
+function stripInactivePlanNestedDocs(plan) {
+  const out = { ...plan };
+  if (out.flexibleRules === null) delete out.flexibleRules;
+  if (out.goldRules === null) delete out.goldRules;
+  return out;
+}
+
 /** Authoritative complete-plan validation (same schema as POST /scheme-plans). */
 export function validateCompletePlan(planLike) {
   const parsed = planBody.safeParse(preparePlanForCompleteValidation(planLike));
   if (!parsed.success) {
     throw errors.validation(zodIssuesToDetails(parsed.error.issues));
   }
-  return parsed.data;
+  return stripInactivePlanNestedDocs(parsed.data);
 }

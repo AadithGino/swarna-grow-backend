@@ -3316,8 +3316,13 @@ null
 #### `GET /api/v1/admin/schemes/:schemeId/settlement-preview`
 - **Auth:** Bearer TENANT_USER
 - **Path params:** `schemeId`
-- **Query:** none
+- **Query:** `closureType=MATURITY_REDEMPTION|PREMATURE_CLOSURE`; for gold-weight schemes **`mode`** (`CASH`, `GOLD_HANDOVER`, `PURCHASE_ADJUSTMENT`) is required.
 - **Idempotent:** no
+- **Classification:** `systemPolicyClosure`, `closureReason`, benefit/penalty zeroing, and `settlementRequired` are derived from **persisted Scheme state** only (never from request body).
+- **System-policy closure:** when `status=CLOSED_PREMATURE`, `settlementRequired=true`, and `closureReason` is `ZERO_FLEXIBLE_PHASE_TOTAL` or `BELOW_MINIMUM_FLEXIBLE_PHASE_TOTAL`, settlement is **principal-only** (net allocated ledger). Customers receive `SETTLEMENT_STAFF_REQUIRED`; staff use `PREMATURE_CLOSURE` initiation/completion.
+- **Premature benefit treatment:** `FORFEIT` or `FULL` only (`PRORATE` rejected on plan create/update).
+- **Redemption modes:** `CASH`, `GOLD_HANDOVER`, `PURCHASE_ADJUSTMENT` only (`TRANSFER_TO_SCHEME` rejected). `PURCHASE_ADJUSTMENT` requires `billNumber`; cash payout is zero.
+- **Gold:** operational valuation uses **exact-day 22K** rate (`GOLD_RATE_NOT_SET` when missing). Cash-plan gold handover weight is computed from settlement paise at completion-day rate.
 - **Request body:**
 ```json
 null
@@ -3327,10 +3332,17 @@ null
 {
   "success": true,
   "data": {
+    "eligible": true,
+    "systemPolicyClosure": false,
+    "closureReason": "",
     "principalPaise": 0,
     "benefitPaise": 0,
     "penaltyPaise": 0,
-    "settlementPaise": 0
+    "settlementPaise": 0,
+    "mode": "CASH",
+    "valuationRatePerGramPaise": 0,
+    "valuationRateEffectiveDate": "YYYY-MM-DD",
+    "blockers": []
   }
 }
 ```

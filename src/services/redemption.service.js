@@ -1074,7 +1074,7 @@ export async function getRedemptionForAdmin(req) {
       .lean(),
     Scheme.findOne({ _id: row.schemeId, tenantId: row.tenantId })
       .select(
-        "_id enrollmentNumber status maturityDate valueBasis planSnapshot.name customerId",
+        "_id enrollmentNumber status maturityDate valueBasis planSnapshot.name customerId closureReason settlementRequired settlementCompletedAt",
       )
       .lean(),
     row.branchId
@@ -1104,8 +1104,16 @@ export async function getRedemptionForAdmin(req) {
           name: scheme.planSnapshot?.name,
           status: scheme.status,
           maturityDate: scheme.maturityDate,
+          closureReason: scheme.closureReason ?? null,
+          settlementRequired: scheme.settlementRequired === true,
+          settlementCompletedAt: scheme.settlementCompletedAt ?? null,
         }
       : undefined,
+    systemPolicyClosure: Boolean(
+      row.modeDetails?.settlementSnapshot?.systemPolicyClosure,
+    ),
+    closureReasonSnapshot:
+      row.modeDetails?.settlementSnapshot?.closureReason ?? null,
     branch: branch
       ? {
           _id: branch._id,

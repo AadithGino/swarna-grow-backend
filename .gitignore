@@ -9,3 +9,4 @@ tmp/
 exports/
 *.log
 .DS_Store
+fix.md

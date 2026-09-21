@@ -162,6 +162,8 @@ export function parseEnv(source = process.env) {
     if (rateLimitEnabled !== "true") offending.push("RATE_LIMIT_ENABLED");
     const providerMode = source.PROVIDER_MODE ?? "mock";
     if (providerMode !== "live") offending.push("PROVIDER_MODE");
+    const otpProvider = source.OTP_PROVIDER ?? "mock";
+    if (otpProvider === "mock") offending.push("OTP_PROVIDER");
     const phonePeEnv = source.PHONEPE_ENV ?? "SANDBOX";
     if (phonePeEnv !== "PRODUCTION") offending.push("PHONEPE_ENV");
     const sharedFcm = source.FCM_SHARED_PROJECT_ENABLED ?? "false";

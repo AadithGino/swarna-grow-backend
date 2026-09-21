@@ -643,6 +643,7 @@ test("limiter test hooks are ignored in NODE_ENV=production subprocess", () => {
     REDIS_REQUIRED: "true",
     RATE_LIMIT_ENABLED: "true",
     PROVIDER_MODE: "live",
+    OTP_PROVIDER: "msg91",
     PHONEPE_ENV: "PRODUCTION",
     FCM_SHARED_PROJECT_ENABLED: "true",
     FCM_PROJECT_ID: "test-firebase-project",

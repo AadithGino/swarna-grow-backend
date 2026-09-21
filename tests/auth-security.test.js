@@ -185,7 +185,7 @@ test("PASSWORD_ONLY login rejects mobile number as password when no hash exists"
   assert.ok(["VALIDATION_FAILED", "CUSTOMER_PASSWORD_NOT_SET"].includes(mobileAsPassword.body.error?.code));
   const withoutHash = await request(app)
     .post("/api/v1/public/auth/login-password")
-    .set("x-forwarded-for", "10.0.1.2")
+    .set("x-forwarded-for", `10.${(Date.now() % 200) + 10}.1.2`)
     .send({ tenantCode: tenant.code, mobile, password: "1234", deviceId: "customer-web" })
     .expect(403);
   assert.equal(withoutHash.body.error.code, "CUSTOMER_PASSWORD_NOT_SET");
