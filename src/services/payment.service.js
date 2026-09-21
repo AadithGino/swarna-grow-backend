@@ -983,11 +983,34 @@ export async function reversePayment(req) {
     return { id: payment._id, status: payment.status, auditEventId, cashAdjustmentId };
   });
 }
+const PAYMENT_LINK_MAX_EXPIRES_MINUTES = 30;
+
 export async function reservePaymentLinkInSession(
   session,
   req,
-  { token = randomToken(32), expiresAt = new Date(Date.now() + Number(req.body.expiresInMinutes ?? 30) * 60_000) } = {},
+  {
+    token = randomToken(32),
+    expiresAt = new Date(
+      Date.now()
+        + Math.min(
+          PAYMENT_LINK_MAX_EXPIRES_MINUTES,
+          Number(req.body.expiresInMinutes ?? PAYMENT_LINK_MAX_EXPIRES_MINUTES),
+        )
+        * 60_000,
+    ),
+  } = {},
 ) {
+  if (
+    req.body.expiresInMinutes != null
+    && Number(req.body.expiresInMinutes) > PAYMENT_LINK_MAX_EXPIRES_MINUTES
+  ) {
+    throw errors.validation([
+      {
+        field: "expiresInMinutes",
+        message: `expiresInMinutes cannot exceed ${PAYMENT_LINK_MAX_EXPIRES_MINUTES}.`,
+      },
+    ]);
+  }
   const scheme = await Scheme.findOne({
     _id: req.body.schemeId,
     ...req.scope,

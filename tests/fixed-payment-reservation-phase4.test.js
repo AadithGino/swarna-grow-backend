@@ -21,6 +21,7 @@ import {
   Alert,
   Customer,
   LedgerEntry,
+  OutboxEvent,
   Payment,
   PaymentIntent,
   PaymentLink,
@@ -348,10 +349,11 @@ test("late success after cancelled reservation routes to review once", async () 
     source: "CUSTOMER_APP",
     paidAt: new Date(),
   });
+  const transactionId = `TX-${createId("tx")}`;
   await finalizeGatewaySuccess({
     tenantId: tenant._id,
     reference: intent._id,
-    transactionId: `TX-${createId("tx")}`,
+    transactionId,
     amountPaise: 100_000,
     intent: cancelledIntent,
     paymentId: payment._id,
@@ -359,6 +361,18 @@ test("late success after cancelled reservation routes to review once", async () 
   const updatedPayment = await Payment.findById(payment._id).lean();
   assert.equal(updatedPayment.status, PaymentStatus.UNALLOCATED_PENDING_REVIEW);
   assert.equal((await Scheme.findById(scheme._id)).installments[1].status, "DUE");
+  assert.equal(await Alert.countDocuments({ tenantId: tenant._id, entityId: payment._id }), 1);
+  assert.equal(await LedgerEntry.countDocuments({ schemeId: scheme._id, type: "UNALLOCATED_PAYMENT" }), 1);
+  assert.equal(await OutboxEvent.countDocuments({ key: payment._id, topic: "payment.unallocated.fixed_reservation_stale" }), 1);
+  const replay = await finalizeGatewaySuccess({
+    tenantId: tenant._id,
+    reference: intent._id,
+    transactionId,
+    amountPaise: 100_000,
+    intent: cancelledIntent,
+    paymentId: payment._id,
+  });
+  assert.equal(replay.outcome, "ALREADY_SUCCESS");
   assert.equal(await Alert.countDocuments({ tenantId: tenant._id, entityId: payment._id }), 1);
   assert.equal(await LedgerEntry.countDocuments({ schemeId: scheme._id, type: "UNALLOCATED_PAYMENT" }), 1);
 });

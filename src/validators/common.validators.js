@@ -453,7 +453,7 @@ export const paymentLinkBody = z.object({
   targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
   expectedPositionVersion: z.number().int().nonnegative().nullish(),
   positionVersion: z.number().int().nonnegative().nullish(),
-  expiresInMinutes: z.number().int().positive().max(43_200).nullish(),
+  expiresInMinutes: z.number().int().positive().max(30).nullish(),
 });
 export const customerPatchBody = customerBody.partial().extend({ expectedVersion: z.number().int().positive().optional() });
 export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(4000) });
