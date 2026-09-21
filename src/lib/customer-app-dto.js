@@ -236,7 +236,7 @@ function fixedPaymentHints(scheme, quote) {
     const max = Number(pr.maxAdvanceInstallments ?? 0);
     bits.push(
       max > 0
-        ? `You can pay up to ${max} future instalment(s) in advance in one PhonePe payment.`
+        ? `You can pay the current due instalment plus up to ${max} future instalment(s) in one online payment.`
         : "Only the current due instalment can be paid online.",
     );
   }

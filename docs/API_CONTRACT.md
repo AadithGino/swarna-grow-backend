@@ -3266,24 +3266,35 @@ null
 #### `GET /api/v1/admin/schemes/:schemeId/payable-range`
 - **Auth:** Bearer TENANT_USER
 - **Path params:** `schemeId`
-- **Query:** none
+- **Query:** `targetCycle` (flexible capped phase only)
 - **Idempotent:** no
 - **Request body:**
 ```json
 null
 ```
-- **Response (200):**
+- **Fixed schemes (`paymentPattern: FIXED`):** amounts come from the central fixed-payment policy. `maxAdvanceInstallments` is the count of **future** instalments allowed **in addition to** the current due instalment (window size = `1 + maxAdvanceInstallments` when advance is enabled).
+- **Response (200) — fixed example:**
 ```json
 {
   "success": true,
   "data": {
-    "minPaise": 0,
-    "maxPaise": 0,
-    "incrementPaise": 0,
-    "positionVersion": 1
+    "model": "FIXED",
+    "payable": true,
+    "currentInstallmentNumber": 2,
+    "reservedPaise": 100000,
+    "minPayablePaise": 100000,
+    "maxPayablePaise": 100000,
+    "allowedAmountsPaise": [100000, 200000],
+    "advancePaymentAllowed": true,
+    "maxAdvanceInstallments": 1,
+    "partialPaymentAllowed": false,
+    "expectedPositionVersion": 3,
+    "expectedVersion": 3
   }
 }
 ```
+- **Manual fixed payment while an online reservation is active:** `422 PAYMENT_CONFIRMATION_PENDING` — staff must **cancel** the pending payment link first.
+- **Stale successful gateway payment** (cancelled/expired reservation, shifted instalments): payment status `UNALLOCATED_PENDING_REVIEW` with review ledger — not allocated to instalments.
 
 #### `GET /api/v1/admin/schemes/:schemeId/payment-intents`
 - **Auth:** Bearer TENANT_USER
@@ -3379,15 +3390,16 @@ null
 - **Auth:** Bearer TENANT_USER
 - **Query:** none
 - **Idempotent:** yes
+- **Expiry:** `expiresInMinutes` defaults to **30** and cannot exceed **30** (fixed and flexible links).
+- **Fixed schemes:** creates a **PaymentIntent reservation** (`fixedFromInstallment` / `fixedThroughInstallment`) that holds instalment capacity until paid, cancelled, failed, or expired.
 - **Request body:**
 ```json
 {
   "schemeId": "sch_...",
   "amountPaise": 1,
   "targetCycle": "YYYY-MM?",
-  "positionVersion": 1,
-  "mobile": "+91...?",
-  "redirectUrl": "url?"
+  "expectedPositionVersion": 1,
+  "expiresInMinutes": 30
 }
 ```
 - **Response (201):**

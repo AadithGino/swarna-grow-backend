@@ -314,6 +314,9 @@ export async function finalizeGatewaySuccess({
       resolvedPaymentId = reserved?._id ?? null;
     }
 
+    const { fixedPaymentTestHookBeforeGatewayRecordPayment } =
+      await import("../lib/fixed-payment-test-hooks.js");
+    await fixedPaymentTestHookBeforeGatewayRecordPayment();
     const recorded = await recordPayment(buildGatewayReq({ tenantId, source: resolvedSource, webhookEventId }), {
       gateway: true,
       source: "WEBHOOK",

@@ -395,6 +395,9 @@ async function recordPaymentInSession(session, req, override) {
       !override.gateway &&
       scheme.paymentPattern === "FIXED"
     ) {
+      const { fixedPaymentTestHookBeforeManualFixedReservationGate } =
+        await import("../lib/fixed-payment-test-hooks.js");
+      await fixedPaymentTestHookBeforeManualFixedReservationGate();
       const { sumActiveFixedReservationPaise, assertNoBlockingFixedReservations } =
         await import("../lib/fixed-payment-reservation.js");
       const blocking = await sumActiveFixedReservationPaise(
@@ -637,6 +640,9 @@ async function recordPaymentInSession(session, req, override) {
     );
     gatewayTxFaultCheckpoint("recordPayment:ledger-created");
     if (quote && scheme.paymentPattern === "FIXED") {
+      const { fixedPaymentTestHookBeforeFixedSchemeCommit } =
+        await import("../lib/fixed-payment-test-hooks.js");
+      await fixedPaymentTestHookBeforeFixedSchemeCommit();
       const { allocateFixedPaymentToInstallments } = await import("../lib/fixed-payment-policy.js");
       allocateFixedPaymentToInstallments(
         scheme,
@@ -1444,7 +1450,12 @@ export async function initiatePublicPayment(req) {
       { _id: link._id, initiationClaimToken: claimMarker },
       { $unset: { initiationClaimToken: "", initiationClaimExpiresAt: "" } },
     );
-    throw error;
+    if (error instanceof AppError) throw error;
+    throw errors.dependency(
+      error?.message?.includes("transient")
+        ? "Payment provider is temporarily unavailable. Retry shortly."
+        : "Payment provider initiation failed.",
+    );
   }
 }
 export async function createPaymentIntent(req) {
