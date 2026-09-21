@@ -114,6 +114,7 @@ export function closureSettlementFiguresDiffer(stored, fresh) {
   const keys = [
     "settlementPaise",
     "principalPaise",
+    "principalWeightMg",
     "benefitPaise",
     "benefitWeightMg",
     "penaltyPaise",
@@ -121,10 +122,20 @@ export function closureSettlementFiguresDiffer(stored, fresh) {
     "goldWeightMg",
     "weightMg",
     "benefitRatePerGramPaise",
+    "valuationRatePerGramPaise",
   ];
   for (const key of keys) {
     if (stored?.[key] == null && fresh?.[key] == null) continue;
     if (Number(stored?.[key] ?? 0) !== Number(fresh?.[key] ?? 0)) return true;
+  }
+  if (
+    String(stored?.valuationRateEffectiveDate ?? "")
+    !== String(fresh?.valuationRateEffectiveDate ?? "")
+  ) {
+    return true;
+  }
+  if (stored?.mode != null && fresh?.mode != null && stored.mode !== fresh.mode) {
+    return true;
   }
   return false;
 }
@@ -180,13 +191,15 @@ export async function computeClosureSettlementCore({
   let settlementRateEffectiveDate = null;
 
   const needsExactRate =
-    scheme.valueBasis === ValueBasis.GOLD_WEIGHT
-    && (
-      benefitPaise > 0
-      || mode === RedemptionMode.CASH
-      || mode === RedemptionMode.GOLD_HANDOVER
-      || mode === RedemptionMode.PURCHASE_ADJUSTMENT
-      || penaltyPaise > 0
+    mode === RedemptionMode.GOLD_HANDOVER
+    || (
+      scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+      && (
+        benefitPaise > 0
+        || mode === RedemptionMode.CASH
+        || mode === RedemptionMode.PURCHASE_ADJUSTMENT
+        || penaltyPaise > 0
+      )
     );
 
   let exactRate = null;
@@ -268,6 +281,30 @@ export async function computeClosureSettlementCore({
         message: "Settlement value is zero or negative after penalty.",
       });
     }
+    if (
+      mode === RedemptionMode.GOLD_HANDOVER
+      && exactRate
+      && blockers.length === 0
+    ) {
+      const { rounding, precisionMg } = resolvePlanGoldRounding(scheme, tenantOps);
+      let handoverWeightMg = moneyToWeightMg(
+        settlementPaise,
+        exactRate.ratePerGramPaise,
+        rounding,
+      );
+      handoverWeightMg = applyWeightPrecisionMg(
+        handoverWeightMg,
+        precisionMg,
+        rounding,
+      );
+      weightMg = handoverWeightMg;
+      if (!(handoverWeightMg > 0)) {
+        blockers.push({
+          code: "GOLD_WEIGHT_ROUNDS_TO_ZERO",
+          message: "Settlement rounds to zero gold weight at the applicable rate.",
+        });
+      }
+    }
   } else if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && !needsExactRate) {
     settlementPaise = Math.max(
       0,
@@ -320,9 +357,10 @@ export function resolveSettlementModeFromReq(req) {
   );
 }
 
-export const SETTLEMENT_SNAPSHOT_FIELD_KEYS = Object.freeze([
+export const SETTLEMENT_SNAPSHOT_NUMERIC_KEYS = Object.freeze([
   "schemeVersion",
   "principalPaise",
+  "principalWeightMg",
   "benefitPaise",
   "benefitWeightMg",
   "benefitRatePerGramPaise",
@@ -331,13 +369,26 @@ export const SETTLEMENT_SNAPSHOT_FIELD_KEYS = Object.freeze([
   "settlementPaise",
   "goldWeightMg",
   "weightMg",
-  "computedAt",
+  "valuationRatePerGramPaise",
 ]);
 
-export function buildSettlementSnapshotFromPreview(preview, schemeVersion) {
+export const SETTLEMENT_SNAPSHOT_STRING_KEYS = Object.freeze([
+  "computedAt",
+  "valuationRateEffectiveDate",
+  "mode",
+]);
+
+export const SETTLEMENT_SNAPSHOT_FIELD_KEYS = Object.freeze([
+  ...SETTLEMENT_SNAPSHOT_NUMERIC_KEYS,
+  ...SETTLEMENT_SNAPSHOT_STRING_KEYS,
+]);
+
+export function buildSettlementSnapshotFromPreview(preview, schemeVersion, mode) {
   return {
     schemeVersion,
+    mode,
     principalPaise: preview.principalPaise,
+    principalWeightMg: preview.goldWeightMg ?? preview.principalWeightMg ?? 0,
     benefitPaise: preview.benefitPaise,
     benefitWeightMg: preview.benefitWeightMg,
     benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
@@ -346,6 +397,8 @@ export function buildSettlementSnapshotFromPreview(preview, schemeVersion) {
     settlementPaise: preview.settlementPaise,
     goldWeightMg: preview.goldWeightMg,
     weightMg: preview.weightMg,
+    valuationRatePerGramPaise: preview.valuationRatePerGramPaise ?? 0,
+    valuationRateEffectiveDate: preview.valuationRateEffectiveDate ?? "",
     computedAt: new Date().toISOString(),
   };
 }
@@ -354,16 +407,27 @@ export function assertSettlementSnapshotComplete(snapshot) {
   if (!snapshot || typeof snapshot !== "object") {
     return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
   }
-  for (const key of SETTLEMENT_SNAPSHOT_FIELD_KEYS) {
+  for (const key of SETTLEMENT_SNAPSHOT_NUMERIC_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
     const value = snapshot[key];
-    if (key === "computedAt") {
-      if (typeof value !== "string" || !value.trim()) return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
-      continue;
-    }
     if (typeof value !== "number" || !Number.isFinite(value)) {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+  }
+  for (const key of SETTLEMENT_SNAPSHOT_STRING_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+    const value = snapshot[key];
+    if (typeof value !== "string") {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+    if (key === "computedAt" && !value.trim()) {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+    if (key === "mode" && !value.trim()) {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
   }

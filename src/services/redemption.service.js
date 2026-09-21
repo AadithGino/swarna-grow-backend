@@ -34,7 +34,7 @@ import {
   applyWeightPrecisionMg,
   decimalRoundingMode,
   moneyToWeightMg,
-  weightMgToMoneyPaise,
+  moneyPaiseFromWeightMg,
 } from "../lib/money.js";
 import { goldRateForExactDate } from "../lib/gold-rate-lookup.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
@@ -331,9 +331,13 @@ export async function settlementPreview(req, closureType) {
     weightMg,
     prematureBenefitTreatment,
     penaltyRule,
+    settlementRatePerGramPaise,
+    settlementRateEffectiveDate,
   } = core;
   const totals = { amountPaidPaise: principalPaise, goldWeightMg };
   const eligible = blockers.length === 0;
+  const valuationRatePerGramPaise = settlementRatePerGramPaise ?? 0;
+  const valuationRateEffectiveDate = settlementRateEffectiveDate ?? "";
 
   const benefitLabel =
     benefitDef?.displayLabel ??
@@ -496,6 +500,7 @@ export async function settlementPreview(req, closureType) {
     closureType,
     schemeId: scheme._id,
     principalPaise,
+    principalWeightMg: goldWeightMg,
     goldWeightMg,
     weightMg,
     benefitEligible,
@@ -505,6 +510,9 @@ export async function settlementPreview(req, closureType) {
     penaltyPaise,
     penaltyWeightMg,
     settlementPaise,
+    valuationRatePerGramPaise,
+    valuationRateEffectiveDate,
+    mode: settlementMode ?? null,
   };
 }
 export async function requestCustomerRedemption(req) {
@@ -568,7 +576,11 @@ export async function requestCustomerRedemption(req) {
       ...(req.body.modeDetails?.billNumber
         ? { billNumber: String(req.body.modeDetails.billNumber).trim() }
         : {}),
-      settlementSnapshot: buildSettlementSnapshotFromPreview(preview, scheme.version),
+      settlementSnapshot: buildSettlementSnapshotFromPreview(
+        preview,
+        scheme.version,
+        req.body.preferredMode,
+      ),
     },
     status: RedemptionStatus.REQUESTED,
     principalPaise: preview.principalPaise,
@@ -638,7 +650,11 @@ export async function initiateRedemption(
   }
   const modeDetails = {
     ...(req.body.modeDetails ?? {}),
-    settlementSnapshot: buildSettlementSnapshotFromPreview(preview, schemeRow.version),
+    settlementSnapshot: buildSettlementSnapshotFromPreview(
+      preview,
+      schemeRow.version,
+      req.body.mode,
+    ),
   };
   const expected = modeDetails.expectedFinalValuePaise;
   if (
@@ -846,9 +862,16 @@ export async function transitionRedemption(req, action) {
         );
       }
       const snapshot = row.modeDetails.settlementSnapshot;
+      if (snapshot.mode !== row.mode) {
+        throw errors.business(
+          "SETTLEMENT_VALUE_CHANGED",
+          "The settlement amount changed since this request was submitted. Refresh and try again.",
+        );
+      }
       const baseline = {
         settlementPaise: snapshot.settlementPaise,
         principalPaise: snapshot.principalPaise,
+        principalWeightMg: snapshot.principalWeightMg,
         benefitPaise: snapshot.benefitPaise,
         benefitWeightMg: snapshot.benefitWeightMg,
         benefitRatePerGramPaise: snapshot.benefitRatePerGramPaise,
@@ -856,6 +879,9 @@ export async function transitionRedemption(req, action) {
         penaltyWeightMg: snapshot.penaltyWeightMg,
         goldWeightMg: snapshot.goldWeightMg,
         weightMg: snapshot.weightMg,
+        valuationRatePerGramPaise: snapshot.valuationRatePerGramPaise,
+        valuationRateEffectiveDate: snapshot.valuationRateEffectiveDate,
+        mode: snapshot.mode,
       };
       if (closureSettlementFiguresDiffer(baseline, freshPreview)) {
         throw errors.business(
@@ -924,10 +950,9 @@ export async function transitionRedemption(req, action) {
             );
           }
           row.weightMg = handoverWeightMg;
-          row.handoverValuePaise = weightMgToMoneyPaise(
+          row.handoverValuePaise = moneyPaiseFromWeightMg(
             handoverWeightMg,
             rate.ratePerGramPaise,
-            rounding,
           );
           ledgerDebitAmountPaise = row.settlementPaise ?? 0;
           ledgerDebitWeightMg = handoverWeightMg;

@@ -288,7 +288,11 @@ test("completion rejects body mode different from approved request", async () =>
     principalPaise: preview.principalPaise,
     version: 1,
     modeDetails: {
-      settlementSnapshot: buildSettlementSnapshotFromPreview(preview, scheme.version),
+      settlementSnapshot: buildSettlementSnapshotFromPreview(
+        preview,
+        scheme.version,
+        RedemptionMode.CASH,
+      ),
     },
   });
   await assert.rejects(
@@ -467,21 +471,20 @@ test("cash plan gold handover blocked when exact-day rate missing", async () => 
     paid: 300_000,
     allowedModes: [RedemptionMode.CASH, RedemptionMode.GOLD_HANDOVER],
   });
-  const initiated = await initiateRedemption(
-    {
-      auth: { id: user._id, tenantId: scheme.tenantId, type: "TENANT_USER" },
-      scope: { tenantId: scheme.tenantId, branchId: scheme.branchId },
-      params: { schemeId: scheme._id },
-      body: { mode: RedemptionMode.GOLD_HANDOVER, expectedVersion: scheme.version },
-      query: {},
-      headers: {},
-      ip: "127.0.0.1",
-    },
-    ClosureType.MATURITY_REDEMPTION,
-  );
-  await transitionRedemption(adminReq({ user, scheme, redemptionId: initiated._id }), "approve");
   await assert.rejects(
-    () => transitionRedemption(adminReq({ user, scheme, redemptionId: initiated._id }), "complete"),
+    () =>
+      initiateRedemption(
+        {
+          auth: { id: user._id, tenantId: scheme.tenantId, type: "TENANT_USER" },
+          scope: { tenantId: scheme.tenantId, branchId: scheme.branchId },
+          params: { schemeId: scheme._id },
+          body: { mode: RedemptionMode.GOLD_HANDOVER, expectedVersion: scheme.version },
+          query: {},
+          headers: {},
+          ip: "127.0.0.1",
+        },
+        ClosureType.MATURITY_REDEMPTION,
+      ),
     (error) => error.code === "GOLD_RATE_NOT_SET",
   );
 });

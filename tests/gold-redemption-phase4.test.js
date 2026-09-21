@@ -200,35 +200,17 @@ test("cash-plan gold handover uses exact handover-day 22K rate and weight", asyn
 });
 
 test("gold handover blocked when exact-day rate missing", async () => {
-  const { branch, user, customer, scheme } = await seedCashMaturedWithGoldHandover();
-  const requested = await requestCustomerRedemption({
-    auth: { id: customer._id, tenantId: scheme.tenantId, type: "CUSTOMER" },
-    scope: { tenantId: scheme.tenantId },
-    params: { schemeId: scheme._id },
-    body: { preferredMode: RedemptionMode.GOLD_HANDOVER, expectedVersion: scheme.version },
-    query: {},
-    headers: {},
-    ip: "127.0.0.1",
-  });
-  await transitionRedemption({
-    auth: { id: user._id, tenantId: scheme.tenantId, type: "TENANT_USER" },
-    scope: { tenantId: scheme.tenantId, branchId: branch._id },
-    params: { redemptionId: requested.id },
-    body: {},
-    query: {},
-    headers: {},
-    ip: "127.0.0.1",
-  }, "approve");
+  const { customer, scheme } = await seedCashMaturedWithGoldHandover();
   await assert.rejects(
-    () => transitionRedemption({
-      auth: { id: user._id, tenantId: scheme.tenantId, type: "TENANT_USER" },
-      scope: { tenantId: scheme.tenantId, branchId: branch._id },
-      params: { redemptionId: requested.id },
-      body: {},
+    () => requestCustomerRedemption({
+      auth: { id: customer._id, tenantId: scheme.tenantId, type: "CUSTOMER" },
+      scope: { tenantId: scheme.tenantId },
+      params: { schemeId: scheme._id },
+      body: { preferredMode: RedemptionMode.GOLD_HANDOVER, expectedVersion: scheme.version },
       query: {},
       headers: {},
       ip: "127.0.0.1",
-    }, "complete"),
+    }),
     (error) => error.code === "GOLD_RATE_NOT_SET",
   );
 });
@@ -387,34 +369,16 @@ test("yesterday 22K rate does not satisfy exact handover-day requirement", async
     purity: "22K",
     enteredBy: user._id,
   });
-  const requested = await requestCustomerRedemption({
-    auth: { id: customer._id, tenantId: scheme.tenantId, type: "CUSTOMER" },
-    scope: { tenantId: scheme.tenantId },
-    params: { schemeId: scheme._id },
-    body: { preferredMode: RedemptionMode.GOLD_HANDOVER, expectedVersion: scheme.version },
-    query: {},
-    headers: {},
-    ip: "127.0.0.1",
-  });
-  await transitionRedemption({
-    auth: { id: user._id, tenantId: scheme.tenantId, type: "TENANT_USER" },
-    scope: { tenantId: scheme.tenantId, branchId: branch._id },
-    params: { redemptionId: requested.id },
-    body: {},
-    query: {},
-    headers: {},
-    ip: "127.0.0.1",
-  }, "approve");
   await assert.rejects(
-    () => transitionRedemption({
-      auth: { id: user._id, tenantId: scheme.tenantId, type: "TENANT_USER" },
-      scope: { tenantId: scheme.tenantId, branchId: branch._id },
-      params: { redemptionId: requested.id },
-      body: {},
+    () => requestCustomerRedemption({
+      auth: { id: customer._id, tenantId: scheme.tenantId, type: "CUSTOMER" },
+      scope: { tenantId: scheme.tenantId },
+      params: { schemeId: scheme._id },
+      body: { preferredMode: RedemptionMode.GOLD_HANDOVER, expectedVersion: scheme.version },
       query: {},
       headers: {},
       ip: "127.0.0.1",
-    }, "complete"),
+    }),
     (error) => error.code === "GOLD_RATE_NOT_SET",
   );
 });

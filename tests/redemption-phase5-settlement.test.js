@@ -333,7 +333,11 @@ test("SETTLEMENT_VALUE_CHANGED when completion-day rate differs from request day
     weightMg: previewAtRequest.weightMg,
     version: 1,
     modeDetails: {
-      settlementSnapshot: buildSettlementSnapshotFromPreview(previewAtRequest, scheme.version),
+      settlementSnapshot: buildSettlementSnapshotFromPreview(
+        previewAtRequest,
+        scheme.version,
+        RedemptionMode.CASH,
+      ),
     },
   });
 
