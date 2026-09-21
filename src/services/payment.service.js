@@ -391,6 +391,46 @@ async function recordPaymentInSession(session, req, override) {
       if (!gatewayLateSuccess) throw error;
       quote = null;
     }
+    if (
+      !override.gateway &&
+      scheme.paymentPattern === "FIXED"
+    ) {
+      const { sumActiveFixedReservationPaise, assertNoBlockingFixedReservations } =
+        await import("../lib/fixed-payment-reservation.js");
+      const blocking = await sumActiveFixedReservationPaise(
+        scheme.tenantId,
+        scheme._id,
+        session,
+      );
+      assertNoBlockingFixedReservations(
+        blocking,
+        "Cancel pending payment links before recording a manual fixed payment.",
+      );
+    }
+    if (
+      override.gateway &&
+      scheme.paymentPattern === "FIXED" &&
+      override.fixedReservationIntent
+    ) {
+      const { fixedReservationConsumable } = await import("../lib/fixed-payment-reservation.js");
+      const consumable = fixedReservationConsumable(
+        override.fixedReservationIntent,
+        scheme.toObject(),
+        scheme.planSnapshot?.paymentRules ?? {},
+      );
+      if (
+        !consumable.ok
+        || Number(req.body.amountPaise) !== Number(override.fixedReservationIntent.amountPaise)
+      ) {
+        override._forceUnallocatedFixedGateway = {
+          reason: consumable.reason ?? "RESERVATION_AMOUNT_MISMATCH",
+        };
+        quote = null;
+      } else {
+        quote = consumable.quote;
+        req.body.expectedVersion = override.fixedReservationIntent.positionVersion;
+      }
+    }
     if (quote?.targetCycle) req.body.targetCycle = quote.targetCycle;
     if (quote) {
       try {
@@ -645,6 +685,16 @@ async function recordPaymentInSession(session, req, override) {
         tenantId: scheme.tenantId,
         scheme,
         payment,
+      });
+    }
+    if (payment.status === PaymentStatus.UNALLOCATED_PENDING_REVIEW && override._forceUnallocatedFixedGateway) {
+      const { recordStaleFixedReservationGatewaySuccess } = await import("../lib/fixed-payment-reservation.js");
+      await recordStaleFixedReservationGatewaySuccess({
+        session,
+        tenantId: scheme.tenantId,
+        scheme,
+        payment,
+        reason: override._forceUnallocatedFixedGateway.reason,
       });
     }
     await OutboxEvent.create(
@@ -936,7 +986,7 @@ export async function reversePayment(req) {
 export async function reservePaymentLinkInSession(
   session,
   req,
-  { token = randomToken(32), expiresAt = new Date(Date.now() + Number(req.body.expiresInMinutes ?? 1440) * 60_000) } = {},
+  { token = randomToken(32), expiresAt = new Date(Date.now() + Number(req.body.expiresInMinutes ?? 30) * 60_000) } = {},
 ) {
   const scheme = await Scheme.findOne({
     _id: req.body.schemeId,
@@ -944,9 +994,9 @@ export async function reservePaymentLinkInSession(
   }).session(session);
   if (!scheme) throw errors.notFound("Scheme");
   const quote = await payableRange(req, scheme.toObject());
-  const targetCycle = quote.targetCycle;
+  let targetCycle = quote.targetCycle;
   let intent;
-  let positionVersion = quote.positionVersion;
+  let positionVersion = quote.positionVersion ?? quote.expectedPositionVersion ?? scheme.version;
   if (scheme.paymentPattern === "FLEXIBLE") {
     assertExpectedPositionVersion(scheme, quote, req.body);
     await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
@@ -992,6 +1042,17 @@ export async function reservePaymentLinkInSession(
         { session },
       )
     )[0];
+  } else if (scheme.paymentPattern === "FIXED") {
+    const { reserveFixedPaymentIntentInSession } = await import("../lib/fixed-payment-reservation.js");
+    const reserved = await reserveFixedPaymentIntentInSession(session, {
+      tenantId: scheme.tenantId,
+      scheme,
+      amountPaise: req.body.amountPaise,
+      expiresAt,
+    });
+    intent = reserved.intent;
+    positionVersion = reserved.positionVersion;
+    targetCycle = `inst:${intent.fixedFromInstallment}-${intent.fixedThroughInstallment}`;
   } else {
     checkAmount(quote, req.body.amountPaise);
   }

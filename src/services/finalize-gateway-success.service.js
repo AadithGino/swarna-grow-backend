@@ -1,4 +1,5 @@
 import { AuditEntityType, LinkStatus, PaymentIntentStatus, PaymentStatus } from "../constants/enums.js";
+import { isFixedReservationIntent } from "../lib/fixed-payment-reservation.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { recordPhonePeDriftRepaired } from "../lib/ops-metrics.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -267,8 +268,9 @@ export async function finalizeGatewaySuccess({
 
   const payment = await withTransaction(async (session) => {
     let resolvedSource = source;
+    let freshIntent = null;
     if (intent?._id) {
-      const freshIntent = await PaymentIntent.findOne({
+      freshIntent = await PaymentIntent.findOne({
         _id: intent._id,
         tenantId,
       })
@@ -282,7 +284,17 @@ export async function finalizeGatewaySuccess({
       })
         .session(session)
         .lean();
-      if (freshLink) resolvedSource = freshLink;
+      if (freshLink) {
+        resolvedSource = freshLink;
+        if (freshLink.paymentIntentId) {
+          freshIntent = await PaymentIntent.findOne({
+            _id: freshLink.paymentIntentId,
+            tenantId,
+          })
+            .session(session)
+            .lean();
+        }
+      }
     }
     const lateSuccess = intent
       ? resolvedSource.status !== PaymentIntentStatus.PENDING
@@ -312,6 +324,9 @@ export async function finalizeGatewaySuccess({
       lateSuccess,
       lateSuccessDetectedVia: lateSuccess ? "WEBHOOK" : undefined,
       gatewayCompletedAt: new Date(),
+      fixedReservationIntent: isFixedReservationIntent(freshIntent)
+        ? freshIntent
+        : null,
       session,
     });
 

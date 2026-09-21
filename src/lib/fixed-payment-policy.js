@@ -1,3 +1,11 @@
+/** How many consecutive unpaid installments may be included in one payment window. */
+export function advanceInstallmentWindowCount(paymentRules = {}) {
+  if (paymentRules.advancePaymentAllowed !== true) return 1;
+  const extra = Number(paymentRules.maxAdvanceInstallments ?? 0);
+  if (!Number.isFinite(extra) || extra < 0) return 1;
+  return 1 + extra;
+}
+
 /** Consecutive unpaid installments from the current due row (inclusive). */
 export function consecutiveUnpaidInstallments(installments, maxCount) {
   const due = installments.find((row) => !["PAID", "WAIVED"].includes(row.status));
@@ -14,7 +22,30 @@ export function consecutiveUnpaidInstallments(installments, maxCount) {
   return rows;
 }
 
-export function computeFixedPaymentQuote(scheme, paymentRules = {}) {
+function applyReservationToQuote(baseQuote, reservedPaise, paymentRules) {
+  if (!reservedPaise) return baseQuote;
+  const partialAllowed = paymentRules.partialPaymentAllowed === true;
+  let maxPayablePaise = Math.max(0, baseQuote.maxPayablePaise - reservedPaise);
+  let allowedAmountsPaise = baseQuote.allowedAmountsPaise;
+  if (allowedAmountsPaise?.length) {
+    allowedAmountsPaise = allowedAmountsPaise.filter((amount) => amount <= maxPayablePaise);
+    maxPayablePaise = allowedAmountsPaise[allowedAmountsPaise.length - 1] ?? 0;
+  }
+  const minPayablePaise = partialAllowed
+    ? Math.min(baseQuote.minPayablePaise, maxPayablePaise)
+    : (allowedAmountsPaise?.[0] ?? maxPayablePaise);
+  return {
+    ...baseQuote,
+    payable: maxPayablePaise > 0 && (partialAllowed || (allowedAmountsPaise?.length ?? 0) > 0),
+    minPayablePaise: Math.max(0, minPayablePaise),
+    maxPayablePaise,
+    allowedAmountsPaise: allowedAmountsPaise?.length ? allowedAmountsPaise : baseQuote.allowedAmountsPaise,
+    reservedPaise,
+    remainingPayablePaise: maxPayablePaise,
+  };
+}
+
+export function computeFixedPaymentQuote(scheme, paymentRules = {}, options = {}) {
   const installments = scheme.installments ?? [];
   const due = installments.find((row) => !["PAID", "WAIVED"].includes(row.status));
   if (!due) {
@@ -24,16 +55,19 @@ export function computeFixedPaymentQuote(scheme, paymentRules = {}) {
       maxPayablePaise: 0,
       allowedAmountsPaise: [],
       installmentNumber: null,
+      currentInstallmentNumber: null,
+      consecutivePayableInstallments: [],
+      reservedPaise: options.reservedPaise ?? 0,
+      remainingPayablePaise: 0,
     };
   }
   const partialAllowed = paymentRules.partialPaymentAllowed === true;
-  const advanceAllowed = paymentRules.advancePaymentAllowed === true;
-  const maxAdvanceInstallments = advanceAllowed
-    ? Math.max(1, paymentRules.maxAdvanceInstallments ?? 1)
-    : 1;
-  const consecutive = consecutiveUnpaidInstallments(installments, maxAdvanceInstallments);
+  const maxCount = advanceInstallmentWindowCount(paymentRules);
+  const consecutive = consecutiveUnpaidInstallments(installments, maxCount);
   const currentRemaining = due.amountPaise - due.paidPaise;
+  const consecutivePayableInstallments = consecutive.map((row) => row.number);
 
+  let base;
   if (!partialAllowed) {
     const allowedAmountsPaise = [];
     let cumulative = 0;
@@ -45,44 +79,93 @@ export function computeFixedPaymentQuote(scheme, paymentRules = {}) {
     const perTxnCap = paymentRules.maxPaymentPerTransactionPaise;
     const cappedMax = perTxnCap != null ? Math.min(maxPayablePaise, perTxnCap) : maxPayablePaise;
     const allowedCapped = allowedAmountsPaise.filter((amount) => amount <= cappedMax);
-    return {
+    base = {
       payable: allowedCapped.length > 0,
       minPayablePaise: allowedCapped[0] ?? currentRemaining,
       maxPayablePaise: cappedMax,
       allowedAmountsPaise: allowedCapped,
       installmentNumber: due.number,
+      currentInstallmentNumber: due.number,
       suggestedPaise: allowedCapped[0] ?? currentRemaining,
+      consecutivePayableInstallments,
     };
-  }
-
-  let maxPayablePaise = currentRemaining;
-  if (advanceAllowed) {
-    maxPayablePaise = consecutive.reduce(
+  } else {
+    let maxPayablePaise = consecutive.reduce(
       (sum, row) => sum + (row.amountPaise - row.paidPaise),
       0,
     );
+    const perTxnCap = paymentRules.maxPaymentPerTransactionPaise;
+    if (perTxnCap != null) maxPayablePaise = Math.min(maxPayablePaise, perTxnCap);
+    const minPayablePaise = Math.min(
+      paymentRules.minPaymentPaise ?? currentRemaining,
+      currentRemaining,
+      maxPayablePaise,
+    );
+    base = {
+      payable: maxPayablePaise > 0,
+      minPayablePaise: Math.max(1, minPayablePaise),
+      maxPayablePaise,
+      allowedAmountsPaise: null,
+      installmentNumber: due.number,
+      currentInstallmentNumber: due.number,
+      suggestedPaise: currentRemaining,
+      consecutivePayableInstallments,
+    };
   }
-  const perTxnCap = paymentRules.maxPaymentPerTransactionPaise;
-  if (perTxnCap != null) maxPayablePaise = Math.min(maxPayablePaise, perTxnCap);
-  const minPayablePaise = Math.min(
-    paymentRules.minPaymentPaise ?? currentRemaining,
-    currentRemaining,
-  );
+
+  return applyReservationToQuote(base, options.reservedPaise ?? 0, paymentRules);
+}
+
+export function buildFixedPayableQuote(scheme, paymentRules = {}, options = {}) {
+  const quote = computeFixedPaymentQuote(scheme, paymentRules, options);
   return {
-    payable: maxPayablePaise > 0,
-    minPayablePaise: Math.max(1, minPayablePaise),
-    maxPayablePaise,
-    allowedAmountsPaise: null,
-    installmentNumber: due.number,
-    suggestedPaise: currentRemaining,
+    model: "FIXED",
+    ...quote,
+    partialPaymentAllowed: paymentRules.partialPaymentAllowed === true,
+    advancePaymentAllowed: paymentRules.advancePaymentAllowed === true,
+    maxAdvanceInstallments:
+      paymentRules.advancePaymentAllowed === true
+        ? Number(paymentRules.maxAdvanceInstallments ?? 0)
+        : 0,
+    maxPaymentPerTransactionPaise: paymentRules.maxPaymentPerTransactionPaise ?? null,
   };
 }
 
 export function isFixedPaymentAmountAllowed(quote, amountPaise) {
+  if (!quote.payable) return false;
   if (quote.allowedAmountsPaise?.length) {
     return quote.allowedAmountsPaise.includes(amountPaise);
   }
   return amountPaise >= quote.minPayablePaise && amountPaise <= quote.maxPayablePaise;
+}
+
+/** Preview which installment numbers receive a validated fixed payment amount. */
+export function previewFixedAllocation(installments, amountPaise, paymentRules = {}) {
+  const rows = (installments ?? []).map((row) => ({ ...row }));
+  const partialAllowed = paymentRules.partialPaymentAllowed === true;
+  let remaining = amountPaise;
+  let fromInstallment = null;
+  let throughInstallment = null;
+  for (const installment of rows) {
+    if (remaining <= 0) break;
+    if (["PAID", "WAIVED"].includes(installment.status)) continue;
+    const need = installment.amountPaise - installment.paidPaise;
+    if (need <= 0) continue;
+    if (fromInstallment == null) fromInstallment = installment.number;
+    if (!partialAllowed) {
+      if (remaining < need) break;
+      remaining -= need;
+      throughInstallment = installment.number;
+      continue;
+    }
+    const allocation = Math.min(need, remaining);
+    remaining -= allocation;
+    throughInstallment = installment.number;
+  }
+  if (remaining > 0 || fromInstallment == null) {
+    throw new Error("FIXED_PAYMENT_ALLOCATION_PREVIEW_FAILED");
+  }
+  return { fromInstallment, throughInstallment };
 }
 
 /** Apply a validated fixed payment amount to installment rows (mutates scheme.installments). */
@@ -96,10 +179,7 @@ export function allocateFixedPaymentToInstallments(scheme, amountPaise, paymentR
     if (need <= 0) continue;
     if (!partialAllowed) {
       if (remaining < need) {
-        installment.paidPaise += remaining;
-        remaining = 0;
-        installment.status = installment.paidPaise >= installment.amountPaise ? "PAID" : "PARTIALLY_PAID";
-        break;
+        throw new Error("FIXED_PAYMENT_PARTIAL_NOT_ALLOWED");
       }
       installment.paidPaise += need;
       remaining -= need;

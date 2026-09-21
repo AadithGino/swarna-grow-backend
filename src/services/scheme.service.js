@@ -28,7 +28,8 @@ import {
   ONE_ACTIVE_SCHEME_CONFLICT_STATUSES,
   OPEN_ENROLLMENT_STATUSES,
 } from "../lib/scheme-enrollment-status.js";
-import { computeFixedPaymentQuote } from "../lib/fixed-payment-policy.js";
+import { buildFixedPayableQuote } from "../lib/fixed-payment-policy.js";
+import { sumActiveFixedReservationPaise } from "../lib/fixed-payment-reservation.js";
 import { analyzeFreeWindowLedgerForCap } from "../lib/flexible-free-window-net.js";
 import { applySystemFlexLockClosure } from "../lib/flexible-lock-settlement.js";
 import { withTransaction, withTransientTransactionRetry } from "../lib/transaction.js";
@@ -1322,16 +1323,30 @@ export async function payableRange(req, schemeInput) {
   const plan = scheme.planSnapshot;
   const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle;
   if (scheme.paymentPattern === PaymentPattern.FIXED) {
-    const quote = computeFixedPaymentQuote(scheme, plan.paymentRules ?? {});
+    const paymentRules = plan.paymentRules ?? {};
+    const { reservedPaise } = await sumActiveFixedReservationPaise(
+      scheme.tenantId,
+      scheme._id,
+    );
+    const quote = buildFixedPayableQuote(scheme, paymentRules, { reservedPaise });
     return {
       model: "FIXED",
       installmentNumber: quote.installmentNumber,
+      currentInstallmentNumber: quote.currentInstallmentNumber,
+      consecutivePayableInstallments: quote.consecutivePayableInstallments,
       minPayablePaise: quote.minPayablePaise,
       maxPayablePaise: quote.maxPayablePaise,
       allowedAmountsPaise: quote.allowedAmountsPaise ?? undefined,
-      maxPaymentPerTransactionPaise: plan.paymentRules?.maxPaymentPerTransactionPaise ?? null,
+      maxPaymentPerTransactionPaise: quote.maxPaymentPerTransactionPaise ?? null,
       suggestedPaise: quote.suggestedPaise ?? quote.minPayablePaise,
       expectedVersion: scheme.version,
+      expectedPositionVersion: scheme.version,
+      positionVersion: scheme.version,
+      reservedPaise,
+      remainingPayablePaise: quote.remainingPayablePaise ?? quote.maxPayablePaise,
+      partialPaymentAllowed: quote.partialPaymentAllowed,
+      advancePaymentAllowed: quote.advancePaymentAllowed,
+      maxAdvanceInstallments: quote.maxAdvanceInstallments,
       payable: quote.payable,
     };
   }

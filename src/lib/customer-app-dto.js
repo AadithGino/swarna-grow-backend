@@ -233,11 +233,11 @@ function fixedPaymentHints(scheme, quote) {
   const bits = [];
   if (pr.partialPaymentAllowed) bits.push("Partial instalment payments are allowed.");
   if (pr.advancePaymentAllowed) {
-    const max = Math.max(1, pr.maxAdvanceInstallments ?? 1);
+    const max = Number(pr.maxAdvanceInstallments ?? 0);
     bits.push(
-      max > 1
-        ? `You can pay up to ${max} instalments in one PhonePe payment.`
-        : "Pay one due instalment at a time unless advance payments are configured.",
+      max > 0
+        ? `You can pay up to ${max} future instalment(s) in advance in one PhonePe payment.`
+        : "Only the current due instalment can be paid online.",
     );
   }
   return bits.length ? bits.join(" ") : null;
@@ -256,7 +256,12 @@ export function enrichPayableRange(quote, scheme) {
   const remainingPaise = quote.remainingPaise ?? maxPayablePaise;
   const cycleCapPaise = quote.capPaise ?? (quote.phase === "CAPPED" ? quote.capPaise : null);
   const quickAmounts = buildQuickAmounts({ ...quote, maxPayablePaise: remainingPaise });
-  const positionVersion = quote.positionVersion ?? scheme?.positionVersion ?? 0;
+  const positionVersion =
+    quote.expectedPositionVersion ??
+    quote.positionVersion ??
+    scheme?.positionVersion ??
+    scheme?.version ??
+    0;
   const cycleSelection = buildTargetCycleOptions(scheme, quote);
   return {
     model: quote.model,
@@ -288,9 +293,21 @@ export function enrichPayableRange(quote, scheme) {
     unusedAllowanceCarriesForward: false,
     allowFutureCycleSelection: cycleSelection.allowFutureCycleSelection,
     targetCycleOptions: cycleSelection.targetCycleOptions,
-    advancePaymentAllowed: Boolean(scheme?.planSnapshot?.paymentRules?.advancePaymentAllowed),
-    maxAdvanceInstallments: scheme?.planSnapshot?.paymentRules?.maxAdvanceInstallments ?? null,
-    partialPaymentAllowed: Boolean(scheme?.planSnapshot?.paymentRules?.partialPaymentAllowed),
+    advancePaymentAllowed:
+      quote.advancePaymentAllowed ??
+      Boolean(scheme?.planSnapshot?.paymentRules?.advancePaymentAllowed),
+    maxAdvanceInstallments:
+      quote.maxAdvanceInstallments ??
+      scheme?.planSnapshot?.paymentRules?.maxAdvanceInstallments ??
+      null,
+    partialPaymentAllowed:
+      quote.partialPaymentAllowed ??
+      Boolean(scheme?.planSnapshot?.paymentRules?.partialPaymentAllowed),
+    currentInstallmentNumber: quote.currentInstallmentNumber ?? quote.installmentNumber ?? null,
+    reservedPaise: quote.reservedPaise ?? 0,
+    allowedAmountsPaise: quote.allowedAmountsPaise ?? null,
+    expectedPositionVersion: positionVersion,
+    reservationExpiresAt: quote.reservationExpiresAt ?? null,
   };
 }
 

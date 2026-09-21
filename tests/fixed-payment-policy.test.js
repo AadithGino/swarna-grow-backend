@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  advanceInstallmentWindowCount,
   computeFixedPaymentQuote,
   isFixedPaymentAmountAllowed,
 } from "../src/lib/fixed-payment-policy.js";
@@ -17,7 +18,7 @@ test("partial disabled allows only exact installment sums", () => {
     { installments },
     { partialPaymentAllowed: false, advancePaymentAllowed: true, maxAdvanceInstallments: 2 },
   );
-  assert.deepEqual(quote.allowedAmountsPaise, [100000, 200000]);
+  assert.deepEqual(quote.allowedAmountsPaise, [100000, 200000, 300000]);
   assert.equal(isFixedPaymentAmountAllowed(quote, 150000), false);
   assert.equal(isFixedPaymentAmountAllowed(quote, 200000), true);
 });
@@ -28,4 +29,26 @@ test("advance disabled allows only current installment remainder", () => {
     { partialPaymentAllowed: false, advancePaymentAllowed: false },
   );
   assert.deepEqual(quote.allowedAmountsPaise, [100000]);
+});
+
+test("maxAdvanceInstallments 0 with advance enabled is current only", () => {
+  assert.equal(
+    advanceInstallmentWindowCount({ advancePaymentAllowed: true, maxAdvanceInstallments: 0 }),
+    1,
+  );
+  const quote = computeFixedPaymentQuote(
+    { installments },
+    { partialPaymentAllowed: false, advancePaymentAllowed: true, maxAdvanceInstallments: 0 },
+  );
+  assert.deepEqual(quote.allowedAmountsPaise, [100000]);
+});
+
+test("reserved capacity reduces allowed exact amounts", () => {
+  const quote = computeFixedPaymentQuote(
+    { installments },
+    { partialPaymentAllowed: false, advancePaymentAllowed: true, maxAdvanceInstallments: 1 },
+    { reservedPaise: 100_000 },
+  );
+  assert.deepEqual(quote.allowedAmountsPaise, [100_000]);
+  assert.equal(quote.reservedPaise, 100_000);
 });
