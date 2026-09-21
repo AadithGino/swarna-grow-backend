@@ -5,8 +5,8 @@ import { computeClosurePenaltyPaise } from "./scheme-closure-penalty.js";
 import {
   applyWeightPrecisionMg,
   decimalRoundingMode,
+  moneyPaiseFromWeightMg,
   moneyToWeightMg,
-  weightMgToMoneyPaise,
 } from "./money.js";
 import { computeNetAllocatedLedgerTotals } from "./flexible-lock-settlement.js";
 
@@ -79,7 +79,7 @@ export function computeGoldWeightModeSettlement({
     );
     const handoverValuePaise =
       finalHandoverWeightMg > 0
-        ? weightMgToMoneyPaise(finalHandoverWeightMg, ratePerGramPaise, rounding)
+        ? moneyPaiseFromWeightMg(finalHandoverWeightMg, ratePerGramPaise)
         : 0;
     return {
       penaltyWeightMg,
@@ -92,10 +92,9 @@ export function computeGoldWeightModeSettlement({
     };
   }
 
-  const eligibleValuePaise = weightMgToMoneyPaise(
+  const eligibleValuePaise = moneyPaiseFromWeightMg(
     eligibleWeightMg,
     ratePerGramPaise,
-    rounding,
   );
   const settlementPaise = Math.max(0, eligibleValuePaise - Math.max(0, penaltyPaise));
   const cashOutPaise =
@@ -224,11 +223,17 @@ export async function computeClosureSettlementCore({
     }
   }
 
-  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && exactRate && blockers.length === 0) {
+  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && !mode) {
+    blockers.push({
+      code: "REDEMPTION_MODE_REQUIRED",
+      message: "Redemption mode is required for gold-weight settlement.",
+    });
+  }
+
+  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && exactRate && blockers.length === 0 && mode) {
     const { rounding, precisionMg } = resolvePlanGoldRounding(scheme, tenantOps);
-    const effectiveMode = mode ?? RedemptionMode.CASH;
     const modeSettlement = computeGoldWeightModeSettlement({
-      mode: effectiveMode,
+      mode,
       principalWeightMg: netTotals.goldWeightMg,
       benefitWeightMg,
       penaltyPaise,
@@ -238,7 +243,7 @@ export async function computeClosureSettlementCore({
     });
     penaltyWeightMg = modeSettlement.penaltyWeightMg;
     settlementPaise = modeSettlement.settlementPaise;
-    if (effectiveMode === RedemptionMode.GOLD_HANDOVER) {
+    if (mode === RedemptionMode.GOLD_HANDOVER) {
       weightMg = modeSettlement.finalHandoverWeightMg;
       if (!(weightMg > 0)) {
         blockers.push({
@@ -313,6 +318,56 @@ export function resolveSettlementModeFromReq(req) {
     ?? req.body?.preferredMode
     ?? null
   );
+}
+
+export const SETTLEMENT_SNAPSHOT_FIELD_KEYS = Object.freeze([
+  "schemeVersion",
+  "principalPaise",
+  "benefitPaise",
+  "benefitWeightMg",
+  "benefitRatePerGramPaise",
+  "penaltyPaise",
+  "penaltyWeightMg",
+  "settlementPaise",
+  "goldWeightMg",
+  "weightMg",
+  "computedAt",
+]);
+
+export function buildSettlementSnapshotFromPreview(preview, schemeVersion) {
+  return {
+    schemeVersion,
+    principalPaise: preview.principalPaise,
+    benefitPaise: preview.benefitPaise,
+    benefitWeightMg: preview.benefitWeightMg,
+    benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
+    penaltyPaise: preview.penaltyPaise,
+    penaltyWeightMg: preview.penaltyWeightMg,
+    settlementPaise: preview.settlementPaise,
+    goldWeightMg: preview.goldWeightMg,
+    weightMg: preview.weightMg,
+    computedAt: new Date().toISOString(),
+  };
+}
+
+export function assertSettlementSnapshotComplete(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+  }
+  for (const key of SETTLEMENT_SNAPSHOT_FIELD_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+    const value = snapshot[key];
+    if (key === "computedAt") {
+      if (typeof value !== "string" || !value.trim()) return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+  }
+  return { ok: true };
 }
 
 export { ClosureType };

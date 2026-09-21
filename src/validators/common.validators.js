@@ -89,6 +89,11 @@ export const grievanceReopenBody = z.object({
   reason: z.string().trim().min(3).max(500),
   expectedVersion: z.number().int().positive(),
 });
+export const settlementPreviewQuery = z.object({
+  type: z.enum([E.ClosureType.MATURITY_REDEMPTION, E.ClosureType.PREMATURE_CLOSURE]).optional(),
+  mode: enumSchema(E.RedemptionMode).optional(),
+});
+
 export const customerRedemptionRequestBody = z.object({
   preferredMode: enumSchema(E.RedemptionMode),
   preferredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

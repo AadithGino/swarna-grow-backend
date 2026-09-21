@@ -15,6 +15,7 @@ import {
   TenantRole,
 } from "../src/constants/enums.js";
 import {
+  buildSettlementSnapshotFromPreview,
   computeGoldWeightModeSettlement,
   convertBenefitPaiseToWeightMg,
 } from "../src/lib/scheme-closure-settlement.js";
@@ -331,6 +332,9 @@ test("SETTLEMENT_VALUE_CHANGED when completion-day rate differs from request day
     settlementPaise: previewAtRequest.settlementPaise,
     weightMg: previewAtRequest.weightMg,
     version: 1,
+    modeDetails: {
+      settlementSnapshot: buildSettlementSnapshotFromPreview(previewAtRequest, scheme.version),
+    },
   });
 
   await assert.rejects(

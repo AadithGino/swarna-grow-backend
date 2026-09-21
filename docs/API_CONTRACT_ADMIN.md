@@ -2033,7 +2033,7 @@ null
 #### `GET /api/v1/admin/schemes/:schemeId/settlement-preview`
 - **Auth:** Bearer TENANT_USER
 - **Path params:** `schemeId`
-- **Query:** none
+- **Query:** `type` (`MATURITY_REDEMPTION`|`PREMATURE_CLOSURE`, optional). `mode` (`CASH`|`GOLD_HANDOVER`|`PURCHASE_ADJUSTMENT`, optional for cash plans; **required** for `GOLD_WEIGHT` schemes).
 - **Idempotent:** no
 - **Request body:**
 ```json

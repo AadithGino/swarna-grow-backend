@@ -17,6 +17,17 @@ function cashOutExpr() {
   };
 }
 
+/** Purchase-adjustment credit (not cash payout). */
+function purchaseAdjustmentSettlementExpr() {
+  return {
+    $cond: [
+      { $eq: ["$mode", "PURCHASE_ADJUSTMENT"] },
+      { $ifNull: ["$settlementPaise", 0] },
+      0,
+    ],
+  };
+}
+
 /** Reference rupee value of gold handed over (weight × rate at handover). */
 function handoverValueExpr() {
   return {
@@ -55,6 +66,7 @@ export async function redemptionPeriodSummary(scope, query = {}) {
           weightMg: { $sum: { $ifNull: ["$weightMg", 0] } },
           cashOutPaise: { $sum: cashOutExpr() },
           handoverValuePaise: { $sum: handoverValueExpr() },
+          purchaseAdjustmentSettlementPaise: { $sum: purchaseAdjustmentSettlementExpr() },
         },
       },
     ]),
@@ -141,6 +153,7 @@ export async function redemptionPeriodSummary(scope, query = {}) {
     cashSettlementPaise,
     goldWeightMg,
     goldHandoverValuePaise,
+    purchaseAdjustmentSettlementPaise: t.purchaseAdjustmentSettlementPaise ?? 0,
     maturityRedemptions: {
       count: maturity.count,
       settlementPaise:

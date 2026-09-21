@@ -19,6 +19,8 @@ import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import {
+  assertSettlementSnapshotComplete,
+  buildSettlementSnapshotFromPreview,
   computeClosureSettlementCore,
   closureSettlementFiguresDiffer,
   resolveSettlementModeFromReq,
@@ -288,6 +290,15 @@ export async function settlementPreview(req, closureType) {
     Tenant.findById(scheme.tenantId).select("operations").lean(),
   ]);
   const settlementMode = resolveSettlementModeFromReq(req);
+  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
+    if (!settlementMode) {
+      throw errors.business(
+        "REDEMPTION_MODE_REQUIRED",
+        "Redemption mode is required for gold-weight settlement preview.",
+      );
+    }
+    assertRedemptionModeAllowed(rules, settlementMode);
+  }
   const core = await computeClosureSettlementCore({
     scheme,
     ledgerEntries: entries,
@@ -557,19 +568,7 @@ export async function requestCustomerRedemption(req) {
       ...(req.body.modeDetails?.billNumber
         ? { billNumber: String(req.body.modeDetails.billNumber).trim() }
         : {}),
-      settlementSnapshot: {
-        schemeVersion: scheme.version,
-        principalPaise: preview.principalPaise,
-        benefitPaise: preview.benefitPaise,
-        benefitWeightMg: preview.benefitWeightMg,
-        benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
-        penaltyPaise: preview.penaltyPaise,
-        penaltyWeightMg: preview.penaltyWeightMg,
-        settlementPaise: preview.settlementPaise,
-        goldWeightMg: preview.goldWeightMg,
-        weightMg: preview.weightMg,
-        computedAt: new Date().toISOString(),
-      },
+      settlementSnapshot: buildSettlementSnapshotFromPreview(preview, scheme.version),
     },
     status: RedemptionStatus.REQUESTED,
     principalPaise: preview.principalPaise,
@@ -639,19 +638,7 @@ export async function initiateRedemption(
   }
   const modeDetails = {
     ...(req.body.modeDetails ?? {}),
-    settlementSnapshot: {
-      schemeVersion: schemeRow.version,
-      principalPaise: preview.principalPaise,
-      benefitPaise: preview.benefitPaise,
-      benefitWeightMg: preview.benefitWeightMg,
-      benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
-      penaltyPaise: preview.penaltyPaise,
-      penaltyWeightMg: preview.penaltyWeightMg,
-      settlementPaise: preview.settlementPaise,
-      goldWeightMg: preview.goldWeightMg,
-      weightMg: preview.weightMg,
-      computedAt: new Date().toISOString(),
-    },
+    settlementSnapshot: buildSettlementSnapshotFromPreview(preview, schemeRow.version),
   };
   const expected = modeDetails.expectedFinalValuePaise;
   if (
@@ -812,6 +799,22 @@ export async function transitionRedemption(req, action) {
     if (action === "complete") {
       row.completedBy = req.auth.id;
       row.completedAt = new Date();
+      if (req.body?.mode != null && req.body.mode !== row.mode) {
+        throw errors.business(
+          "REDEMPTION_MODE_NOT_ALLOWED",
+          "Redemption mode cannot be changed after the request was created.",
+          { requestedMode: row.mode, bodyMode: req.body.mode },
+        );
+      }
+      const snapshotCheck = assertSettlementSnapshotComplete(
+        row.modeDetails?.settlementSnapshot,
+      );
+      if (!snapshotCheck.ok) {
+        throw errors.business(
+          snapshotCheck.code,
+          "This redemption is missing a valid settlement snapshot. Create a new request.",
+        );
+      }
       if (row.mode === RedemptionMode.PURCHASE_ADJUSTMENT) {
         const billNumber = String(
           req.body.modeDetails?.billNumber ?? row.modeDetails?.billNumber ?? "",
@@ -842,20 +845,18 @@ export async function transitionRedemption(req, action) {
           freshPreview.blockers[0]?.message ?? "This scheme is no longer eligible for redemption.",
         );
       }
-      const snapshot = row.modeDetails?.settlementSnapshot;
-      const baseline = snapshot
-        ? {
-          settlementPaise: snapshot.settlementPaise,
-          principalPaise: snapshot.principalPaise,
-          benefitPaise: snapshot.benefitPaise,
-          benefitWeightMg: snapshot.benefitWeightMg,
-          benefitRatePerGramPaise: snapshot.benefitRatePerGramPaise,
-          penaltyPaise: snapshot.penaltyPaise,
-          penaltyWeightMg: snapshot.penaltyWeightMg,
-          goldWeightMg: snapshot.goldWeightMg,
-          weightMg: snapshot.weightMg,
-        }
-        : row;
+      const snapshot = row.modeDetails.settlementSnapshot;
+      const baseline = {
+        settlementPaise: snapshot.settlementPaise,
+        principalPaise: snapshot.principalPaise,
+        benefitPaise: snapshot.benefitPaise,
+        benefitWeightMg: snapshot.benefitWeightMg,
+        benefitRatePerGramPaise: snapshot.benefitRatePerGramPaise,
+        penaltyPaise: snapshot.penaltyPaise,
+        penaltyWeightMg: snapshot.penaltyWeightMg,
+        goldWeightMg: snapshot.goldWeightMg,
+        weightMg: snapshot.weightMg,
+      };
       if (closureSettlementFiguresDiffer(baseline, freshPreview)) {
         throw errors.business(
           "SETTLEMENT_VALUE_CHANGED",

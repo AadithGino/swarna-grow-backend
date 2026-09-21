@@ -26,6 +26,7 @@ import {
   planPatchBody,
   previewScheduleBody,
   redemptionBody,
+  settlementPreviewQuery,
 } from "../validators/common.validators.js";
 import { guarded } from "../lib/route.js";
 import { errors } from "../lib/app-error.js";
@@ -139,6 +140,7 @@ adminSchemeRouter.get(
   "/schemes/:schemeId/settlement-preview",
   ...guarded(
     Permission.REDEMPTION_READ,
+    validate({ query: settlementPreviewQuery }),
     asyncHandler(async (req, res) => {
       const closureType =
         req.query.type === ClosureType.PREMATURE_CLOSURE

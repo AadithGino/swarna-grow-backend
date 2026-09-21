@@ -1,4 +1,5 @@
 import { PaymentPattern } from "../constants/enums.js";
+import { percentOfPaiseFloor } from "./money.js";
 
 export function computeConfiguredBenefitPaise(scheme, totals, benefitDef) {
   if (!benefitDef || benefitDef.type === "TEXT_ONLY") return 0;
@@ -6,7 +7,9 @@ export function computeConfiguredBenefitPaise(scheme, totals, benefitDef) {
   if (benefitDef.type === "FIXED_BONUS_AMOUNT") {
     benefitPaise =
       benefitDef.bonusBasis === "PERCENT_OF_PAID"
-        ? Math.floor((totals.amountPaidPaise * benefitDef.bonusValue) / 100)
+        ? percentOfPaiseFloor(totals.amountPaidPaise, benefitDef.bonusValue, {
+          fieldName: "benefitPercent",
+        })
         : benefitDef.bonusValue;
     if (benefitDef.maxBonusPaise) benefitPaise = Math.min(benefitPaise, benefitDef.maxBonusPaise);
   }

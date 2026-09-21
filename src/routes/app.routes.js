@@ -13,6 +13,7 @@ import {
   cancelPaymentIntentBody,
   customerGrievanceMessageBody,
   customerRedemptionRequestBody,
+  settlementPreviewQuery,
   fcmDeleteBody,
   fcmRegisterBody,
   fixedSchemePayBody,
@@ -103,7 +104,11 @@ appRouter.get("/scheme-plans/:planId", asyncHandler(appCustomer.getPlan));
 appRouter.get("/schemes", asyncHandler(appCustomer.listSchemes));
 appRouter.get("/schemes/:schemeId/payable-range", asyncHandler(appCustomer.payableRange));
 appRouter.get("/schemes/:schemeId/passbook", asyncHandler(async (req, res) => sendSuccess(res, await schemes.getPassbook(req))));
-appRouter.get("/schemes/:schemeId/settlement-preview", asyncHandler(operations.settlementPreview(ClosureType.MATURITY_REDEMPTION)));
+appRouter.get(
+  "/schemes/:schemeId/settlement-preview",
+  validate({ query: settlementPreviewQuery }),
+  asyncHandler(operations.settlementPreview(ClosureType.MATURITY_REDEMPTION)),
+);
 appRouter.get("/schemes/:schemeId", asyncHandler(appCustomer.getScheme));
 
 appRouter.post(

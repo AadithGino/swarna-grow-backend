@@ -298,7 +298,7 @@ Curated plan cards (see `mapCustomerPlanListItem` in `customer-app-dto.js`): `di
 | GET | `/schemes/:schemeId` | **`CustomerSchemeDetail`** (see Appendix A) — mapped in `customer-scheme-detail-dto.js`, not raw Mongo |
 | GET | `/schemes/:schemeId/payable-range` | Query `targetCycle` (capped phase); enriched quote (see below) |
 | GET | `/schemes/:schemeId/passbook` | Passbook rows |
-| GET | `/schemes/:schemeId/settlement-preview` | Maturity preview with benefits, blockers, eligibility |
+| GET | `/schemes/:schemeId/settlement-preview` | Maturity preview; query `mode` required for gold-weight schemes (`CASH`, `GOLD_HANDOVER`, or `PURCHASE_ADJUSTMENT`) |
 | POST | `/schemes/enrol` | Body: `{ planId, installmentAmountPaise?, payNow?, redirectUrl? }` only — plan decides first-instalment timing (customer cannot send `firstInstallmentMode`). Response discriminates `paymentType`: `FIXED_PAYMENT_LINK` \| `FLEXIBLE_PAYMENT_INTENT`. |
 | POST | `/schemes/:schemeId/pay` | **Fixed schemes only** → payment link DTO. Flexible → `422 FLEXIBLE_PAYMENT_INTENT_REQUIRED`. |
 | POST | `/schemes/:schemeId/payment-intents` | **Flexible only**; body `{ amountPaise, targetCycle?, expectedPositionVersion, redirectUrl? }` |
