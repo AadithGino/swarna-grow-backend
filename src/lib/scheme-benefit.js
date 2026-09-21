@@ -16,3 +16,21 @@ export function computeConfiguredBenefitPaise(scheme, totals, benefitDef) {
   }
   return Math.max(0, benefitPaise);
 }
+
+/** Benefit for closure/redemption; FORFEIT and system-policy closure yield zero. FULL is never treated as FORFEIT. */
+export function computeClosureBenefitPaise({
+  scheme,
+  totals,
+  benefitDef,
+  benefitEligible,
+  isPremature,
+  prematureBenefitTreatment,
+  systemPolicyClosure,
+}) {
+  if (systemPolicyClosure) return 0;
+  if (isPremature && prematureBenefitTreatment === "FORFEIT") return 0;
+  const includeBenefit =
+    benefitEligible || (isPremature && prematureBenefitTreatment === "FULL");
+  if (!includeBenefit) return 0;
+  return computeConfiguredBenefitPaise(scheme, totals, benefitDef);
+}

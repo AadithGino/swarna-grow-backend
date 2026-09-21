@@ -32,10 +32,46 @@ export function isFlexSystemPolicyClosure(scheme) {
 
 /** Net allocated principal from ledger (excludes UNALLOCATED and non-allocated payments). */
 export function computeNetAllocatedPrincipalPaise(entries) {
-  const business = entries.filter(
-    (row) => row.type !== "UNALLOCATED_PAYMENT",
+  return computeNetAllocatedLedgerTotals(entries, new Set()).amountPaidPaise;
+}
+
+/** Ledger totals for settlement: excludes UNALLOCATED rows and payments in excludedPaymentIds. */
+export function computeNetAllocatedLedgerTotals(entries, excludedPaymentIds = new Set()) {
+  const filtered = entries.filter(
+    (row) =>
+      row.type !== "UNALLOCATED_PAYMENT"
+      && (!row.paymentId || !excludedPaymentIds.has(String(row.paymentId))),
   );
-  return Math.max(0, ledgerTotals(business).amountPaidPaise);
+  const totals = ledgerTotals(filtered);
+  return {
+    amountPaidPaise: Math.max(0, totals.amountPaidPaise),
+    goldWeightMg: Math.max(0, totals.goldWeightMg),
+  };
+}
+
+export async function loadExcludedPaymentIdsForLedgerEntries(entries, tenantId, session) {
+  const paymentIds = [
+    ...new Set(entries.map((row) => row.paymentId).filter(Boolean)),
+  ];
+  const excludedPaymentIds = new Set();
+  if (!paymentIds.length) return excludedPaymentIds;
+  const payments = await Payment.find({
+    _id: { $in: paymentIds },
+    tenantId,
+    status: {
+      $in: [
+        PaymentStatus.PENDING,
+        PaymentStatus.FAILED,
+        PaymentStatus.UNALLOCATED_PENDING_REVIEW,
+        PaymentStatus.REVERSED,
+      ],
+    },
+  })
+    .select("_id")
+    .session(session ?? null)
+    .lean();
+  for (const row of payments) excludedPaymentIds.add(String(row._id));
+  return excludedPaymentIds;
 }
 
 export async function computeNetAllocatedPrincipalForScheme({
@@ -68,10 +104,7 @@ export async function computeNetAllocatedPrincipalForScheme({
       .lean();
     for (const row of payments) excludedPaymentIds.add(String(row._id));
   }
-  const filtered = entries.filter(
-    (row) => !row.paymentId || !excludedPaymentIds.has(String(row.paymentId)),
-  );
-  return computeNetAllocatedPrincipalPaise(filtered);
+  return computeNetAllocatedLedgerTotals(entries, excludedPaymentIds).amountPaidPaise;
 }
 
 export async function enqueueFlexPolicyClosedOutbox({

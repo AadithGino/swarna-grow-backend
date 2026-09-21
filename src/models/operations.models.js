@@ -15,7 +15,7 @@ handoverSchema.index({ tenantId: 1, branchId: 1, status: 1, createdAt: -1 });
 
 const redemptionSchema = new mongoose.Schema({
   _id: stringId("red"), tenantId: tenantField, branchId: branchField, schemeId: { type: String, required: true, index: true }, customerId: { type: String, required: true }, closureType: enumField(ClosureType, { required: true }), mode: enumField(RedemptionMode, { required: true }), status: enumField(RedemptionStatus, { default: RedemptionStatus.REQUESTED }),
-  principalPaise: integerField(), benefitPaise: integerField(), benefitWeightMg: integerField(), benefitRatePerGramPaise: integerField(), penaltyPaise: integerField(), settlementPaise: integerField(), weightMg: integerField(),
+  principalPaise: integerField(), benefitPaise: integerField(), benefitWeightMg: integerField(), benefitRatePerGramPaise: integerField(), penaltyPaise: integerField(), penaltyWeightMg: integerField(), settlementPaise: integerField(), weightMg: integerField(),
   /** Cash physically paid out (CASH / purchase adjust / transfer). Zero for gold handover. */
   cashOutPaise: integerField(),
   /** Gold handover: rate locked at completion for reference valuation. */

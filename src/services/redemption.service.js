@@ -18,12 +18,16 @@ import {
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
-import { computeConfiguredBenefitPaise } from "../lib/scheme-benefit.js";
+import {
+  computeClosureSettlementCore,
+  closureSettlementFiguresDiffer,
+  resolveSettlementModeFromReq,
+} from "../lib/scheme-closure-settlement.js";
+import { loadExcludedPaymentIdsForLedgerEntries } from "../lib/flexible-lock-settlement.js";
 import { nextSchemeLedgerSequence } from "./sequence.service.js";
 import { ledgerTotals } from "./scheme.service.js";
 import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
-import { latestGoldRateOnOrBefore } from "./tenant.service.js";
 import {
   applyWeightPrecisionMg,
   decimalRoundingMode,
@@ -58,17 +62,6 @@ function moneyField(paise) {
       maximumFractionDigits: 0,
     }).format(value / 100),
   };
-}
-
-function computePenaltyPaise(penaltyRule, amountPaidPaise) {
-  if (!penaltyRule || penaltyRule.mode === "NONE") return 0;
-  if (penaltyRule.mode === "PERCENT_OF_PAID") {
-    return Math.floor((amountPaidPaise * (penaltyRule.value ?? 0)) / 100);
-  }
-  if (penaltyRule.mode === "FLAT") {
-    return penaltyRule.flatPaise ?? penaltyRule.value ?? 0;
-  }
-  return penaltyRule.value ?? 0;
 }
 
 function installmentsPaidCount(scheme) {
@@ -126,12 +119,12 @@ export async function settlementPreview(req, closureType) {
       .select("_id name mobile passbookNumber customerNumber")
       .lean(),
   ]);
-  const totals = ledgerTotals(entries);
   const rules = scheme.planSnapshot?.redemptionRules ?? {};
   const benefitDef = scheme.planSnapshot?.benefit ?? null;
   const isPremature = closureType === ClosureType.PREMATURE_CLOSURE;
 
   if (isFlexSystemPolicyClosure(scheme)) {
+    const flexTotals = ledgerTotals(entries);
     const blockers = [];
     const isCustomer = req.auth?.type === "CUSTOMER";
     if (isCustomer) {
@@ -154,7 +147,7 @@ export async function settlementPreview(req, closureType) {
     }
     const principalPaise = Math.max(
       0,
-      Number(scheme.settlementPrincipalPaise ?? totals.amountPaidPaise ?? 0),
+      Number(scheme.settlementPrincipalPaise ?? flexTotals.amountPaidPaise ?? 0),
     );
     if (scheme.settlementRequired && principalPaise <= 0) {
       blockers.push({
@@ -209,8 +202,8 @@ export async function settlementPreview(req, closureType) {
       computation: {
         lines,
         finalValue: moneyField(settlementPaise),
-        goldWeight: totals.goldWeightMg
-          ? { weightMg: totals.goldWeightMg, weightDisplay: `${(totals.goldWeightMg / 1000).toFixed(3)} g` }
+        goldWeight: flexTotals.goldWeightMg
+          ? { weightMg: flexTotals.goldWeightMg, weightDisplay: `${(flexTotals.goldWeightMg / 1000).toFixed(3)} g` }
           : null,
       },
       benefit: null,
@@ -222,7 +215,7 @@ export async function settlementPreview(req, closureType) {
       closureType,
       schemeId: scheme._id,
       principalPaise,
-      goldWeightMg: totals.goldWeightMg,
+      goldWeightMg: flexTotals.goldWeightMg,
       benefitEligible: false,
       benefitPaise: 0,
       benefitWeightMg: 0,
@@ -290,64 +283,45 @@ export async function settlementPreview(req, closureType) {
     ((!eligibility?.requireAllInstallmentsPaid || requiredPaid) &&
       defaultCount <= (eligibility?.maxAllowedDefaults ?? Number.MAX_SAFE_INTEGER));
 
-  const penaltyRule = isPremature ? rules.prematurePenalty : null;
-  const prematureBenefitTreatment = penaltyRule?.benefitTreatment ?? "FORFEIT";
-  let benefitPaise = 0;
-  const includeMaturityBenefit =
-    benefitEligible
-    || (isPremature && prematureBenefitTreatment === "FULL");
-  if (includeMaturityBenefit) {
-    benefitPaise = computeConfiguredBenefitPaise(scheme, totals, benefitDef);
-  }
-  if (isPremature && prematureBenefitTreatment === "FORFEIT") {
-    benefitPaise = 0;
-  }
-
-  const penaltyPaise = isPremature
-    ? computePenaltyPaise(penaltyRule, totals.amountPaidPaise)
-    : 0;
-
-  let benefitWeightMg = 0;
-  let benefitRatePerGramPaise = 0;
-  if (scheme.valueBasis === "GOLD_WEIGHT" && benefitPaise > 0) {
-    const rate = await latestGoldRateOnOrBefore(
-      { tenantId: scheme.tenantId, branchId: scheme.branchId },
-      scheme.maturityDate,
-    );
-    if (!rate) {
-      blockers.push({
-        code: "GOLD_RATE_NOT_SET",
-        message:
-          "A gold rate effective on or before the maturity date is required to calculate the benefit.",
-      });
-    } else {
-      benefitRatePerGramPaise = rate.ratePerGramPaise;
-      const goldRules = scheme.planSnapshot?.goldRules ?? {};
-      const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
-      benefitWeightMg = moneyToWeightMg(
-        benefitPaise,
-        benefitRatePerGramPaise,
-        rounding,
-      );
-      benefitWeightMg = applyWeightPrecisionMg(
-        benefitWeightMg,
-        goldRules.weightPrecisionMg,
-        rounding,
-      );
-      if (!(benefitWeightMg > 0)) {
-        blockers.push({
-          code: "GOLD_BENEFIT_ROUNDS_TO_ZERO",
-          message:
-            "The configured benefit rounds to zero gold weight at the applicable rate.",
-        });
-      }
-    }
-  }
-
-  const settlementPaise = Math.max(
-    0,
-    totals.amountPaidPaise + benefitPaise - penaltyPaise,
-  );
+  const [excludedPaymentIds, tenant] = await Promise.all([
+    loadExcludedPaymentIdsForLedgerEntries(entries, scheme.tenantId),
+    Tenant.findById(scheme.tenantId).select("operations").lean(),
+  ]);
+  const settlementMode = resolveSettlementModeFromReq(req);
+  const core = await computeClosureSettlementCore({
+    scheme,
+    ledgerEntries: entries,
+    excludedPaymentIds,
+    closureType,
+    valuationDateYmd: today(),
+    mode: settlementMode,
+    tenantOps: tenant,
+    systemPolicyClosure: false,
+    benefitEligible,
+    paidCount,
+    monthsCompleted,
+    lockInMet,
+    requiredPaid,
+    defaultCount,
+    benefitDef,
+    rules,
+    isPremature,
+  });
+  blockers.push(...core.blockers);
+  const {
+    benefitPaise,
+    benefitWeightMg,
+    benefitRatePerGramPaise,
+    penaltyPaise,
+    penaltyWeightMg,
+    settlementPaise,
+    principalPaise,
+    goldWeightMg,
+    weightMg,
+    prematureBenefitTreatment,
+    penaltyRule,
+  } = core;
+  const totals = { amountPaidPaise: principalPaise, goldWeightMg };
   const eligible = blockers.length === 0;
 
   const benefitLabel =
@@ -436,9 +410,6 @@ export async function settlementPreview(req, closureType) {
     available: allowedModeCodes.includes(row.mode),
   }));
 
-  const tenant = await Tenant.findById(scheme.tenantId)
-    .select("operations")
-    .lean();
   const approvalRequired = Boolean(
     rules.approvalRequired ||
       tenant?.operations?.redemptionApprovalRequired,
@@ -479,8 +450,11 @@ export async function settlementPreview(req, closureType) {
     computation: {
       lines,
       finalValue: moneyField(settlementPaise),
-      goldWeight: totals.goldWeightMg
-        ? { weightMg: totals.goldWeightMg, weightDisplay: `${(totals.goldWeightMg / 1000).toFixed(3)} g` }
+      goldWeight: (weightMg || totals.goldWeightMg)
+        ? {
+          weightMg: weightMg || totals.goldWeightMg,
+          weightDisplay: `${((weightMg || totals.goldWeightMg) / 1000).toFixed(3)} g`,
+        }
         : null,
     },
     benefit: benefitDef
@@ -510,13 +484,15 @@ export async function settlementPreview(req, closureType) {
     warningText,
     closureType,
     schemeId: scheme._id,
-    principalPaise: totals.amountPaidPaise,
-    goldWeightMg: totals.goldWeightMg,
+    principalPaise,
+    goldWeightMg,
+    weightMg,
     benefitEligible,
     benefitPaise,
     benefitWeightMg,
     benefitRatePerGramPaise,
     penaltyPaise,
+    penaltyWeightMg,
     settlementPaise,
   };
 }
@@ -531,7 +507,16 @@ export async function requestCustomerRedemption(req) {
   if (req.body.expectedVersion !== scheme.version) {
     throw new AppError("VERSION_CONFLICT", "This scheme changed. Refresh and try again.", 409);
   }
-  const preview = await settlementPreview(req, ClosureType.MATURITY_REDEMPTION);
+  const preview = await settlementPreview(
+    {
+      ...req,
+      body: {
+        ...req.body,
+        mode: req.body.preferredMode ?? req.body.mode,
+      },
+    },
+    ClosureType.MATURITY_REDEMPTION,
+  );
   if (!preview.eligible) {
     throw errors.business(
       preview.blockers[0]?.code ?? "NOT_ELIGIBLE",
@@ -579,8 +564,10 @@ export async function requestCustomerRedemption(req) {
         benefitWeightMg: preview.benefitWeightMg,
         benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
         penaltyPaise: preview.penaltyPaise,
+        penaltyWeightMg: preview.penaltyWeightMg,
         settlementPaise: preview.settlementPaise,
         goldWeightMg: preview.goldWeightMg,
+        weightMg: preview.weightMg,
         computedAt: new Date().toISOString(),
       },
     },
@@ -590,8 +577,11 @@ export async function requestCustomerRedemption(req) {
     benefitWeightMg: preview.benefitWeightMg,
     benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
     penaltyPaise: preview.penaltyPaise,
+    penaltyWeightMg: preview.penaltyWeightMg,
     settlementPaise: preview.settlementPaise,
-    weightMg: (preview.goldWeightMg ?? 0) + (preview.benefitWeightMg ?? 0),
+    weightMg:
+      preview.weightMg
+      ?? (preview.goldWeightMg ?? 0) + (preview.benefitWeightMg ?? 0),
     requestedBy: req.auth.id,
     requestedAt: new Date(),
   });
@@ -634,14 +624,35 @@ export async function initiateRedemption(
       "Premature closure is not included in your plan.",
     );
   }
-  const preview = await settlementPreview(req, closureType);
+  const preview = await settlementPreview(
+    {
+      ...req,
+      body: { ...(req.body ?? {}), mode: req.body.mode },
+    },
+    closureType,
+  );
   if (!preview.eligible) {
     throw errors.business(
       preview.blockers[0]?.code ?? "NOT_ELIGIBLE",
       preview.blockers[0]?.message ?? "This scheme is not eligible for closure.",
     );
   }
-  const modeDetails = req.body.modeDetails ?? {};
+  const modeDetails = {
+    ...(req.body.modeDetails ?? {}),
+    settlementSnapshot: {
+      schemeVersion: schemeRow.version,
+      principalPaise: preview.principalPaise,
+      benefitPaise: preview.benefitPaise,
+      benefitWeightMg: preview.benefitWeightMg,
+      benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
+      penaltyPaise: preview.penaltyPaise,
+      penaltyWeightMg: preview.penaltyWeightMg,
+      settlementPaise: preview.settlementPaise,
+      goldWeightMg: preview.goldWeightMg,
+      weightMg: preview.weightMg,
+      computedAt: new Date().toISOString(),
+    },
+  };
   const expected = modeDetails.expectedFinalValuePaise;
   if (
     expected != null &&
@@ -733,15 +744,18 @@ export async function initiateRedemption(
             customerId: scheme.customerId,
             closureType,
             mode: req.body.mode,
-            modeDetails: req.body.modeDetails,
+            modeDetails,
             status,
             principalPaise: preview.principalPaise,
             benefitPaise: preview.benefitPaise,
             benefitWeightMg: preview.benefitWeightMg,
             benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
             penaltyPaise: preview.penaltyPaise,
+            penaltyWeightMg: preview.penaltyWeightMg,
             settlementPaise: preview.settlementPaise,
-            weightMg: preview.goldWeightMg + preview.benefitWeightMg,
+            weightMg:
+              preview.weightMg
+              ?? (preview.goldWeightMg ?? 0) + (preview.benefitWeightMg ?? 0),
             requestedBy: req.auth.id,
             requestedAt: new Date(),
           },
@@ -811,11 +825,14 @@ export async function transitionRedemption(req, action) {
         row.modeDetails = { ...(row.modeDetails ?? {}), billNumber };
       }
       const scheme = await Scheme.findById(row.schemeId).session(session);
+      const completeDate = today();
       const freshPreview = await settlementPreview(
         {
           params: { schemeId: row.schemeId },
           auth: req.auth,
           scope: req.scope,
+          body: { mode: row.mode },
+          query: {},
         },
         row.closureType,
       );
@@ -825,7 +842,21 @@ export async function transitionRedemption(req, action) {
           freshPreview.blockers[0]?.message ?? "This scheme is no longer eligible for redemption.",
         );
       }
-      if (Number(freshPreview.settlementPaise) !== Number(row.settlementPaise)) {
+      const snapshot = row.modeDetails?.settlementSnapshot;
+      const baseline = snapshot
+        ? {
+          settlementPaise: snapshot.settlementPaise,
+          principalPaise: snapshot.principalPaise,
+          benefitPaise: snapshot.benefitPaise,
+          benefitWeightMg: snapshot.benefitWeightMg,
+          benefitRatePerGramPaise: snapshot.benefitRatePerGramPaise,
+          penaltyPaise: snapshot.penaltyPaise,
+          penaltyWeightMg: snapshot.penaltyWeightMg,
+          goldWeightMg: snapshot.goldWeightMg,
+          weightMg: snapshot.weightMg,
+        }
+        : row;
+      if (closureSettlementFiguresDiffer(baseline, freshPreview)) {
         throw errors.business(
           "SETTLEMENT_VALUE_CHANGED",
           "The settlement amount changed since this request was submitted. Refresh and try again.",
@@ -836,9 +867,11 @@ export async function transitionRedemption(req, action) {
       row.benefitWeightMg = freshPreview.benefitWeightMg;
       row.benefitRatePerGramPaise = freshPreview.benefitRatePerGramPaise;
       row.penaltyPaise = freshPreview.penaltyPaise;
+      row.penaltyWeightMg = freshPreview.penaltyWeightMg;
       row.settlementPaise = freshPreview.settlementPaise;
-      row.weightMg = (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0);
-      const completeDate = today();
+      row.weightMg =
+        freshPreview.weightMg
+        ?? (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0);
       let ledgerDebitAmountPaise;
       let ledgerDebitWeightMg;
       let ledgerDebitRatePaise = 0;
@@ -869,11 +902,7 @@ export async function transitionRedemption(req, action) {
         row.handoverRateEffectiveDate = rate.effectiveDate;
         row.cashOutPaise = 0;
         if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
-          row.handoverValuePaise = weightMgToMoneyPaise(
-            row.weightMg ?? 0,
-            rate.ratePerGramPaise,
-            rounding,
-          );
+          row.handoverValuePaise = freshPreview.settlementPaise ?? 0;
           ledgerDebitAmountPaise = row.handoverValuePaise;
           ledgerDebitWeightMg = row.weightMg ?? 0;
         } else {
@@ -908,7 +937,9 @@ export async function transitionRedemption(req, action) {
         row.handoverValuePaise = 0;
         ledgerDebitAmountPaise = row.settlementPaise ?? 0;
         ledgerDebitWeightMg =
-          scheme.valueBasis === ValueBasis.GOLD_WEIGHT ? (row.weightMg ?? 0) : 0;
+          scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+            ? (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0)
+            : 0;
       } else {
         row.cashOutPaise = row.settlementPaise ?? 0;
         row.handoverValuePaise = 0;
@@ -916,7 +947,9 @@ export async function transitionRedemption(req, action) {
         row.handoverRateEffectiveDate = undefined;
         ledgerDebitAmountPaise = row.settlementPaise ?? 0;
         ledgerDebitWeightMg =
-          scheme.valueBasis === ValueBasis.GOLD_WEIGHT ? (row.weightMg ?? 0) : 0;
+          scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+            ? (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0)
+            : 0;
       }
 
       const nextLedgerSequence = () =>
@@ -959,6 +992,7 @@ export async function transitionRedemption(req, action) {
               type: LedgerEntryType.CLOSURE_PENALTY,
               sequence,
               amountPaise: row.penaltyPaise,
+              weightMg: row.penaltyWeightMg > 0 ? row.penaltyWeightMg : undefined,
               actorType: "USER",
               actorId: req.auth.id,
               description: "Premature closure penalty",
