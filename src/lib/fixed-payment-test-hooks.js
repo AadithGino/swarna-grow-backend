@@ -1,5 +1,3 @@
-/** Test-only coordination for fixed payment races (NODE_ENV=test). */
-
 function enabled() {
   return process.env.NODE_ENV === "test";
 }
@@ -7,6 +5,7 @@ function enabled() {
 let pauseBeforeManualFixedReservationGate = null;
 let pauseBeforeFixedSchemeCommit = null;
 let pauseBeforeGatewayRecordPayment = null;
+const pendingGateReleases = [];
 
 function makeGate() {
   let releaseGate = () => {};
@@ -17,12 +16,10 @@ function makeGate() {
   const gate = new Promise((resolve) => {
     releaseGate = resolve;
   });
+  pendingGateReleases.push(releaseGate);
   return {
     waitUntilPaused: () => entered,
     resume: () => releaseGate(),
-    disarm: (clear) => {
-      clear();
-    },
     async pause() {
       signalEntered();
       await gate;
@@ -69,7 +66,12 @@ export function armPauseBeforeGatewayRecordPayment() {
   };
 }
 
+/** Release any armed barrier and clear hook state (test teardown). */
 export function clearFixedPaymentTestHooks() {
+  while (pendingGateReleases.length) {
+    const release = pendingGateReleases.pop();
+    release();
+  }
   pauseBeforeManualFixedReservationGate = null;
   pauseBeforeFixedSchemeCommit = null;
   pauseBeforeGatewayRecordPayment = null;

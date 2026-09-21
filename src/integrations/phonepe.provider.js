@@ -187,10 +187,6 @@ export const phonePeProvider = {
     upiFlows = env.PHONEPE_UPI_FLOWS,
   }) {
     if (env.PROVIDER_MODE === "mock") {
-      const id = String(merchantOrderId ?? "");
-      if (id.includes("__mock_transient_pay__")) {
-        throw new Error("mock transient provider error");
-      }
       return {
         providerOrderId: `mock_${merchantOrderId}`,
         redirectUrl: `${redirectUrl}?mock=success`,

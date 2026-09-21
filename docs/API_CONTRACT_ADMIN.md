@@ -1985,21 +1985,30 @@ null
 #### `GET /api/v1/admin/schemes/:schemeId/payable-range`
 - **Auth:** Bearer TENANT_USER
 - **Path params:** `schemeId`
-- **Query:** none
+- **Query:** `targetCycle` (flexible capped phase only)
 - **Idempotent:** no
+- **Fixed schemes:** `maxAdvanceInstallments` counts **future** instalments **in addition to** the current due instalment.
+- **Manual fixed payment** while an online reservation is active: `422 PAYMENT_CONFIRMATION_PENDING` — cancel the pending payment link first.
 - **Request body:**
 ```json
 null
 ```
-- **Response (200):**
+- **Response (200) — fixed example:**
 ```json
 {
   "success": true,
   "data": {
-    "minPaise": 0,
-    "maxPaise": 0,
-    "incrementPaise": 0,
-    "positionVersion": 1
+    "model": "FIXED",
+    "payable": true,
+    "currentInstallmentNumber": 2,
+    "reservedPaise": 100000,
+    "minPayablePaise": 100000,
+    "maxPayablePaise": 100000,
+    "allowedAmountsPaise": [100000, 200000],
+    "advancePaymentAllowed": true,
+    "maxAdvanceInstallments": 1,
+    "partialPaymentAllowed": false,
+    "expectedPositionVersion": 3
   }
 }
 ```
@@ -2098,15 +2107,16 @@ null
 - **Auth:** Bearer TENANT_USER
 - **Query:** none
 - **Idempotent:** yes
+- **Expiry:** `expiresInMinutes` defaults to **30** and cannot exceed **30**.
+- **Fixed schemes:** creates a **PaymentIntent reservation** (`fixedFromInstallment` / `fixedThroughInstallment`) until paid, cancelled, failed, or expired.
 - **Request body:**
 ```json
 {
   "schemeId": "sch_...",
   "amountPaise": 1,
   "targetCycle": "YYYY-MM?",
-  "positionVersion": 1,
-  "mobile": "+91...?",
-  "redirectUrl": "url?"
+  "expectedPositionVersion": 1,
+  "expiresInMinutes": 30
 }
 ```
 - **Response (201):**

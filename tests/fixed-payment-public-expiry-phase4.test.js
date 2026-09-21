@@ -226,6 +226,38 @@ test("fixed public link: consumed paid link is not payable", async () => {
   assert.equal((await PaymentLink.findById(link.id).lean()).status, LinkStatus.PAID);
 });
 
+test("fixed public link: concurrent initiation yields one claim owner", async () => {
+  const { scheme, user } = await seedFixedScheme();
+  const link = await createPaymentLink(staffReq(scheme, user, {
+    schemeId: scheme._id,
+    amountPaise: 100_000,
+  }));
+  const claimMarker = `CLAIMING-${createId("payment")}`;
+  await PaymentLink.updateOne(
+    { _id: link.id },
+    {
+      $set: {
+        initiationClaimToken: claimMarker,
+        initiationClaimExpiresAt: new Date(Date.now() + 60_000),
+      },
+    },
+  );
+  const busy = await postInitiate(link.token);
+  assert.equal(busy.status, 422);
+  assert.equal(busy.body.error?.code, "PAYMENT_LINK_BUSY");
+  await PaymentLink.updateOne(
+    { _id: link.id },
+    { $unset: { initiationClaimToken: "", initiationClaimExpiresAt: "" } },
+  );
+  const ok = await postInitiate(link.token);
+  assert.equal(ok.status, 200);
+  assert.equal(await Payment.countDocuments({ schemeId: scheme._id }), 1);
+  assert.equal(await PaymentIntent.countDocuments({ schemeId: scheme._id }), 1);
+  const retry = await postInitiate(link.token);
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.data.paymentId, ok.body.data.paymentId);
+});
+
 test("fixed public link: repeated initiation reuses same payment", async () => {
   const { scheme, user } = await seedFixedScheme();
   const link = await createPaymentLink(staffReq(scheme, user, {

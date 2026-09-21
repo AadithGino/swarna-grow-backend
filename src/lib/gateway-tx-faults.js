@@ -6,6 +6,7 @@ export function clearGatewayTxFaults() {
 }
 
 export function setGatewayTxFaultAfter(label, error = new Error(`fault:${label}`)) {
+  if (process.env.NODE_ENV !== "test") return;
   afterFaults.set(label, error);
 }
 

@@ -304,7 +304,9 @@ Curated plan cards (see `mapCustomerPlanListItem` in `customer-app-dto.js`): `di
 | POST | `/schemes/:schemeId/payment-intents` | **Flexible only**; body `{ amountPaise, targetCycle?, expectedPositionVersion, redirectUrl? }` |
 | POST | `/schemes/:schemeId/redemption-request` | Body: `{ preferredMode, preferredDate?, remarks?, expectedVersion }` → non-financial `REQUESTED` redemption |
 
-**Payable range (example fields):**
+**Payable range — fixed schemes (via `enrichPayableRange`):** includes `currentInstallmentNumber`, `reservedPaise`, `minPayable` / `maxPayable`, `allowedAmountsPaise` (when partial disabled), `advancePaymentAllowed`, `maxAdvanceInstallments` (**future** slots **in addition to** current), `partialPaymentAllowed`, `expectedPositionVersion`. Online reservations block conflicting manual staff payments until the link is cancelled (`PAYMENT_CONFIRMATION_PENDING`). Stale successful gateway payments may land in `UNALLOCATED_PENDING_REVIEW`.
+
+**Payable range (flexible example fields):**
 
 ```json
 {
