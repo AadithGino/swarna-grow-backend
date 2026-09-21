@@ -53,7 +53,10 @@ runNodeScript(["--env-file=.env", "scripts/seed-demo.js"], "Demo seed");
 runNodeScript(["--env-file=.env", "scripts/sync-indexes.js", "--dry-run"], "Index sync dry-run");
 runNodeScript(["--env-file=.env", "scripts/sync-indexes.js", "--apply"], "Index sync apply");
 
-console.log("\n--- Phase 6 smoke flow ---");
+console.log("\n--- Phase 6 smoke flow (run 1) ---");
 await runPhase6SmokeFlow();
 
-console.log("\nphase6-disposable-verify: OK");
+console.log("\n--- Phase 6 smoke flow (run 2 — repeatability) ---");
+await runPhase6SmokeFlow();
+
+console.log("\nphase6-disposable-verify: OK (seed once, smoke twice)");

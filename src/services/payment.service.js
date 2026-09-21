@@ -351,6 +351,8 @@ export async function maybeCompleteMockGatewayPayment({ tenantId, link, intent, 
 }
 
 export async function recordPayment(req, override = {}) {
+  const { rejectClientReferenceDateFields } = await import("../lib/payment-reference-date-override.js");
+  rejectClientReferenceDateFields(req);
   if (
     !override.gateway &&
     !Object.values(ManualPaymentMode).includes(req.body.mode)
@@ -386,8 +388,9 @@ async function recordPaymentInSession(session, req, override) {
     const paymentBranchId = resolvePaymentBranchId(req, scheme, customerRow);
     let quote;
     try {
+      const { resolveInternalPayableReferenceDate } = await import("../lib/payment-reference-date-override.js");
       quote = await payableRange(req, scheme.toObject(), {
-        referenceDate: override.referenceDate,
+        referenceDate: resolveInternalPayableReferenceDate(override),
       });
     } catch (error) {
       if (!gatewayLateSuccess) throw error;

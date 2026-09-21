@@ -820,7 +820,10 @@ async function recordFlexPayment(ctx, scheme, amountPaise, mode = "CASH", target
       mode,
       targetCycle: cycle,
     }),
-    { referenceDate: flexCycleReferenceDate(cycle) },
+    {
+      referenceDate: flexCycleReferenceDate(cycle),
+      internalReferenceDateOverride: true,
+    },
   );
   return Scheme.findById(scheme._id);
 }

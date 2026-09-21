@@ -433,17 +433,19 @@ export const previewScheduleBody = z
     }
   });
 export const enrolBody = z.object({ customerId: z.string(), planId: z.string(), branchId: z.string().optional(), installmentAmountPaise: positivePaise.optional(), firstInstallmentMode: enumSchema(E.FirstInstallmentMode), firstInstallmentAction: enumSchema(E.FirstInstallmentAction).optional(), payment: z.record(z.string(), z.unknown()).optional() });
-export const paymentBody = z.object({
-  schemeId: z.string(),
-  amountPaise: positivePaise,
-  mode: enumSchema(E.ManualPaymentMode),
-  targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
-  expectedVersion: z.number().int().positive().nullish(),
-  expectedPositionVersion: z.number().int().nonnegative().nullish(),
-  positionVersion: z.number().int().nonnegative().nullish(),
-  reference: z.string().max(160).nullish(),
-  remarks: z.string().max(500).nullish(),
-});
+export const paymentBody = z
+  .object({
+    schemeId: z.string(),
+    amountPaise: positivePaise,
+    mode: enumSchema(E.ManualPaymentMode),
+    targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
+    expectedVersion: z.number().int().positive().nullish(),
+    expectedPositionVersion: z.number().int().nonnegative().nullish(),
+    positionVersion: z.number().int().nonnegative().nullish(),
+    reference: z.string().max(160).nullish(),
+    remarks: z.string().max(500).nullish(),
+  })
+  .strict();
 export const paymentIntentBody = z.object({
   amountPaise: positivePaise,
   targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),

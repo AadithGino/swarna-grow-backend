@@ -69,7 +69,9 @@ NODE_ENV=development \
 node --env-file=.env scripts/phase6-disposable-verify.js
 ```
 
-The orchestrator resets the disposable database, runs `seed:demo`, index dry-run + apply, then `scripts/phase6-smoke-flow.js` (fixed/flex enrolment, PhonePe mock finalization, system-policy settlement preview, redemption mode previews). Safety gates print host, database name, and `NODE_ENV` before any destructive step.
+The orchestrator resets the disposable database, runs `seed:demo`, index dry-run + apply, then runs `scripts/phase6-smoke-flow.js` **twice** (repeatability). The smoke executes persisted lifecycles: flexible lock (CAPPED + caps), system-policy closure settlement completion, maturity batch transition, CASH / GOLD_HANDOVER / PURCHASE_ADJUSTMENT redemption completions, and PhonePe SUCCESS + idempotent replay — not preview-only checks. Safety gates print host, database name, and `NODE_ENV` before any destructive step.
+
+Payable `referenceDate` for flexible seed/smoke is **internal-only** via `internalReferenceDateOverride` on `recordPayment` overrides; HTTP body/query `referenceDate` is rejected; production disables the override (`src/lib/payment-reference-date-override.js`, `tests/payment-reference-date-override.test.js`).
 
 ## V1 manual payment modes
 
