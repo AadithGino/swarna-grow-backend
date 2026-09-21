@@ -24,10 +24,11 @@ import {
   computeClosureSettlementCore,
   closureSettlementFiguresDiffer,
   resolveSettlementModeFromReq,
+  sanitizeSettlementClassificationFromRequest,
+  settlementSnapshotClassificationInvalid,
 } from "../lib/scheme-closure-settlement.js";
 import { loadExcludedPaymentIdsForLedgerEntries } from "../lib/flexible-lock-settlement.js";
 import { nextSchemeLedgerSequence } from "./sequence.service.js";
-import { ledgerTotals } from "./scheme.service.js";
 import { writeAudit } from "./audit.service.js";
 import { paginate } from "../lib/pagination.js";
 import {
@@ -40,7 +41,7 @@ import { goldRateForExactDate } from "../lib/gold-rate-lookup.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, elapsedSchemeMonths, today } from "../lib/date.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
-import { isFlexSystemPolicyClosure } from "../lib/flexible-lock-settlement.js";
+import { isSystemPolicyClosureSettlement } from "../lib/system-policy-closure.js";
 
 const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.REQUESTED,
@@ -106,6 +107,7 @@ function assertRedemptionBranchAllowed(scheme, req) {
 }
 
 export async function settlementPreview(req, closureType) {
+  sanitizeSettlementClassificationFromRequest(req);
   const accessScope =
     req.auth.type === "CUSTOMER"
       ? { tenantId: req.auth.tenantId, customerId: req.auth.id }
@@ -124,21 +126,14 @@ export async function settlementPreview(req, closureType) {
   const rules = scheme.planSnapshot?.redemptionRules ?? {};
   const benefitDef = scheme.planSnapshot?.benefit ?? null;
   const isPremature = closureType === ClosureType.PREMATURE_CLOSURE;
+  const systemPolicyClosure = isSystemPolicyClosureSettlement(scheme);
+  const blockers = [];
 
-  if (isFlexSystemPolicyClosure(scheme)) {
-    const flexTotals = ledgerTotals(entries);
-    const blockers = [];
-    const isCustomer = req.auth?.type === "CUSTOMER";
-    if (isCustomer) {
+  if (systemPolicyClosure) {
+    if (req.auth?.type === "CUSTOMER") {
       blockers.push({
         code: "SETTLEMENT_STAFF_REQUIRED",
         message: "Staff must complete settlement for this scheme.",
-      });
-    }
-    if (!scheme.settlementRequired) {
-      blockers.push({
-        code: "SETTLEMENT_NOT_REQUIRED",
-        message: "This scheme does not require principal settlement.",
       });
     }
     if (scheme.settlementCompletedAt) {
@@ -147,94 +142,20 @@ export async function settlementPreview(req, closureType) {
         message: "Settlement has already been completed for this scheme.",
       });
     }
-    const principalPaise = Math.max(
-      0,
-      Number(scheme.settlementPrincipalPaise ?? flexTotals.amountPaidPaise ?? 0),
-    );
-    if (scheme.settlementRequired && principalPaise <= 0) {
+    if (closureType !== ClosureType.PREMATURE_CLOSURE) {
       blockers.push({
-        code: "SETTLEMENT_PRINCIPAL_ZERO",
-        message: "No refundable principal remains for settlement.",
+        code: "SCHEME_NOT_CLOSABLE",
+        message: "This scheme requires staff settlement as a premature policy closure.",
       });
     }
-    const settlementPaise = principalPaise;
-    const paidCount = installmentsPaidCount(scheme);
-    const lines = [
-      {
-        key: "TOTAL_PAID",
-        label: `Total paid (${paidCount} installment${paidCount === 1 ? "" : "s"})`,
-        amount: moneyField(principalPaise),
-        sign: "+",
-      },
-      {
-        key: "PENALTY",
-        label: "Premature closure charge",
-        amount: moneyField(0),
-        sign: "-",
-      },
-    ];
-    const allowedModeCodes = rules.allowedModes ?? ["CASH"];
-    const allowedModes = allowedModeCodes.map((mode) => ({
-      mode,
-      label: REDEMPTION_MODE_LABELS[mode] ?? mode,
-      available: allowedModeCodes.includes(mode),
-    }));
-    return {
-      type: ClosureType.PREMATURE_CLOSURE,
-      eligible: blockers.length === 0,
-      blockers,
-      scheme: {
-        id: scheme._id,
-        schemeNumber: scheme.enrollmentNumber,
-        planName: scheme.planSnapshot?.name,
-        valueBasis: scheme.valueBasis,
-        status: scheme.status,
-        maturityDate: scheme.maturityDate,
-        closureReason: scheme.closureReason,
-        settlementRequired: scheme.settlementRequired,
-      },
-      customer: customer
-        ? {
-          id: customer._id,
-          name: customer.name,
-          mobile: customer.mobile,
-          passbookNumber: customer.passbookNumber ?? customer.customerNumber,
-        }
-        : undefined,
-      computation: {
-        lines,
-        finalValue: moneyField(settlementPaise),
-        goldWeight: flexTotals.goldWeightMg
-          ? { weightMg: flexTotals.goldWeightMg, weightDisplay: `${(flexTotals.goldWeightMg / 1000).toFixed(3)} g` }
-          : null,
-      },
-      benefit: null,
-      textBenefits: [],
-      penalty: null,
-      allowedModes,
-      approvalRequired: false,
-      flexSystemPolicyClosure: true,
-      closureType,
-      schemeId: scheme._id,
-      principalPaise,
-      goldWeightMg: flexTotals.goldWeightMg,
-      benefitEligible: false,
-      benefitPaise: 0,
-      benefitWeightMg: 0,
-      benefitRatePerGramPaise: 0,
-      penaltyPaise: 0,
-      settlementPaise,
-      maxSettlementPaise: principalPaise,
-    };
   }
+
   const paidCount = installmentsPaidCount(scheme);
   const monthsCompleted = elapsedSchemeMonths(scheme.startDate, today());
   const lockInMonths = rules.lockInMonths ?? 0;
   const lockInEligibleFrom = addMonthsClamped(scheme.startDate, lockInMonths).format("YYYY-MM-DD");
   const lockInMet = lockInMonths === 0 || monthsCompleted >= lockInMonths;
-  const blockers = [];
-
-  if (isPremature) {
+  if (isPremature && !systemPolicyClosure) {
     if (!rules.prematureClosureAllowed) {
       blockers.push({
         code: "PREMATURE_CLOSURE_NOT_ALLOWED",
@@ -256,11 +177,21 @@ export async function settlementPreview(req, closureType) {
         message: `Scheme status ${scheme.status} cannot be closed prematurely.`,
       });
     }
-  } else if (scheme.status !== SchemeStatus.MATURED) {
+  } else if (!isPremature && scheme.status !== SchemeStatus.MATURED) {
     blockers.push({
       code: "SCHEME_NOT_MATURED",
       message: "The scheme has not matured yet.",
       eligibleFrom: scheme.maturityDate,
+    });
+  }
+
+  if (
+    systemPolicyClosure
+    && scheme.status !== SchemeStatus.CLOSED_PREMATURE
+  ) {
+    blockers.push({
+      code: "SCHEME_NOT_CLOSABLE",
+      message: "System-policy settlement requires a closed scheme in settlement state.",
     });
   }
 
@@ -278,6 +209,7 @@ export async function settlementPreview(req, closureType) {
   const eligibility = benefitDef?.eligibility;
   const minMonthsCompleted = eligibility?.minMonthsCompleted ?? 0;
   const benefitEligible =
+    !systemPolicyClosure &&
     !isPremature &&
     benefitDef &&
     benefitDef.type !== "TEXT_ONLY" &&
@@ -307,7 +239,7 @@ export async function settlementPreview(req, closureType) {
     valuationDateYmd: today(),
     mode: settlementMode,
     tenantOps: tenant,
-    systemPolicyClosure: false,
+    systemPolicyClosure,
     benefitEligible,
     paidCount,
     monthsCompleted,
@@ -319,6 +251,12 @@ export async function settlementPreview(req, closureType) {
     isPremature,
   });
   blockers.push(...core.blockers);
+  if (systemPolicyClosure && core.settlementPaise <= 0 && blockers.length === 0) {
+    blockers.push({
+      code: "SETTLEMENT_PRINCIPAL_ZERO",
+      message: "No refundable principal remains for settlement.",
+    });
+  }
   const {
     benefitPaise,
     benefitWeightMg,
@@ -453,6 +391,12 @@ export async function settlementPreview(req, closureType) {
       monthsCompleted,
       lockInMonths,
       lockInMet,
+      ...(systemPolicyClosure
+        ? {
+          closureReason: scheme.closureReason,
+          settlementRequired: scheme.settlementRequired,
+        }
+        : {}),
     },
     customer: customer
       ? {
@@ -513,6 +457,9 @@ export async function settlementPreview(req, closureType) {
     valuationRatePerGramPaise,
     valuationRateEffectiveDate,
     mode: settlementMode ?? null,
+    systemPolicyClosure,
+    closureReason: systemPolicyClosure ? (scheme.closureReason ?? "") : "",
+    maxSettlementPaise: systemPolicyClosure ? principalPaise : undefined,
   };
 }
 export async function requestCustomerRedemption(req) {
@@ -611,13 +558,14 @@ export async function initiateRedemption(
   closureType,
   customerRequest = false,
 ) {
+  sanitizeSettlementClassificationFromRequest(req);
   const schemeRow = await Scheme.findOne({
     _id: req.params.schemeId,
     tenantId: req.auth.tenantId,
     ...(req.auth.type === "CUSTOMER" ? { customerId: req.auth.id } : req.scope),
   }).lean();
   if (!schemeRow) throw errors.notFound("Scheme");
-  if (customerRequest && isFlexSystemPolicyClosure(schemeRow)) {
+  if (customerRequest && isSystemPolicyClosureSettlement(schemeRow)) {
     throw errors.business(
       "SETTLEMENT_STAFF_REQUIRED",
       "Staff must complete settlement for this scheme.",
@@ -627,7 +575,7 @@ export async function initiateRedemption(
   assertRedemptionBranchAllowed(schemeRow, req);
   if (
     closureType === ClosureType.PREMATURE_CLOSURE
-    && !isFlexSystemPolicyClosure(schemeRow)
+    && !isSystemPolicyClosureSettlement(schemeRow)
   ) {
     assertFeatureEntitled(
       req.tenant ?? await Tenant.findById(req.auth.tenantId).lean(),
@@ -667,7 +615,7 @@ export async function initiateRedemption(
       { preview },
     );
   }
-  if (closureType === ClosureType.PREMATURE_CLOSURE && !preview.flexSystemPolicyClosure) {
+  if (closureType === ClosureType.PREMATURE_CLOSURE && !preview.systemPolicyClosure) {
     if (preview.penaltyPaise > 0 && !modeDetails.acknowledgePenalty) {
       throw errors.business(
         "ACKNOWLEDGEMENT_REQUIRED",
@@ -685,7 +633,7 @@ export async function initiateRedemption(
     }
   }
   if (
-    preview.flexSystemPolicyClosure
+    preview.systemPolicyClosure
     && preview.maxSettlementPaise != null
     && Number(req.body.settlementPaise ?? preview.settlementPaise) > Number(preview.maxSettlementPaise)
   ) {
@@ -882,11 +830,19 @@ export async function transitionRedemption(req, action) {
         valuationRatePerGramPaise: snapshot.valuationRatePerGramPaise,
         valuationRateEffectiveDate: snapshot.valuationRateEffectiveDate,
         mode: snapshot.mode,
+        systemPolicyClosure: snapshot.systemPolicyClosure,
+        closureReason: snapshot.closureReason,
       };
       if (closureSettlementFiguresDiffer(baseline, freshPreview)) {
         throw errors.business(
           "SETTLEMENT_VALUE_CHANGED",
           "The settlement amount changed since this request was submitted. Refresh and try again.",
+        );
+      }
+      if (settlementSnapshotClassificationInvalid(snapshot, scheme, freshPreview)) {
+        throw errors.business(
+          "SETTLEMENT_VALUE_CHANGED",
+          "Settlement classification no longer matches this scheme. Create a new request.",
         );
       }
       row.principalPaise = freshPreview.principalPaise;
@@ -1059,7 +1015,7 @@ export async function transitionRedemption(req, action) {
         { session },
       );
       const schemeBefore = scheme.toObject();
-      if (isFlexSystemPolicyClosure(scheme)) {
+      if (isSystemPolicyClosureSettlement(scheme)) {
         scheme.settlementRequired = false;
         scheme.settlementCompletedAt = new Date();
       } else {

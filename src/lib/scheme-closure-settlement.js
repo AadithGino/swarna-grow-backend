@@ -9,6 +9,7 @@ import {
   moneyToWeightMg,
 } from "./money.js";
 import { computeNetAllocatedLedgerTotals } from "./flexible-lock-settlement.js";
+import { isSystemPolicyClosureSettlement } from "./system-policy-closure.js";
 
 export function resolvePlanGoldRounding(scheme, tenantOps) {
   const goldRules = scheme.planSnapshot?.goldRules ?? {};
@@ -136,6 +137,45 @@ export function closureSettlementFiguresDiffer(stored, fresh) {
   }
   if (stored?.mode != null && fresh?.mode != null && stored.mode !== fresh.mode) {
     return true;
+  }
+  if (Boolean(stored?.systemPolicyClosure) !== Boolean(fresh?.systemPolicyClosure)) {
+    return true;
+  }
+  if (
+    String(stored?.closureReason ?? "")
+    !== String(fresh?.closureReason ?? "")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function sanitizeSettlementClassificationFromRequest(req) {
+  if (req.body?.systemPolicyClosure !== undefined) delete req.body.systemPolicyClosure;
+  if (req.query?.systemPolicyClosure !== undefined) delete req.query.systemPolicyClosure;
+  if (req.body?.closureReason !== undefined) delete req.body.closureReason;
+  if (req.query?.closureReason !== undefined) delete req.query.closureReason;
+  const modeDetails = req.body?.modeDetails;
+  if (modeDetails && typeof modeDetails === "object") {
+    delete modeDetails.systemPolicyClosure;
+    delete modeDetails.closureReason;
+  }
+}
+
+export function settlementSnapshotClassificationInvalid(snapshot, scheme, freshPreview) {
+  const liveSystemPolicy = isSystemPolicyClosureSettlement(scheme);
+  const snapSystemPolicy = Boolean(snapshot?.systemPolicyClosure);
+  const freshSystemPolicy = Boolean(freshPreview?.systemPolicyClosure);
+  if (snapSystemPolicy !== freshSystemPolicy) return true;
+  if (snapSystemPolicy !== liveSystemPolicy) return true;
+  const snapReason = String(snapshot?.closureReason ?? "");
+  const freshReason = String(freshPreview?.closureReason ?? "");
+  const liveReason = liveSystemPolicy ? String(scheme.closureReason ?? "") : "";
+  if (snapReason !== freshReason) return true;
+  if (liveSystemPolicy && snapReason !== liveReason) return true;
+  if (snapSystemPolicy && !scheme.settlementRequired) return true;
+  if (liveSystemPolicy && scheme.settlementCompletedAt) {
+    // completion preview should be ineligible; figures may still match snapshot
   }
   return false;
 }
@@ -319,6 +359,17 @@ export async function computeClosureSettlementCore({
     });
   }
 
+  if (
+    systemPolicyClosure
+    && settlementPaise <= 0
+    && blockers.length === 0
+  ) {
+    blockers.push({
+      code: "SETTLEMENT_PRINCIPAL_ZERO",
+      message: "No refundable principal remains for settlement.",
+    });
+  }
+
   return {
     blockers,
     netTotals,
@@ -376,17 +427,25 @@ export const SETTLEMENT_SNAPSHOT_STRING_KEYS = Object.freeze([
   "computedAt",
   "valuationRateEffectiveDate",
   "mode",
+  "closureReason",
+]);
+
+export const SETTLEMENT_SNAPSHOT_BOOLEAN_KEYS = Object.freeze([
+  "systemPolicyClosure",
 ]);
 
 export const SETTLEMENT_SNAPSHOT_FIELD_KEYS = Object.freeze([
   ...SETTLEMENT_SNAPSHOT_NUMERIC_KEYS,
   ...SETTLEMENT_SNAPSHOT_STRING_KEYS,
+  ...SETTLEMENT_SNAPSHOT_BOOLEAN_KEYS,
 ]);
 
 export function buildSettlementSnapshotFromPreview(preview, schemeVersion, mode) {
   return {
     schemeVersion,
     mode,
+    systemPolicyClosure: Boolean(preview.systemPolicyClosure),
+    closureReason: preview.closureReason ?? "",
     principalPaise: preview.principalPaise,
     principalWeightMg: preview.goldWeightMg ?? preview.principalWeightMg ?? 0,
     benefitPaise: preview.benefitPaise,
@@ -428,6 +487,14 @@ export function assertSettlementSnapshotComplete(snapshot) {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
     if (key === "mode" && !value.trim()) {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+  }
+  for (const key of SETTLEMENT_SNAPSHOT_BOOLEAN_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+      return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
+    }
+    if (typeof snapshot[key] !== "boolean") {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
   }

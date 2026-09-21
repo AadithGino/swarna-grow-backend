@@ -18,17 +18,16 @@ function ledgerTotals(entries) {
 }
 import { AuditEntityType } from "../constants/enums.js";
 
-export const FLEX_SYSTEM_CLOSURE_REASONS = Object.freeze([
-  "ZERO_FLEXIBLE_PHASE_TOTAL",
-  "BELOW_MINIMUM_FLEXIBLE_PHASE_TOTAL",
-]);
+import {
+  isFlexSystemPolicyClosure,
+} from "./system-policy-closure.js";
 
-export function isFlexSystemPolicyClosure(scheme) {
-  return (
-    scheme?.status === SchemeStatus.CLOSED_PREMATURE
-    && FLEX_SYSTEM_CLOSURE_REASONS.includes(scheme.closureReason)
-  );
-}
+export {
+  FLEX_SYSTEM_CLOSURE_REASONS,
+  isFlexSystemPolicyClosure,
+  isSystemPolicyClosureSettlement,
+  SYSTEM_POLICY_CLOSURE_REASONS,
+} from "./system-policy-closure.js";
 
 /** Net allocated principal from ledger (excludes UNALLOCATED and non-allocated payments). */
 export function computeNetAllocatedPrincipalPaise(entries) {
