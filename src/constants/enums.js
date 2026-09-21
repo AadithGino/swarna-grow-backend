@@ -36,8 +36,8 @@ export const SchemeDisplayMode = makeEnum("FIXED", "FLEXIBLE_FREE_WINDOW", "FLEX
 export const FlexiblePhase = makeEnum("FLEXIBLE", "CAPPED");
 export const CycleStatus = makeEnum("UPCOMING", "PARTIALLY_PAID", "PAID", "EXPIRED");
 export const InstallmentStatus = makeEnum("PENDING", "DUE", "PARTIALLY_PAID", "PAID", "OVERDUE", "WAIVED");
-export const PaymentMode = makeEnum("CASH", "CARD", "UPI", "BANK_TRANSFER", "CHEQUE", "ONLINE_GATEWAY", "LEGACY_ONLINE");
-export const ManualPaymentMode = makeEnum("CASH", "CARD", "UPI", "BANK_TRANSFER", "CHEQUE");
+export const PaymentMode = makeEnum("CASH", "CARD", "UPI", "BANK_TRANSFER", "ONLINE_GATEWAY", "LEGACY_ONLINE");
+export const ManualPaymentMode = makeEnum("CASH", "CARD", "UPI", "BANK_TRANSFER");
 export const PaymentIntentStatus = makeEnum("PENDING", "SUCCEEDED", "FAILED", "EXPIRED", "CANCELLED");
 export const PaymentStatus = makeEnum("PENDING", "SUCCESS", "FAILED", "AMOUNT_MISMATCH_PENDING_REVIEW", "UNALLOCATED_PENDING_REVIEW", "REVERSED");
 export const PaymentSource = makeEnum("PORTAL", "STAFF_APP", "CUSTOMER_APP", "WEBHOOK", "SYSTEM");
@@ -113,7 +113,6 @@ export const PAYMENT_MODE_ORDER = Object.freeze([
   PaymentMode.CARD,
   PaymentMode.UPI,
   PaymentMode.BANK_TRANSFER,
-  PaymentMode.CHEQUE,
   PaymentMode.ONLINE_GATEWAY,
   PaymentMode.LEGACY_ONLINE,
 ]);
@@ -123,7 +122,6 @@ export const PAYMENT_MODE_LABELS = Object.freeze({
   CARD: "Card / POS",
   UPI: "UPI",
   BANK_TRANSFER: "Bank transfer",
-  CHEQUE: "Cheque",
   ONLINE_GATEWAY: "Online payment",
   LEGACY_ONLINE: "Legacy online",
 });

@@ -1309,7 +1309,7 @@ export async function getLedger(req) {
   );
   return result;
 }
-export async function payableRange(req, schemeInput) {
+export async function payableRange(req, schemeInput, options = {}) {
   const scheme = schemeInput ?? await getScheme(req);
   const payableStatuses = [
     SchemeStatus.PENDING_PAYMENT,
@@ -1358,6 +1358,7 @@ export async function payableRange(req, schemeInput) {
       cycles: scheme.cycles,
       freeCycleCount: flexRules.flexiblePhaseCycles,
       suppliedCycle: targetCycle,
+      referenceDate: options.referenceDate,
     });
     return {
       model: "FLEXIBLE",

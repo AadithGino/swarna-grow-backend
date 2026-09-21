@@ -679,7 +679,7 @@ async function openRedemption(ctx, schemeId, closureType, mode) {
   const scheme = await Scheme.findById(schemeId);
   if (!scheme) throw new Error(`Scheme ${schemeId} not found for redemption seed`);
   const preview = await settlementPreview(
-    redemptionCtx(ctx, scheme._id),
+    redemptionCtx(ctx, scheme._id, { mode }),
     closureType,
   );
   if (!preview.eligible) {
@@ -806,15 +806,21 @@ function flexPaymentReq(ctx, schemeId, { amountPaise, expectedPositionVersion, m
   };
 }
 
+function flexCycleReferenceDate(cycleKey) {
+  return `${cycleKey}-15`;
+}
+
 async function recordFlexPayment(ctx, scheme, amountPaise, mode = "CASH", targetCycle) {
   let doc = await Scheme.findById(scheme._id);
+  const cycle = targetCycle ?? monthKey();
   await recordPayment(
     flexPaymentReq(ctx, doc._id, {
       amountPaise,
       expectedPositionVersion: doc.positionVersion ?? 0,
       mode,
-      targetCycle,
+      targetCycle: cycle,
     }),
+    { referenceDate: flexCycleReferenceDate(cycle) },
   );
   return Scheme.findById(scheme._id);
 }
@@ -823,10 +829,16 @@ async function seedFlexibleScenarios(ownerCtx, staffCtx, flexPlan, customers) {
   const summary = [];
   const [freeCust, lockCust, cappedCust] = customers;
 
-  const freeEnrol = await enrolFlexible(ownerCtx, freeCust, flexPlan);
-  let freeScheme = await Scheme.findById(freeEnrol._id);
-  freeScheme = await recordFlexPayment(staffCtx, freeScheme, 120_000, "CASH");
-  freeScheme = await recordFlexPayment(staffCtx, freeScheme, 80_000, "CASH");
+  const freeStart = addMonthsClamped(today(), -1).format("YYYY-MM-DD");
+  let freeScheme = await createFlexibleScheme(ownerCtx, {
+    customer: freeCust,
+    plan: flexPlan,
+    branchId: freeCust.branchId,
+    startDate: freeStart,
+  });
+  const [freeCycle1] = flexPhaseCycleKeys(freeScheme, 1);
+  freeScheme = await recordFlexPayment(staffCtx, freeScheme, 120_000, "CASH", freeCycle1);
+  freeScheme = await recordFlexPayment(staffCtx, freeScheme, 80_000, "CASH", freeCycle1);
   summary.push({
     enrollment: freeScheme.enrollmentNumber,
     story: "FLEXIBLE free window · ₹2,000 collected · ready to apply lock",

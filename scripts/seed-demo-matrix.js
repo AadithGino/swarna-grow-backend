@@ -671,11 +671,17 @@ export async function seedExtendedCashControl({
 }
 
 export async function seedCollectorPayments(collectorCtx, kochiCustomer, flexPlan, deps) {
-  const { enrolFlexible, recordFlexPayment } = deps;
+  const { createFlexibleScheme, recordFlexPayment, flexPhaseCycleKeys } = deps;
   const summary = [];
-  const enrol = await enrolFlexible(collectorCtx, kochiCustomer, flexPlan);
-  let scheme = await Scheme.findById(enrol._id);
-  scheme = await recordFlexPayment(collectorCtx, scheme, 80_000, "CASH");
+  const freeStart = addMonthsClamped(today(), -1).format("YYYY-MM-DD");
+  let scheme = await createFlexibleScheme(collectorCtx, {
+    customer: kochiCustomer,
+    plan: flexPlan,
+    branchId: kochiCustomer.branchId,
+    startDate: freeStart,
+  });
+  const [freeCycle1] = flexPhaseCycleKeys(scheme, 1);
+  scheme = await recordFlexPayment(collectorCtx, scheme, 80_000, "CASH", freeCycle1);
   summary.push({
     enrollment: scheme.enrollmentNumber,
     story: "Collector enrol + ₹800 flex payment (KOC customer)",

@@ -386,7 +386,9 @@ async function recordPaymentInSession(session, req, override) {
     const paymentBranchId = resolvePaymentBranchId(req, scheme, customerRow);
     let quote;
     try {
-      quote = await payableRange(req, scheme.toObject());
+      quote = await payableRange(req, scheme.toObject(), {
+        referenceDate: override.referenceDate,
+      });
     } catch (error) {
       if (!gatewayLateSuccess) throw error;
       quote = null;
@@ -403,7 +405,6 @@ async function recordPaymentInSession(session, req, override) {
       const blocking = await sumActiveFixedReservationPaise(
         scheme.tenantId,
         scheme._id,
-        session,
       );
       assertNoBlockingFixedReservations(
         blocking,

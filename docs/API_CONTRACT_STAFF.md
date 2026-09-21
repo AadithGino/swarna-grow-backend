@@ -23,7 +23,7 @@ See also: [Full contract](./API_CONTRACT.md) · [Admin portal](./API_CONTRACT_AD
 - **Role:** Login user must be **`COLLECTION_AGENT`** with a non-null **`branchId`**. Reject or hide the app for other tenant roles (they should use admin or full staff builds).
 - **Branch scope:** Every `/staff/*` call is scoped to the authenticated user’s **branch** and tenant. Do **not** send `branchId` to override scope.
 - **Online-only:** No offline queue, sync, or geo-stamping in V1.
-- **Cash-only collection UI:** The collect screen records **`mode: "CASH"`** only. Do not expose UPI/card/cheque or payment links in this app (backend may accept other modes for other roles — ignore here).
+- **Cash-only collection UI:** The collect screen records **`mode: "CASH"`** only. Do not expose UPI/card/bank transfer or payment links in this app (backend may accept other modes for other roles — ignore here).
 - **Cash in hand:** Successful **`CASH`** collections (minus reversals), minus **accepted** handovers and cash adjustments — **pending** handovers do **not** reduce **`cashInHandPaise`** ([Cash & handover](#cash--handover)).
 - **Available to submit:** **`availableForHandoverPaise`** = **`cashInHandPaise`** − **`cashPendingAcceptancePaise`** (floor 0). Handover amount must not exceed this.
 - **Flexible schemes:** Always **`GET .../payable-range`** immediately before **`POST /staff/payments`**; send **`expectedPositionVersion`** (or fixed **`expectedVersion`**) from that response.
@@ -447,7 +447,7 @@ Flexible capped phase (query **`?targetCycle=2026-09`**):
 
 | Method | Path | Notes |
 |--------|------|--------|
-| POST | `/staff/payments` | **Record collection** — `mode` one of **`ManualPaymentMode`** (`CASH`, `UPI`, `CARD`, `BANK_TRANSFER`, `CHEQUE`); only **`CASH`** affects agent cash-in-hand; **`source: STAFF_APP`** on success |
+| POST | `/staff/payments` | **Record collection** — `mode` one of **`ManualPaymentMode`** (`CASH`, `UPI`, `CARD`, `BANK_TRANSFER`); only **`CASH`** affects agent cash-in-hand; **`source: STAFF_APP`** on success |
 | GET | `/staff/payments` | Cursor list (branch-scoped) — **History → Collections** |
 | GET | `/staff/collections/summary` | Optional — today tile on **Home** (`from` / `to` query dates) |
 

@@ -32,7 +32,7 @@ Audit date: 2026-09-21. Scope: production blockers, forbidden values, idempotenc
 | `PRORATE` in src | Rejection tests + comment in `scheme-closure-penalty.js` (safe) |
 | `PRORATE` in fix.md | Local notes only (gitignored) |
 | `TRANSFER_TO_SCHEME` | Plan validation rejection tests only |
-| `CHEQUE` | Valid manual payment mode enum (not removed product-wide) |
+| `CHEQUE` | Removed from V1 — rejected at validation; only `tests/payment-mode-cheque-rejection.test.js` references the literal |
 | `1440` / 24h link default | Replaced by 30m cap in payment link validation + contract |
 | `countDocuments()+1` ledger | Platform invoice numbering only (non-ledger) |
 | `systemPolicyClosure: false` | Unit test fixture for penalty math only |
@@ -58,3 +58,19 @@ Unsafe post-commit 5xx on financial routes: mitigated by transactional boundarie
 ## Index integrity
 
 Run `npm run db:sync-indexes:dry-run` on target environment before release; apply with `npm run db:sync-indexes` on disposable DB only during verification.
+
+## Disposable database verification (Phase 6 correction)
+
+Run only against a localhost database whose name includes `phase6_verify` (example: `swarnagrow_phase6_verify_20260921`) with `NODE_ENV=development` or `test`:
+
+```bash
+MONGODB_URI=mongodb://127.0.0.1:27017/swarnagrow_phase6_verify_20260921 \
+NODE_ENV=development \
+node --env-file=.env scripts/phase6-disposable-verify.js
+```
+
+The orchestrator resets the disposable database, runs `seed:demo`, index dry-run + apply, then `scripts/phase6-smoke-flow.js` (fixed/flex enrolment, PhonePe mock finalization, system-policy settlement preview, redemption mode previews). Safety gates print host, database name, and `NODE_ENV` before any destructive step.
+
+## V1 manual payment modes
+
+Supported: `CASH`, `UPI`, `CARD`, `BANK_TRANSFER`. `CHEQUE` is not in enums, contracts, collection reports, or seeds; rejection coverage lives in `tests/payment-mode-cheque-rejection.test.js`.

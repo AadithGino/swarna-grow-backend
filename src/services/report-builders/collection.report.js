@@ -17,7 +17,6 @@ const MODE_ROW_KEY = {
   UPI: "upi",
   CARD: "card",
   BANK_TRANSFER: "bankTransfer",
-  CHEQUE: "cheque",
   ONLINE_GATEWAY: "onlineGateway",
   LEGACY_ONLINE: "onlineGateway",
 };
@@ -29,7 +28,6 @@ const COLLECTION_COLUMNS = [
   { key: "upi", label: "UPI", type: "currency", sortable: true, align: "right" },
   { key: "card", label: "Card / POS", type: "currency", align: "right" },
   { key: "bankTransfer", label: "Bank transfer", type: "currency", align: "right" },
-  { key: "cheque", label: "Cheque", type: "currency", align: "right" },
   { key: "onlineGateway", label: "Online payment", type: "currency", align: "right" },
   { key: "total", label: "Total", type: "currency", sortable: true, align: "right", emphasis: true },
   { key: "goldCredited", label: "Gold credited", type: "weight", align: "right" },
@@ -41,7 +39,6 @@ function emptyModeRow() {
     upi: moneyRef(0),
     card: moneyRef(0),
     bankTransfer: moneyRef(0),
-    cheque: moneyRef(0),
     onlineGateway: moneyRef(0),
     total: moneyRef(0),
     paymentCount: 0,
@@ -114,7 +111,7 @@ export async function buildCollectionReport(req) {
   const totalsRow = tableRows.reduce(
     (acc, row) => {
       acc.paymentCount += row.paymentCount;
-      for (const key of ["cash", "upi", "card", "bankTransfer", "cheque", "onlineGateway", "total"]) {
+      for (const key of ["cash", "upi", "card", "bankTransfer", "onlineGateway", "total"]) {
         acc[key] = moneyRef(acc[key].amountPaise + row[key].amountPaise);
       }
       acc.goldCredited = weightRef(acc.goldCredited.weightMg + row.goldCredited.weightMg);

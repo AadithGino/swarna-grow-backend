@@ -9,34 +9,14 @@ import { dirname, join } from "node:path";
 import mongoose from "mongoose";
 import { connectDatabase, disconnectDatabase } from "../src/config/database.js";
 import { env } from "../src/config/env.js";
+import { assertPhase6DisposableEnvironment } from "./lib/phase6-disposable-guards.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const applySeed = process.argv.includes("--apply-seed");
 
-function assertDisposableDatabase(uri) {
-  let parsed;
-  try {
-    parsed = new URL(uri.replace(/^mongodb(\+srv)?:\/\//, "http://"));
-  } catch {
-    console.error("Cannot parse MONGODB_URI");
-    process.exit(1);
-  }
-  const dbName = parsed.pathname.replace(/^\//, "").split("?")[0] || "";
-  const host = parsed.hostname;
-  const allowed =
-    host === "127.0.0.1"
-    || host === "localhost"
-    || /test|dev|local|memory/i.test(dbName);
-  console.log(`Target database: host=${host} db=${dbName || "(default)"}`);
-  if (!allowed) {
-    console.error("Refusing to run seed verification on non-disposable database.");
-    process.exit(1);
-  }
-}
-
 function scanSeedSources() {
   const paths = ["scripts/seed-demo.js", "scripts/seed-demo-matrix.js"];
-  const forbidden = ["PRORATE", "TRANSFER_TO_SCHEME"];
+  const forbidden = ["PRORATE", "TRANSFER_TO_SCHEME", "CHEQUE"];
   for (const rel of paths) {
     const text = readFileSync(join(root, rel), "utf8");
     for (const token of forbidden) {
@@ -45,7 +25,7 @@ function scanSeedSources() {
       }
     }
   }
-  console.log("Seed source scan: no PRORATE / TRANSFER_TO_SCHEME literals.");
+  console.log("Seed source scan: no PRORATE / TRANSFER_TO_SCHEME / CHEQUE literals.");
 }
 
 async function verifyDatabaseState() {
@@ -60,7 +40,7 @@ async function verifyDatabaseState() {
   console.log("Gold rates: 22K only.");
 }
 
-assertDisposableDatabase(env.MONGODB_URI);
+assertPhase6DisposableEnvironment({ mongodbUri: env.MONGODB_URI, nodeEnv: process.env.NODE_ENV });
 scanSeedSources();
 
 if (applySeed) {

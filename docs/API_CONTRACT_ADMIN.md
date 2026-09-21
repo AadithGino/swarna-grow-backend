@@ -1586,7 +1586,7 @@ null
     "customerId": "cus_...",
     "receiptNumber": "string",
     "amountPaise": 1,
-    "mode": "CASH|CARD|UPI|BANK_TRANSFER|CHEQUE|ONLINE_GATEWAY",
+    "mode": "CASH|CARD|UPI|BANK_TRANSFER|ONLINE_GATEWAY",
     "status": "PENDING|SUCCESS|FAILED|REVERSED|...",
     "source": "PORTAL|STAFF_APP|CUSTOMER_APP|WEBHOOK|SYSTEM",
     "paidAt": "ISO"
@@ -2187,7 +2187,7 @@ null
 {
   "schemeId": "sch_...",
   "amountPaise": 1,
-  "mode": "CASH|CARD|UPI|BANK_TRANSFER|CHEQUE",
+  "mode": "CASH|CARD|UPI|BANK_TRANSFER",
   "targetCycle": "YYYY-MM?",
   "expectedVersion": 1,
   "positionVersion": 1,
@@ -2205,7 +2205,7 @@ null
     "customerId": "cus_...",
     "receiptNumber": "string",
     "amountPaise": 1,
-    "mode": "CASH|CARD|UPI|BANK_TRANSFER|CHEQUE|ONLINE_GATEWAY",
+    "mode": "CASH|CARD|UPI|BANK_TRANSFER|ONLINE_GATEWAY",
     "status": "PENDING|SUCCESS|FAILED|REVERSED|...",
     "source": "PORTAL|STAFF_APP|CUSTOMER_APP|WEBHOOK|SYSTEM",
     "paidAt": "ISO"
@@ -2254,7 +2254,7 @@ null
     "customerId": "cus_...",
     "receiptNumber": "string",
     "amountPaise": 1,
-    "mode": "CASH|CARD|UPI|BANK_TRANSFER|CHEQUE|ONLINE_GATEWAY",
+    "mode": "CASH|CARD|UPI|BANK_TRANSFER|ONLINE_GATEWAY",
     "status": "PENDING|SUCCESS|FAILED|REVERSED|...",
     "source": "PORTAL|STAFF_APP|CUSTOMER_APP|WEBHOOK|SYSTEM",
     "paidAt": "ISO"
@@ -4292,7 +4292,7 @@ null
 {
   "schemeId": "sch_...",
   "amountPaise": 1,
-  "mode": "CASH|CARD|UPI|BANK_TRANSFER|CHEQUE",
+  "mode": "CASH|CARD|UPI|BANK_TRANSFER",
   "targetCycle": "YYYY-MM?",
   "expectedVersion": 1,
   "positionVersion": 1,
@@ -4310,7 +4310,7 @@ null
     "customerId": "cus_...",
     "receiptNumber": "string",
     "amountPaise": 1,
-    "mode": "CASH|CARD|UPI|BANK_TRANSFER|CHEQUE|ONLINE_GATEWAY",
+    "mode": "CASH|CARD|UPI|BANK_TRANSFER|ONLINE_GATEWAY",
     "status": "PENDING|SUCCESS|FAILED|REVERSED|...",
     "source": "PORTAL|STAFF_APP|CUSTOMER_APP|WEBHOOK|SYSTEM",
     "paidAt": "ISO"
