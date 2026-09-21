@@ -1,5 +1,14 @@
 import { LedgerEntry, Scheme, SchemePlan } from "../../models/index.js";
 import { moneyRef, rateRef, weightRef } from "../../lib/money.js";
+import {
+  displayNetGoldAmountPaise,
+  displayNetGoldWeightMg,
+  goldAccrualLiabilityPaise,
+  goldAccrualMongoAmountDeltaExpr,
+  goldAccrualMongoWeightDeltaExpr,
+  goldAccrualRateExposurePaise,
+  weightedAccrualRatePerGramPaise,
+} from "../../lib/gold-accrual-netting.js";
 import { currentGoldRate } from "../tenant.service.js";
 import { today } from "../../lib/date.js";
 import { dateMatch } from "../../lib/query-filters.js";
@@ -23,13 +32,15 @@ const COLUMNS = [
   { key: "averageRatePaid", label: "Avg rate paid", type: "currency", align: "right" },
 ];
 
+const weightDeltaExpr = goldAccrualMongoWeightDeltaExpr();
+const amountDeltaExpr = goldAccrualMongoAmountDeltaExpr();
+
 async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to, groupBy) {
   if (!schemeIds.length || !from || !to) return [];
 
   const baseMatch = {
     tenantId,
     schemeId: { $in: schemeIds },
-    weightMg: { $gt: 0 },
   };
   const [openingRow, dailyRows] = await Promise.all([
     LedgerEntry.aggregate([
@@ -39,7 +50,12 @@ async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to, groupBy)
           effectiveAt: { $lt: new Date(`${from}T00:00:00+05:30`) },
         },
       },
-      { $group: { _id: null, weightMg: { $sum: "$weightMg" } } },
+      {
+        $group: {
+          _id: null,
+          weightMg: { $sum: weightDeltaExpr },
+        },
+      },
     ]),
     LedgerEntry.aggregate([
       {
@@ -57,7 +73,7 @@ async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to, groupBy)
               timezone: "Asia/Kolkata",
             },
           },
-          weightMg: { $sum: "$weightMg" },
+          weightMg: { $sum: weightDeltaExpr },
         },
       },
       { $sort: { _id: 1 } },
@@ -73,11 +89,12 @@ async function buildCumulativeGramsTrend(schemeIds, tenantId, from, to, groupBy)
       groupBy === "DAY"
         ? (dailyMap.get(bucket.key) ?? 0)
         : (Number(bucket.value) || 0);
+    const displayMg = displayNetGoldWeightMg(cumulative);
     return {
       x: bucket.key,
       xDisplay: formatTrendBucketLabel(bucket.key, groupBy),
-      y: cumulative,
-      yDisplay: weightRef(cumulative).weightDisplay,
+      y: displayMg,
+      yDisplay: weightRef(displayMg).weightDisplay,
     };
   });
 }
@@ -102,14 +119,12 @@ export async function buildGoldAccrualReport(req) {
 
   const schemeIds = activeSchemes.map((s) => s._id);
   const ledgerByScheme = await LedgerEntry.aggregate([
-    { $match: { tenantId: req.auth.tenantId, schemeId: { $in: schemeIds }, weightMg: { $gt: 0 } } },
+    { $match: { tenantId: req.auth.tenantId, schemeId: { $in: schemeIds } } },
     {
       $group: {
         _id: "$schemeId",
-        weightMg: { $sum: "$weightMg" },
-        amountPaise: { $sum: { $ifNull: ["$amountPaise", 0] } },
-        rateSum: { $sum: { $ifNull: ["$ratePerGramPaise", 0] } },
-        rateCount: { $sum: { $cond: [{ $gt: ["$ratePerGramPaise", 0] }, 1, 0] } },
+        weightMg: { $sum: weightDeltaExpr },
+        amountPaise: { $sum: amountDeltaExpr },
       },
     },
   ]);
@@ -133,8 +148,6 @@ export async function buildGoldAccrualReport(req) {
         activeSchemes: 0,
         weightMg: 0,
         amountPaise: 0,
-        rateSum: 0,
-        rateCount: 0,
       });
     }
     const row = byPlan.get(planId);
@@ -143,8 +156,6 @@ export async function buildGoldAccrualReport(req) {
     if (led) {
       row.weightMg += led.weightMg;
       row.amountPaise += led.amountPaise;
-      row.rateSum += led.rateSum;
-      row.rateCount += led.rateCount;
     }
   }
 
@@ -157,25 +168,35 @@ export async function buildGoldAccrualReport(req) {
 
   const tableRows = [...byPlan.values()]
     .map((row) => {
-      const liabilityPaise = ratePaise ? Math.round((row.weightMg * ratePaise) / 1000) : 0;
-      const avgRate = row.rateCount ? Math.round(row.rateSum / row.rateCount) : 0;
+      const netWeightMg = row.weightMg;
+      const netAmountPaise = row.amountPaise;
+      const displayWeightMg = displayNetGoldWeightMg(netWeightMg);
+      const displayAmountPaise = displayNetGoldAmountPaise(netAmountPaise);
+      const liabilityPaise = goldAccrualLiabilityPaise(netWeightMg, ratePaise);
+      const avgRate = weightedAccrualRatePerGramPaise(netAmountPaise, netWeightMg);
       return {
         key: row.key,
         label: row.label,
         activeSchemes: row.activeSchemes,
-        gramsAccrued: weightRef(row.weightMg),
-        amountReceived: moneyRef(row.amountPaise),
+        gramsAccrued: weightRef(displayWeightMg),
+        amountReceived: moneyRef(displayAmountPaise),
         liabilityToday: moneyRef(liabilityPaise),
         averageRatePaid: avgRate ? rateRef(avgRate) : rateRef(0),
+        _netWeightMg: netWeightMg,
+        _netAmountPaise: netAmountPaise,
       };
     })
     .sort((a, b) => b.gramsAccrued.weightMg - a.gramsAccrued.weightMg);
 
-  const totalWeightMg = tableRows.reduce((sum, r) => sum + r.gramsAccrued.weightMg, 0);
-  const totalReceived = tableRows.reduce((sum, r) => sum + r.amountReceived.amountPaise, 0);
-  const totalLiability = ratePaise ? Math.round((totalWeightMg * ratePaise) / 1000) : 0;
+  const totalNetWeightMg = tableRows.reduce((sum, r) => sum + r._netWeightMg, 0);
+  const totalNetAmountPaise = tableRows.reduce((sum, r) => sum + r._netAmountPaise, 0);
+  const totalWeightMg = displayNetGoldWeightMg(totalNetWeightMg);
+  const totalReceived = displayNetGoldAmountPaise(totalNetAmountPaise);
+  const totalLiability = goldAccrualLiabilityPaise(totalNetWeightMg, ratePaise);
+  const totalExposure = goldAccrualRateExposurePaise(totalLiability, totalNetAmountPaise);
 
-  const { rows, meta } = paginateRows(tableRows, req.query);
+  const publicRows = tableRows.map(({ _netWeightMg, _netAmountPaise, ...row }) => row);
+  const { rows, meta } = paginateRows(publicRows, req.query);
 
   return {
     ...envelope,
@@ -193,7 +214,7 @@ export async function buildGoldAccrualReport(req) {
       {
         key: "RATE_EXPOSURE",
         label: "Rate exposure",
-        value: moneyRef(Math.max(0, totalLiability - totalReceived)),
+        value: moneyRef(totalExposure),
         valueType: "currency",
         severity: "INFO",
         note: "Difference between today's value and what customers actually paid.",
@@ -215,7 +236,7 @@ export async function buildGoldAccrualReport(req) {
           {
             key: "grams",
             name: "Grams",
-            data: tableRows.map((row) => ({
+            data: publicRows.map((row) => ({
               x: row.label,
               y: row.gramsAccrued.weightMg,
               yDisplay: row.gramsAccrued.weightDisplay,

@@ -1931,10 +1931,12 @@ null
 {
   "success": true,
   "data": {
-    "principalPaise": 0,
-    "benefitPaise": 0,
-    "penaltyPaise": 0,
-    "settlementPaise": 0
+    "schemeId": "sch_...",
+    "maturityDate": "YYYY-MM-DD",
+    "projectedPrincipalPaise": 0,
+    "projectedBenefitPaise": 0,
+    "projectedAmountPaise": 0,
+    "projectedWeightMg": 0
   }
 }
 ```

@@ -1,5 +1,5 @@
 import { AuditEntityType, PaymentPattern, PaymentStatus, SchemePlanStatus } from "../constants/enums.js";
-import { Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
+import { LedgerEntry, Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
 import { assertFeatureEntitled, assertWithinLimit } from "../lib/tenant-limits.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
@@ -10,6 +10,7 @@ import { effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, today } from "../lib/date.js";
 import { iteratePeriodBuckets } from "../lib/analytics-period.js";
 import { moneyRef, weightRef } from "../lib/money.js";
+import { computeConfiguredBenefitPaise } from "../lib/scheme-benefit.js";
 import {
   buildIllustrativeFreeWindowNetSummary,
   computeFlexibleLockCapDetails,
@@ -24,6 +25,41 @@ import {
 import { buildSchedulePreview, resolveFixedSchemeMaturityDate } from "./schedule.service.js";
 
 const ACTIVE_SCHEME_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED"];
+const PLAN_BENEFIT_LIABILITY_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED", "MATURED"];
+
+/** Outstanding configured benefit across live and matured-unredeemed schemes (per-scheme cap, net paid). */
+export async function computePlanBenefitLiabilityPaise(tenantId, plan) {
+  const benefit = plan.benefit;
+  if (!benefit || benefit.type === "TEXT_ONLY") return 0;
+  const schemes = await Scheme.find({
+    tenantId,
+    planId: plan._id,
+    status: { $in: PLAN_BENEFIT_LIABILITY_STATUSES },
+  })
+    .select("_id installmentAmountPaise paymentPattern lockedAveragePaise planSnapshot")
+    .lean();
+  if (!schemes.length) return 0;
+  const schemeIds = schemes.map((row) => row._id);
+  const ledgerRows = await LedgerEntry.find({
+    tenantId,
+    schemeId: { $in: schemeIds },
+  })
+    .sort({ sequence: 1 })
+    .lean();
+  const entriesByScheme = new Map();
+  for (const entry of ledgerRows) {
+    const bucket = entriesByScheme.get(entry.schemeId) ?? [];
+    bucket.push(entry);
+    entriesByScheme.set(entry.schemeId, bucket);
+  }
+  const { ledgerTotals } = await import("./scheme.service.js");
+  let total = 0;
+  for (const scheme of schemes) {
+    const totals = ledgerTotals(entriesByScheme.get(scheme._id) ?? []);
+    total += computeConfiguredBenefitPaise(scheme, totals, benefit);
+  }
+  return Math.max(0, total);
+}
 
 function schemeListScope(req) {
   return effectiveScope(req);
@@ -220,29 +256,7 @@ async function buildPlanStatsPayload(tenantId, plan) {
       { $limit: 12 },
     ]),
   ]);
-  let benefitLiabilityPaise = 0;
-  if (plan.benefit?.type === "ONE_FREE_INSTALLMENT") {
-    benefitLiabilityPaise =
-      counts.activeSchemes *
-      (plan.amountRules?.fixedAmountPaise ??
-        plan.amountRules?.minInstallmentPaise ??
-        0);
-  } else if (plan.benefit?.type === "FIXED_BONUS_AMOUNT") {
-    if (plan.benefit.bonusBasis === "PERCENT_OF_PAID") {
-      benefitLiabilityPaise = Math.floor(
-        (collectedPaise * (plan.benefit.bonusValue ?? 0)) / 100,
-      );
-      if (plan.benefit.maxBonusPaise != null) {
-        benefitLiabilityPaise = Math.min(
-          benefitLiabilityPaise,
-          plan.benefit.maxBonusPaise * Math.max(counts.activeSchemes, 1),
-        );
-      }
-    } else {
-      benefitLiabilityPaise =
-        (plan.benefit.bonusValue ?? 0) * counts.activeSchemes;
-    }
-  }
+  const benefitLiabilityPaise = await computePlanBenefitLiabilityPaise(tenantId, plan);
   const trendEnd = today();
   const trendStart = addMonthsClamped(trendEnd, -11)
     .startOf("month")
