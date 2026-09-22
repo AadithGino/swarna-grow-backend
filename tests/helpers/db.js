@@ -26,7 +26,9 @@ export async function startTestDb() {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       replSet = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } });
+      await replSet.waitUntilRunning();
       await mongoose.connect(replSet.getUri("swarnagrow_test"));
+      await mongoose.connection.db.admin().command({ ping: 1 });
       return;
     } catch (error) {
       lastError = error;
@@ -64,6 +66,7 @@ export async function stopTestDb() {
       instance.stop({ doCleanup: true, force: true }),
       new Promise((resolve) => setTimeout(resolve, 8000)),
     ]).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 

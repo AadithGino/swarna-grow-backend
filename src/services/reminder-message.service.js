@@ -32,33 +32,38 @@ export async function claimReminderMessage({
     installmentNumber,
   });
   const messageId = deterministicReminderMessageId(dedupeKey);
-  const insertResult = await Message.updateOne(
-    { reminderDedupeKey: dedupeKey },
-    {
-      $setOnInsert: {
-        _id: messageId,
-        tenantId,
-        branchId,
-        customerId,
-        schemeId,
-        type,
-        channel,
-        status: MessageStatus.QUEUED,
-        templateKey: templateKey ?? type,
-        templateParams: {
-          ...templateParams,
-          reminderDate,
-          offsetKey,
-          ...(installmentNumber != null ? { installmentNumber } : {}),
+  try {
+    const insertResult = await Message.updateOne(
+      { _id: messageId },
+      {
+        $setOnInsert: {
+          _id: messageId,
+          tenantId,
+          branchId,
+          customerId,
+          schemeId,
+          type,
+          channel,
+          status: MessageStatus.QUEUED,
+          templateKey: templateKey ?? type,
+          templateParams: {
+            ...templateParams,
+            reminderDate,
+            offsetKey,
+            ...(installmentNumber != null ? { installmentNumber } : {}),
+          },
+          reminderDedupeKey: dedupeKey,
+          dispatchPriority: dispatchPriorityForMessageType(type),
         },
-        reminderDedupeKey: dedupeKey,
-        dispatchPriority: dispatchPriorityForMessageType(type),
       },
-    },
-    { upsert: true },
-  );
-  if (!insertResult.upsertedCount) return null;
-  return messageId;
+      { upsert: true },
+    );
+    if (!insertResult.upsertedCount) return null;
+    return messageId;
+  } catch (error) {
+    if (error?.code === 11000) return null;
+    throw error;
+  }
 }
 
 export async function attachPaymentLinkToMessage(messageId, paymentLinkToken) {

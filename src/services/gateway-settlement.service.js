@@ -27,8 +27,18 @@ export async function runDailyGatewaySettlementForTenant({
   tenantId,
   businessDate = istBusinessDate(),
   leaseOwner = "scheduler",
+  runId: expectedRunId,
 }) {
-  let claimed = await SettlementRun.findOne({ tenantId, businessDate, provider: "PHONEPE" });
+  let claimed;
+  if (expectedRunId) {
+    claimed = await SettlementRun.findOne({ _id: expectedRunId, tenantId, provider: "PHONEPE" });
+    if (!claimed) {
+      return { outcome: "RUN_NOT_FOUND", runId: expectedRunId };
+    }
+    businessDate = claimed.businessDate ?? businessDate;
+  } else {
+    claimed = await SettlementRun.findOne({ tenantId, businessDate, provider: "PHONEPE" });
+  }
   if (!claimed) {
     claimed = await SettlementRun.create({
       _id: createId("stl"),

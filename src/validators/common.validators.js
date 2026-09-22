@@ -100,6 +100,11 @@ export const customerRedemptionRequestBody = z.object({
   preferredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   remarks: z.string().max(500).optional(),
   expectedVersion: z.number().int().positive(),
+  modeDetails: z
+    .object({
+      billNumber: z.string().trim().min(1).max(64).optional(),
+    })
+    .optional(),
 });
 export const cancelPaymentIntentBody = z.object({
   expectedPositionVersion: z.number().int().nonnegative(),

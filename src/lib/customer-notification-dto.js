@@ -161,8 +161,8 @@ export function customerNotificationDedupeKey(row) {
     params.targetCycle ??
     (params.installmentNumber != null ? `inst:${params.installmentNumber}` : "");
   const occurrence =
-    params.reminderDate ??
     params.occurrenceKey ??
+    params.reminderDate ??
     params.offsetKey ??
     "";
   const paymentPart = params.paymentId ?? "";

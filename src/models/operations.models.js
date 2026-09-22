@@ -63,7 +63,7 @@ messageSchema.index(
 );
 messageSchema.index({ tenantId: 1, status: 1, branchId: 1, customerId: 1, _id: 1 });
 messageSchema.index(
-  { reminderDedupeKey: 1 },
+  { tenantId: 1, reminderDedupeKey: 1 },
   {
     unique: true,
     partialFilterExpression: { reminderDedupeKey: { $type: "string" } },
