@@ -146,6 +146,7 @@ test("scheme detail DTO — FLEXIBLE capped window", () => {
   assert.equal(dto.displayMode, "FLEXIBLE_LOCK_WINDOW");
   assert.equal(dto.progressCard.type, "FLEXIBLE_LOCK_WINDOW");
   assert.equal(dto.progressCard.remainingThisCycle.amountPaise, 150000);
+  assert.equal(dto.progressCard.paidThisCycle.amountPaise, 50000);
 });
 
 test("payable range — maxPayable equals remainingThisCycle in capped phase", () => {
@@ -171,6 +172,7 @@ test("payable range — maxPayable equals remainingThisCycle in capped phase", (
   assert.equal(enriched.maxPayable.amountPaise, 150000);
   assert.equal(enriched.remainingThisCycle.amountPaise, 150000);
   assert.equal(enriched.cycleCap.amountPaise, 200000);
+  assert.equal(enriched.paidThisCycle.amountPaise, 50000);
   assert.equal(enriched.positionVersion, 12);
 });
 

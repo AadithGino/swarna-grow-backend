@@ -8,12 +8,16 @@
 
 ## Scope
 
-- Public: OTP, tenant resolve, pay links, app config
+- Public: OTP, password login, tenant resolve, signup funnel, pay links, app config
 - App auth: `/app/auth/*` (refresh, logout, me)
 - Customer app: all `/app/*` routes below
 - Health checks
 
-**Route count (this panel):** **59** — full list in [Appendix C](#appendix-c--route-inventory-customer-panel)
+**Route count (this panel):** **67** — full list in [Appendix C](#appendix-c--route-inventory-customer-panel)
+
+**Examples:** Baseline request/response JSON per route in [Appendix F](#appendix-f--example-requests--responses) (numbers match Appendix C).
+
+**Scheme × settings matrix:** Every route crossed with **FIXED / free-window / capped** flexible modes, **CASH vs GOLD_WEIGHT**, and **tenant operational flags** — [API_CONTRACT_CUSTOMER_MATRIX.md](./API_CONTRACT_CUSTOMER_MATRIX.md) and [Appendix G](#appendix-g--scheme--operations-response-matrix).
 
 See also: [Full contract](./API_CONTRACT.md) · [Admin](./API_CONTRACT_ADMIN.md) · [Collection agent app](./API_CONTRACT_STAFF.md) · [Super Admin](./API_CONTRACT_SUPER_ADMIN.md)
 
@@ -290,7 +294,11 @@ Query: `includeTrends=true`, `trendMonths=6`
 
 Curated plan cards (see `mapCustomerPlanListItem` in `customer-app-dto.js`): `displayName`, `description`, `valueBasis`, `valueBasisLabel`, `paymentPattern`, `paymentPatternLabel`, `durationMonths`, `amountSummary` (`{ label, min, max, multipleOf, amountMode }`), `benefitLabel`, `benefitType`, `highlights[]`, optional `flexibleSummary`, `canEnrol`, `blockedReason` — **no** raw `amountRules` / `flexibleRules` blobs.
 
+**Calendar tenure vs contribution cycles (V1):** `durationMonths` is the number of consecutive calendar months from enrolment to maturity (last day of the final month). When `installmentCount` is set, it is the number of **contribution** cycles (fixed instalments, or flexible free+capped phases combined). Example: flexible `durationMonths: 12` with `installmentCount: 11` and `6+5` phases yields 12 calendar cycles on the scheme; month 12 is maturity-only — `GET payable-range` / payments in that month return **`422 MATURITY_WAITING_CYCLE`**. Fixed plans may use `durationMonths: 12` with `installmentCount: 11` (11 payable instalments; maturity still at end of month 12).
+
 ### Schemes
+
+Examples: [F.39](#f39-get-apiv1appschemes)–[F.47](#f47-post-apiv1appschemesschemeidpaysdk-order) (read/pay), [F.67](#f67-post-apiv1appschemesschemeidredemption-request) (redeem).
 
 | Method | Path | Notes |
 |--------|------|--------|
@@ -317,6 +325,7 @@ Curated plan cards (see `mapCustomerPlanListItem` in `customer-app-dto.js`): `di
   "minPayable": { "amountPaise": 50000, "amountDisplay": "₹500" },
   "maxPayable": { "amountPaise": 150000, "amountDisplay": "₹1,500" },
   "cycleCap": { "amountPaise": 200000, "amountDisplay": "₹2,000" },
+  "paidThisCycle": { "amountPaise": 50000, "amountDisplay": "₹500" },
   "remainingThisCycle": { "amountPaise": 150000, "amountDisplay": "₹1,500" },
   "suggested": { "amountPaise": 150000, "amountDisplay": "₹1,500" },
   "multipleOfPaise": 100,
@@ -423,7 +432,7 @@ Common top-level fields: `id`, `schemeNumber`, `planName`, `displayMode` (`FIXED
 |---------------|---------------------|----------|
 | `FIXED` | `FIXED` | `installmentsPaid/Total`, `nextDue`, passbook instalment rows |
 | `FLEXIBLE_FREE_WINDOW` | `FLEXIBLE_FREE_WINDOW` | `freeWindowBanner`, min/max per payment, optional contributions |
-| `FLEXIBLE_LOCK_WINDOW` | `FLEXIBLE_LOCK_WINDOW` | `cycleCap`, `remainingThisCycle`, locked average |
+| `FLEXIBLE_LOCK_WINDOW` | `FLEXIBLE_LOCK_WINDOW` | `cycleCap`, **`paidThisCycle`**, `remainingThisCycle`, `currentCycle`, locked average |
 
 Contract tests: `tests/customer-app-contract.test.js` (all three display modes).
 
@@ -441,7 +450,7 @@ Poll UI enum: **`PROCESSING` \| `PAID` \| `FAILED` \| `EXPIRED` \| `CANCELLED`**
 
 ## Appendix C — Route inventory (customer panel)
 
-**Total: 59** (2 health + 17 public + 3 app auth + 37 app). Handlers: `src/routes/public.routes.js`, `src/routes/app-auth.routes.js`, `src/routes/app.routes.js`.
+**Total: 67** (2 health + 19 public + 3 app auth + 43 app). Handlers: `src/routes/public.routes.js`, `src/routes/app-auth.routes.js`, `src/routes/app.routes.js`.
 
 | # | Method | Path |
 |---|--------|------|
@@ -451,59 +460,67 @@ Poll UI enum: **`PROCESSING` \| `PAID` \| `FAILED` \| `EXPIRED` \| `CANCELLED`**
 | 4 | GET | `/api/v1/public/auth/password-policy` |
 | 5 | POST | `/api/v1/public/auth/otp/request` |
 | 6 | POST | `/api/v1/public/auth/otp/verify` |
-| 7 | POST | `/api/v1/public/auth/set-password` |
-| 8 | GET | `/api/v1/public/tenants/resolve` |
-| 9 | GET | `/api/v1/public/tenants/:tenantId/branches` |
-| 10 | POST | `/api/v1/public/signup/start` |
-| 11 | POST | `/api/v1/public/signup/verify-otp` |
-| 12 | GET | `/api/v1/public/signup/plans` |
-| 13 | POST | `/api/v1/public/signup/:signupId/select-plan` |
-| 14 | POST | `/api/v1/public/signup/:signupId/payment/initiate` |
-| 15 | GET | `/api/v1/public/signup/:signupId/status` |
-| 16 | GET | `/api/v1/public/signup/check-availability` |
-| 17 | GET | `/api/v1/public/pay/:linkToken` |
-| 18 | POST | `/api/v1/public/pay/:linkToken/initiate` |
-| 19 | GET | `/api/v1/public/pay/:linkToken/status` |
-| 20 | POST | `/api/v1/app/auth/refresh` |
-| 21 | POST | `/api/v1/app/auth/logout` |
-| 22 | GET | `/api/v1/app/auth/me` |
-| 23 | GET | `/api/v1/app/auth/devices` |
-| 24 | DELETE | `/api/v1/app/auth/devices/:deviceId` |
-| 25 | GET | `/api/v1/app/home` |
-| 26 | GET | `/api/v1/app/profile` |
-| 27 | PATCH | `/api/v1/app/profile` |
-| 28 | POST | `/api/v1/app/profile/complete` |
-| 29 | PUT | `/api/v1/app/profile/kyc` |
-| 30 | POST | `/api/v1/app/uploads/presign` |
-| 31 | GET | `/api/v1/app/scheme-plans` |
-| 32 | GET | `/api/v1/app/scheme-plans/:planId` |
-| 33 | GET | `/api/v1/app/schemes` |
-| 34 | GET | `/api/v1/app/schemes/:schemeId` |
-| 35 | GET | `/api/v1/app/schemes/:schemeId/payable-range` |
-| 36 | GET | `/api/v1/app/schemes/:schemeId/passbook` |
-| 37 | GET | `/api/v1/app/schemes/:schemeId/settlement-preview` |
-| 38 | POST | `/api/v1/app/schemes/enrol` |
-| 39 | POST | `/api/v1/app/schemes/:schemeId/pay` |
-| 40 | POST | `/api/v1/app/schemes/:schemeId/payment-intents` |
-| 41 | POST | `/api/v1/app/schemes/:schemeId/redemption-request` |
-| 42 | GET | `/api/v1/app/payment-intents/:intentId` |
-| 43 | POST | `/api/v1/app/payment-intents/:intentId/cancel` |
-| 44 | GET | `/api/v1/app/payments` |
-| 45 | GET | `/api/v1/app/payments/:paymentId/receipt` |
-| 46 | GET | `/api/v1/app/payments/:linkId/status` |
-| 47 | GET | `/api/v1/app/notifications` |
-| 48 | POST | `/api/v1/app/notifications/:id/read` |
-| 49 | POST | `/api/v1/app/notifications/read-all` |
-| 50 | POST | `/api/v1/app/devices/fcm-token` |
-| 51 | DELETE | `/api/v1/app/devices/fcm-token` |
-| 52 | GET | `/api/v1/app/branches` |
-| 53 | GET | `/api/v1/app/gold-rate/current` |
-| 54 | GET | `/api/v1/app/gold-rate/history` |
-| 55 | POST | `/api/v1/app/grievances` |
-| 56 | GET | `/api/v1/app/grievances` |
-| 57 | GET | `/api/v1/app/grievances/:grievanceId` |
-| 58 | POST | `/api/v1/app/grievances/:grievanceId/messages` |
-| 59 | POST | `/api/v1/app/grievances/:grievanceId/reopen` |
+| 7 | POST | `/api/v1/public/auth/login-password` |
+| 8 | POST | `/api/v1/public/auth/set-password` |
+| 9 | GET | `/api/v1/public/tenants/resolve` |
+| 10 | GET | `/api/v1/public/tenants/:tenantId/branches` |
+| 11 | POST | `/api/v1/public/signup/start` |
+| 12 | POST | `/api/v1/public/signup/verify-otp` |
+| 13 | GET | `/api/v1/public/signup/plans` |
+| 14 | POST | `/api/v1/public/signup/:signupId/select-plan` |
+| 15 | POST | `/api/v1/public/signup/:signupId/payment/initiate` |
+| 16 | GET | `/api/v1/public/signup/:signupId/status` |
+| 17 | GET | `/api/v1/public/signup/check-availability` |
+| 18 | GET | `/api/v1/public/pay/:linkToken` |
+| 19 | POST | `/api/v1/public/pay/:linkToken/initiate` |
+| 20 | GET | `/api/v1/public/pay/:linkToken/status` |
+| 21 | GET | `/api/v1/public/uploads/:uploadId` |
+| 22 | POST | `/api/v1/app/auth/refresh` |
+| 23 | POST | `/api/v1/app/auth/logout` |
+| 24 | GET | `/api/v1/app/auth/me` |
+| 25 | GET | `/api/v1/app/auth/devices` |
+| 26 | DELETE | `/api/v1/app/auth/devices/:deviceId` |
+| 27 | GET | `/api/v1/app/home` |
+| 28 | GET | `/api/v1/app/profile` |
+| 29 | PATCH | `/api/v1/app/profile` |
+| 30 | POST | `/api/v1/app/profile/complete` |
+| 31 | PUT | `/api/v1/app/profile/kyc` |
+| 32 | PUT | `/api/v1/app/profile/nominee` |
+| 33 | DELETE | `/api/v1/app/profile/nominee` |
+| 34 | POST | `/api/v1/app/uploads/presign` |
+| 35 | POST | `/api/v1/app/uploads/:uploadId/complete` |
+| 36 | GET | `/api/v1/app/uploads/:uploadId` |
+| 37 | GET | `/api/v1/app/scheme-plans` |
+| 38 | GET | `/api/v1/app/scheme-plans/:planId` |
+| 39 | GET | `/api/v1/app/schemes` |
+| 40 | GET | `/api/v1/app/schemes/:schemeId/payable-range` |
+| 41 | GET | `/api/v1/app/schemes/:schemeId/passbook` |
+| 42 | GET | `/api/v1/app/schemes/:schemeId/settlement-preview` |
+| 43 | GET | `/api/v1/app/schemes/:schemeId` |
+| 44 | POST | `/api/v1/app/schemes/enrol` |
+| 45 | POST | `/api/v1/app/schemes/:schemeId/pay` |
+| 46 | POST | `/api/v1/app/schemes/:schemeId/payment-intents` |
+| 47 | POST | `/api/v1/app/schemes/:schemeId/pay/sdk-order` |
+| 48 | GET | `/api/v1/app/payment-intents/:intentId` |
+| 49 | POST | `/api/v1/app/payment-intents/:intentId/cancel` |
+| 50 | GET | `/api/v1/app/payments` |
+| 51 | GET | `/api/v1/app/payments/:paymentId/receipt` |
+| 52 | GET | `/api/v1/app/payments/:paymentId` |
+| 53 | GET | `/api/v1/app/payments/:linkId/status` |
+| 54 | GET | `/api/v1/app/notifications` |
+| 55 | POST | `/api/v1/app/notifications/:id/read` |
+| 56 | POST | `/api/v1/app/notifications/read-all` |
+| 57 | POST | `/api/v1/app/devices/fcm-token` |
+| 58 | DELETE | `/api/v1/app/devices/fcm-token` |
+| 59 | GET | `/api/v1/app/branches` |
+| 60 | GET | `/api/v1/app/gold-rate/current` |
+| 61 | GET | `/api/v1/app/gold-rate/history` |
+| 62 | POST | `/api/v1/app/grievances` |
+| 63 | GET | `/api/v1/app/grievances` |
+| 64 | GET | `/api/v1/app/grievances/:grievanceId` |
+| 65 | POST | `/api/v1/app/grievances/:grievanceId/messages` |
+| 66 | POST | `/api/v1/app/grievances/:grievanceId/reopen` |
+| 67 | POST | `/api/v1/app/schemes/:schemeId/redemption-request` |
 
 ## Appendix D — Upload presign
 
@@ -533,6 +550,492 @@ Shared types: **`TenantBranding`** (`tenantCode`, `displayName`, `appDisplayName
 | **Settlement / redemption preview** | `eligible`, `blockers[]: { code, message }`, `maturityDate`, `goldRateDateApplied`, `benefits`, `totals` (MoneyRef / WeightRef), `redemptionStatus` |
 | **Redemption request (201)** | `id`, `schemeId`, `status: REQUESTED`, `preferredMode`, `preferredDate`, `version` |
 
+## Appendix G — Scheme & operations response matrix
+
+Full document: **[API_CONTRACT_CUSTOMER_MATRIX.md](./API_CONTRACT_CUSTOMER_MATRIX.md)** (maintained alongside this file).
+
+| Topic | Matrix section |
+|-------|----------------|
+| Display modes & value basis | §1 |
+| `customerSelfEnrol`, `customerSelfRegistration`, `kycMandatory`, `multiScheme`, login mode, view-only, payments off | §2–§2.1, §6 |
+| All 67 routes → shape + which variants apply | §3, §7 |
+| Home / list / detail / payable-range / settlement / enrol / payments by scheme type | §5.1–§5.8 |
+| Public pay link FIXED vs FLEXIBLE label | §4.1 |
+| FIXED partial/advance payable-range | §5.4 |
+| Capped `CYCLE_CAP_REACHED`, future-cycle options | §5.4 |
+| Settlement `modePreviews` (GOLD_WEIGHT) | §5.5 |
+| `payButton` when payments disabled / matured | §5.6 |
+
+Use **Appendix F** for copy-paste baselines; use the **matrix** when implementing UI for every plan type and jeweller setting.
+
+## Appendix F — Example requests & responses
+
+Route numbers match [Appendix C](#appendix-c--route-inventory-customer-panel). Payload shapes follow `customer-app-dto.js`, `customer-scheme-detail-dto.js`, and validators in `common.validators.js`. Wrapper: `{ "success": true, "data": … }` unless noted.
+
+For **FIXED vs FLEXIBLE_FREE_WINDOW vs FLEXIBLE_LOCK_WINDOW**, **GOLD_WEIGHT**, and **tenant capability** variants, see [Appendix G](#appendix-g--scheme--operations-response-matrix) / [MATRIX](./API_CONTRACT_CUSTOMER_MATRIX.md).
+
+### F.1 `GET /health`
+
+**Response (200):** `{ "status": "ok", "timestamp": "2026-09-22T06:00:00.000Z" }`
+
+### F.2 `GET /health/ready`
+
+**Response (200):** `{ "database": "ready", "queue": "ready" }`
+
+### F.3 `GET /api/v1/public/app-config`
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "android": { "minimumVersion": "1.0.0", "latestVersion": "1.2.0", "forceUpdate": false, "storeUrl": "https://play.google.com/..." },
+    "ios": { "minimumVersion": "1.0.0", "latestVersion": "1.2.0", "forceUpdate": false, "storeUrl": "https://apps.apple.com/..." },
+    "maintenance": { "enabled": false, "title": null, "message": null }
+  }
+}
+```
+
+### F.4 `GET /api/v1/public/auth/password-policy`
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "minLength": 4,
+    "maxLength": 128,
+    "numericOnly": true,
+    "requireUppercase": false,
+    "requireLowercase": false,
+    "requireNumber": true,
+    "requireSymbol": false
+  }
+}
+```
+
+### F.5 `POST /api/v1/public/auth/otp/request`
+
+**Request:**
+
+```json
+{
+  "tenantCode": "NAKSHATHRAJE",
+  "mobile": "+919999999902",
+  "purpose": "LOGIN",
+  "deviceId": "web-chrome-abc123"
+}
+```
+
+**Response (202):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "otpId": "550e8400-e29b-41d4-a716-446655440000",
+    "channel": "SMS",
+    "maskedMobile": "******9902",
+    "resendAvailableInSeconds": 30,
+    "attemptsAllowed": 5,
+    "isRegistered": true,
+    "expiresInSeconds": 300
+  }
+}
+```
+
+### F.6 `POST /api/v1/public/auth/otp/verify`
+
+**Request:**
+
+```json
+{
+  "tenantCode": "NAKSHATHRAJE",
+  "mobile": "+919999999902",
+  "purpose": "LOGIN",
+  "deviceId": "web-chrome-abc123",
+  "otp": "123456",
+  "otpId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "isNewCustomer": false,
+    "profileComplete": true,
+    "customer": {
+      "id": "cus_01M33R10B7RPVJZEZMRVR5VBPW",
+      "name": "Sarath Kumar",
+      "mobile": "+919999999902",
+      "branchId": "brn_01M33EXAMPLE",
+      "passbookNumber": "PB/2026/00012",
+      "branch": { "id": "brn_01M33EXAMPLE", "name": "Main Showroom", "code": "MAIN" },
+      "profileComplete": true
+    },
+    "tenant": {
+      "tenantCode": "NAKSHATHRAJE",
+      "displayName": "Nakshathra Jewellers",
+      "appDisplayName": "Nakshathra Savings",
+      "logoUrl": "/uploads/upl_01M33EXAMPLE",
+      "primaryColor": "#730321",
+      "accentColor": "#C9A227",
+      "customerLoginMode": "OTP_ONLY",
+      "customerAppPaymentsEnabled": true
+    },
+    "tenantCapabilities": {
+      "customerSelfEnrol": true,
+      "customerSelfRegistration": true,
+      "kycMandatory": false,
+      "multiScheme": true,
+      "customerLoginMode": "OTP_ONLY",
+      "customerAppWriteEnabled": true,
+      "customerAppPaymentsEnabled": true
+    },
+    "accessToken": "eyJ...",
+    "refreshToken": "rt_...",
+    "expiresIn": 1800,
+    "tokenType": "Bearer"
+  }
+}
+```
+
+### F.7 `POST /api/v1/public/auth/login-password`
+
+**Request:** `{ "tenantCode": "NAKSHATHRAJE", "mobile": "+919999999902", "password": "1234", "deviceId": "android-pixel-8" }`
+
+**Response (200):** Same session shape as [F.6](#f6-post-apiv1publicauthotpverify).
+
+### F.8 `POST /api/v1/public/auth/set-password`
+
+**Request:** `{ "resetToken": "<32+ chars>", "password": "5678", "confirmPassword": "5678" }`
+
+**Response (200):** `{ "success": true, "data": { "passwordSet": true } }`
+
+### F.9 `GET /api/v1/public/tenants/resolve?tenantCode=NAKSHATHRAJE`
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "resolvedBy": "TENANT_CODE",
+    "tenantCode": "NAKSHATHRAJE",
+    "tenants": [
+      {
+        "id": "tnt_01M33NZ7JMR9ABR5MCP306YQN7",
+        "tenantCode": "NAKSHATHRAJE",
+        "displayName": "Nakshathra Jewellers",
+        "status": "ACTIVE",
+        "customerAppPaymentsEnabled": true
+      }
+    ]
+  }
+}
+```
+
+### F.10 `GET /api/v1/public/tenants/:tenantId/branches`
+
+**Response (200):** `{ "success": true, "data": [{ "id": "brn_01M33EXAMPLE", "code": "MAIN", "name": "Main Showroom" }] }`
+
+### F.11–F.17 Public signup (tenant onboarding)
+
+| # | Request | Response |
+|---|---------|----------|
+| F.11 | `POST /signup/start` `{ businessName, ownerName, mobile, email, city }` | `201` signup session |
+| F.12 | `POST /signup/verify-otp` `{ signupId, otp }` | Signup token |
+| F.13 | `GET /signup/plans` | Subscription plans |
+| F.14 | `POST /:signupId/select-plan` `{ subscriptionPlanId, billingCycle }` | Selected plan |
+| F.15 | `POST /:signupId/payment/initiate` `{ redirectUrl }` | Checkout |
+| F.16 | `GET /:signupId/status` | Status DTO |
+| F.17 | `GET /signup/check-availability` | `{ available: true }` |
+
+### F.18 `GET /api/v1/public/pay/:linkToken`
+
+**Response (200):** `publicPayPageDto` — `{ linkId, status, jeweller, customerName, maskedMobile, schemeLabel, amount (MoneyRef), canPay, expiresAt }`
+
+### F.19 `POST /api/v1/public/pay/:linkToken/initiate`
+
+**Request:** `{ "redirectUrl": "https://customer.example.com/pay/status", "mobile": "+919999999902" }`
+
+**Response (200):** `{ "gatewayUrl", "transactionId", "paymentId", "expiresAt" }`
+
+### F.20 `GET /api/v1/public/pay/:linkToken/status`
+
+**Response (200):** Pay page + `poll`: `{ status, processing, paid, failed, receipt, updatedScheme, retryAfterSeconds }`
+
+### F.21 `GET /api/v1/public/uploads/:uploadId`
+
+**Response:** Binary file (not JSON).
+
+### F.22 `POST /api/v1/app/auth/refresh`
+
+**Request:** `{ "refreshToken": "rt_..." }`
+
+**Response (200):** `{ "accessToken", "refreshToken", "expiresIn": 1800, "tokenType": "Bearer" }`
+
+### F.23 `POST /api/v1/app/auth/logout`
+
+**Request:** optional `{ "refreshToken" }` · **Headers:** `Authorization: Bearer …`
+
+**Response (200):** `{ "success": true, "data": { "loggedOut": true } }`
+
+### F.24 `GET /api/v1/app/auth/me`
+
+**Response (200):** Same as [F.28](#f28-get-apiv1appprofile).
+
+### F.25 `GET /api/v1/app/auth/devices`
+
+**Response (200):** `{ "success": true, "data": [{ "deviceId", "platform", "lastUsedAt", "expiresAt" }] }`
+
+### F.26 `DELETE /api/v1/app/auth/devices/:deviceId`
+
+**Response (200):** `{ "success": true, "data": { "revoked": true } }`
+
+### F.27 `GET /api/v1/app/home?includeTrends=true&trendMonths=6`
+
+**Response (200):** `buildHome` shell — tenant branding, greeting, summary, optional trends, `activeSchemes[]`.
+
+**Scheme cards:** three `displayMode` shapes in [MATRIX §5.1](./API_CONTRACT_CUSTOMER_MATRIX.md#51-get-apphome--activeschemes-maphomeschemecard).
+
+### F.28 `GET /api/v1/app/profile`
+
+**Response (200):** `customerProfileDto` — `{ id, customerNumber, passbookNumber, name, mobile, mobileImmutable: true, email, address, branch, profileComplete, nominee, version, tenant }`
+
+### F.29 `PATCH /api/v1/app/profile`
+
+**Request:** `{ "email", "address", "expectedVersion" }`
+
+**Response (200):** Updated profile DTO.
+
+### F.30 `POST /api/v1/app/profile/complete`
+
+**Request:** `{ "name": "Sarath Kumar", "email": "sarath@example.com" }`
+
+**Response (200):** Profile with `profileComplete: true`.
+
+### F.31 `PUT /api/v1/app/profile/kyc`
+
+**Request:** `{ "type": "AADHAAR", "frontUploadId", "backUploadId" }`
+
+**Response (200):** Profile with `kyc.status: "SUBMITTED"` (403 when KYC not enabled).
+
+### F.32 `PUT /api/v1/app/profile/nominee`
+
+**Request:** `{ "name", "relationship": "SPOUSE", "mobile", "expectedVersion" }`
+
+### F.33 `DELETE /api/v1/app/profile/nominee`
+
+**Request:** `{ "expectedVersion": 5 }`
+
+### F.34 `POST /api/v1/app/uploads/presign`
+
+**Request:** `{ "purpose": "KYC_DOCUMENT", "fileName", "contentType", "sizeBytes" }`
+
+**Response (200):** `{ uploadId, uploadUrl, method: "PUT", headers, expiresAt }`
+
+### F.35 `POST /api/v1/app/uploads/:uploadId/complete`
+
+**Response (200):** `{ uploadId, status: "READY" }`
+
+### F.36 `GET /api/v1/app/uploads/:uploadId`
+
+**Response:** Binary download.
+
+### F.37–F.38 `GET /api/v1/app/scheme-plans` · `GET .../:planId`
+
+**Response (200):** `mapCustomerPlanListItem` — FIXED vs FLEXIBLE examples in [MATRIX §5.2](./API_CONTRACT_CUSTOMER_MATRIX.md#52-get-appscheme-plans--plan-list-item); `canEnrol: false` when self-enrol disabled.
+
+### F.39 `GET /api/v1/app/schemes`
+
+**Active:** `{ data: [ SchemeCard ], meta }` — same card shapes as home [§5.1](./API_CONTRACT_CUSTOMER_MATRIX.md#51-get-apphome--activeschemes-maphomeschemecard). **Past:** `?group=PAST` → [§5.3](./API_CONTRACT_CUSTOMER_MATRIX.md#53-get-appschemesgrouppast--mappastschemerow).
+
+### F.40 `GET /api/v1/app/schemes/:schemeId/payable-range?targetCycle=2026-09`
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "model": "FLEXIBLE",
+    "phase": "CAPPED",
+    "payable": true,
+    "targetCycle": "2026-09",
+    "minPayable": { "amountPaise": 10000, "amountDisplay": "₹100" },
+    "maxPayable": { "amountPaise": 40000, "amountDisplay": "₹400" },
+    "cycleCap": { "amountPaise": 200000, "amountDisplay": "₹2,000" },
+    "paidThisCycle": { "amountPaise": 160000, "amountDisplay": "₹1,600" },
+    "remainingThisCycle": { "amountPaise": 40000, "amountDisplay": "₹400" },
+    "suggested": { "amountPaise": 40000, "amountDisplay": "₹400" },
+    "positionVersion": 21,
+    "expectedPositionVersion": 21,
+    "paidMoneyNeverExpires": true,
+    "unusedAllowanceCarriesForward": false
+  }
+}
+```
+
+### F.41 `GET /api/v1/app/schemes/:schemeId/passbook`
+
+**Response (200):** `{ scheme, rows[], totals }` — row labels follow scheme `displayMode`.
+
+### F.42 `GET /api/v1/app/schemes/:schemeId/settlement-preview?mode=CASH`
+
+**Response (200):** CASH vs GOLD_WEIGHT + `modePreviews` — [MATRIX §5.5](./API_CONTRACT_CUSTOMER_MATRIX.md#55-get-appschemesschemeidsettlement-preview).
+
+### F.43 `GET /api/v1/app/schemes/:schemeId`
+
+**Response (200):** `CustomerSchemeDetail` — `progressCard` by mode, `payButton`, embedded `payableRange`, `redemption` — [MATRIX §5.6](./API_CONTRACT_CUSTOMER_MATRIX.md#56-get-appschemesschemeid--progresscard-by-displaymode).
+
+### F.44 `POST /api/v1/app/schemes/enrol`
+
+**Request:** `{ "planId", "payNow": true, "redirectUrl" }`
+
+**Response (201):** FIXED → `paymentLink`; FLEXIBLE → `paymentIntent` — [MATRIX §5.7](./API_CONTRACT_CUSTOMER_MATRIX.md#57-post-appschemesenrol).
+
+### F.45 `POST /api/v1/app/schemes/:schemeId/pay`
+
+**Request:** `{ "amountPaise": 250000, "redirectUrl" }` (fixed only)
+
+**Response (201):** `paymentLinkDto`
+
+### F.46 `POST /api/v1/app/schemes/:schemeId/payment-intents`
+
+**Request:**
+
+```json
+{
+  "amountPaise": 40000,
+  "targetCycle": "2026-09",
+  "expectedPositionVersion": 21,
+  "redirectUrl": "https://customer.example.com/pay/status"
+}
+```
+
+**Response (201):** `paymentIntentAppDto`
+
+### F.47 `POST /api/v1/app/schemes/:schemeId/pay/sdk-order`
+
+Same as F.46; response includes `providerOrderId`.
+
+### F.48 `GET /api/v1/app/payment-intents/:intentId`
+
+**Response (200):** Intent + poll fields (`processing`, `paid`, `receipt`, …).
+
+### F.49 `POST /api/v1/app/payment-intents/:intentId/cancel`
+
+**Request:** `{ "expectedPositionVersion": 21 }`
+
+**Response (200):** `paymentIntentCancelDto`
+
+### F.50 `GET /api/v1/app/payments`
+
+**Response (200):** `{ data: [ mapCustomerPaymentListItem ], meta: { summary, nextCursor, hasMore } }`
+
+### F.51 `GET /api/v1/app/payments/:paymentId/receipt`
+
+**Response:** PDF (`Content-Type: application/pdf`).
+
+### F.52 `GET /api/v1/app/payments/:paymentId`
+
+**Response (200):** Single payment list item.
+
+### F.53 `GET /api/v1/app/payments/:linkId/status`
+
+**Response (200):** `paymentPollStatusDto` (payment **link** id).
+
+### F.54 `GET /api/v1/app/notifications`
+
+**Response (200):** `{ items: [ mapCustomerNotification ], unreadCount }`
+
+### F.55 `POST /api/v1/app/notifications/:id/read`
+
+**Response (200):** `{ read: true }`
+
+### F.56 `POST /api/v1/app/notifications/read-all`
+
+**Response (200):** `{ updated: 5 }`
+
+### F.57 `POST /api/v1/app/devices/fcm-token`
+
+**Request:** `{ fcmToken, deviceId, platform: "android"|"ios" }`
+
+**Response (200):** `{ registered: true, replacedPreviousToken: true }`
+
+### F.58 `DELETE /api/v1/app/devices/fcm-token`
+
+**Request:** `{ "deviceId" }` · **Response:** `{ removed: true }`
+
+### F.59 `GET /api/v1/app/branches`
+
+**Response (200):** Active branches array.
+
+### F.60 `GET /api/v1/app/gold-rate/current`
+
+**Response (200):** `{ ratePerGramPaise, ratePerGramDisplay, effectiveDate, purity }`
+
+### F.61 `GET /api/v1/app/gold-rate/history`
+
+**Response (200):** Rate history array (max 100).
+
+### F.62 `POST /api/v1/app/grievances`
+
+**Request:** `{ category, subject, description, attachmentUploadIds[] }`
+
+**Response (201):** Grievance detail.
+
+### F.63 `GET /api/v1/app/grievances`
+
+**Response (200):** Paginated list.
+
+### F.64 `GET /api/v1/app/grievances/:grievanceId`
+
+**Response (200):** Detail + messages + `version`.
+
+### F.65 `POST /api/v1/app/grievances/:grievanceId/messages`
+
+**Request:** `{ body, expectedVersion, attachmentUploadIds[] }`
+
+### F.66 `POST /api/v1/app/grievances/:grievanceId/reopen`
+
+**Request:** `{ reason, expectedVersion }`
+
+### F.67 `POST /api/v1/app/schemes/:schemeId/redemption-request`
+
+**Request:**
+
+```json
+{
+  "preferredMode": "GOLD_HANDOVER",
+  "preferredDate": "2027-03-01",
+  "remarks": "Prefer morning visit",
+  "expectedVersion": 12
+}
+```
+
+**Response (201):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "red_01M33EXAMPLE",
+    "schemeId": "sch_01M33R4NK7BGPJ32GGJKRFPJEH",
+    "status": "REQUESTED",
+    "preferredMode": "GOLD_HANDOVER",
+    "preferredDate": "2027-03-01",
+    "version": 13
+  }
+}
+```
+
 ---
 
-*Implementation: `customer-scheme-detail-dto.js`, `customer-app-dto.js`, `customer-app.service.js`, `payment.service.js`.*
+*Implementation: `customer-scheme-detail-dto.js`, `customer-app-dto.js`, `customer-notification-dto.js`, `customer-app.service.js`, `scheme.service.js`, `payment.service.js`, `redemption.service.js`. Response matrix: `API_CONTRACT_CUSTOMER_MATRIX.md`.*

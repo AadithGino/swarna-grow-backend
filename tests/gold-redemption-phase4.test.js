@@ -298,6 +298,32 @@ async function seedGoldWeightMaturedHandover({ weightMg = 600, amountPaise = 300
   return { tenant, branch, user, customer, scheme, weightMg, amountPaise };
 }
 
+test("gold-weight settlement preview includes modePreviews and valuationNote", async () => {
+  const { tenant, branch, user, scheme } = await seedGoldWeightMaturedHandover();
+  const handoverDay = today();
+  await setGoldRate({
+    auth: { id: user._id, tenantId: tenant._id },
+    headers: { "user-agent": "test" },
+    body: { effectiveDate: handoverDay, ratePerGramPaise: 520_000, branchId: branch._id },
+  });
+  const preview = await settlementPreview(
+    {
+      auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
+      scope: { tenantId: tenant._id, branchId: branch._id },
+      params: { schemeId: scheme._id },
+      query: { mode: RedemptionMode.GOLD_HANDOVER },
+      body: {},
+      headers: {},
+      ip: "127.0.0.1",
+    },
+    ClosureType.MATURITY_REDEMPTION,
+  );
+  assert.ok(preview.modePreviews?.GOLD_HANDOVER);
+  assert.ok(preview.modePreviews.GOLD_HANDOVER.weight?.weightMg > 0);
+  assert.match(String(preview.modePreviews.GOLD_HANDOVER.note ?? ""), /today's rate/i);
+  assert.ok(preview.valuationNote);
+});
+
 test("gold-weight plan handover uses exact handover-day rate for valuation", async () => {
   const { tenant, branch, user, customer, scheme, weightMg } =
     await seedGoldWeightMaturedHandover();

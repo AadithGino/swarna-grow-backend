@@ -185,12 +185,8 @@ appRouter.get("/payments/:linkId/status", asyncHandler(appCustomer.paymentLinkSt
 appRouter.get("/notifications", asyncHandler(appCustomer.notifications));
 appRouter.post("/notifications/:id/read", idempotent, asyncHandler(async (req, res) => {
   assertCustomerAppWritable(req.tenant);
-  const { Message } = await import("../models/index.js");
-  sendSuccess(res, await Message.findOneAndUpdate(
-    { _id: req.params.id, tenantId: req.auth.tenantId, customerId: req.auth.id },
-    { $set: { readAt: new Date() } },
-    { new: true },
-  ).lean());
+  const customerApp = await import("../services/customer-app.service.js");
+  sendSuccess(res, await customerApp.markNotificationRead(req.auth, req.params.id));
 }));
 appRouter.post("/notifications/read-all", idempotent, asyncHandler(async (req, res) => {
   assertCustomerAppWritable(req.tenant);

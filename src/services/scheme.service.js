@@ -27,6 +27,7 @@ import {
   ENROLMENT_CAPACITY_STATUSES,
   ONE_ACTIVE_SCHEME_CONFLICT_STATUSES,
   OPEN_ENROLLMENT_STATUSES,
+  ACTIVE_AND_LOCKED_STATUSES,
 } from "../lib/scheme-enrollment-status.js";
 import { buildFixedPayableQuote } from "../lib/fixed-payment-policy.js";
 import { sumActiveFixedReservationPaise } from "../lib/fixed-payment-reservation.js";
@@ -46,6 +47,7 @@ import {
 import { dateMatch, calendarDateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { moneyRef } from "../lib/money.js";
 import { generatedAtIst } from "./report-builders/report-envelope.js";
+import { isFlexibleMaturityOnlyCycleIndex } from "../lib/flexible-plan-duration.js";
 import { buildFlexibleEnrolPreview } from "./plan.service.js";
 import {
   buildCalendarMonthCycles,
@@ -147,6 +149,81 @@ async function schemePresentationExtras(scheme) {
           requestedAt: completed.requestedAt,
         }
       : null,
+  };
+}
+
+/** Default capped-phase cycle when the client omits targetCycle (admin collect dialog). */
+function resolveCappedTargetCycle(scheme, suppliedCycle) {
+  if (suppliedCycle) return suppliedCycle;
+  const current = monthKey();
+  const cycles = scheme.cycles ?? [];
+  const currentRow = cycles.find((row) => row.cycle === current && row.capPaise > 0);
+  if (currentRow) return current;
+  const incomplete = cycles.find(
+    (row) => row.capPaise > 0 && (row.paidPaise ?? 0) < row.capPaise,
+  );
+  if (incomplete) return incomplete.cycle;
+  const lastCapped = [...cycles].reverse().find((row) => row.capPaise > 0);
+  return lastCapped?.cycle ?? current;
+}
+
+function buildFlexibleAdminEnrollmentContext(scheme) {
+  if (scheme.paymentPattern !== PaymentPattern.FLEXIBLE) return null;
+  const flexRules = scheme.planSnapshot?.flexibleRules ?? {};
+  if (scheme.flexiblePhase === FlexiblePhase.FLEXIBLE) {
+    const freeCount = flexRules.flexiblePhaseCycles ?? 0;
+    const freeCycles = (scheme.cycles ?? []).slice(0, freeCount);
+    return {
+      flexible: { phase: "FREE" },
+      progress: {
+        paidCycles: freeCycles.filter((c) => (c.paidPaise ?? 0) > 0).length,
+        installmentsTotal: freeCount,
+      },
+    };
+  }
+  const cappedCycles = (scheme.cycles ?? []).filter((row) => row.capPaise > 0);
+  const targetCycle = resolveCappedTargetCycle(scheme, null);
+  const cycle =
+    cappedCycles.find((row) => row.cycle === targetCycle) ?? cappedCycles[0];
+  if (!cycle) {
+    return { flexible: { phase: "CAPPED" } };
+  }
+  const remaining = Math.max(0, cycle.capPaise - (cycle.paidPaise ?? 0));
+  const paidCycles = cappedCycles.filter(
+    (row) => row.capPaise > 0 && (row.paidPaise ?? 0) >= row.capPaise,
+  ).length;
+  const capDisplay = moneyField(
+    scheme.lockedAveragePaise ?? cycle.capPaise,
+  ).amountDisplay;
+  return {
+    paymentPosition: {
+      targetCycle: cycle.cycle,
+      cycleLabel: cycle.cycle,
+      currentCycleCapPaise: cycle.capPaise,
+      confirmedThisCyclePaise: cycle.paidPaise ?? 0,
+      remainingThisCyclePaise: remaining,
+      positionVersion: scheme.positionVersion ?? 0,
+    },
+    payableThisMonth: {
+      min: flexRules.cappedPhase?.minimumPaymentPaise,
+      max: remaining,
+      suggested: remaining,
+      targetCycle: cycle.cycle,
+      positionVersion: scheme.positionVersion ?? 0,
+    },
+    flexible: {
+      phase: "CAPPED",
+      capSnapshot: {
+        cycleCapPaise: cycle.capPaise,
+        formulaLabel: `Monthly cap ${capDisplay}`,
+        explainerText:
+          "Contributions in the capped phase count toward this month's allowance only.",
+      },
+    },
+    progress: {
+      paidCycles,
+      installmentsTotal: cappedCycles.length,
+    },
   };
 }
 
@@ -724,6 +801,8 @@ export async function getScheme(req) {
     ? buildFixedPassbook(scheme, payments)
     : null;
   const presentation = await schemePresentationExtras(scheme);
+  const flexContext = buildFlexibleAdminEnrollmentContext(scheme);
+  const amountPaidPaise = ledgerTotals(ledger).amountPaidPaise;
   return {
     ...scheme,
     customer: customer ? { _id: customer._id, id: customer._id, name: customer.name, mobile: customer.mobile } : undefined,
@@ -736,6 +815,19 @@ export async function getScheme(req) {
     actions: presentation.actions,
     pendingRedemption: presentation.pendingRedemption,
     completedRedemption: presentation.completedRedemption,
+    ...(flexContext ?? {}),
+    progress: {
+      installmentsPaid: (scheme.installments ?? []).filter((row) =>
+        ["PAID", "WAIVED"].includes(row.status),
+      ).length,
+      installmentsTotal:
+        scheme.installments?.length ??
+        scheme.planSnapshot?.durationMonths ??
+        0,
+      paidCycles: flexContext?.progress?.paidCycles,
+      amountPaid: { amountPaise: amountPaidPaise },
+      ...(flexContext?.progress ?? {}),
+    },
   };
 }
 
@@ -1103,6 +1195,9 @@ export async function listSchemes(req) {
   if (req.query.status) filters.status = req.query.status;
   if (req.query.group === "PAST") filters.status = { $in: [SchemeStatus.REDEEMED, SchemeStatus.CLOSED_PREMATURE] };
   else if (req.query.group === "OPEN") filters.status = { $in: OPEN_ENROLLMENT_STATUSES };
+  else if (req.query.group === "ACTIVE_AND_LOCKED") {
+    filters.status = { $in: ACTIVE_AND_LOCKED_STATUSES };
+  }
   else if (req.auth.type === "CUSTOMER" && !req.query.status) {
     filters.status = {
       $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED, SchemeStatus.MATURED],
@@ -1158,11 +1253,31 @@ export async function listSchemes(req) {
     const branch = effectiveBranchId ? branchMap.get(effectiveBranchId) : null;
     const installments = scheme.installments ?? [];
     const paidInstallments = installments.filter((row) => ["PAID", "WAIVED"].includes(row.status)).length;
+    const cappedCycles = (scheme.cycles ?? []).filter((row) => row.capPaise > 0);
+    const paidCappedCycles = cappedCycles.filter(
+      (row) => (row.paidPaise ?? 0) >= row.capPaise,
+    ).length;
     const amountPaidPaise =
       scheme.paymentPattern === PaymentPattern.FIXED
         ? installments.reduce((sum, row) => sum + (row.paidPaise ?? 0), 0)
         : (scheme.cycles ?? []).reduce((sum, row) => sum + (row.paidPaise ?? 0), 0);
     const nextDueRow = installments.find((row) => ["DUE", "PARTIALLY_PAID", "OVERDUE", "PENDING"].includes(row.status));
+    const flexListProgress =
+      scheme.paymentPattern === PaymentPattern.FLEXIBLE
+        ? scheme.flexiblePhase === FlexiblePhase.FLEXIBLE
+          ? {
+              paidCycles: (scheme.cycles ?? [])
+                .slice(0, scheme.planSnapshot?.flexibleRules?.flexiblePhaseCycles ?? 0)
+                .filter((c) => (c.paidPaise ?? 0) > 0).length,
+              installmentsTotal:
+                scheme.planSnapshot?.flexibleRules?.flexiblePhaseCycles ??
+                cappedCycles.length,
+            }
+          : {
+              paidCycles: paidCappedCycles,
+              installmentsTotal: cappedCycles.length,
+            }
+        : null;
     return {
       ...scheme,
       customer: customer ? { _id: customer._id, id: customer._id, name: customer.name, mobile: customer.mobile } : undefined,
@@ -1178,7 +1293,17 @@ export async function listSchemes(req) {
           }
         : null,
       plan: scheme.planSnapshot ? { _id: scheme.planId, id: scheme.planId, name: scheme.planSnapshot.name, durationMonths: scheme.planSnapshot.durationMonths, valueBasis: scheme.planSnapshot.valueBasis, paymentPattern: scheme.planSnapshot.paymentPattern } : undefined,
-      progress: { installmentsPaid: paidInstallments, installmentsTotal: installments.length || scheme.planSnapshot?.installmentCount || scheme.planSnapshot?.durationMonths || 0, amountPaid: { amountPaise: amountPaidPaise } },
+      progress: {
+        installmentsPaid: paidInstallments,
+        installmentsTotal:
+          flexListProgress?.installmentsTotal ??
+          (installments.length ||
+            scheme.planSnapshot?.installmentCount ||
+            scheme.planSnapshot?.durationMonths ||
+            0),
+        paidCycles: flexListProgress?.paidCycles,
+        amountPaid: { amountPaise: amountPaidPaise },
+      },
       totals: { amountPaidPaise, totalPaid: { amountPaise: amountPaidPaise } },
       displayMode: scheme.paymentPattern === "FIXED" ? "FIXED" : scheme.flexiblePhase === "FLEXIBLE" ? "FLEXIBLE_FREE_WINDOW" : "FLEXIBLE_LOCK_WINDOW",
     };
@@ -1201,6 +1326,7 @@ export function schemeAgentCollectPreview(scheme) {
   let payableMaxPaise = null;
   let payableLabel = "Active";
   let payable = false;
+  let cyclePreview;
 
   if (["ACTIVE", "LOCKED", "DEFAULTED"].includes(scheme.status)) {
     if (scheme.paymentPattern === PaymentPattern.FIXED) {
@@ -1223,21 +1349,26 @@ export function schemeAgentCollectPreview(scheme) {
         payableLabel = "Optional contribution";
       }
     } else {
-      const currentCycle = monthKey();
-      const cycle =
-        (scheme.cycles ?? []).find((row) => row.cycle === currentCycle) ??
-        (scheme.cycles ?? []).find((row) => Math.max(0, Number(row.capPaise ?? 0) - Number(row.paidPaise ?? 0)) > 0);
+      const targetCycle = resolveCappedTargetCycle(scheme, null);
+      const cycle = (scheme.cycles ?? []).find((row) => row.cycle === targetCycle);
       if (cycle) {
-        const remaining = Math.max(0, Number(cycle.capPaise ?? 0) - Number(cycle.paidPaise ?? 0));
+        const cap = Number(cycle.capPaise ?? 0);
+        const paid = Number(cycle.paidPaise ?? 0);
+        const remaining = Math.max(0, cap - paid);
         payablePaise = remaining;
         payableMaxPaise = remaining;
         payable = remaining > 0;
-        payableLabel = remaining > 0 ? "Cycle due" : "Cycle complete";
+        payableLabel = remaining > 0 ? "This cycle" : "Cycle complete";
+        cyclePreview = { targetCycle, cycleCapPaise: cap, paidThisCyclePaise: paid, remainingThisCyclePaise: remaining };
       }
     }
   }
 
   const flex = scheme.flexiblePhase;
+  const cycleProgressLabel =
+    cyclePreview && cyclePreview.cycleCapPaise > 0
+      ? `${moneyField(cyclePreview.paidThisCyclePaise).amountDisplay} of ${moneyField(cyclePreview.cycleCapPaise).amountDisplay} this cycle · ${moneyField(cyclePreview.remainingThisCyclePaise).amountDisplay} remaining`
+      : undefined;
   return {
     _id: scheme._id,
     id: scheme._id,
@@ -1256,9 +1387,14 @@ export function schemeAgentCollectPreview(scheme) {
     payableLabel,
     payable,
     progressLabel:
-      scheme.paymentPattern === PaymentPattern.FIXED && installments.length
+      cycleProgressLabel ??
+      (scheme.paymentPattern === PaymentPattern.FIXED && installments.length
         ? `${paidInstallments}/${installments.length} instalments`
-        : payableLabel,
+        : payableLabel),
+    targetCycle: cyclePreview?.targetCycle,
+    cycleCapPaise: cyclePreview?.cycleCapPaise,
+    paidThisCyclePaise: cyclePreview?.paidThisCyclePaise,
+    remainingThisCyclePaise: cyclePreview?.remainingThisCyclePaise,
   };
 }
 /** Attach ledger-backed totals for customer scheme cards (list/home). */
@@ -1373,11 +1509,21 @@ export async function payableRange(req, schemeInput, options = {}) {
       payable: true,
     };
   }
-  if (!targetCycle) throw errors.validation([{ field: "targetCycle", message: "targetCycle is required in the capped phase" }]);
-  const cycle = scheme.cycles.find((row) => row.cycle === targetCycle); if (!cycle) throw errors.notFound("Payment cycle");
-  const rules = plan.flexibleRules.cappedPhase; const currentCycle = monthKey();
+  const effectiveTargetCycle = resolveCappedTargetCycle(scheme, targetCycle);
+  const cycleIndex = (scheme.cycles ?? []).findIndex((row) => row.cycle === effectiveTargetCycle);
+  if (isFlexibleMaturityOnlyCycleIndex(cycleIndex, plan)) {
+    throw errors.business(
+      "MATURITY_WAITING_CYCLE",
+      "This calendar cycle is maturity-only; contributions are closed.",
+      422,
+    );
+  }
+  const cycle = scheme.cycles.find((row) => row.cycle === effectiveTargetCycle);
+  if (!cycle) throw errors.notFound("Payment cycle");
+  const rules = plan.flexibleRules.cappedPhase;
+  const currentCycle = monthKey();
   const monthDistanceBetween = (from, to) => (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7));
-  const monthDistance = monthDistanceBetween(currentCycle, targetCycle);
+  const monthDistance = monthDistanceBetween(currentCycle, effectiveTargetCycle);
   if (monthDistance < 0) throw errors.business("CYCLE_CLOSED", "Unused capacity from a closed cycle cannot be paid later.");
   if (monthDistance > 0) {
     if (!rules.allowFutureCyclePayment) throw errors.business("FUTURE_CYCLE_PAYMENT_NOT_ALLOWED", "Future-cycle payments are not enabled for this plan.");
@@ -1400,7 +1546,7 @@ export async function payableRange(req, schemeInput, options = {}) {
     model: "FLEXIBLE",
     phase: "CAPPED",
     contributionIsOptional: true,
-    targetCycle,
+    targetCycle: effectiveTargetCycle,
     minPayablePaise: finalRemainder ? remaining : rules.minimumPaymentPaise,
     maxPayablePaise: remainingPaise,
     suggestedPaise: remainingPaise,
@@ -1502,7 +1648,8 @@ export async function applyFlexibleLock(req, internal = {}) {
     scheme.lockedAt = lockTimestamp;
     scheme.positionVersion += 1;
     scheme.version += 1;
-    scheme.cycles.slice(rules.flexiblePhaseCycles).forEach((cycle) => {
+    const cappedCycles = rules.cappedPhaseCycles ?? 0;
+    scheme.cycles.slice(freeCycles, freeCycles + cappedCycles).forEach((cycle) => {
       cycle.capPaise = cap;
       cycle.remainingPaise = cap;
     });

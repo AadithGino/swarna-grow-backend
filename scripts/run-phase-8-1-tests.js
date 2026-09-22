@@ -17,9 +17,12 @@ const files = [
   "tests/webhook-processors-sdk.test.js",
 ];
 
-const result = spawnSync(
-  process.execPath,
-  ["--test", "--test-concurrency=1", ...files.map((f) => path.join(root, f))],
-  { cwd: root, env: { ...process.env, NODE_ENV: "test" }, stdio: "inherit" },
-);
-process.exit(result.status ?? 1);
+for (const file of files) {
+  const abs = path.join(root, file);
+  const result = spawnSync(
+    process.execPath,
+    ["--test", "--test-concurrency=1", abs],
+    { cwd: root, env: { ...process.env, NODE_ENV: "test" }, stdio: "inherit" },
+  );
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}

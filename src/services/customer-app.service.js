@@ -11,6 +11,7 @@ import {
 import { errors } from "../lib/app-error.js";
 import { moneyPaiseFromWeightMg } from "../lib/money.js";
 import { mobileLookupVariants } from "../lib/mobile.js";
+import { customerNotificationDedupeKey } from "../lib/customer-notification-dto.js";
 import {
   customerProfileDto,
   enrichPayableRange,
@@ -639,16 +640,17 @@ export async function markNotificationRead(auth, messageId) {
   }).lean();
   if (!row) throw errors.notFound("Notification");
   const now = new Date();
-  const filter = {
+  const dedupeKey = customerNotificationDedupeKey(row);
+  const unread = await Message.find({
     tenantId: auth.tenantId,
     customerId: auth.id,
-    type: row.type,
     readAt: null,
-  };
-  if (row.schemeId) filter.schemeId = row.schemeId;
-  if (row.templateParams?.paymentId) {
-    filter["templateParams.paymentId"] = row.templateParams.paymentId;
+  }).lean();
+  const ids = unread
+    .filter((candidate) => customerNotificationDedupeKey(candidate) === dedupeKey)
+    .map((candidate) => candidate._id);
+  if (ids.length) {
+    await Message.updateMany({ _id: { $in: ids } }, { $set: { readAt: now } });
   }
-  await Message.updateMany(filter, { $set: { readAt: now } });
   return { read: true, readAt: now.toISOString() };
 }

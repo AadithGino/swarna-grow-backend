@@ -112,28 +112,43 @@ async function seedPlatformToken() {
 }
 
 async function seedMatrixFixtures() {
-  await SubscriptionPlan.create({
-    _id: IDS.planId,
-    tier: PlanTier.STARTER,
-    name: "Starter",
-    pricePaise: 99_900,
-    active: true,
-    version: 1,
-  });
+  await SubscriptionPlan.updateOne(
+    { _id: IDS.planId },
+    {
+      $setOnInsert: {
+        _id: IDS.planId,
+        tier: PlanTier.STARTER,
+        name: "Starter",
+        pricePaise: 99_900,
+        active: true,
+        version: 1,
+      },
+    },
+    { upsert: true },
+  );
   const { tenant } = await seedTenantUser();
   IDS.tenantId = tenant._id;
-  await WebhookEvent.create({
-    _id: IDS.webhookFailureId,
-    tenantId: tenant._id,
-    provider: "PHONEPE",
-    status: "FAILED",
-    providerEventId: `pe_${IDS.webhookFailureId}`,
-  });
+  await WebhookEvent.updateOne(
+    { _id: IDS.webhookFailureId },
+    {
+      $setOnInsert: {
+        _id: IDS.webhookFailureId,
+        tenantId: tenant._id,
+        provider: "PHONEPE",
+        status: "FAILED",
+        providerEventId: `pe_${IDS.webhookFailureId}`,
+      },
+    },
+    { upsert: true },
+  );
 }
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => { await resetTestDb(); });
+test.beforeEach(async () => {
+  await resetTestDb();
+  await seedMatrixFixtures();
+});
 
 test("platform mutation registry matches platform.routes.js", () => {
   const { routeCount, routes } = assertPlatformMutationRegistry({
@@ -192,14 +207,6 @@ for (const routeKey of routeKeys) {
 
 test("PATCH /subscription-plans/:planId accepts partial body with expectedVersion", async () => {
   const token = await seedPlatformToken();
-  await SubscriptionPlan.create({
-    _id: IDS.planId,
-    tier: PlanTier.STARTER,
-    name: "Starter",
-    pricePaise: 99_900,
-    active: true,
-    version: 1,
-  });
   const res = await request(app)
     .patch(routePath("PATCH /subscription-plans/:planId"))
     .set("authorization", `Bearer ${token}`)
@@ -221,7 +228,6 @@ test("PATCH /tenants/:tenantId rejects body without expectedVersion", async () =
 
 test("valid platform mutations accept strict DTOs", async () => {
   const token = await seedPlatformToken();
-  await seedMatrixFixtures();
 
   const createPlan = await request(app)
     .post(routePath("POST /subscription-plans"))

@@ -296,8 +296,9 @@ export async function computeClosureSettlementCore({
     });
     penaltyWeightMg = modeSettlement.penaltyWeightMg;
     settlementPaise = modeSettlement.settlementPaise;
+    // Cash and purchase value principal + benefit. Handover uses that weight after penalty.
+    weightMg = modeSettlement.finalHandoverWeightMg;
     if (mode === RedemptionMode.GOLD_HANDOVER) {
-      weightMg = modeSettlement.finalHandoverWeightMg;
       if (!(weightMg > 0)) {
         blockers.push({
           code: "GOLD_WEIGHT_ROUNDS_TO_ZERO",

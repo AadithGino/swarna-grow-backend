@@ -36,6 +36,7 @@ import {
   decimalRoundingMode,
   moneyToWeightMg,
   moneyPaiseFromWeightMg,
+  rateRef,
 } from "../lib/money.js";
 import { goldRateForExactDate } from "../lib/gold-rate-lookup.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
@@ -67,6 +68,58 @@ function moneyField(paise) {
   };
 }
 
+/**
+ * Gold settlement rupees are today's rate × grams, not the rupees originally collected.
+ * Rewrite the credit lines so they add up to that figure, and show the grams used.
+ */
+function alignGoldValuationLines({
+  lines,
+  goldWeightMg,
+  benefitWeightMg,
+  penaltyWeightMg,
+  penaltyPaise,
+  settlementPaise,
+  ratePerGramPaise,
+  collectedPaise,
+}) {
+  if (!(ratePerGramPaise > 0) || !(goldWeightMg > 0)) return;
+  const principalValue = moneyPaiseFromWeightMg(goldWeightMg, ratePerGramPaise);
+  const benefitValue = benefitWeightMg > 0
+    ? moneyPaiseFromWeightMg(benefitWeightMg, ratePerGramPaise)
+    : 0;
+  const paidLine = lines.find((line) => line.key === "TOTAL_PAID");
+  if (paidLine) {
+    paidLine.label = paidLine.label.replace(/^Total paid/, "Gold balance");
+    paidLine.amount = moneyField(principalValue);
+    paidLine.weight = weightDisplayFromMg(goldWeightMg);
+    paidLine.note = `Collected ${moneyField(collectedPaise).amountDisplay}. Valued at today's 22K rate.`;
+  }
+  const benefitLine = lines.find((line) => line.key === "BENEFIT" && !line.forfeited);
+  if (benefitLine && benefitWeightMg > 0) {
+    benefitLine.amount = moneyField(benefitValue);
+    benefitLine.weight = weightDisplayFromMg(benefitWeightMg);
+  }
+  const penaltyLine = lines.find((line) => line.key === "PENALTY");
+  let penaltyValue = Math.max(0, penaltyPaise);
+  const credits = principalValue + (benefitLine && benefitWeightMg > 0 ? benefitValue : 0);
+  if (penaltyWeightMg > 0 && penaltyLine) {
+    penaltyValue = Math.max(0, credits - settlementPaise);
+    penaltyLine.weight = weightDisplayFromMg(penaltyWeightMg);
+  }
+  const sum = credits - penaltyValue;
+  const delta = settlementPaise - sum;
+  if (delta !== 0) {
+    if (benefitLine && benefitWeightMg > 0) {
+      benefitLine.amount = moneyField(benefitValue + delta);
+    } else if (paidLine) {
+      paidLine.amount = moneyField(principalValue + delta);
+    }
+  }
+  if (penaltyLine && penaltyValue !== penaltyPaise) {
+    penaltyLine.amount = moneyField(penaltyValue);
+  }
+}
+
 function installmentsPaidCount(scheme) {
   if (scheme.paymentPattern === "FLEXIBLE") {
     const freeCycles = scheme.planSnapshot?.flexibleRules?.flexiblePhaseCycles ?? 0;
@@ -93,6 +146,80 @@ function assertRedemptionModeAllowed(rules, mode) {
       { allowedModes: allowed },
     );
   }
+}
+
+function weightDisplayFromMg(weightMg) {
+  const mg = Math.max(0, Number(weightMg ?? 0));
+  if (!mg) return null;
+  return {
+    weightMg: mg,
+    weightDisplay: `${(mg / 1000).toFixed(3)} g`,
+  };
+}
+
+/** Per-mode settlement figures for gold-weight preview UI (admin + customer). */
+async function buildSettlementModePreviews({
+  scheme,
+  allowedModeCodes,
+  ledgerEntries,
+  excludedPaymentIds,
+  closureType,
+  tenantOps,
+  systemPolicyClosure,
+  benefitEligible,
+  paidCount,
+  monthsCompleted,
+  lockInMet,
+  requiredPaid,
+  defaultCount,
+  benefitDef,
+  rules,
+  isPremature,
+}) {
+  if (scheme.valueBasis !== ValueBasis.GOLD_WEIGHT) return undefined;
+  const modePreviews = {};
+  for (const mode of allowedModeCodes) {
+    const core = await computeClosureSettlementCore({
+      scheme,
+      ledgerEntries,
+      excludedPaymentIds,
+      closureType,
+      valuationDateYmd: today(),
+      mode,
+      tenantOps,
+      systemPolicyClosure,
+      benefitEligible,
+      paidCount,
+      monthsCompleted,
+      lockInMet,
+      requiredPaid,
+      defaultCount,
+      benefitDef,
+      rules,
+      isPremature,
+    });
+    const ratePaise = core.settlementRatePerGramPaise ?? 0;
+    const weight = weightDisplayFromMg(core.weightMg ?? core.goldWeightMg);
+    const entry = {};
+    if (ratePaise > 0) entry.rateApplied = rateRef(ratePaise);
+    if (weight) {
+      entry.weight = weight;
+      entry.weightDisplay = weight.weightDisplay;
+    }
+    if (mode === RedemptionMode.GOLD_HANDOVER && ratePaise > 0) {
+      entry.note = `At today's rate of ${rateRef(ratePaise).ratePerGramDisplay} per gram`;
+    } else if (mode === RedemptionMode.CASH) {
+      entry.note = ratePaise > 0
+        ? `Cash equivalent at ${rateRef(ratePaise).ratePerGramDisplay} per gram${
+          core.settlementRateEffectiveDate ? ` (${core.settlementRateEffectiveDate})` : ""
+        }.`
+        : "Settlement is paid in cash; accrued gold weight is closed out against this payout.";
+    } else if (mode === RedemptionMode.PURCHASE_ADJUSTMENT) {
+      entry.note = "Value is adjusted against an in-store purchase when staff complete handover.";
+    }
+    if (Object.keys(entry).length) modePreviews[mode] = entry;
+  }
+  return Object.keys(modePreviews).length ? modePreviews : undefined;
 }
 
 function assertRedemptionBranchAllowed(scheme, req) {
@@ -333,6 +460,19 @@ export async function settlementPreview(req, closureType) {
     sign: "-",
   });
 
+  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && valuationRatePerGramPaise > 0) {
+    alignGoldValuationLines({
+      lines,
+      goldWeightMg,
+      benefitWeightMg,
+      penaltyWeightMg,
+      penaltyPaise,
+      settlementPaise,
+      ratePerGramPaise: valuationRatePerGramPaise,
+      collectedPaise: totals.amountPaidPaise,
+    });
+  }
+
   const textBenefits =
     benefitDef?.type === "TEXT_ONLY"
       ? [
@@ -376,6 +516,30 @@ export async function settlementPreview(req, closureType) {
         ? "Closing early applies a premature closure charge. The configured benefit is retained. This cannot be undone."
         : "Closing early retains the configured benefit. This cannot be undone."
     : undefined;
+
+  const modePreviews = await buildSettlementModePreviews({
+    scheme,
+    allowedModeCodes,
+    ledgerEntries: entries,
+    excludedPaymentIds,
+    closureType,
+    tenantOps: tenant,
+    systemPolicyClosure,
+    benefitEligible,
+    paidCount,
+    monthsCompleted,
+    lockInMet,
+    requiredPaid,
+    defaultCount,
+    benefitDef,
+    rules,
+    isPremature,
+  });
+
+  const valuationNote =
+    scheme.valueBasis === ValueBasis.GOLD_WEIGHT && valuationRatePerGramPaise > 0
+      ? "Cash equivalent uses today's published gold rate. It changes when the rate changes."
+      : undefined;
 
   return {
     type: closureType,
@@ -436,11 +600,13 @@ export async function settlementPreview(req, closureType) {
       }
       : null,
     allowedModes,
+    modePreviews,
     approvalRequired,
     approvalReason: approvalRequired
       ? "Admin approval is required before this scheme can be closed."
       : undefined,
     warningText,
+    valuationNote,
     closureType,
     schemeId: scheme._id,
     principalPaise,
@@ -741,7 +907,11 @@ export async function transitionRedemption(req, action) {
     const before = row.toObject();
     const allowed = {
       approve: [RedemptionStatus.PENDING_APPROVAL, RedemptionStatus.REQUESTED],
-      reject: [RedemptionStatus.PENDING_APPROVAL, RedemptionStatus.REQUESTED],
+      reject: [
+        RedemptionStatus.PENDING_APPROVAL,
+        RedemptionStatus.REQUESTED,
+        RedemptionStatus.APPROVED,
+      ],
       complete: [RedemptionStatus.APPROVED],
     };
     if (!allowed[action].includes(row.status))

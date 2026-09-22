@@ -254,7 +254,14 @@ export function enrichPayableRange(quote, scheme) {
   if (fixedHints) helperBits.push(fixedHints);
   const maxPayablePaise = quote.maxPayablePaise ?? 0;
   const remainingPaise = quote.remainingPaise ?? maxPayablePaise;
-  const cycleCapPaise = quote.capPaise ?? (quote.phase === "CAPPED" ? quote.capPaise : null);
+  const cycleCapPaise =
+    quote.capPaise ??
+    (quote.phase === "CAPPED" && remainingPaise >= 0 && quote.paidPaise != null
+      ? remainingPaise + Number(quote.paidPaise)
+      : null);
+  const paidThisCyclePaise =
+    quote.paidPaise ??
+    (cycleCapPaise != null ? Math.max(0, Number(cycleCapPaise) - remainingPaise) : null);
   const quickAmounts = buildQuickAmounts({ ...quote, maxPayablePaise: remainingPaise });
   const positionVersion =
     quote.expectedPositionVersion ??
@@ -277,6 +284,7 @@ export function enrichPayableRange(quote, scheme) {
         remainingPaise,
     ),
     cycleCap: cycleCapPaise != null ? moneyRef(cycleCapPaise) : null,
+    paidThisCycle: paidThisCyclePaise != null ? moneyRef(paidThisCyclePaise) : null,
     remainingThisCycle: moneyRef(remainingPaise),
     multipleOfPaise: quote.paymentIncrementPaise ?? 1,
     multipleOf: moneyRef(quote.paymentIncrementPaise ?? 1),
@@ -586,6 +594,8 @@ export function mapPastSchemeRow(scheme, redemption) {
 export {
   mapCustomerNotification as mapNotification,
   buildNotificationContext,
+  countUnreadDedupedNotifications,
+  dedupeCustomerNotificationRows,
 } from "./customer-notification-dto.js";
 
 export { maskMobile };

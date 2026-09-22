@@ -9,8 +9,14 @@ import { signAccessToken } from "../../src/services/token.service.js";
 
 let replSet;
 let tenantCodeSeq = 0;
+/** Nested test files in one process must not tear down Mongo while siblings still run. */
+let testDbRefCount = 0;
 
 export async function startTestDb() {
+  testDbRefCount += 1;
+  if (testDbRefCount > 1 && mongoose.connection.readyState === 1) {
+    return;
+  }
   if (mongoose.connection.readyState === 1) await mongoose.disconnect();
   if (replSet) {
     try { await replSet.stop({ doCleanup: true, force: true }); } catch { /* ignore */ }
@@ -33,6 +39,9 @@ export async function startTestDb() {
 }
 
 export async function stopTestDb() {
+  testDbRefCount = Math.max(0, testDbRefCount - 1);
+  if (testDbRefCount > 0) return;
+
   const { clearIdempotencyHeartbeatsForTests } = await import("../../src/middlewares/idempotency.middleware.js");
   const { clearRateLimitStoresForTests } = await import("../../src/middlewares/security.middleware.js");
   const { disconnectRedis } = await import("../../src/config/redis.js");

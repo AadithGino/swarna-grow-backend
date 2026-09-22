@@ -149,3 +149,60 @@ export function buildNotificationContext({ payments = [], schemes = [] } = {}) {
     schemeById: new Map(schemes.map((s) => [String(s._id), s])),
   };
 }
+
+/** One in-app row per business event (WhatsApp + push enqueue separate Message docs). */
+export function customerNotificationDedupeKey(row) {
+  if (row.reminderDedupeKey) return String(row.reminderDedupeKey);
+  const params = row.templateParams ?? {};
+  if (params.inboxEventKey) return String(params.inboxEventKey);
+  if (params.outboxEventId) return `${row.type}|${params.outboxEventId}`;
+  const cyclePart =
+    params.cycleKey ??
+    params.targetCycle ??
+    (params.installmentNumber != null ? `inst:${params.installmentNumber}` : "");
+  const occurrence =
+    params.reminderDate ??
+    params.occurrenceKey ??
+    params.offsetKey ??
+    "";
+  const paymentPart = params.paymentId ?? "";
+  const redemptionPart = params.redemptionId ?? "";
+  const refundPart = params.refundId ?? params.paymentRefundId ?? "";
+  return [
+    row.type,
+    String(row.schemeId ?? ""),
+    String(cyclePart),
+    String(paymentPart),
+    String(redemptionPart),
+    String(refundPart),
+    String(occurrence),
+  ].join("|");
+}
+
+function preferCustomerNotificationRow(a, b) {
+  const channelRank = (row) => {
+    if (row.channel === "PUSH") return 2;
+    if (row.channel === "WHATSAPP") return 1;
+    return 0;
+  };
+  const rankDiff = channelRank(a) - channelRank(b);
+  if (rankDiff !== 0) return rankDiff > 0 ? a : b;
+  if (Boolean(a.readAt) !== Boolean(b.readAt)) return a.readAt ? a : b;
+  return new Date(a.createdAt) >= new Date(b.createdAt) ? a : b;
+}
+
+export function dedupeCustomerNotificationRows(rows) {
+  const byKey = new Map();
+  for (const row of rows) {
+    const key = customerNotificationDedupeKey(row);
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? preferCustomerNotificationRow(existing, row) : row);
+  }
+  return [...byKey.values()].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+}
+
+export function countUnreadDedupedNotifications(rows) {
+  return dedupeCustomerNotificationRows(rows).filter((row) => !row.readAt).length;
+}
