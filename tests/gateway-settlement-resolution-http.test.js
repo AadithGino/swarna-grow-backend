@@ -11,6 +11,7 @@ import {
 } from "../src/services/gateway-settlement.service.js";
 import { SettlementMismatchStatus, SettlementResolutionCategory, SettlementRunStatus } from "../src/models/gateway-settlement.models.js";
 import { configureTenantPhonePe, seedAdminGatewayContext, seedUserOnTenant } from "./helpers/gateway-http-fixture.js";
+import { clearIdempotencyHeartbeatsForTests } from "../src/middlewares/idempotency.middleware.js";
 import { bearerFor, resetTestDb, seedBranch, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
 const app = createApp();
@@ -29,7 +30,10 @@ function paidAtOnDate(businessDate) {
 }
 
 describe("gateway settlement resolution HTTP", { concurrency: false }, () => {
-  test.beforeEach(async () => { await resetTestDb(); });
+  test.beforeEach(async () => {
+    await resetTestDb();
+    clearIdempotencyHeartbeatsForTests();
+  });
 
   async function seedTenantAdminContext() {
     const seeded = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
@@ -81,16 +85,12 @@ describe("gateway settlement resolution HTTP", { concurrency: false }, () => {
       { $unset: { leaseExpiresAt: "", leaseOwner: "", startedAt: "" } },
     );
 
-    let batch;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      batch = await runDailyGatewaySettlementForTenant({
-        tenantId: ctx.tenant._id,
-        businessDate,
-        leaseOwner: `test-${suffix}`,
-        runId: upload.runId,
-      });
-      if (batch.outcome !== "RUN_NOT_FOUND") break;
-    }
+    const batch = await runDailyGatewaySettlementForTenant({
+      tenantId: ctx.tenant._id,
+      businessDate,
+      leaseOwner: `test-${suffix}`,
+      runId: upload.runId,
+    });
     assert.notEqual(batch.outcome, "LEASE_BUSY", JSON.stringify(batch));
     assert.notEqual(batch.outcome, "RUN_NOT_FOUND", JSON.stringify(batch));
     assert.equal(batch.outcome, SettlementRunStatus.MISMATCH, JSON.stringify(batch));
@@ -222,16 +222,12 @@ describe("gateway settlement resolution HTTP", { concurrency: false }, () => {
       { _id: upload.runId },
       { $unset: { leaseExpiresAt: "", leaseOwner: "", startedAt: "" } },
     );
-    let batch;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      batch = await runDailyGatewaySettlementForTenant({
-        tenantId: ctx.tenant._id,
-        businessDate,
-        leaseOwner: `test-multi-${suffix}`,
-        runId: upload.runId,
-      });
-      if (batch.outcome !== "RUN_NOT_FOUND") break;
-    }
+    const batch = await runDailyGatewaySettlementForTenant({
+      tenantId: ctx.tenant._id,
+      businessDate,
+      leaseOwner: `test-multi-${suffix}`,
+      runId: upload.runId,
+    });
     assert.notEqual(batch.outcome, "RUN_NOT_FOUND", JSON.stringify(batch));
     assert.equal(batch.outcome, SettlementRunStatus.MISMATCH);
     const mismatches = await SettlementMismatch.find({ tenantId: ctx.tenant._id, runId: batch.runId })
@@ -327,16 +323,28 @@ describe("gateway settlement resolution HTTP", { concurrency: false }, () => {
   test("regression: mismatch seed and resolve succeeds 50 times in one session", async () => {
     for (let i = 0; i < 50; i += 1) {
       await resetTestDb();
+      clearIdempotencyHeartbeatsForTests();
       const { ctx, mismatch, runId, suffix } = await seedMismatch();
-      await request(app)
+      const idempotencyKey = createId("idem");
+      const body = {
+        category: SettlementResolutionCategory.PROVIDER_CONFIRMED,
+        reason: `Regression resolve iteration ${i} (${suffix})`,
+      };
+      const resolveRes = await request(app)
         .post(`/api/v1/admin/gateway/settlement-mismatches/${mismatch._id}/resolve`)
         .set("authorization", `Bearer ${ctx.token}`)
-        .set("x-idempotency-key", `regression-${suffix}-${i}`)
-        .send({
-          category: SettlementResolutionCategory.PROVIDER_CONFIRMED,
-          reason: `Regression resolve ${i}`,
-        })
-        .expect(200);
+        .set("x-idempotency-key", idempotencyKey)
+        .send(body);
+      assert.equal(
+        resolveRes.status,
+        200,
+        JSON.stringify({
+          iteration: i,
+          response: resolveRes.body,
+          idempotencyKey,
+          mismatchId: mismatch._id,
+        }),
+      );
       const alert = await Alert.findOne({
         tenantId: ctx.tenant._id,
         type: AlertType.GATEWAY_SETTLEMENT_MISMATCH,

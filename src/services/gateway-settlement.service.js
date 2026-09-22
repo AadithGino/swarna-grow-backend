@@ -222,7 +222,13 @@ export async function uploadGatewaySettlementStatement(req) {
     provider: "PHONEPE",
   });
   if (run?.inputChecksum === checksum) {
-    return { runId: run._id, duplicate: true };
+    const existingItems = await SettlementItem.countDocuments({
+      tenantId: req.auth.tenantId,
+      runId: run._id,
+    });
+    if (existingItems === rows.length && existingItems > 0) {
+      return { runId: run._id, duplicate: true };
+    }
   }
   await withTransaction(async (session) => {
     if (!run) {
@@ -264,6 +270,17 @@ export async function uploadGatewaySettlementStatement(req) {
       { session },
     );
   });
+  const persistedItems = await SettlementItem.countDocuments({
+    tenantId: req.auth.tenantId,
+    runId: run._id,
+  });
+  if (persistedItems !== rows.length) {
+    throw errors.business(
+      "SETTLEMENT_UPLOAD_INCOMPLETE",
+      "Settlement upload did not persist all statement rows.",
+      { expected: rows.length, actual: persistedItems },
+    );
+  }
   return { runId: run._id, duplicate: false };
 }
 
