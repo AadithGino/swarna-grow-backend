@@ -50,6 +50,7 @@ export const platformCreateTenantBody = z.object({
 }).strict();
 
 export const platformUpdateTenantBody = z.object({
+  expectedVersion: z.number().int().min(0),
   name: z.string().trim().min(2).max(160).optional(),
   mobile: z.string().trim().min(10).max(16).optional(),
   email: z.string().email().optional(),
@@ -108,6 +109,7 @@ export const platformSubscriptionChangeBody = z.object({
 }).strict();
 
 export const platformSubscriptionLimitsBody = z.object({
+  expectedVersion: z.number().int().min(0),
   activeCustomers: z.number().int().positive().optional(),
   branches: z.number().int().positive().optional(),
   staff: z.number().int().positive().optional(),

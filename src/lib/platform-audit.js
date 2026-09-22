@@ -10,15 +10,25 @@ const SECRET_KEYS = new Set([
   "passwordHash",
 ]);
 
-export function redactPlatformAuditPayload(value) {
+export function redactPlatformAuditPayload(value, seen = new WeakSet()) {
   if (value == null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(redactPlatformAuditPayload);
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  if (value instanceof Map) {
+    return Object.fromEntries(
+      [...value.entries()].map(([key, val]) => [key, redactPlatformAuditPayload(val, seen)]),
+    );
+  }
+  if (Array.isArray(value)) return value.map((item) => redactPlatformAuditPayload(item, seen));
+  if (typeof value.toObject === "function") {
+    return redactPlatformAuditPayload(value.toObject(), seen);
+  }
   const out = {};
   for (const [key, val] of Object.entries(value)) {
     if (SECRET_KEYS.has(key) && typeof val === "string" && val.length > 0) {
       out[key] = maskSecret(val);
     } else if (val && typeof val === "object") {
-      out[key] = redactPlatformAuditPayload(val);
+      out[key] = redactPlatformAuditPayload(val, seen);
     } else {
       out[key] = val;
     }

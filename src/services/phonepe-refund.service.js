@@ -68,6 +68,59 @@ async function resolvePaymentForRefund({ tenantId, payload }) {
   }).lean();
 }
 
+async function reversalExistsForRefund({ tenantId, paymentRefundId, session }) {
+  return LedgerEntry.exists({
+    tenantId,
+    type: LedgerEntryType.REVERSAL,
+    "metadata.paymentRefundId": paymentRefundId,
+  }).session(session);
+}
+
+/**
+ * Single-flight accounting claim inside the caller's Mongo transaction.
+ * Stale claims (claim timestamp set but no REVERSAL) may be reclaimed by matching the prior claim value.
+ */
+async function claimRefundForAccounting({ tenantId, refundId, session }) {
+  if (await reversalExistsForRefund({ tenantId, paymentRefundId: refundId, session })) {
+    return { claimed: null, claimOutcome: "DUPLICATE" };
+  }
+
+  let claimed = await PaymentRefund.findOneAndUpdate(
+    {
+      _id: refundId,
+      tenantId,
+      status: { $ne: GatewayRefundStatus.COMPLETED },
+      accountingClaimedAt: { $exists: false },
+    },
+    { $set: { accountingClaimedAt: new Date() } },
+    { session, new: true },
+  );
+  if (claimed) return { claimed, claimOutcome: "CLAIMED" };
+
+  const snap = await PaymentRefund.findOne({ _id: refundId, tenantId }).session(session).lean();
+  if (snap?.status === GatewayRefundStatus.COMPLETED) {
+    return { claimed: null, claimOutcome: "DUPLICATE" };
+  }
+  if (!snap?.accountingClaimedAt) {
+    return { claimed: null, claimOutcome: "CONFLICT" };
+  }
+
+  claimed = await PaymentRefund.findOneAndUpdate(
+    {
+      _id: refundId,
+      tenantId,
+      status: { $ne: GatewayRefundStatus.COMPLETED },
+      accountingClaimedAt: snap.accountingClaimedAt,
+    },
+    { $set: { accountingClaimedAt: new Date() } },
+    { session, new: true },
+  );
+  if (!claimed) {
+    return { claimed: null, claimOutcome: "CONFLICT" };
+  }
+  return { claimed, claimOutcome: "STALE_CLAIM_RECLAIMED" };
+}
+
 async function loadOrCreatePaymentRefund({
   tenantId,
   payment,
@@ -152,25 +205,16 @@ async function applyGatewayRefundCompletion({
       return;
     }
 
-    const claimedRefund = await PaymentRefund.findOneAndUpdate(
-      {
-        _id: refund._id,
-        tenantId,
-        status: { $ne: GatewayRefundStatus.COMPLETED },
-        accountingClaimedAt: { $exists: false },
-      },
-      { $set: { accountingClaimedAt: new Date() } },
-      { session, new: true },
-    );
+    const { claimed: claimedRefund, claimOutcome } = await claimRefundForAccounting({
+      tenantId,
+      refundId: refund._id,
+      session,
+    });
     if (!claimedRefund) {
-      const snap = await PaymentRefund.findOne({ _id: refund._id, tenantId }).session(session).lean();
-      if (snap?.status === GatewayRefundStatus.COMPLETED || snap?.accountingClaimedAt) {
-        outcome = "DUPLICATE";
-        return;
-      }
-      outcome = "CONFLICT";
+      outcome = claimOutcome === "DUPLICATE" ? "DUPLICATE" : "CONFLICT";
       return;
     }
+    gatewayTxFaultCheckpoint("refund:claim-set");
 
     const weightDeltaMg = refundWeightDeltaMg({
       originalPaymentWeightMg: lockedPayment.weightMg ?? 0,
@@ -409,8 +453,12 @@ export async function processPhonePeRefundWebhook({
       return { outcome: "ALREADY_COMPLETED", refundId: refund._id };
     }
     await withTransaction(async (session) => {
-      await PaymentRefund.updateOne(
-        { _id: refund._id, tenantId, status: { $ne: GatewayRefundStatus.COMPLETED } },
+      const failedRefund = await PaymentRefund.findOneAndUpdate(
+        {
+          _id: refund._id,
+          tenantId,
+          status: { $in: [GatewayRefundStatus.PENDING, GatewayRefundStatus.ACCEPTED] },
+        },
         {
           $set: {
             status: GatewayRefundStatus.FAILED,
@@ -418,9 +466,10 @@ export async function processPhonePeRefundWebhook({
             providerPayload: payload,
           },
         },
-        { session },
+        { session, new: true },
       );
-      const failedAmount = refund.amountPaise ?? validatedAmount ?? 0;
+      if (!failedRefund) return;
+      const failedAmount = failedRefund.amountPaise ?? validatedAmount ?? 0;
       if (failedAmount > 0) {
         await Payment.updateOne(
           { _id: payment._id, tenantId },

@@ -309,7 +309,7 @@ export async function createTenant(req) {
       tenantId: tenant._id,
       branchId: branch?._id ?? null,
       role: TenantRole.TENANT_OWNER,
-      name: body.ownerName,
+      name: body.ownerName ?? body.name,
       mobile: body.ownerMobile ?? body.mobile,
       email: body.ownerEmail ?? body.email,
       passwordHash: ownerPasswordHash,

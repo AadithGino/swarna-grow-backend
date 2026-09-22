@@ -208,7 +208,7 @@ test("PATCH /subscription-plans/:planId accepts partial body with expectedVersio
   assert.equal(res.status, 200);
 });
 
-test("PATCH /tenants/:tenantId accepts partial body at validation layer", async () => {
+test("PATCH /tenants/:tenantId rejects body without expectedVersion", async () => {
   const token = await seedPlatformToken();
   const { tenant } = await seedTenantUser();
   const res = await request(app)
@@ -216,8 +216,7 @@ test("PATCH /tenants/:tenantId accepts partial body at validation layer", async 
     .set("authorization", `Bearer ${token}`)
     .set("x-idempotency-key", "patch-partial-tenant")
     .send({ name: "Renamed Tenant" });
-  assert.equal(res.status, 422);
-  assert.match(res.body.error?.message ?? "", /expectedVersion/i);
+  assert.equal(res.status, 400);
 });
 
 test("valid platform mutations accept strict DTOs", async () => {

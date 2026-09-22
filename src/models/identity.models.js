@@ -81,6 +81,7 @@ const tenantSchema = new mongoose.Schema({
   subscription: { type: subscriptionSchema, default: () => ({}) }, featureFlags: { type: Map, of: Boolean, default: {} },
   integrationSecrets: { type: integrationSecretsSchema, select: false },
   goLiveAt: Date,
+  suspendReason: String,
   version: versionField,
 }, baseOptions);
 tenantSchema.index({ code: 1 }, { unique: true }); tenantSchema.index({ mobile: 1 }, { unique: true });

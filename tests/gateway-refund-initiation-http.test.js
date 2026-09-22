@@ -10,14 +10,17 @@ import {
   UserType,
 } from "../src/constants/enums.js";
 import { createId } from "../src/lib/ids.js";
-import { Session, User } from "../src/models/index.js";
-import { bearerFor } from "./helpers/db.js";
+import { AuditEvent, LedgerEntry, Payment, PaymentRefund, Session, User } from "../src/models/index.js";
+import { bearerFor, seedCustomer } from "./helpers/db.js";
 import { phonePeProvider } from "../src/integrations/phonepe.provider.js";
+import { signAccessToken } from "../src/services/token.service.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   assertRefundInitiationCheckpoint,
   clearRefundInitiationTestHooks,
 } from "../src/lib/gateway-refund-initiation-test-hooks.js";
-import { AuditEvent, LedgerEntry, Payment, PaymentRefund } from "../src/models/index.js";
 import {
   PaymentMode,
   PaymentStatus,
@@ -111,6 +114,68 @@ async function seedPlatformBearer() {
   user.$locals = { testSessionId: session._id };
   return bearerFor(user);
 }
+
+async function seedCustomerBearer(tenantId, branchId, customerId) {
+  const session = await Session.create({
+    _id: createId("session"),
+    customerId,
+    tenantId,
+    deviceId: "customer-device",
+    familyId: createId("family"),
+    refreshTokenHash: createId("refresh"),
+    platform: "android",
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
+  return signAccessToken({
+    id: customerId,
+    type: "CUSTOMER",
+    tenantId,
+    branchId,
+    role: "CUSTOMER",
+    permissions: [],
+    deviceId: "customer-device",
+    securityVersion: 0,
+    sessionId: session._id,
+  });
+}
+
+test("customer bearer is denied on admin refund initiation", async () => {
+  const ctx = await seedAdminGatewayContext();
+  const customer = await seedCustomer({
+    tenantId: ctx.tenant._id,
+    branchId: ctx.branch._id,
+    mobile: `+91988${String(Date.now()).slice(-8)}`,
+  });
+  const customerToken = await seedCustomerBearer(ctx.tenant._id, ctx.branch._id, customer._id);
+  const beforeAudit = await AuditEvent.countDocuments({});
+  const beforeRefunds = await PaymentRefund.countDocuments({});
+  const beforeLedger = await LedgerEntry.countDocuments({});
+  let providerCalled = false;
+  const original = phonePeProvider.initiateRefund.bind(phonePeProvider);
+  phonePeProvider.initiateRefund = async () => {
+    providerCalled = true;
+    return {};
+  };
+  try {
+    const res = await postRefund(customerToken, ctx.paymentId, { amountPaise: 1000, reason: "Customer try" }, "idem-customer");
+    assert.ok([401, 403].includes(res.status));
+    assert.equal(await PaymentRefund.countDocuments({}), beforeRefunds);
+    assert.equal(await AuditEvent.countDocuments({}), beforeAudit);
+    assert.equal(await LedgerEntry.countDocuments({}), beforeLedger);
+    assert.equal(providerCalled, false);
+  } finally {
+    phonePeProvider.initiateRefund = original;
+  }
+});
+
+test("customer app routes do not expose admin refund initiation", () => {
+  const appRoutes = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/routes/app.routes.js"),
+    "utf8",
+  );
+  assert.equal(appRoutes.includes("initiateAdminPaymentRefund"), false);
+  assert.equal(appRoutes.includes("/payments/:paymentId/refunds"), false);
+});
 
 test("platform and staff roles cannot initiate gateway refunds", async () => {
   const ctx = await seedAdminGatewayContext();
