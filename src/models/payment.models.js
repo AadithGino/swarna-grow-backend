@@ -43,6 +43,7 @@ const paymentSchema = new mongoose.Schema(
     reversedBy: String,
     reversalReason: String,
     refundedAmountPaise: integerField({ default: 0, min: 0 }),
+    gatewayRefundReservedPaise: integerField({ default: 0, min: 0 }),
     refundedWeightMg: integerField({ default: 0, min: 0 }),
     lastRefundedAt: Date,
     targetCycle: String,
@@ -160,6 +161,7 @@ const paymentRefundSchema = new mongoose.Schema(
     providerInitiationAttempts: { type: Number, default: 0 },
     providerInitiationError: String,
     lastInitiationAt: Date,
+    accountingClaimedAt: Date,
   },
   baseOptions,
 );

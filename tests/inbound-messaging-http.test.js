@@ -101,6 +101,63 @@ test("valid signed inbound persists and admin APIs enforce scope", async () => {
   assert.equal(read2.body.data.status, "READ");
 });
 
+test("signature mismatch when raw bytes differ from signed payload", async () => {
+  const ctx = await seedAdminGatewayContext();
+  await seedTenantWhatsApp(ctx.tenant._id);
+  const payload = inboundPayload({ messageId: "wamid.rawbytes.1" });
+  const signedRaw = JSON.stringify(payload);
+  const tamperedRaw = signedRaw.replace("Hello", "Hello!");
+  const res = await request(app)
+    .post(`/api/v1/webhooks/whatsapp/${ctx.tenant._id}`)
+    .set("content-type", "application/json")
+    .set("x-hub-signature-256", signBody(signedRaw))
+    .send(tamperedRaw);
+  assert.equal(res.status, 401);
+  assert.equal(await InboundMessage.countDocuments({}), 0);
+});
+
+test("malformed and wrong-length signatures fail without persistence", async () => {
+  const ctx = await seedAdminGatewayContext();
+  await seedTenantWhatsApp(ctx.tenant._id);
+  const raw = JSON.stringify(inboundPayload({ messageId: "wamid.sigshape.1" }));
+  for (const header of ["SHA256=deadbeef", "sha256=abc", "sha256="]) {
+    const res = await request(app)
+      .post(`/api/v1/webhooks/whatsapp/${ctx.tenant._id}`)
+      .set("content-type", "application/json")
+      .set("x-hub-signature-256", header)
+      .send(raw);
+    assert.equal(res.status, 401);
+  }
+  assert.equal(await InboundMessage.countDocuments({}), 0);
+});
+
+test("oversized webhook payload rejected before persistence", async () => {
+  const ctx = await seedAdminGatewayContext();
+  await seedTenantWhatsApp(ctx.tenant._id);
+  const pad = "x".repeat(2_097_152);
+  const raw = JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ id: "wamid.big", text: { body: pad } }] } }] }] });
+  const res = await request(app)
+    .post(`/api/v1/webhooks/whatsapp/${ctx.tenant._id}`)
+    .set("content-type", "application/json")
+    .set("x-hub-signature-256", signBody(raw))
+    .send(raw);
+  assert.equal(res.status, 413);
+  assert.equal(await WebhookEvent.countDocuments({ provider: "WHATSAPP" }), 0);
+});
+
+test("duplicate provider message id is scoped per tenant", async () => {
+  const ctxA = await seedAdminGatewayContext();
+  const ctxB = await seedAdminGatewayContext();
+  await seedTenantWhatsApp(ctxA.tenant._id);
+  await seedTenantWhatsApp(ctxB.tenant._id);
+  const payload = inboundPayload({ messageId: "wamid.tenant.scope" });
+  await postWhatsAppWebhook(ctxA.tenant._id, payload);
+  await processLatestWebhook();
+  await postWhatsAppWebhook(ctxB.tenant._id, payload);
+  await processLatestWebhook();
+  assert.equal(await InboundMessage.countDocuments({ providerMessageId: "wamid.tenant.scope" }), 2);
+});
+
 test("invalid signature rejected with no inbound rows", async () => {
   const ctx = await seedAdminGatewayContext();
   await seedTenantWhatsApp(ctx.tenant._id);

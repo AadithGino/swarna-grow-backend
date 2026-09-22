@@ -27,6 +27,7 @@ import {
   platformTenantListQuery,
   platformTenantTemplateBody,
   platformUpdatePlanBody,
+  platformLogoutBody,
   platformUpdateTenantBody,
   platformWebhookRetryBody,
   platformWhatsappIntegrationBody,
@@ -46,7 +47,7 @@ export const platformRouter = Router();
 platformRouter.post("/auth/login", loginRateLimit, validate({ body: platformLoginBody }), asyncHandler(auth.login(true)));
 platformRouter.post("/auth/refresh", asyncHandler(auth.refresh));
 platformRouter.use(authenticate, requireSubject("PLATFORM_USER"));
-platformRouter.post("/auth/logout", asyncHandler(auth.logout));
+platformRouter.post("/auth/logout", validate({ body: platformLogoutBody }), asyncHandler(auth.logout));
 platformRouter.get("/subscription-plans", asyncHandler(controller.plans));
 platformRouter.post("/subscription-plans", validate({ body: platformCreatePlanBody }), idempotent, asyncHandler(controller.createPlan));
 platformRouter.get("/subscription-plans/:planId", planIdParam, asyncHandler(controller.getPlan));

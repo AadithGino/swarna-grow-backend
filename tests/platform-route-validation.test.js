@@ -3,22 +3,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { assertPlatformMutationRegistry } from "../src/lib/platform-mutation-registry.js";
+import { platformRouteValidators } from "../src/validators/platform.validators.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const routes = readFileSync(join(root, "src/routes/platform.routes.js"), "utf8");
+const routesSource = readFileSync(join(root, "src/routes/platform.routes.js"), "utf8");
 
-const mutations = [
-  ['post("/subscription-plans"', "platformCreatePlanBody"],
-  ['patch("/subscription-plans/:planId"', "platformUpdatePlanBody"],
-  ['post("/tenants"', "platformCreateTenantBody"],
-  ['patch("/tenants/:tenantId"', "platformUpdateTenantBody"],
-  ['put("/tenants/:tenantId/integrations/payment-gateway"', "platformPhonePeIntegrationBody"],
-  ['post("/webhook-failures/:id/retry"', "platformWebhookRetryBody"],
-];
-
-test("platform mutation routes reference validate() with DTO schemas", () => {
-  for (const [route, schema] of mutations) {
-    assert.match(routes, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(routes, new RegExp(schema));
-  }
+test("platform mutation registry stays aligned with platform.routes.js", () => {
+  const { routeCount } = assertPlatformMutationRegistry({
+    routesSource,
+    validators: platformRouteValidators,
+  });
+  assert.equal(routeCount, 27);
 });

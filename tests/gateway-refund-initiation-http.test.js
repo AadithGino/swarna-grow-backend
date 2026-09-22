@@ -2,7 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { TenantRole } from "../src/constants/enums.js";
+import argon2 from "argon2";
+import {
+  PlatformRole,
+  TenantRole,
+  UserStatus,
+  UserType,
+} from "../src/constants/enums.js";
+import { createId } from "../src/lib/ids.js";
+import { Session, User } from "../src/models/index.js";
+import { bearerFor } from "./helpers/db.js";
 import { phonePeProvider } from "../src/integrations/phonepe.provider.js";
 import {
   assertRefundInitiationCheckpoint,
@@ -78,6 +87,72 @@ test("staff role without PAYMENT_REVERSE is rejected", async () => {
   });
   const res = await postRefund(staff.token, ctx.paymentId, { amountPaise: 1000, reason: "Nope" }, "idem-staff");
   assert.equal(res.status, 403);
+});
+
+async function seedPlatformBearer() {
+  const user = await User.create({
+    _id: createId("user"),
+    type: UserType.PLATFORM_USER,
+    role: PlatformRole.SUPER_ADMIN,
+    name: "Platform",
+    passwordHash: await argon2.hash("9876", { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 }),
+    status: UserStatus.ACTIVE,
+    permissions: ["*"],
+  });
+  const session = await Session.create({
+    _id: createId("session"),
+    userId: user._id,
+    deviceId: "platform",
+    familyId: createId("family"),
+    refreshTokenHash: createId("refresh"),
+    platform: "web",
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
+  user.$locals = { testSessionId: session._id };
+  return bearerFor(user);
+}
+
+test("platform and staff roles cannot initiate gateway refunds", async () => {
+  const ctx = await seedAdminGatewayContext();
+  const platformToken = await seedPlatformBearer();
+  assert.equal(
+    (await postRefund(platformToken, ctx.paymentId, { amountPaise: 1000, reason: "Platform try" }, "idem-platform")).status,
+    403,
+  );
+  const staff = await seedUserOnTenant({
+    tenantId: ctx.tenant._id,
+    branchId: ctx.branch._id,
+    role: TenantRole.BRANCH_STAFF,
+  });
+  assert.equal(
+    (await postRefund(staff.token, ctx.paymentId, { amountPaise: 1000, reason: "Staff try" }, "idem-staff-2")).status,
+    403,
+  );
+});
+
+test("non-gateway manual modes and fully reversed payments rejected", async () => {
+  const ctx = await seedAdminGatewayContext();
+  for (const mode of [PaymentMode.CASH, PaymentMode.UPI, PaymentMode.CARD, PaymentMode.BANK_TRANSFER]) {
+    await Payment.updateOne({ _id: ctx.paymentId }, { $set: { mode, status: PaymentStatus.SUCCESS } });
+    assert.equal(
+      (await postRefund(ctx.token, ctx.paymentId, { amountPaise: 1000, reason: `${mode} try` }, `idem-${mode}`)).status,
+      422,
+    );
+  }
+  await Payment.updateOne(
+    { _id: ctx.paymentId },
+    {
+      $set: {
+        mode: PaymentMode.ONLINE_GATEWAY,
+        status: PaymentStatus.REVERSED,
+        refundedAmountPaise: 100_000,
+      },
+    },
+  );
+  assert.equal(
+    (await postRefund(ctx.token, ctx.paymentId, { amountPaise: 1000, reason: "Already reversed" }, "idem-reversed")).status,
+    422,
+  );
 });
 
 test("non-gateway and failed payments rejected", async () => {

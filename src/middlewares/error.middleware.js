@@ -14,6 +14,9 @@ export function errorHandler(error, req, res, _next) {
   else if (error instanceof SyntaxError && error.status === 400 && "body" in error) normalized = new AppError("INVALID_JSON", "The request body is not valid JSON.", 400);
   else if (error?.name === "ValidationError") normalized = new AppError("VALIDATION_FAILED", "Please correct the highlighted fields.", 400, Object.values(error.errors).map((item) => ({ field: item.path, message: item.message })));
   else if (error?.name === "CastError") normalized = new AppError("RESOURCE_NOT_FOUND", "The requested resource was not found.", 404);
+  else if (error?.type === "entity.too.large") {
+    normalized = new AppError("WEBHOOK_BODY_TOO_LARGE", "Webhook payload exceeds the allowed size.", 413);
+  }
   else if (error?.code === 11000) normalized = appErrorFromDuplicateKey(error);
   if (!(normalized instanceof AppError)) { logger.error({ err: error, traceId: req.traceId }, "Unhandled request error"); normalized = new AppError("INTERNAL_ERROR", "Something went wrong. Please try again.", 500); }
   else if (normalized.statusCode >= 500) logger.error({ err: error, traceId: req.traceId }, "Request failed");

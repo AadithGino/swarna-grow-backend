@@ -328,8 +328,10 @@ test("two concurrent full-refund callbacks converge to one reversal", async () =
     processPhonePeRefundWebhook(args),
   ]);
   assert.equal(await LedgerEntry.countDocuments({ tenantId: tenant._id, paymentId, type: "REVERSAL" }), 1);
-  assert.equal(
-    settled.filter((row) => row.status === "fulfilled" && row.value?.outcome === "COMPLETED").length,
-    1,
-  );
+  const completed = settled.filter((row) => row.status === "fulfilled" && row.value?.outcome === "COMPLETED").length;
+  const duplicate = settled.filter(
+    (row) => row.status === "fulfilled" && ["DUPLICATE", "CONFLICT"].includes(row.value?.outcome),
+  ).length;
+  assert.equal(completed, 1);
+  assert.equal(completed + duplicate, 2);
 });

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import * as E from "../constants/enums.js";
+import { flexiblePhaseTargetMonths } from "../lib/flexible-plan-duration.js";
 import { canonicalMobile } from "../lib/mobile.js";
 
 export const idParam = (name) => z.object({ [name]: z.string().min(4).max(80) });
@@ -37,7 +38,7 @@ export const platformAppConfigBody = z.object({
     title: z.string().trim().max(120).nullable().optional(),
     message: z.string().trim().max(500).nullable().optional(),
   }).optional(),
-});
+}).strict();
 export const signupStartBody = z.object({
   businessName: z.string().trim().min(2).max(160),
   ownerName: z.string().trim().min(2).max(120),
@@ -265,6 +266,15 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
       message: "Fixed plans must not define flexibleRules.",
     });
   }
+  if (value.durationMonths != null && value.installmentCount != null) {
+    if (value.installmentCount > value.durationMonths) {
+      context.addIssue({
+        code: "custom",
+        path: ["installmentCount"],
+        message: "installmentCount cannot exceed durationMonths.",
+      });
+    }
+  }
   if (
     pattern === E.PaymentPattern.FLEXIBLE
     && value.flexibleRules
@@ -272,12 +282,13 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
   ) {
     const flexMonths = value.flexibleRules.flexiblePhaseCycles ?? 0;
     const cappedMonths = value.flexibleRules.cappedPhaseCycles ?? 0;
-    if (flexMonths + cappedMonths !== value.durationMonths) {
+    const paymentMonths = flexiblePhaseTargetMonths(value);
+    if (flexMonths + cappedMonths !== paymentMonths) {
       context.addIssue({
         code: "custom",
         path: ["flexibleRules"],
         message:
-          "flexiblePhaseCycles + cappedPhaseCycles must equal durationMonths.",
+          "flexiblePhaseCycles + cappedPhaseCycles must equal installmentCount (payment months).",
       });
     }
   }

@@ -142,7 +142,10 @@ export const platformFlagsBody = z.object({
 
 export const platformWebhookRetryBody = z.object({}).strict();
 
+export const platformLogoutBody = z.object({}).strict();
+
 export const platformRouteValidators = {
+  "POST /auth/logout": { body: platformLogoutBody },
   "POST /subscription-plans": { body: platformCreatePlanBody },
   "PATCH /subscription-plans/:planId": { params: planIdParam, body: platformUpdatePlanBody },
   "POST /subscription-plans/:planId/deprecate": { params: planIdParam, body: platformDeprecatePlanBody },

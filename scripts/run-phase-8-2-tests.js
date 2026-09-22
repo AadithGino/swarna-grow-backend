@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = [
   "scripts/run-phase-8-1-tests.js",
+  "tests/gateway-refund-concurrency.test.js",
   "tests/gateway-refund-initiation-http.test.js",
   "tests/gateway-poll-status-http.test.js",
   "tests/inbound-messaging-http.test.js",

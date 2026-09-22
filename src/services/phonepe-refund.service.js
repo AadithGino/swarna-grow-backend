@@ -1,3 +1,4 @@
+
 import { AuditEntityType, AlertType, GatewayRefundStatus, LedgerEntryType, PaymentStatus, SchemeStatus } from "../constants/enums.js";
 import { callbackTypeKey } from "../integrations/phonepe.provider.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
@@ -67,6 +68,53 @@ async function resolvePaymentForRefund({ tenantId, payload }) {
   }).lean();
 }
 
+async function loadOrCreatePaymentRefund({
+  tenantId,
+  payment,
+  idempotencyKey,
+  providerRefundId,
+  validatedAmount,
+  kind,
+  payload,
+}) {
+  let refund = await PaymentRefund.findOne({
+    tenantId,
+    $or: [
+      { providerEventId: idempotencyKey },
+      ...(providerRefundId ? [{ providerRefundId }] : []),
+    ],
+  });
+  if (refund) return refund;
+
+  const amountPaiseForCreate =
+    validatedAmount
+    ?? (kind === "ACCEPTED" ? payment.amountPaise : null);
+  if (!amountPaiseForCreate) return null;
+
+  try {
+    refund = await PaymentRefund.create({
+      _id: createId("pref"),
+      tenantId,
+      paymentId: payment._id,
+      providerRefundId,
+      providerEventId: idempotencyKey,
+      amountPaise: amountPaiseForCreate,
+      status: GatewayRefundStatus.PENDING,
+      providerPayload: payload,
+    });
+    return refund;
+  } catch (error) {
+    if (error?.code !== 11000) throw error;
+    return PaymentRefund.findOne({
+      tenantId,
+      $or: [
+        { providerEventId: idempotencyKey },
+        ...(providerRefundId ? [{ providerRefundId }] : []),
+      ],
+    });
+  }
+}
+
 async function applyGatewayRefundCompletion({
   tenantId,
   payment,
@@ -78,16 +126,6 @@ async function applyGatewayRefundCompletion({
   let outcome = "COMPLETED";
 
   await withTransaction(async (session) => {
-    const lockedRefund = await PaymentRefund.findOne({
-      _id: refund._id,
-      tenantId,
-      status: { $ne: GatewayRefundStatus.COMPLETED },
-    }).session(session);
-    if (!lockedRefund) {
-      outcome = "DUPLICATE";
-      return;
-    }
-
     const lockedPayment = await Payment.findOne({
       _id: payment._id,
       tenantId,
@@ -111,6 +149,26 @@ async function applyGatewayRefundCompletion({
         session,
       });
       outcome = "EXCEEDS_REMAINING";
+      return;
+    }
+
+    const claimedRefund = await PaymentRefund.findOneAndUpdate(
+      {
+        _id: refund._id,
+        tenantId,
+        status: { $ne: GatewayRefundStatus.COMPLETED },
+        accountingClaimedAt: { $exists: false },
+      },
+      { $set: { accountingClaimedAt: new Date() } },
+      { session, new: true },
+    );
+    if (!claimedRefund) {
+      const snap = await PaymentRefund.findOne({ _id: refund._id, tenantId }).session(session).lean();
+      if (snap?.status === GatewayRefundStatus.COMPLETED || snap?.accountingClaimedAt) {
+        outcome = "DUPLICATE";
+        return;
+      }
+      outcome = "CONFLICT";
       return;
     }
 
@@ -152,7 +210,7 @@ async function applyGatewayRefundCompletion({
           actorId: "phonepe-refund",
           reversalOf: payment._id,
           description: `Gateway refund ${providerRefundId ?? ""}`.trim(),
-          metadata: { paymentRefundId: lockedRefund._id, providerRefundId },
+          metadata: { paymentRefundId: claimedRefund._id, providerRefundId },
         },
       ],
       { session },
@@ -185,15 +243,36 @@ async function applyGatewayRefundCompletion({
       lockedPayment.status = PaymentStatus.PARTIALLY_REFUNDED;
     }
     await lockedPayment.save({ session });
+    await Payment.updateOne(
+      { _id: payment._id, tenantId },
+      [
+        {
+          $set: {
+            gatewayRefundReservedPaise: {
+              $max: [
+                0,
+                {
+                  $subtract: [
+                    { $ifNull: ["$gatewayRefundReservedPaise", 0] },
+                    refundAmountPaise,
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      { session },
+    );
     gatewayTxFaultCheckpoint("refund:payment-saved");
 
-    lockedRefund.status = GatewayRefundStatus.COMPLETED;
-    lockedRefund.completedAt = new Date();
-    lockedRefund.amountPaise = refundAmountPaise;
-    lockedRefund.providerPayload = payload;
-    lockedRefund.requiresReview = false;
-    lockedRefund.reviewReason = undefined;
-    await lockedRefund.save({ session });
+    claimedRefund.status = GatewayRefundStatus.COMPLETED;
+    claimedRefund.completedAt = new Date();
+    claimedRefund.amountPaise = refundAmountPaise;
+    claimedRefund.providerPayload = payload;
+    claimedRefund.requiresReview = false;
+    claimedRefund.reviewReason = undefined;
+    await claimedRefund.save({ session });
     gatewayTxFaultCheckpoint("refund:refund-completed");
 
     if (TERMINAL_SCHEME_STATUSES.has(scheme.status)) {
@@ -218,7 +297,7 @@ async function applyGatewayRefundCompletion({
       entityType: AuditEntityType.PAYMENT,
       entityId: payment._id,
       after: lockedPayment.toObject(),
-      metadata: { refundId: lockedRefund._id, providerRefundId, refundAmountPaise, weightDeltaMg },
+      metadata: { refundId: claimedRefund._id, providerRefundId, refundAmountPaise, weightDeltaMg },
       actorType: "WEBHOOK",
       session,
     });
@@ -295,31 +374,17 @@ export async function processPhonePeRefundWebhook({
     }
   }
 
-  let refund = await PaymentRefund.findOne({
+  const refund = await loadOrCreatePaymentRefund({
     tenantId,
-    $or: [
-      { providerEventId: idempotencyKey },
-      ...(providerRefundId ? [{ providerRefundId }] : []),
-    ],
+    payment,
+    idempotencyKey,
+    providerRefundId,
+    validatedAmount,
+    kind,
+    payload,
   });
-
   if (!refund) {
-    const amountPaiseForCreate =
-      validatedAmount
-      ?? (kind === "ACCEPTED" ? payment.amountPaise : null);
-    if (!amountPaiseForCreate) {
-      return { outcome: "INVALID_AMOUNT" };
-    }
-    refund = await PaymentRefund.create({
-      _id: createId("pref"),
-      tenantId,
-      paymentId: payment._id,
-      providerRefundId,
-      providerEventId: idempotencyKey,
-      amountPaise: amountPaiseForCreate,
-      status: GatewayRefundStatus.PENDING,
-      providerPayload: payload,
-    });
+    return { outcome: "INVALID_AMOUNT" };
   }
 
   if (kind === "ACCEPTED") {
@@ -343,16 +408,43 @@ export async function processPhonePeRefundWebhook({
     if (refund.status === GatewayRefundStatus.COMPLETED) {
       return { outcome: "ALREADY_COMPLETED", refundId: refund._id };
     }
-    await PaymentRefund.updateOne(
-      { _id: refund._id, tenantId, status: { $ne: GatewayRefundStatus.COMPLETED } },
-      {
-        $set: {
-          status: GatewayRefundStatus.FAILED,
-          failedAt: new Date(),
-          providerPayload: payload,
+    await withTransaction(async (session) => {
+      await PaymentRefund.updateOne(
+        { _id: refund._id, tenantId, status: { $ne: GatewayRefundStatus.COMPLETED } },
+        {
+          $set: {
+            status: GatewayRefundStatus.FAILED,
+            failedAt: new Date(),
+            providerPayload: payload,
+          },
         },
-      },
-    );
+        { session },
+      );
+      const failedAmount = refund.amountPaise ?? validatedAmount ?? 0;
+      if (failedAmount > 0) {
+        await Payment.updateOne(
+          { _id: payment._id, tenantId },
+          [
+            {
+              $set: {
+                gatewayRefundReservedPaise: {
+                  $max: [
+                    0,
+                    {
+                      $subtract: [
+                        { $ifNull: ["$gatewayRefundReservedPaise", 0] },
+                        failedAmount,
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+          { session },
+        );
+      }
+    });
     recordPhonePeRefundOutcome("FAILED");
     return { outcome: "FAILED", refundId: refund._id };
   }
@@ -360,6 +452,7 @@ export async function processPhonePeRefundWebhook({
   if (kind === "COMPLETED") {
     const refundAmountPaise = validatedAmount;
     if (refund.status === GatewayRefundStatus.COMPLETED) {
+      recordPhonePeRefundOutcome("DUPLICATE");
       return { outcome: "DUPLICATE", refundId: refund._id };
     }
 
@@ -398,9 +491,28 @@ export async function processPhonePeRefundWebhook({
         providerRefundId,
         payload,
       });
+      if (applied.outcome === "DUPLICATE") {
+        recordPhonePeRefundOutcome("DUPLICATE");
+        return { outcome: "DUPLICATE", refundId: refund._id };
+      }
+      if (applied.outcome === "CONFLICT") {
+        await upsertOperationalAlert({
+          tenantId,
+          type: AlertType.GATEWAY_REFUND_DUPLICATE_CONFLICT,
+          entityId: payment._id,
+          title: "Gateway refund conflict",
+          message: "Refund completion could not apply atomically due to payment state conflict.",
+          metadata: { providerRefundId },
+        });
+        recordPhonePeRefundOutcome("CONFLICT");
+        return { outcome: "CONFLICT", refundId: refund._id };
+      }
       if (applied.outcome === "EXCEEDS_REMAINING") {
         recordPhonePeRefundOutcome("EXCEEDS_REMAINING");
         return { outcome: "EXCEEDS_REMAINING", refundId: refund._id };
+      }
+      if (applied.outcome !== "COMPLETED") {
+        return { outcome: applied.outcome, refundId: refund._id };
       }
     } catch (error) {
       if (error.code === "REFUND_PAYMENT_NOT_REFUNDABLE" || error.message?.includes("REFUND_PAYMENT_NOT_REFUNDABLE")) {

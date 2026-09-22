@@ -11,7 +11,7 @@ import {
 } from "../src/services/gateway-settlement.service.js";
 import { SettlementMismatchStatus, SettlementResolutionCategory } from "../src/models/gateway-settlement.models.js";
 import { seedAdminGatewayContext, seedUserOnTenant } from "./helpers/gateway-http-fixture.js";
-import { resetTestDb, startTestDb, stopTestDb } from "./helpers/db.js";
+import { resetTestDb, seedBranch, startTestDb, stopTestDb } from "./helpers/db.js";
 
 const app = createApp();
 
@@ -125,6 +125,127 @@ test("reopen resolved mismatch reopens alert", async () => {
     type: AlertType.GATEWAY_SETTLEMENT_MISMATCH,
   }).lean();
   assert.equal(alert.status, "OPEN");
+});
+
+async function seedTwoMismatchesSameRun() {
+  const ctx = await seedAdminGatewayContext();
+  const paymentA = createId("payment");
+  const paymentB = createId("payment");
+  const schemeId = createId("scheme");
+  const customerId = createId("customer");
+  for (const [paymentId, txnId] of [[paymentA, "txn_real_a"], [paymentB, "txn_real_b"]]) {
+    await Payment.create({
+      _id: paymentId,
+      tenantId: ctx.tenant._id,
+      branchId: ctx.branch._id,
+      schemeId,
+      customerId,
+      receiptNumber: `RCP-${paymentId}`,
+      amountPaise: 50_000,
+      mode: PaymentMode.ONLINE_GATEWAY,
+      status: PaymentStatus.SUCCESS,
+      paidAt: new Date("2026-09-22T10:00:00+05:30"),
+      providerTransactionId: txnId,
+      source: "CUSTOMER_APP",
+    });
+  }
+  await uploadGatewaySettlementStatement({
+    auth: { tenantId: ctx.tenant._id, id: ctx.user._id },
+    body: {
+      businessDate: "2026-09-22",
+      items: [
+        { providerTransactionId: "txn_wrong_a", settledAmountPaise: 50_000 },
+        { providerTransactionId: "txn_wrong_b", settledAmountPaise: 50_000 },
+      ],
+    },
+  });
+  await runDailyGatewaySettlementForTenant({
+    tenantId: ctx.tenant._id,
+    businessDate: "2026-09-22",
+  });
+  const mismatches = await SettlementMismatch.find({ tenantId: ctx.tenant._id }).sort({ createdAt: 1 }).lean();
+  assert.equal(mismatches.length, 2);
+  return { ctx, mismatches };
+}
+
+test("resolving one of two mismatches keeps run alert open until all are resolved", async () => {
+  const { ctx, mismatches } = await seedTwoMismatchesSameRun();
+  const beforeLedger = await LedgerEntry.countDocuments({});
+  await request(app)
+    .post(`/api/v1/admin/gateway/settlement-mismatches/${mismatches[0]._id}/resolve`)
+    .set("authorization", `Bearer ${ctx.token}`)
+    .set("x-idempotency-key", "resolve-multi-1")
+    .send({
+      category: SettlementResolutionCategory.PROVIDER_CONFIRMED,
+      reason: "First mismatch verified",
+    })
+    .expect(200);
+  const alert = await Alert.findOne({
+    tenantId: ctx.tenant._id,
+    type: AlertType.GATEWAY_SETTLEMENT_MISMATCH,
+  }).lean();
+  assert.equal(alert.status, "OPEN");
+  await request(app)
+    .post(`/api/v1/admin/gateway/settlement-mismatches/${mismatches[1]._id}/resolve`)
+    .set("authorization", `Bearer ${ctx.token}`)
+    .set("x-idempotency-key", "resolve-multi-2")
+    .send({
+      category: SettlementResolutionCategory.BANK_CONFIRMED,
+      reason: "Second mismatch verified",
+    })
+    .expect(200);
+  const alertDone = await Alert.findOne({
+    tenantId: ctx.tenant._id,
+    type: AlertType.GATEWAY_SETTLEMENT_MISMATCH,
+  }).lean();
+  assert.equal(alertDone.status, "RESOLVED");
+  assert.equal(await LedgerEntry.countDocuments({}), beforeLedger);
+});
+
+test("concurrent resolve with same idempotency key is idempotent", async () => {
+  const { ctx, mismatch } = await seedMismatch();
+  const body = {
+    category: SettlementResolutionCategory.INTERNAL_REFERENCE_CORRECTED,
+    reason: "Concurrent resolve idempotent",
+  };
+  const [a, b] = await Promise.all([
+    request(app)
+      .post(`/api/v1/admin/gateway/settlement-mismatches/${mismatch._id}/resolve`)
+      .set("authorization", `Bearer ${ctx.token}`)
+      .set("x-idempotency-key", "resolve-concurrent-idem")
+      .send(body),
+    request(app)
+      .post(`/api/v1/admin/gateway/settlement-mismatches/${mismatch._id}/resolve`)
+      .set("authorization", `Bearer ${ctx.token}`)
+      .set("x-idempotency-key", "resolve-concurrent-idem")
+      .send(body),
+  ]);
+  assert.ok([200, 409].includes(a.status), JSON.stringify(a.body));
+  assert.ok([200, 409].includes(b.status), JSON.stringify(b.body));
+  assert.ok(a.status === 200 || b.status === 200, "at least one resolve succeeds");
+  const row = await SettlementMismatch.findById(mismatch._id).lean();
+  const resolves = row.resolutionHistory.filter((h) => h.action === "RESOLVE");
+  assert.equal(resolves.length, 1);
+});
+
+test("branch manager cannot resolve mismatch outside branch scope", async () => {
+  const { ctx, mismatches } = await seedTwoMismatchesSameRun();
+  const branchB = await seedBranch({ tenantId: ctx.tenant._id, code: "BR2", name: "Branch Two" });
+  const otherBranch = await seedUserOnTenant({
+    tenantId: ctx.tenant._id,
+    branchId: branchB._id,
+    role: TenantRole.BRANCH_MANAGER,
+    mobile: "+919611122233",
+  });
+  await request(app)
+    .post(`/api/v1/admin/gateway/settlement-mismatches/${mismatches[0]._id}/resolve`)
+    .set("authorization", `Bearer ${otherBranch.token}`)
+    .set("x-idempotency-key", "resolve-wrong-branch")
+    .send({
+      category: SettlementResolutionCategory.PROVIDER_CONFIRMED,
+      reason: "Should not resolve",
+    })
+    .expect(404);
 });
 
 test("staff cannot resolve mismatches", async () => {

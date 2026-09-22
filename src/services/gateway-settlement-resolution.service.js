@@ -67,12 +67,26 @@ export async function resolveSettlementMismatch(req) {
 
   let outcome;
   await withTransaction(async (session) => {
-    const row = await SettlementMismatch.findOne({
+    let row = await SettlementMismatch.findOne({
       _id: req.params.mismatchId,
       ...scopeFilter(req),
       status: SettlementMismatchStatus.OPEN,
     }).session(session);
-    if (!row) throw errors.notFound("Settlement mismatch");
+    if (!row) {
+      const resolved = await SettlementMismatch.findOne({
+        _id: req.params.mismatchId,
+        ...scopeFilter(req),
+        status: SettlementMismatchStatus.RESOLVED,
+      }).session(session);
+      const priorResolved = resolved?.resolutionHistory?.find(
+        (entry) => entry.idempotencyKey === idempotencyKey && entry.action === SettlementResolutionAction.RESOLVE,
+      );
+      if (priorResolved) {
+        outcome = { mismatchId: resolved._id, status: SettlementMismatchStatus.RESOLVED, reused: true };
+        return;
+      }
+      throw errors.notFound("Settlement mismatch");
+    }
 
     const prior = row.resolutionHistory?.find(
       (entry) => entry.idempotencyKey === idempotencyKey && entry.action === SettlementResolutionAction.RESOLVE,

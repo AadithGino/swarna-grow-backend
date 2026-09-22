@@ -15,21 +15,6 @@ import { Payment, PaymentIntent, PaymentRefund, Tenant } from "../models/index.j
 import { writeAudit } from "./audit.service.js";
 
 const REFUNDABLE = new Set([PaymentStatus.SUCCESS, PaymentStatus.PARTIALLY_REFUNDED]);
-const RESERVATION_STATUSES = [GatewayRefundStatus.PENDING, GatewayRefundStatus.ACCEPTED];
-
-async function sumReservedRefundPaise({ tenantId, paymentId, session }) {
-  const rows = await PaymentRefund.aggregate([
-    {
-      $match: {
-        tenantId,
-        paymentId,
-        status: { $in: RESERVATION_STATUSES },
-      },
-    },
-    { $group: { _id: null, total: { $sum: "$amountPaise" } } },
-  ]).session(session);
-  return rows[0]?.total ?? 0;
-}
 
 function idempotencyPayloadMatches(refund, { amountPaise, reason }) {
   return refund.amountPaise === amountPaise && String(refund.reason ?? "").trim() === String(reason).trim();
@@ -88,13 +73,33 @@ export async function initiateAdminPaymentRefund(req) {
         throw errors.business("REFUND_REQUIRES_REVIEW", "Resolve payment review before initiating a provider refund.");
       }
 
-      const reserved = await sumReservedRefundPaise({
-        tenantId: payment.tenantId,
-        paymentId: payment._id,
-        session,
-      });
-      const remaining = payment.amountPaise - (payment.refundedAmountPaise ?? 0) - reserved;
-      if (amountPaise > remaining) {
+      const reservedPayment = await Payment.findOneAndUpdate(
+        {
+          _id: payment._id,
+          tenantId: payment.tenantId,
+          mode: PaymentMode.ONLINE_GATEWAY,
+          status: { $in: [...REFUNDABLE] },
+          $expr: {
+            $gte: [
+              {
+                $subtract: [
+                  "$amountPaise",
+                  {
+                    $add: [
+                      { $ifNull: ["$refundedAmountPaise", 0] },
+                      { $ifNull: ["$gatewayRefundReservedPaise", 0] },
+                    ],
+                  },
+                ],
+              },
+              amountPaise,
+            ],
+          },
+        },
+        { $inc: { gatewayRefundReservedPaise: amountPaise } },
+        { session, new: true },
+      );
+      if (!reservedPayment) {
         throw errors.business("REFUND_AMOUNT_EXCEEDS_REMAINING", "Refund amount exceeds remaining refundable balance.");
       }
 

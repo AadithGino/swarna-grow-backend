@@ -70,6 +70,7 @@ export async function createSubscriptionPlan(body, req) {
   const patch = { ...body };
   delete patch.expectedVersion;
   delete patch.billingCycle;
+  delete patch.code;
   if (patch.supportedBillingCycles) patch.billingCycle = patch.supportedBillingCycles[0];
   if (patch.monthlyPricePaise != null) patch.pricePaise = patch.monthlyPricePaise;
   if (patch.limits) patch.limits = limitsFromApi(patch.limits);
