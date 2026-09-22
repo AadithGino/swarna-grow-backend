@@ -75,28 +75,7 @@ async function applyGatewayRefundCompletion({
   providerRefundId,
   payload,
 }) {
-  const priorRefundedAmount = payment.refundedAmountPaise ?? 0;
-  const priorRefundedWeight = payment.refundedWeightMg ?? 0;
-  const remainingPaise = payment.amountPaise - priorRefundedAmount;
-  if (refundAmountPaise > remainingPaise) {
-    await upsertOperationalAlert({
-      tenantId,
-      type: AlertType.GATEWAY_REFUND_INVALID,
-      entityId: payment._id,
-      title: "Gateway refund exceeds remaining amount",
-      message: "Refund callback amount exceeds the remaining refundable balance.",
-      metadata: { providerRefundId, refundAmountPaise, remainingPaise },
-    });
-    return { outcome: "EXCEEDS_REMAINING" };
-  }
-
-  const weightDeltaMg = refundWeightDeltaMg({
-    originalPaymentWeightMg: payment.weightMg ?? 0,
-    originalPaymentAmountPaise: payment.amountPaise,
-    priorRefundedAmountPaise: priorRefundedAmount,
-    priorRefundedWeightMg: priorRefundedWeight,
-    refundAmountPaise,
-  });
+  let outcome = "COMPLETED";
 
   await withTransaction(async (session) => {
     const lockedRefund = await PaymentRefund.findOne({
@@ -104,7 +83,10 @@ async function applyGatewayRefundCompletion({
       tenantId,
       status: { $ne: GatewayRefundStatus.COMPLETED },
     }).session(session);
-    if (!lockedRefund) return;
+    if (!lockedRefund) {
+      outcome = "DUPLICATE";
+      return;
+    }
 
     const lockedPayment = await Payment.findOne({
       _id: payment._id,
@@ -114,6 +96,31 @@ async function applyGatewayRefundCompletion({
     if (!lockedPayment) {
       throw errors.business("REFUND_PAYMENT_NOT_REFUNDABLE", "Refund completed but payment is not refundable.");
     }
+
+    const priorRefundedAmount = lockedPayment.refundedAmountPaise ?? 0;
+    const priorRefundedWeight = lockedPayment.refundedWeightMg ?? 0;
+    const remainingPaise = lockedPayment.amountPaise - priorRefundedAmount;
+    if (refundAmountPaise > remainingPaise) {
+      await upsertOperationalAlert({
+        tenantId,
+        type: AlertType.GATEWAY_REFUND_INVALID,
+        entityId: payment._id,
+        title: "Gateway refund exceeds remaining amount",
+        message: "Refund callback amount exceeds the remaining refundable balance.",
+        metadata: { providerRefundId, refundAmountPaise, remainingPaise },
+        session,
+      });
+      outcome = "EXCEEDS_REMAINING";
+      return;
+    }
+
+    const weightDeltaMg = refundWeightDeltaMg({
+      originalPaymentWeightMg: lockedPayment.weightMg ?? 0,
+      originalPaymentAmountPaise: lockedPayment.amountPaise,
+      priorRefundedAmountPaise: priorRefundedAmount,
+      priorRefundedWeightMg: priorRefundedWeight,
+      refundAmountPaise,
+    });
 
     const scheme = await Scheme.findOne({
       _id: payment.schemeId,
@@ -150,6 +157,7 @@ async function applyGatewayRefundCompletion({
       ],
       { session },
     );
+    gatewayTxFaultCheckpoint("refund:ledger-created");
 
     const entries = await LedgerEntry.find({
       tenantId: payment.tenantId,
@@ -161,6 +169,7 @@ async function applyGatewayRefundCompletion({
     rebuildSchemeProjection(scheme, entries);
     scheme.version += 1;
     await scheme.save({ session });
+    gatewayTxFaultCheckpoint("refund:scheme-saved");
 
     const newRefundedAmount = priorRefundedAmount + refundAmountPaise;
     const newRefundedWeight = priorRefundedWeight + weightDeltaMg;
@@ -176,6 +185,7 @@ async function applyGatewayRefundCompletion({
       lockedPayment.status = PaymentStatus.PARTIALLY_REFUNDED;
     }
     await lockedPayment.save({ session });
+    gatewayTxFaultCheckpoint("refund:payment-saved");
 
     lockedRefund.status = GatewayRefundStatus.COMPLETED;
     lockedRefund.completedAt = new Date();
@@ -184,6 +194,7 @@ async function applyGatewayRefundCompletion({
     lockedRefund.requiresReview = false;
     lockedRefund.reviewReason = undefined;
     await lockedRefund.save({ session });
+    gatewayTxFaultCheckpoint("refund:refund-completed");
 
     if (TERMINAL_SCHEME_STATUSES.has(scheme.status)) {
       await upsertOperationalAlert({
@@ -211,10 +222,10 @@ async function applyGatewayRefundCompletion({
       actorType: "WEBHOOK",
       session,
     });
-    gatewayTxFaultCheckpoint("refund:completed");
+    gatewayTxFaultCheckpoint("refund:audit-written");
   });
 
-  return { outcome: "COMPLETED" };
+  return { outcome };
 }
 
 export async function processPhonePeRefundWebhook({

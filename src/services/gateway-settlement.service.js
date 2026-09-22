@@ -3,6 +3,7 @@ import { AlertType, PaymentMode, PaymentStatus } from "../constants/enums.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { errors } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
+import { withTransaction } from "../lib/transaction.js";
 import { Payment, PaymentRefund, SettlementItem, SettlementRun, Tenant } from "../models/index.js";
 import { SettlementRunStatus, SettlementSourceType } from "../models/gateway-settlement.models.js";
 import { GatewayRefundStatus } from "../constants/enums.js";
@@ -90,7 +91,7 @@ export async function runDailyGatewaySettlementForTenant({
     await upsertOperationalAlert({
       tenantId,
       type: AlertType.GATEWAY_SETTLEMENT_MISSING,
-      entityId: claimed._id,
+      entityId: `${claimed._id}:${businessDate}`,
       title: "PhonePe settlement statement missing",
       message: `No settlement upload exists for business date ${businessDate}.`,
       metadata: { businessDate },
@@ -171,30 +172,45 @@ export async function uploadGatewaySettlementStatement(req) {
   if (run?.inputChecksum === checksum) {
     return { runId: run._id, duplicate: true };
   }
-  if (!run) {
-    run = await SettlementRun.create({
-      _id: createId("stl"),
-      tenantId: req.auth.tenantId,
-      businessDate,
-      provider: "PHONEPE",
-      sourceType: SettlementSourceType.UPLOAD,
-      status: SettlementRunStatus.PENDING,
-      inputChecksum: checksum,
-    });
-  } else {
-    await SettlementItem.deleteMany({ tenantId: req.auth.tenantId, runId: run._id });
-    await SettlementRun.updateOne({ _id: run._id }, { $set: { inputChecksum: checksum, status: SettlementRunStatus.PENDING } });
-  }
-  await SettlementItem.insertMany(rows.map((row) => ({
-    tenantId: req.auth.tenantId,
-    runId: run._id,
-    providerTransactionId: row.providerTransactionId,
-    providerRefundId: row.providerRefundId,
-    expectedAmountPaise: row.expectedAmountPaise,
-    settledAmountPaise: row.settledAmountPaise,
-    matchedPaymentId: row.matchedPaymentId,
-    matchedRefundId: row.matchedRefundId,
-  })));
+  await withTransaction(async (session) => {
+    if (!run) {
+      const created = await SettlementRun.create(
+        [
+          {
+            _id: createId("stl"),
+            tenantId: req.auth.tenantId,
+            businessDate,
+            provider: "PHONEPE",
+            sourceType: SettlementSourceType.UPLOAD,
+            status: SettlementRunStatus.PENDING,
+            inputChecksum: checksum,
+          },
+        ],
+        { session },
+      );
+      run = created[0];
+    } else {
+      await SettlementItem.deleteMany({ tenantId: req.auth.tenantId, runId: run._id }).session(session);
+      await SettlementRun.updateOne(
+        { _id: run._id },
+        { $set: { inputChecksum: checksum, status: SettlementRunStatus.PENDING } },
+      ).session(session);
+    }
+    await SettlementItem.insertMany(
+      rows.map((row) => ({
+        _id: createId("sti"),
+        tenantId: req.auth.tenantId,
+        runId: run._id,
+        providerTransactionId: row.providerTransactionId,
+        providerRefundId: row.providerRefundId,
+        expectedAmountPaise: row.expectedAmountPaise,
+        settledAmountPaise: row.settledAmountPaise,
+        matchedPaymentId: row.matchedPaymentId,
+        matchedRefundId: row.matchedRefundId,
+      })),
+      { session },
+    );
+  });
   return { runId: run._id, duplicate: false };
 }
 

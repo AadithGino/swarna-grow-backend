@@ -258,7 +258,7 @@ export async function writeAudit({
         metadata: sanitize(metadata),
         traceId: req.traceId,
         ip: req.ip,
-        userAgent: req.headers["user-agent"],
+        userAgent: req.headers?.["user-agent"],
       },
     ],
     { session },

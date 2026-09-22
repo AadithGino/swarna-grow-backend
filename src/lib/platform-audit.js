@@ -26,6 +26,24 @@ export function redactPlatformAuditPayload(value) {
   return out;
 }
 
+/** Express `req` fields like `headers` are not own-enumerable — do not `{...req}` for audit. */
+function auditRequestContext(req) {
+  if (!req) {
+    return {
+      auth: { id: "platform-system", type: "SYSTEM", tenantId: "platform" },
+      headers: {},
+      ip: "system",
+    };
+  }
+  return {
+    auth: req.auth,
+    headers: req.headers,
+    ip: req.ip,
+    traceId: req.traceId,
+    scope: req.scope,
+  };
+}
+
 export async function auditPlatformMutation({
   req,
   action,
@@ -36,11 +54,14 @@ export async function auditPlatformMutation({
   after,
   session,
 }) {
-  const request = req ?? { auth: { id: "platform-system", type: "SYSTEM" }, headers: {}, ip: "system" };
+  const request = auditRequestContext(req);
   await writeAudit({
     req: {
       ...request,
-      auth: { ...request.auth, tenantId: tenantId ?? request.auth?.tenantId ?? "platform" },
+      auth: {
+        ...request.auth,
+        tenantId: tenantId ?? request.auth?.tenantId ?? "platform",
+      },
     },
     action,
     entityType,

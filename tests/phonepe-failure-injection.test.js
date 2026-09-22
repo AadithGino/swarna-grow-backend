@@ -240,12 +240,13 @@ function snapshotPartialRefundState({ tenantId, paymentId }) {
   ]);
 }
 
-test("partial refund review rolls back on each atomic boundary", async () => {
+test("partial refund rolls back on each atomic boundary", async () => {
   for (const checkpoint of [
-    "partialRefund:payment-updated",
-    "partialRefund:refund-updated",
-    "partialRefund:alert-upserted",
-    "partialRefund:audit-written",
+    "refund:ledger-created",
+    "refund:scheme-saved",
+    "refund:payment-saved",
+    "refund:refund-completed",
+    "refund:audit-written",
   ]) {
     await resetTestDb();
     clearGatewayTxFaults();
@@ -265,17 +266,14 @@ test("partial refund review rolls back on each atomic boundary", async () => {
     }));
     const after = await snapshotPartialRefundState({ tenantId: tenant._id, paymentId });
     assert.deepEqual(after[0], before[0]);
-    assert.deepEqual(after[2], before[2]);
-    assert.deepEqual(after[3], before[3]);
-    assert.deepEqual(after[4], before[4]);
+    assert.equal(await LedgerEntry.countDocuments({ paymentId, type: "REVERSAL" }), 0);
     for (const refund of after[1]) {
-      assert.equal(refund.status, GatewayRefundStatus.PENDING);
-      assert.notEqual(refund.requiresReview, true);
+      assert.notEqual(refund.status, GatewayRefundStatus.COMPLETED);
     }
   }
 });
 
-test("partial refund retry converges to one alert and review state", async () => {
+test("partial refund retry converges to one reversal row", async () => {
   const { tenant, paymentId, intentId } = await seedPaidForPartialRefund();
   const payload = {
     originalMerchantOrderId: intentId,
@@ -289,20 +287,15 @@ test("partial refund retry converges to one alert and review state", async () =>
     payload,
     providerEventId: "pe-partial-retry",
   };
-  setGatewayTxFaultAfter("partialRefund:alert-upserted");
+  setGatewayTxFaultAfter("refund:payment-saved");
   await assert.rejects(() => processPhonePeRefundWebhook(args));
   clearGatewayTxFaults();
   const repaired = await processPhonePeRefundWebhook(args);
-  assert.equal(repaired.outcome, "PARTIAL_REVIEW");
-  const alerts = await Alert.find({
-    tenantId: tenant._id,
-    type: "GATEWAY_REFUND_PARTIAL",
-    entityId: paymentId,
-  }).lean();
-  assert.equal(alerts.length, 1);
+  assert.equal(repaired.outcome, "COMPLETED");
+  assert.equal(await LedgerEntry.countDocuments({ paymentId, type: "REVERSAL" }), 1);
   const payment = await Payment.findById(paymentId).lean();
-  assert.equal(payment.requiresReview, true);
-  assert.equal(payment.reviewReason, "PARTIAL_REFUND_REQUIRES_REVIEW");
+  assert.equal(payment.status, PaymentStatus.PARTIALLY_REFUNDED);
+  assert.equal(payment.refundedAmountPaise, 25_000);
 });
 
 test("two concurrent full-refund callbacks converge to one reversal", async () => {

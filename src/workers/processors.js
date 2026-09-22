@@ -471,9 +471,25 @@ export async function processWebhook(job) {
       const status = event.payload?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
       if (status) await updateDelivery(status.id, status.status?.toUpperCase(), status.errors?.[0]);
     }
-    event.status = "COMPLETED";
-    event.processedAt = new Date();
-    await event.save();
+    const { JobStatus } = await import("../constants/enums.js");
+    const completed = await WebhookEvent.findOneAndUpdate(
+      {
+        _id: event._id,
+        status: { $nin: [JobStatus.UNSUPPORTED, JobStatus.COMPLETED] },
+      },
+      {
+        $set: {
+          status: JobStatus.COMPLETED,
+          processedAt: new Date(),
+          error: null,
+        },
+      },
+      { new: true },
+    );
+    if (!completed) {
+      observeWebhookProcessingMs(Date.now() - started);
+      return;
+    }
     await finalizeWebhookStorage(event._id);
     incrementWebhookMetric(WebhookMetric.PROCESSING_COMPLETED);
     observeWebhookProcessingMs(Date.now() - started);

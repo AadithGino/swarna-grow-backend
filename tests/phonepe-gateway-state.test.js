@@ -314,7 +314,7 @@ test("inactive tenant webhook guard rejects unknown or suspended tenants", async
   );
 });
 
-test("refund partial amount creates review alert without reversing payment", async () => {
+test("refund partial amount applies reversal ledger and PARTIALLY_REFUNDED status", async () => {
   const { tenant, paymentId, intentId } = await seedPendingGatewayPayment({
     mockSuffix: "__mock_completed__",
   });
@@ -338,10 +338,11 @@ test("refund partial amount creates review alert without reversing payment", asy
     },
     providerEventId: "pe-ref-partial",
   });
-  assert.equal(result.outcome, "PARTIAL_REVIEW");
-  assert.equal((await Payment.findById(paymentId).lean()).status, PaymentStatus.SUCCESS);
-  const alert = await Alert.findOne({ tenantId: tenant._id, type: "GATEWAY_REFUND_PARTIAL" }).lean();
-  assert.ok(alert);
+  assert.equal(result.outcome, "COMPLETED");
+  const payment = await Payment.findById(paymentId).lean();
+  assert.equal(payment.status, PaymentStatus.PARTIALLY_REFUNDED);
+  assert.equal(payment.refundedAmountPaise, 25_000);
+  assert.equal(await LedgerEntry.countDocuments({ paymentId, type: "REVERSAL" }), 1);
 });
 
 test("refund replay is idempotent for full reversal", async () => {

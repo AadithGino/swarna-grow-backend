@@ -18,6 +18,7 @@ import {
   Scheme,
 } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
+import { gatewaySettlementUploadBody } from "../validators/gateway-settlement.validators.js";
 import {
   enrolBody,
   paymentBody,
@@ -353,7 +354,11 @@ adminSchemeRouter.get(
 );
 adminSchemeRouter.post(
   "/gateway/settlement-runs/upload",
-  ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async (req, res) => {
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    validate({ body: gatewaySettlementUploadBody }),
+    idempotent,
+    asyncHandler(async (req, res) => {
     const { uploadGatewaySettlementStatement } = await import("../services/gateway-settlement.service.js");
     const { sendSuccess } = await import("../lib/response.js");
     return sendSuccess(res, await uploadGatewaySettlementStatement(req), {}, 201);

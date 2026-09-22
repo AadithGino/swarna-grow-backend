@@ -1,41 +1,46 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { AlertType } from "../src/constants/enums.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const rawAlertPattern = /type: "([A-Z0-9_]+)"/;
 
-test("every operational Alert upsert type is declared in AlertType", () => {
-  const output = execSync(
-    "rg -o 'type: AlertType\\.[A-Z0-9_]+|type: \"GATEWAY_[A-Z0-9_]+\"|type: \"WEBHOOK_FAILURE\"|type: \"PAYMENT_REVIEW\"|type: \"FLEX_SETTLEMENT_REQUIRED\"|type: \"FCM_DELIVERY_EXHAUSTED\"|type: \"SYSTEM_ERROR\"|type: \"MISSING_GOLD_RATE\"' src --no-heading",
+test("every Alert.type write in src uses AlertType enum members", () => {
+  const alertWrites = execSync(
+    "rg -n \"type: AlertType\\.[A-Z0-9_]+|type: \\\"[A-Z0-9_]+\\\"\" src --glob \"*.js\"",
     { cwd: root, encoding: "utf8" },
-  ).trim();
-  const lines = output ? output.split("\n") : [];
-  const rawStrings = lines
-    .filter((line) => line.includes('type: "'))
-    .map((line) => line.match(rawAlertPattern)?.[1])
-    .filter(Boolean);
-  assert.equal(rawStrings.length, 0, `raw alert type strings remain: ${rawStrings.join(", ")}`);
-  const used = new Set(
-    lines
-      .map((line) => line.match(/AlertType\.([A-Z0-9_]+)/)?.[1])
-      .filter(Boolean),
+  ).trim().split("\n").filter(Boolean);
+  const operational = alertWrites.filter(
+    (line) => line.includes("AlertType.")
+      || (line.includes('type: "') && line.match(/GATEWAY_|WEBHOOK_|PAYMENT_REVIEW|FLEX_|FCM_|SYSTEM_ERROR|MISSING_GOLD/)),
   );
-  for (const key of used) {
-    assert.ok(AlertType[key], `AlertType missing enum member for ${key}`);
+  const raw = operational
+    .filter((line) => !line.includes("AlertType."))
+    .map((line) => line.match(/type: "([A-Z0-9_]+)"/)?.[1])
+    .filter(Boolean);
+  assert.equal(raw.length, 0, `raw operational alert strings: ${raw.join(", ")}`);
+  for (const line of operational.filter((l) => l.includes("AlertType."))) {
+    const key = line.match(/AlertType\.([A-Z0-9_]+)/)?.[1];
+    assert.ok(key && AlertType[key], `missing AlertType member for ${key}`);
   }
 });
 
+test("operational alert upserts use runValidators", () => {
+  const helper = readFileSync(join(root, "src/lib/operational-alert.js"), "utf8");
+  assert.match(helper, /runValidators:\s*true/);
+});
+
 test("AlertType includes Phase 6.2 gateway alert members", () => {
-  const required = [
+  for (const key of [
     "GATEWAY_UNSUPPORTED_CALLBACK",
     "GATEWAY_SETTLEMENT_MISMATCH",
     "GATEWAY_SETTLEMENT_MISSING",
     "GATEWAY_REFUND_PARTIAL",
     "GATEWAY_RECONCILE_EXHAUSTED",
-  ];
-  for (const key of required) assert.ok(AlertType[key]);
+  ]) {
+    assert.ok(AlertType[key]);
+  }
 });

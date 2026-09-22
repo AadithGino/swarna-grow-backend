@@ -29,6 +29,25 @@ export async function finalizeUnsupportedPhonePeCallback({
   payload = {},
 }) {
   const metadata = sanitizeCallbackMetadata(type, payload);
+  const terminal = await WebhookEvent.updateOne(
+    {
+      _id: webhookEventId,
+      tenantId,
+      status: { $nin: [JobStatus.COMPLETED, JobStatus.UNSUPPORTED] },
+    },
+    {
+      $set: {
+        status: JobStatus.UNSUPPORTED,
+        processedAt: new Date(),
+        unsupportedCallbackType: metadata.callbackType,
+        unsupportedMetadata: metadata,
+        error: "UNSUPPORTED_CALLBACK",
+      },
+    },
+  );
+  if (!terminal.modifiedCount) {
+    return { outcome: "ALREADY_TERMINAL" };
+  }
   await upsertOperationalAlert({
     tenantId,
     type: AlertType.GATEWAY_UNSUPPORTED_CALLBACK,
@@ -41,18 +60,6 @@ export async function finalizeUnsupportedPhonePeCallback({
   logger.warn(
     { tenantId, webhookEventId, providerEventId, ...metadata },
     "PhonePe unsupported callback — no financial mutation",
-  );
-  await WebhookEvent.updateOne(
-    { _id: webhookEventId, tenantId },
-    {
-      $set: {
-        status: JobStatus.UNSUPPORTED,
-        processedAt: new Date(),
-        unsupportedCallbackType: metadata.callbackType,
-        unsupportedMetadata: metadata,
-        error: "UNSUPPORTED_CALLBACK",
-      },
-    },
   );
   return { outcome: "UNSUPPORTED" };
 }
