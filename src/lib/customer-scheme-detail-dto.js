@@ -59,15 +59,35 @@ function fixedProgress(scheme) {
 }
 
 function flexibleCappedProgress(scheme) {
+  const pos = scheme.paymentPosition;
+  if (pos?.currentCycleCapPaise != null) {
+    const cap = Number(pos.currentCycleCapPaise ?? 0);
+    const paid = Number(pos.confirmedThisCyclePaise ?? 0);
+    const remaining = Number(pos.remainingThisCyclePaise ?? Math.max(0, cap - paid));
+    return {
+      phase: "CAPPED",
+      currentCycle: pos.targetCycle ?? pos.cycleLabel ?? monthKey(),
+      cycleCap: moneyRef(cap),
+      paidThisCycle: moneyRef(paid),
+      remainingThisCycle: moneyRef(remaining),
+      lockedAverage: moneyRef(scheme.lockedAveragePaise ?? cap),
+    };
+  }
   const current = monthKey();
-  const cycle = scheme.cycles?.find((r) => r.cycle === current) ?? scheme.cycles?.find((r) => (r.remainingPaise ?? 0) > 0);
+  const cycle =
+    scheme.cycles?.find((r) => r.cycle === current && (r.capPaise ?? 0) > 0) ??
+    scheme.cycles?.find((r) => (r.capPaise ?? 0) > 0 && (r.paidPaise ?? 0) < (r.capPaise ?? 0));
+  const capPaise = cycle?.capPaise ?? scheme.lockedAveragePaise ?? 0;
+  const paidPaise = cycle?.paidPaise ?? 0;
+  const remainingPaise =
+    cycle?.remainingPaise ?? Math.max(0, Number(capPaise) - Number(paidPaise));
   return {
     phase: "CAPPED",
     currentCycle: cycle?.cycle ?? current,
-    cycleCap: moneyRef(cycle?.capPaise ?? scheme.lockedAveragePaise ?? 0),
-    paidThisCycle: moneyRef(cycle?.paidPaise ?? 0),
-    remainingThisCycle: moneyRef(cycle?.remainingPaise ?? 0),
-    lockedAverage: moneyRef(scheme.lockedAveragePaise ?? 0),
+    cycleCap: moneyRef(capPaise),
+    paidThisCycle: moneyRef(paidPaise),
+    remainingThisCycle: moneyRef(remainingPaise),
+    lockedAverage: moneyRef(scheme.lockedAveragePaise ?? capPaise),
   };
 }
 
@@ -365,8 +385,10 @@ function buildProgressCard(raw, displayMode, totals) {
   return {
     type: "FLEXIBLE_LOCK_WINDOW",
     cycleCap: capped.cycleCap,
+    paidThisCycle: capped.paidThisCycle,
     remainingThisCycle: capped.remainingThisCycle,
     lockedAverage: capped.lockedAverage,
+    currentCycle: capped.currentCycle,
     ...gold,
   };
 }
@@ -583,6 +605,7 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
   let nextActionLabel;
   let nextActionAmount = null;
   let canPay = ["ACTIVE", "LOCKED", "DEFAULTED"].includes(scheme.status);
+  let cappedProgress;
   const planMonths = scheme.planSnapshot?.durationMonths ?? scheme.planSnapshot?.installmentCount ?? null;
 
   if (displayMode === "FIXED") {
@@ -619,18 +642,16 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     canPay = canPay && scheme.status === "ACTIVE";
   } else {
     progressPhase = "CAPPED";
-    const capped = flexibleCappedProgress(scheme);
-    const cap = capped.cycleCap?.amountPaise ?? 0;
-    const remaining = capped.remainingThisCycle?.amountPaise ?? 0;
+    cappedProgress = flexibleCappedProgress(scheme);
+    const cap = cappedProgress.cycleCap?.amountPaise ?? 0;
+    const remaining = cappedProgress.remainingThisCycle?.amountPaise ?? 0;
     progressPercent = cap ? Math.min(100, Math.round(((cap - remaining) / cap) * 100)) : 0;
-    const cycleLabel = capped.currentCycle ? formatCycleLabel(capped.currentCycle) : "This month";
-    progressLabel = `Capped phase · ${cycleLabel}`;
-    progressDetail = capped.lockedAverage?.amountPaise
-      ? `Monthly cap ${capped.lockedAverage.amountDisplay} · ${capped.paidThisCycle.amountDisplay} paid this cycle`
-      : "Monthly contribution limit applies";
+    const cycleLabel = cappedProgress.currentCycle ? formatCycleLabel(cappedProgress.currentCycle) : "This month";
+    progressLabel = `${cappedProgress.paidThisCycle.amountDisplay} of ${cappedProgress.cycleCap.amountDisplay} · ${cycleLabel}`;
+    progressDetail = `${cappedProgress.remainingThisCycle.amountDisplay} remaining · cap from free-window average`;
     nextActionLabel =
-      remaining > 0 ? `${capped.remainingThisCycle.amountDisplay} room this month` : "Cycle allowance used";
-    nextActionAmount = remaining > 0 ? capped.remainingThisCycle : null;
+      remaining > 0 ? `${cappedProgress.remainingThisCycle.amountDisplay} room this month` : "Cycle allowance used";
+    nextActionAmount = remaining > 0 ? cappedProgress.remainingThisCycle : null;
     canPay = canPay && remaining > 0;
   }
 
@@ -661,6 +682,12 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     canPay,
     benefitLabel: benefitLabel(scheme.planSnapshot),
     recentPayments: extras.recentPayments ?? undefined,
+    ...(cappedProgress
+      ? {
+          cycleCap: cappedProgress.cycleCap,
+          remainingThisCycle: cappedProgress.remainingThisCycle,
+        }
+      : {}),
   };
 }
 

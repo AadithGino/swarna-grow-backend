@@ -10,3 +10,9 @@ exports/
 *.log
 .DS_Store
 fix.md
+test-results/
+docs/e2e-visual-screenshots/
+docs/e2e-audit*.json
+docs/e2e-visual-*.json
+docs/tenant-*-results.json
+docs/tenant-report-kpi-contract.json
