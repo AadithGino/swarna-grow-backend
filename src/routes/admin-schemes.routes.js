@@ -18,7 +18,12 @@ import {
   Scheme,
 } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
-import { gatewaySettlementUploadBody } from "../validators/gateway-settlement.validators.js";
+import {
+  gatewaySettlementUploadBody,
+  paymentRefundInitiationBody,
+  settlementMismatchReopenBody,
+  settlementMismatchResolveBody,
+} from "../validators/gateway-settlement.validators.js";
 import {
   enrolBody,
   paymentBody,
@@ -317,6 +322,7 @@ adminSchemeRouter.post(
   "/payments/:paymentId/refunds",
   ...guarded(
     Permission.PAYMENT_REVERSE,
+    validate({ body: paymentRefundInitiationBody }),
     idempotent,
     asyncHandler(async (req, res) => {
       const { initiateAdminPaymentRefund } = await import("../services/payment-refund-initiation.service.js");
@@ -363,6 +369,48 @@ adminSchemeRouter.post(
     const { sendSuccess } = await import("../lib/response.js");
     return sendSuccess(res, await uploadGatewaySettlementStatement(req), {}, 201);
   })),
+);
+adminSchemeRouter.get(
+  "/gateway/settlement-mismatches",
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => {
+    const { listSettlementMismatches } = await import("../services/gateway-settlement-resolution.service.js");
+    const { sendSuccess } = await import("../lib/response.js");
+    return sendSuccess(res, await listSettlementMismatches(req));
+  })),
+);
+adminSchemeRouter.get(
+  "/gateway/settlement-mismatches/:mismatchId",
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => {
+    const { getSettlementMismatch } = await import("../services/gateway-settlement-resolution.service.js");
+    const { sendSuccess } = await import("../lib/response.js");
+    return sendSuccess(res, await getSettlementMismatch(req));
+  })),
+);
+adminSchemeRouter.post(
+  "/gateway/settlement-mismatches/:mismatchId/resolve",
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    validate({ body: settlementMismatchResolveBody }),
+    idempotent,
+    asyncHandler(async (req, res) => {
+      const { resolveSettlementMismatch } = await import("../services/gateway-settlement-resolution.service.js");
+      const { sendSuccess } = await import("../lib/response.js");
+      return sendSuccess(res, await resolveSettlementMismatch(req));
+    }),
+  ),
+);
+adminSchemeRouter.post(
+  "/gateway/settlement-mismatches/:mismatchId/reopen",
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    validate({ body: settlementMismatchReopenBody }),
+    idempotent,
+    asyncHandler(async (req, res) => {
+      const { reopenSettlementMismatch } = await import("../services/gateway-settlement-resolution.service.js");
+      const { sendSuccess } = await import("../lib/response.js");
+      return sendSuccess(res, await reopenSettlementMismatch(req));
+    }),
+  ),
 );
 adminSchemeRouter.post(
   "/gateway/settlement-runs/:runId/retry",

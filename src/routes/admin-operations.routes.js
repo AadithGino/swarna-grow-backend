@@ -77,7 +77,7 @@ adminOperationsRouter.post("/messaging/dead-letter/:id/requeue", ...guarded(Perm
 adminOperationsRouter.get("/messaging/inbound", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => {
   const { listInboundMessages } = await import("../services/inbound-message.service.js");
   const page = await listInboundMessages(req);
-  return sendList(res, page.data, page.meta);
+  return sendList(res, page);
 })));
 adminOperationsRouter.get("/messaging/inbound/:id", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => {
   const { getInboundMessage } = await import("../services/inbound-message.service.js");

@@ -4,6 +4,34 @@ import { errors } from "../lib/app-error.js";
 import { Customer, InboundMessage } from "../models/index.js";
 import { InboundMessageStatus } from "../models/inbound-message.model.js";
 
+const MAX_INBOUND_TEXT_LENGTH = 4096;
+const MAX_MEDIA_METADATA_JSON = 2000;
+
+function boundText(value) {
+  if (value == null) return null;
+  return String(value).slice(0, MAX_INBOUND_TEXT_LENGTH);
+}
+
+function boundMediaMetadata(value) {
+  if (!value || typeof value !== "object") return null;
+  const json = JSON.stringify(value);
+  if (json.length > MAX_MEDIA_METADATA_JSON) return null;
+  return value;
+}
+
+export function sanitizeInboundMessage(row) {
+  if (!row) return row;
+  const {
+    webhookEventId: _webhookEventId,
+    providerMetadata,
+    ...rest
+  } = row;
+  return {
+    ...rest,
+    providerMetadata: providerMetadata?.waId ? { waId: providerMetadata.waId } : undefined,
+  };
+}
+
 function extractWhatsAppInbound(payload) {
   const messages = payload?.entry?.[0]?.changes?.[0]?.value?.messages;
   if (!Array.isArray(messages) || !messages.length) return [];
@@ -11,14 +39,14 @@ function extractWhatsAppInbound(payload) {
     providerMessageId: message.id,
     senderMobile: message.from,
     messageType: message.type ?? "unknown",
-    text: message.text?.body ?? null,
-    mediaMetadata: message.image || message.document || message.audio || message.video
+    text: boundText(message.text?.body),
+    mediaMetadata: boundMediaMetadata(message.image || message.document || message.audio || message.video
       ? {
         kind: message.type,
         id: message[message.type]?.id ?? null,
         mimeType: message[message.type]?.mime_type ?? null,
       }
-      : null,
+      : null),
     receivedAt: message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date(),
     providerMetadata: { waId: message.from },
   }));
@@ -69,12 +97,16 @@ export async function listInboundMessages(req) {
       filters.$or = [{ senderMobile: q }, { text: new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") }];
     }
   }
-  return paginate(InboundMessage, {
+  const page = await paginate(InboundMessage, {
     filters,
     cursor: req.query.cursor,
-    limit: req.query.limit,
+    limit: Math.min(Number(req.query.limit ?? 25), 100),
     sort: "receivedAt:desc",
   });
+  return {
+    data: page.data.map((row) => sanitizeInboundMessage(row)),
+    meta: page.meta,
+  };
 }
 
 export async function getInboundMessage(req) {
@@ -84,7 +116,7 @@ export async function getInboundMessage(req) {
     ...(req.scope.branchId ? { branchId: req.scope.branchId } : {}),
   }).lean();
   if (!row) throw errors.notFound("Inbound message");
-  return row;
+  return sanitizeInboundMessage(row);
 }
 
 export async function markInboundMessageRead(req) {
@@ -104,5 +136,5 @@ export async function markInboundMessageRead(req) {
     { new: true },
   ).lean();
   if (!row) throw errors.notFound("Inbound message");
-  return row;
+  return sanitizeInboundMessage(row);
 }

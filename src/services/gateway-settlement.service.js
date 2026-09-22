@@ -4,9 +4,12 @@ import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { errors } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { withTransaction } from "../lib/transaction.js";
+import { escapeCsvCell } from "../lib/csv-formula-escape.js";
 import { Payment, PaymentRefund, SettlementItem, SettlementRun, Tenant } from "../models/index.js";
 import { SettlementRunStatus, SettlementSourceType } from "../models/gateway-settlement.models.js";
 import { GatewayRefundStatus } from "../constants/enums.js";
+import { syncSettlementMismatchesForRun } from "./gateway-settlement-resolution.service.js";
+import { GATEWAY_SETTLEMENT_MAX_ITEMS } from "../validators/gateway-settlement.validators.js";
 
 function istBusinessDate(date = new Date()) {
   const ist = new Date(date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
@@ -62,7 +65,7 @@ export async function runDailyGatewaySettlementForTenant({
     mode: PaymentMode.ONLINE_GATEWAY,
     status: { $in: [PaymentStatus.SUCCESS, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REVERSED] },
     paidAt: { $gte: from, $lte: to },
-  }).select("_id amountPaise refundedAmountPaise providerTransactionId").lean();
+  }).select("_id branchId amountPaise refundedAmountPaise providerTransactionId").lean();
   const refunds = await PaymentRefund.find({
     tenantId,
     status: GatewayRefundStatus.COMPLETED,
@@ -106,9 +109,14 @@ export async function runDailyGatewaySettlementForTenant({
     if (item.providerRefundId) {
       providerRefundPaise += item.settledAmountPaise ?? 0;
       const match = refunds.find((row) => row.providerRefundId === item.providerRefundId);
-      if (!match) mismatches.push({ itemId: item._id, reason: "UNKNOWN_REFUND" });
+      if (!match) mismatches.push({ itemId: item._id, reason: "UNKNOWN_REFUND", branchId: null });
       else if (match.amountPaise !== item.settledAmountPaise) {
-        mismatches.push({ itemId: item._id, reason: "REFUND_AMOUNT_MISMATCH" });
+        const payment = await Payment.findById(match.paymentId).select("branchId").lean();
+        mismatches.push({
+          itemId: item._id,
+          reason: "REFUND_AMOUNT_MISMATCH",
+          branchId: payment?.branchId ?? null,
+        });
       }
     } else {
       providerCapturePaise += item.settledAmountPaise ?? 0;
@@ -116,12 +124,18 @@ export async function runDailyGatewaySettlementForTenant({
         (row) => row.providerTransactionId === item.providerTransactionId
           || row._id === item.matchedPaymentId,
       );
-      if (!match) mismatches.push({ itemId: item._id, reason: "UNKNOWN_CAPTURE" });
+      if (!match) mismatches.push({ itemId: item._id, reason: "UNKNOWN_CAPTURE", branchId: null });
       else if ((match.amountPaise - (match.refundedAmountPaise ?? 0)) !== item.settledAmountPaise) {
-        mismatches.push({ itemId: item._id, reason: "CAPTURE_AMOUNT_MISMATCH" });
+        mismatches.push({ itemId: item._id, reason: "CAPTURE_AMOUNT_MISMATCH", branchId: match.branchId ?? null });
       }
     }
   }
+
+  await syncSettlementMismatchesForRun({
+    tenantId,
+    runId: claimed._id,
+    mismatches,
+  });
 
   const status = mismatches.length
     ? SettlementRunStatus.MISMATCH
@@ -154,6 +168,22 @@ export async function runDailyGatewaySettlementForTenant({
   return { outcome: status, runId: claimed._id, mismatches: mismatches.length };
 }
 
+function safeSourceFileName(name) {
+  if (!name) return undefined;
+  const base = String(name).replace(/\\/g, "/").split("/").pop() ?? "";
+  return base.trim().slice(0, 200) || undefined;
+}
+
+export function formatSettlementItemsForCsvExport(items = []) {
+  const header = "providerTransactionId,providerRefundId,settledAmountPaise";
+  const lines = items.map((row) => [
+    escapeCsvCell(row.providerTransactionId ?? ""),
+    escapeCsvCell(row.providerRefundId ?? ""),
+    escapeCsvCell(row.settledAmountPaise ?? ""),
+  ].join(","));
+  return [header, ...lines].join("\n");
+}
+
 export async function uploadGatewaySettlementStatement(req) {
   const businessDate = String(req.body.businessDate ?? "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) {
@@ -163,7 +193,19 @@ export async function uploadGatewaySettlementStatement(req) {
   if (!Array.isArray(rows) || !rows.length) {
     throw errors.business("SETTLEMENT_ITEMS_REQUIRED", "items array is required.");
   }
-  const checksum = checksumPayload({ businessDate, rows });
+  if (rows.length > GATEWAY_SETTLEMENT_MAX_ITEMS) {
+    throw errors.business("SETTLEMENT_TOO_MANY_ROWS", `Upload exceeds ${GATEWAY_SETTLEMENT_MAX_ITEMS} rows.`);
+  }
+  for (const row of rows) {
+    if (!row.providerTransactionId && !row.providerRefundId) {
+      throw errors.business("SETTLEMENT_ROW_INVALID", "Each row needs providerTransactionId or providerRefundId.");
+    }
+    if (!Number.isSafeInteger(row.settledAmountPaise) || row.settledAmountPaise <= 0) {
+      throw errors.business("SETTLEMENT_AMOUNT_INVALID", "Each settledAmountPaise must be a positive integer.");
+    }
+  }
+  const sourceFileName = safeSourceFileName(req.body.sourceFileName);
+  const checksum = checksumPayload({ businessDate, rows, sourceFileName });
   let run = await SettlementRun.findOne({
     tenantId: req.auth.tenantId,
     businessDate,
@@ -184,6 +226,7 @@ export async function uploadGatewaySettlementStatement(req) {
             sourceType: SettlementSourceType.UPLOAD,
             status: SettlementRunStatus.PENDING,
             inputChecksum: checksum,
+            sourceFileName,
           },
         ],
         { session },
@@ -193,7 +236,7 @@ export async function uploadGatewaySettlementStatement(req) {
       await SettlementItem.deleteMany({ tenantId: req.auth.tenantId, runId: run._id }).session(session);
       await SettlementRun.updateOne(
         { _id: run._id },
-        { $set: { inputChecksum: checksum, status: SettlementRunStatus.PENDING } },
+        { $set: { inputChecksum: checksum, status: SettlementRunStatus.PENDING, sourceFileName } },
       ).session(session);
     }
     await SettlementItem.insertMany(

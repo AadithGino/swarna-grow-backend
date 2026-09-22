@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { baseOptions, enumField, integerField, stringId, tenantField } from "./schema-helpers.js";
+import { baseOptions, branchField, enumField, integerField, stringId, tenantField } from "./schema-helpers.js";
 
 export const SettlementRunStatus = Object.freeze({
   PENDING: "PENDING",
@@ -13,6 +13,25 @@ export const SettlementRunStatus = Object.freeze({
 export const SettlementSourceType = Object.freeze({
   UPLOAD: "UPLOAD",
   API: "API",
+});
+
+export const SettlementMismatchStatus = Object.freeze({
+  OPEN: "OPEN",
+  RESOLVED: "RESOLVED",
+});
+
+export const SettlementResolutionCategory = Object.freeze({
+  PROVIDER_CONFIRMED: "PROVIDER_CONFIRMED",
+  BANK_CONFIRMED: "BANK_CONFIRMED",
+  TIMING_DIFFERENCE: "TIMING_DIFFERENCE",
+  DUPLICATE_STATEMENT_ROW: "DUPLICATE_STATEMENT_ROW",
+  INTERNAL_REFERENCE_CORRECTED: "INTERNAL_REFERENCE_CORRECTED",
+  ACCEPTED_MANUAL_EXCEPTION: "ACCEPTED_MANUAL_EXCEPTION",
+});
+
+export const SettlementResolutionAction = Object.freeze({
+  RESOLVE: "RESOLVE",
+  REOPEN: "REOPEN",
 });
 
 const settlementRunSchema = new mongoose.Schema(
@@ -30,6 +49,7 @@ const settlementRunSchema = new mongoose.Schema(
     mismatchCapturePaise: integerField({ default: 0 }),
     mismatchRefundPaise: integerField({ default: 0 }),
     inputChecksum: String,
+    sourceFileName: String,
     startedAt: Date,
     completedAt: Date,
     leaseOwner: String,
@@ -58,5 +78,32 @@ const settlementItemSchema = new mongoose.Schema(
   baseOptions,
 );
 
+const settlementMismatchSchema = new mongoose.Schema(
+  {
+    _id: stringId("smm"),
+    tenantId: tenantField,
+    branchId: branchField,
+    runId: { type: String, required: true, index: true },
+    itemId: { type: String, required: true },
+    reason: { type: String, required: true },
+    status: enumField(SettlementMismatchStatus, { default: SettlementMismatchStatus.OPEN }),
+    version: { type: Number, default: 0 },
+    resolutionHistory: [{
+      action: { type: String, required: true },
+      category: String,
+      reason: { type: String, required: true },
+      actorId: { type: String, required: true },
+      at: { type: Date, required: true },
+      idempotencyKey: String,
+    }],
+    resolvedAt: Date,
+    resolvedBy: String,
+  },
+  baseOptions,
+);
+settlementMismatchSchema.index({ tenantId: 1, runId: 1, itemId: 1 }, { unique: true });
+settlementMismatchSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
+
 export const SettlementRun = mongoose.model("SettlementRun", settlementRunSchema);
 export const SettlementItem = mongoose.model("SettlementItem", settlementItemSchema);
+export const SettlementMismatch = mongoose.model("SettlementMismatch", settlementMismatchSchema);

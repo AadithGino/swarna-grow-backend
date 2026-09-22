@@ -345,6 +345,9 @@ export const phonePeProvider = {
     tenantId,
   }) {
     if (env.PROVIDER_MODE === "mock") {
+      if (String(merchantRefundId).includes("__mock_init_fail__")) {
+        throw new AppError("DEPENDENCY_UNAVAILABLE", "Mock PhonePe refund initiation failure.", 503);
+      }
       return {
         refundId: merchantRefundId,
         state: "PENDING",

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import * as E from "../constants/enums.js";
-import { passwordPolicySchema, positivePaise } from "./common.validators.js";
+import { passwordPolicySchema, platformAppConfigBody, positivePaise } from "./common.validators.js";
 
 const enumSchema = (enumeration) => z.enum(Object.values(enumeration));
 const id = z.string().trim().min(4).max(80);
@@ -34,7 +34,9 @@ export const platformCreatePlanBody = z.object({
   }).strict(),
 }).strict();
 
-export const platformUpdatePlanBody = platformCreatePlanBody.partial().strict();
+export const platformUpdatePlanBody = platformCreatePlanBody.partial().extend({
+  expectedVersion: z.number().int().min(0),
+}).strict();
 export const platformDeprecatePlanBody = z.object({ reason: z.string().trim().min(3).max(500).optional() }).strict();
 
 export const platformCreateTenantBody = z.object({
@@ -166,5 +168,5 @@ export const platformRouteValidators = {
   "POST /invoices/:invoiceId/mark-paid": { params: invoiceIdParam, body: platformMarkInvoicePaidBody },
   "PUT /tenants/:tenantId/flags": { params: tenantIdParam, body: platformFlagsBody },
   "POST /webhook-failures/:id/retry": { params: webhookRetryParam, body: platformWebhookRetryBody },
-  "PUT /app-config": { body: z.object({}).passthrough() },
+  "PUT /app-config": { body: platformAppConfigBody },
 };
