@@ -42,6 +42,8 @@ const webhookEventSchema = new mongoose.Schema({
   leaseExpiresAt: Date,
   error: String,
   processedAt: Date,
+  unsupportedCallbackType: String,
+  unsupportedMetadata: mongoose.Schema.Types.Mixed,
   purgeAt: Date,
 }, baseOptions);
 webhookEventSchema.index(

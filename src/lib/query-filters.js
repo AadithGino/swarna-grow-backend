@@ -2,9 +2,24 @@
 export const escaped = (value) =>
   String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+export const MAX_SEARCH_QUERY_LENGTH = 100;
+
+/** Trim and cap user search input for Mongo regex filters. */
+export function boundedSearchQuery(q) {
+  const text = String(q ?? "").trim().slice(0, MAX_SEARCH_QUERY_LENGTH);
+  return text || null;
+}
+
+/** Case-insensitive substring regex from bounded user input (empty → null). */
+export function containsSearchRegex(q) {
+  const text = boundedSearchQuery(q);
+  if (!text) return null;
+  return new RegExp(escaped(text), "i");
+}
+
 /** Build a case-insensitive regex from `q` (empty → null). */
 export const searchRegex = (q) => {
-  const text = String(q ?? "").trim();
+  const text = boundedSearchQuery(q);
   if (!text) return null;
   return new RegExp(`^${escaped(text)}`, "i");
 };

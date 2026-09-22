@@ -9,12 +9,15 @@ import {
   Tenant,
 } from "../models/index.js";
 import { errors } from "../lib/app-error.js";
+import { moneyPaiseFromWeightMg } from "../lib/money.js";
 import { mobileLookupVariants } from "../lib/mobile.js";
 import {
   customerProfileDto,
   enrichPayableRange,
   isCustomerProfileComplete,
   buildNotificationContext,
+  countUnreadDedupedNotifications,
+  dedupeCustomerNotificationRows,
   mapNotification,
   mapPastSchemeRow,
   paymentPollStatusDto,
@@ -127,7 +130,7 @@ export async function completeAppProfile(auth, body) {
 export async function buildHome(auth, tenant, query = {}) {
   const includeTrends = query.includeTrends === "true" || query.includeTrends === true;
   const trendMonths = Number(query.trendMonths) || 6;
-  const [customer, activeSchemesRaw, pastSchemes, unreadCount, goldRate] = await Promise.all([
+  const [customer, activeSchemesRaw, pastSchemes, unreadRows, goldRate] = await Promise.all([
     Customer.findById(auth.id).lean(),
     Scheme.find({
       tenantId: auth.tenantId,
@@ -142,9 +145,13 @@ export async function buildHome(auth, tenant, query = {}) {
       .sort({ updatedAt: -1 })
       .limit(5)
       .lean(),
-    Message.countDocuments({ tenantId: auth.tenantId, customerId: auth.id, readAt: null }),
+    Message.find({ tenantId: auth.tenantId, customerId: auth.id, readAt: null })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean(),
     currentGoldRate({ tenantId: auth.tenantId, branchId: auth.branchId }, today()),
   ]);
+  const unreadCount = countUnreadDedupedNotifications(unreadRows);
   const activeSchemes = await schemes.attachLedgerTotals(auth.tenantId, activeSchemesRaw);
   const hasGoldAccumulationScheme = Boolean(
     await Scheme.exists({
@@ -156,15 +163,21 @@ export async function buildHome(auth, tenant, query = {}) {
   const payments = await Payment.find({
     tenantId: auth.tenantId,
     customerId: auth.id,
-    status: PaymentStatus.SUCCESS,
+    status: { $in: [PaymentStatus.SUCCESS, PaymentStatus.PARTIALLY_REFUNDED] },
   })
-    .select("amountPaise weightMg paidAt")
+    .select("amountPaise weightMg refundedAmountPaise refundedWeightMg paidAt")
     .lean();
-  const totalPaidPaise = payments.reduce((s, p) => s + (p.amountPaise ?? 0), 0);
-  const goldMg = payments.reduce((s, p) => s + (p.weightMg ?? 0), 0);
+  const totalPaidPaise = payments.reduce(
+    (s, p) => s + (p.amountPaise ?? 0) - (p.refundedAmountPaise ?? 0),
+    0,
+  );
+  const goldMg = payments.reduce(
+    (s, p) => s + (p.weightMg ?? 0) - (p.refundedWeightMg ?? 0),
+    0,
+  );
   const currentValuePaise =
-    goldRate?.ratePerGramPaise && goldMg
-      ? Math.round((goldMg * goldRate.ratePerGramPaise) / 1000)
+    goldRate?.ratePerGramPaise && goldMg > 0
+      ? moneyPaiseFromWeightMg(goldMg, goldRate.ratePerGramPaise)
       : totalPaidPaise;
   const firstName = customer?.name?.trim()?.split(/\s+/)[0] ?? "there";
   const hour = new Date().getHours();
@@ -573,25 +586,31 @@ export async function getPaymentForApp(req) {
 }
 
 export async function listNotifications(auth) {
+  const limit = Number(auth.limit) || 50;
   const rows = await Message.find({ tenantId: auth.tenantId, customerId: auth.id })
     .sort({ createdAt: -1 })
-    .limit(Number(auth.limit) || 50)
+    .limit(Math.min(limit * 3, 150))
     .lean();
-  const unreadCount = await Message.countDocuments({
+  const unreadRows = await Message.find({
     tenantId: auth.tenantId,
     customerId: auth.id,
     readAt: null,
-  });
+  })
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
+  const unreadCount = countUnreadDedupedNotifications(unreadRows);
+  const deduped = dedupeCustomerNotificationRows(rows).slice(0, limit);
   const paymentIds = [
     ...new Set(
-      rows
+      deduped
         .map((row) => row.templateParams?.paymentId)
         .filter(Boolean)
         .map(String),
     ),
   ];
   const schemeIds = [
-    ...new Set(rows.map((row) => row.schemeId).filter(Boolean).map(String)),
+    ...new Set(deduped.map((row) => row.schemeId).filter(Boolean).map(String)),
   ];
   const [payments, schemes] = await Promise.all([
     paymentIds.length
@@ -607,7 +626,29 @@ export async function listNotifications(auth) {
   ]);
   const ctx = buildNotificationContext({ payments, schemes });
   return {
-    items: rows.map((row) => mapNotification(row, ctx)),
+    items: deduped.map((row) => mapNotification(row, ctx)),
     unreadCount,
   };
+}
+
+export async function markNotificationRead(auth, messageId) {
+  const row = await Message.findOne({
+    _id: messageId,
+    tenantId: auth.tenantId,
+    customerId: auth.id,
+  }).lean();
+  if (!row) throw errors.notFound("Notification");
+  const now = new Date();
+  const filter = {
+    tenantId: auth.tenantId,
+    customerId: auth.id,
+    type: row.type,
+    readAt: null,
+  };
+  if (row.schemeId) filter.schemeId = row.schemeId;
+  if (row.templateParams?.paymentId) {
+    filter["templateParams.paymentId"] = row.templateParams.paymentId;
+  }
+  await Message.updateMany(filter, { $set: { readAt: now } });
+  return { read: true, readAt: now.toISOString() };
 }

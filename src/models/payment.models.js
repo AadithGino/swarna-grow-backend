@@ -42,6 +42,9 @@ const paymentSchema = new mongoose.Schema(
     reversedAt: Date,
     reversedBy: String,
     reversalReason: String,
+    refundedAmountPaise: integerField({ default: 0, min: 0 }),
+    refundedWeightMg: integerField({ default: 0, min: 0 }),
+    lastRefundedAt: Date,
     targetCycle: String,
     isLateSuccess: { type: Boolean, default: false },
     lateSuccessDetectedVia: enumField(LateSuccessDetection),
@@ -151,8 +154,23 @@ const paymentRefundSchema = new mongoose.Schema(
     failedAt: Date,
     requiresReview: { type: Boolean, default: false },
     reviewReason: String,
+    idempotencyKey: String,
+    reason: String,
+    initiatedBy: String,
+    providerInitiationAttempts: { type: Number, default: 0 },
+    providerInitiationError: String,
+    lastInitiationAt: Date,
   },
   baseOptions,
+);
+paymentRefundSchema.index(
+  { tenantId: 1, paymentId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      idempotencyKey: { $type: "string", $gt: "" },
+    },
+  },
 );
 paymentRefundSchema.index(
   { tenantId: 1, providerEventId: 1 },

@@ -4,7 +4,7 @@ import { randomToken } from "../lib/crypto.js";
 import { PushOutcomeKind } from "../lib/fcm-outcomes.js";
 import { incrementOpsMetric, OpsMetric } from "../lib/ops-metrics.js";
 import { createId } from "../lib/ids.js";
-import { Alert, Message, PushDeviceDelivery } from "../models/index.js";
+import { Message, PushDeviceDelivery } from "../models/index.js";
 
 const MESSAGE_TERMINAL_STATUSES = new Set(["SENT", "DELIVERED", "READ"]);
 
@@ -114,24 +114,18 @@ function deliveryStatusForOutcome(outcome, attemptCount) {
 }
 
 async function upsertDeliveryExhaustedAlert({ tenantId, messageId, attempts }) {
-  await Alert.findOneAndUpdate(
-    {
-      tenantId,
-      type: "FCM_DELIVERY_EXHAUSTED",
-      entityId: messageId,
-      status: "OPEN",
-    },
-    {
-      $setOnInsert: {
-        severity: "HIGH",
-        title: "FCM delivery retries exhausted",
-        message: "One or more device deliveries reached the retry limit for this message.",
-        entityType: "MESSAGE",
-        metadata: { attempts },
-      },
-    },
-    { upsert: true },
-  );
+  const { upsertOperationalAlert } = await import("../lib/operational-alert.js");
+  const { AlertSeverity, AlertType } = await import("../constants/enums.js");
+  await upsertOperationalAlert({
+    tenantId,
+    type: AlertType.FCM_DELIVERY_EXHAUSTED,
+    entityId: messageId,
+    severity: AlertSeverity.WARNING,
+    title: "FCM delivery retries exhausted",
+    message: "One or more device deliveries reached the retry limit for this message.",
+    entityType: "MESSAGE",
+    metadata: { attempts },
+  });
   incrementOpsMetric(OpsMetric.FCM_DELIVERY_EXHAUSTED_ALERT);
 }
 

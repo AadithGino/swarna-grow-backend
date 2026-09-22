@@ -1,4 +1,5 @@
-import { Alert } from "../models/index.js";
+import { AlertType } from "../constants/enums.js";
+import { upsertOperationalAlert } from "./operational-alert.js";
 
 /** Critical review alert for completed webhooks that fail strict provider field validation. */
 export async function upsertGatewayWebhookInvalidCompletedAlert({
@@ -8,26 +9,16 @@ export async function upsertGatewayWebhookInvalidCompletedAlert({
   reference = null,
   webhookEventId,
 }) {
-  await Alert.findOneAndUpdate(
-    {
-      tenantId,
-      type: "GATEWAY_WEBHOOK_INVALID_COMPLETED",
-      entityId,
-      status: "OPEN",
+  await upsertOperationalAlert({
+    tenantId,
+    type: AlertType.GATEWAY_WEBHOOK_INVALID_COMPLETED,
+    entityId,
+    title: "Invalid completed gateway webhook",
+    message: `Completed PhonePe callback rejected before finalization: ${code}`,
+    metadata: {
+      code,
+      reference: reference ?? null,
+      webhookEventId,
     },
-    {
-      $setOnInsert: {
-        severity: "CRITICAL",
-        title: "Invalid completed gateway webhook",
-        message: `Completed PhonePe callback rejected before finalization: ${code}`,
-        entityType: "WEBHOOK",
-        metadata: {
-          code,
-          reference: reference ?? null,
-          webhookEventId,
-        },
-      },
-    },
-    { upsert: true },
-  );
+  });
 }

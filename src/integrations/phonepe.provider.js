@@ -2,6 +2,7 @@ import {
   CallbackType,
   CreateSdkOrderRequest,
   Env,
+  RefundRequest,
   ResourceNotFound,
   StandardCheckoutClient,
   StandardCheckoutPayRequest,
@@ -334,6 +335,30 @@ export const phonePeProvider = {
     assertLiveCredentials(credentials);
     const client = getClientFor(credentials, tenantId);
     return client.getOrderStatus(merchantOrderId);
+  },
+
+  async initiateRefund({
+    merchantRefundId,
+    originalMerchantOrderId,
+    amountPaise,
+    credentials,
+    tenantId,
+  }) {
+    if (env.PROVIDER_MODE === "mock") {
+      return {
+        refundId: merchantRefundId,
+        state: "PENDING",
+        amount: amountPaise,
+      };
+    }
+    assertLiveCredentials(credentials);
+    const client = getClientFor(credentials, tenantId);
+    const request = RefundRequest.builder()
+      .merchantRefundId(merchantRefundId)
+      .originalMerchantOrderId(originalMerchantOrderId)
+      .amount(amountPaise)
+      .build();
+    return client.refund(request);
   },
 
   verifyCallback(rawBody, authorizationHeader, credentials, tenantId) {

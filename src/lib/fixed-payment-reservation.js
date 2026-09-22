@@ -184,33 +184,26 @@ export async function recordStaleFixedReservationGatewaySuccess({
   payment,
   reason,
 }) {
-  const { Alert } = await import("../models/index.js");
   const { OutboxEvent } = await import("../models/index.js");
-  await Alert.findOneAndUpdate(
-    {
-      tenantId,
-      type: "PAYMENT_REVIEW",
-      entityId: payment._id,
-      status: "OPEN",
+  const { upsertOperationalAlert } = await import("./operational-alert.js");
+  const { AlertType } = await import("../constants/enums.js");
+  await upsertOperationalAlert({
+    tenantId,
+    type: AlertType.PAYMENT_REVIEW,
+    entityId: payment._id,
+    title: "Unallocated fixed-scheme gateway payment",
+    message:
+      "A gateway payment succeeded but its installment reservation was no longer valid. Funds require manual review.",
+    entityType: "PAYMENT",
+    metadata: {
+      branchId: payment.branchId ?? scheme.branchId,
+      schemeId: scheme._id,
+      customerId: scheme.customerId,
+      paymentId: payment._id,
+      reason: reason ?? "STALE_FIXED_RESERVATION",
     },
-    {
-      $setOnInsert: {
-        branchId: payment.branchId ?? scheme.branchId,
-        severity: "CRITICAL",
-        title: "Unallocated fixed-scheme gateway payment",
-        message:
-          "A gateway payment succeeded but its installment reservation was no longer valid. Funds require manual review.",
-        entityType: "PAYMENT",
-        metadata: {
-          schemeId: scheme._id,
-          customerId: scheme.customerId,
-          paymentId: payment._id,
-          reason: reason ?? "STALE_FIXED_RESERVATION",
-        },
-      },
-    },
-    { upsert: true, session },
-  );
+    session,
+  });
   try {
     await OutboxEvent.create(
       [

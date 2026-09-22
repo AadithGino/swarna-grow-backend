@@ -1,5 +1,5 @@
 import { PaymentStatus, SchemeStatus } from "../constants/enums.js";
-import { Alert, LedgerEntry, OutboxEvent, Payment } from "../models/index.js";
+import { LedgerEntry, OutboxEvent, Payment } from "../models/index.js";
 import { writeAudit } from "../services/audit.service.js";
 
 function ledgerTotals(entries) {
@@ -144,31 +144,26 @@ export async function upsertFlexSettlementAlert({
   settlementPrincipalPaise,
 }) {
   if (!(settlementPrincipalPaise > 0)) return;
-  await Alert.findOneAndUpdate(
-    {
-      tenantId,
-      type: "FLEX_SETTLEMENT_REQUIRED",
-      entityId: scheme._id,
-      status: "OPEN",
+  const { upsertOperationalAlert } = await import("./operational-alert.js");
+  const { AlertSeverity, AlertType } = await import("../constants/enums.js");
+  await upsertOperationalAlert({
+    tenantId,
+    type: AlertType.FLEX_SETTLEMENT_REQUIRED,
+    entityId: scheme._id,
+    severity: AlertSeverity.WARNING,
+    title: "Flexible scheme settlement required",
+    message:
+      "This scheme was closed by flexible lock policy and requires staff settlement of the customer principal.",
+    entityType: "SCHEME",
+    metadata: {
+      branchId: scheme.branchId,
+      schemeId: scheme._id,
+      customerId: scheme.customerId,
+      closureReason: scheme.closureReason,
+      settlementPrincipalPaise,
     },
-    {
-      $setOnInsert: {
-        branchId: scheme.branchId,
-        severity: "WARNING",
-        title: "Flexible scheme settlement required",
-        message:
-          "This scheme was closed by flexible lock policy and requires staff settlement of the customer principal.",
-        entityType: "SCHEME",
-        metadata: {
-          schemeId: scheme._id,
-          customerId: scheme.customerId,
-          closureReason: scheme.closureReason,
-          settlementPrincipalPaise,
-        },
-      },
-    },
-    { upsert: true, session },
-  );
+    session,
+  });
 }
 
 export async function applySystemFlexLockClosure({

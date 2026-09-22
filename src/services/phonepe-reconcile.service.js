@@ -5,7 +5,7 @@ import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phon
 import { validatePhonePeCompletedIdentifiers } from "../lib/phonepe-completed-identifiers.js";
 import { PhonePeOrderStatusKind, normalizePhonePeOrderStatus } from "../lib/phonepe-order-status.js";
 import { randomToken } from "../lib/crypto.js";
-import { Alert, Payment, PaymentIntent, PaymentLink, Tenant } from "../models/index.js";
+import { Payment, PaymentIntent, PaymentLink, Tenant } from "../models/index.js";
 import { applyTerminalGatewayFailure } from "./gateway-terminal-failure.service.js";
 import { recordPhonePeReconcileOutcome } from "../lib/ops-metrics.js";
 import {
@@ -122,24 +122,17 @@ async function establishReconcileExhaustedIfAtThreshold(payment, merchantOrderId
 }
 
 async function upsertReconcileExhaustedAlert({ tenantId, paymentId, merchantOrderId, attempts, detail }) {
-  await Alert.findOneAndUpdate(
-    {
-      tenantId,
-      type: "GATEWAY_RECONCILE_EXHAUSTED",
-      entityId: paymentId,
-      status: "OPEN",
-    },
-    {
-      $setOnInsert: {
-        severity: "CRITICAL",
-        title: "Gateway reconciliation exhausted",
-        message: detail,
-        entityType: "PAYMENT",
-        metadata: { merchantOrderId, attempts },
-      },
-    },
-    { upsert: true },
-  );
+  const { upsertOperationalAlert } = await import("../lib/operational-alert.js");
+  const { AlertType } = await import("../constants/enums.js");
+  await upsertOperationalAlert({
+    tenantId,
+    type: AlertType.GATEWAY_RECONCILE_EXHAUSTED,
+    entityId: paymentId,
+    title: "Gateway reconciliation exhausted",
+    message: detail,
+    entityType: "PAYMENT",
+    metadata: { merchantOrderId, attempts },
+  });
 }
 
 function progressFollowUpFence({ paymentId, tenantId, attempts, leaseOwner }) {

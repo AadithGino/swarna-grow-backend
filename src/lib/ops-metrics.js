@@ -39,6 +39,7 @@ export const OpsMetric = Object.freeze({
   PHONEPE_REFUND_FAILED: "phonepe.refund.failed",
   PHONEPE_REFUND_ACCEPTED: "phonepe.refund.accepted",
   PHONEPE_WEBHOOK_DUPLICATE: "phonepe.webhook.duplicate",
+  PHONEPE_WEBHOOK_UNSUPPORTED: "phonepe.webhook.unsupported",
   PHONEPE_WEBHOOK_OUT_OF_ORDER: "phonepe.webhook.out_of_order",
   REMINDER_RUN: "reminder.scheduler.run",
   REMINDER_LEASE_CONTENTION: "reminder.scheduler.lease_contention",

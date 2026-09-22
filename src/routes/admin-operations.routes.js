@@ -74,7 +74,19 @@ adminOperationsRouter.post("/messaging/dead-letter/:id/requeue", ...guarded(Perm
   );
   sendSuccess(res, { id: replayed._id, queued: true }, {}, 202);
 })));
-adminOperationsRouter.get("/messaging/inbound", ...guarded(Permission.MESSAGE_READ, asyncHandler(async () => { throw new AppError("FEATURE_NOT_AVAILABLE", "Inbound messaging is not available yet.", 501); })));
+adminOperationsRouter.get("/messaging/inbound", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => {
+  const { listInboundMessages } = await import("../services/inbound-message.service.js");
+  const page = await listInboundMessages(req);
+  return sendList(res, page.data, page.meta);
+})));
+adminOperationsRouter.get("/messaging/inbound/:id", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => {
+  const { getInboundMessage } = await import("../services/inbound-message.service.js");
+  return sendSuccess(res, await getInboundMessage(req));
+})));
+adminOperationsRouter.post("/messaging/inbound/:id/read", ...guarded(Permission.MESSAGE_READ, idempotent, asyncHandler(async (req, res) => {
+  const { markInboundMessageRead } = await import("../services/inbound-message.service.js");
+  return sendSuccess(res, await markInboundMessageRead(req));
+})));
 adminOperationsRouter.get("/reminders/config", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.reminderConfig)));
 adminOperationsRouter.put("/reminders/config", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.updateReminderConfig)));
 adminOperationsRouter.post(
@@ -122,7 +134,10 @@ adminOperationsRouter.post("/grievances/:grievanceId/assign", ...guarded(Permiss
 adminOperationsRouter.post("/grievances/:grievanceId/priority", ...guarded(Permission.GRIEVANCE_ASSIGN, idempotent, asyncHandler(controller.mutateGrievance("priority"))));
 adminOperationsRouter.post("/grievances/:grievanceId/messages", ...guarded(Permission.GRIEVANCE_REPLY, validate({ body: messageBody }), idempotent, asyncHandler(controller.grievanceMessage)));
 adminOperationsRouter.post("/grievances/:grievanceId/status", ...guarded(Permission.GRIEVANCE_RESOLVE, idempotent, asyncHandler(controller.mutateGrievance("status"))));
-adminOperationsRouter.post("/payments/:paymentId/poll-status", ...guarded(Permission.PAYMENT_READ, idempotent, asyncHandler(async () => { throw new AppError("FEATURE_NOT_AVAILABLE", "Gateway poll-status is not available yet.", 501); })));
+adminOperationsRouter.post("/payments/:paymentId/poll-status", ...guarded(Permission.PAYMENT_READ, idempotent, asyncHandler(async (req, res) => {
+  const { pollPaymentGatewayStatus } = await import("../services/payment-poll-status.service.js");
+  return sendSuccess(res, await pollPaymentGatewayStatus(req));
+})));
 adminOperationsRouter.post("/payments/:paymentId/reconcile", ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async (req, res) => {
   const { reconcilePaymentById } = await import("../services/phonepe-reconcile.service.js");
   const forceReplay = req.body?.forceReplay === true || req.body?.forceReplay === "true";

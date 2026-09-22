@@ -1,9 +1,10 @@
-import { AuditEntityType, LinkStatus, PaymentIntentStatus, PaymentStatus } from "../constants/enums.js";
+import { AlertType, AuditEntityType, LinkStatus, PaymentIntentStatus, PaymentStatus } from "../constants/enums.js";
+import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { isFixedReservationIntent } from "../lib/fixed-payment-reservation.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { recordPhonePeDriftRepaired } from "../lib/ops-metrics.js";
 import { withTransaction } from "../lib/transaction.js";
-import { Alert, Payment, PaymentIntent, PaymentLink, Scheme } from "../models/index.js";
+import { Payment, PaymentIntent, PaymentLink, Scheme } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
 import { recordPayment } from "./payment.service.js";
 
@@ -170,28 +171,20 @@ async function applyAmountMismatchAtomic({
     }
     gatewayTxFaultCheckpoint("mismatch:scheme-updated");
 
-    await Alert.findOneAndUpdate(
-      {
-        tenantId,
-        type: "GATEWAY_AMOUNT_MISMATCH",
-        entityId: paymentId,
-        status: "OPEN",
+    await upsertOperationalAlert({
+      tenantId,
+      type: AlertType.GATEWAY_AMOUNT_MISMATCH,
+      entityId: paymentId,
+      title: "Gateway amount mismatch",
+      message: "A verified gateway callback amount did not match the reserved payment amount.",
+      entityType: "PAYMENT",
+      metadata: {
+        branchId: source.branchId,
+        expectedPaise: source.amountPaise,
+        receivedPaise: amountPaise,
       },
-      {
-        $setOnInsert: {
-          branchId: source.branchId,
-          severity: "CRITICAL",
-          title: "Gateway amount mismatch",
-          message: "A verified gateway callback amount did not match the reserved payment amount.",
-          entityType: "PAYMENT",
-          metadata: {
-            expectedPaise: source.amountPaise,
-            receivedPaise: amountPaise,
-          },
-        },
-      },
-      { upsert: true, session },
-    );
+      session,
+    });
     gatewayTxFaultCheckpoint("mismatch:alert-upserted");
 
     await writeAudit({

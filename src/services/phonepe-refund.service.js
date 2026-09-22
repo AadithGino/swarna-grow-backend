@@ -1,15 +1,27 @@
-import { AuditEntityType } from "../constants/enums.js";
-import { GatewayRefundStatus, LedgerEntryType, PaymentStatus } from "../constants/enums.js";
+import { AuditEntityType, AlertType, GatewayRefundStatus, LedgerEntryType, PaymentStatus, SchemeStatus } from "../constants/enums.js";
 import { callbackTypeKey } from "../integrations/phonepe.provider.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
+import { refundWeightDeltaMg } from "../lib/gateway-refund-accounting.js";
 import { createId } from "../lib/ids.js";
+import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { withTransaction } from "../lib/transaction.js";
 import { errors } from "../lib/app-error.js";
-import { Alert, LedgerEntry, Payment, PaymentIntent, PaymentRefund, Scheme } from "../models/index.js";
+import { LedgerEntry, Payment, PaymentIntent, PaymentRefund, Scheme } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
 import { nextSchemeLedgerSequence } from "./sequence.service.js";
 import { recordPhonePeRefundOutcome } from "../lib/ops-metrics.js";
 import { rebuildSchemeProjection } from "./scheme.service.js";
+
+const REFUNDABLE_PAYMENT_STATUSES = new Set([
+  PaymentStatus.SUCCESS,
+  PaymentStatus.PARTIALLY_REFUNDED,
+]);
+
+const TERMINAL_SCHEME_STATUSES = new Set([
+  SchemeStatus.MATURED,
+  SchemeStatus.REDEEMED,
+  SchemeStatus.CLOSED_PREMATURE,
+]);
 
 function refundCallbackKind(type) {
   const key = callbackTypeKey(type);
@@ -30,100 +42,6 @@ function refundCurrencyValid(payload) {
   if (!currency) return true;
   const normalized = String(currency).toUpperCase();
   return normalized === "INR" || normalized === "IN";
-}
-
-async function upsertRefundAlert({
-  tenantId,
-  type,
-  entityId,
-  title,
-  message,
-  metadata,
-  session = null,
-}) {
-  await Alert.findOneAndUpdate(
-    { tenantId, type, entityId, status: "OPEN" },
-    {
-      $setOnInsert: {
-        severity: "CRITICAL",
-        title,
-        message,
-        entityType: "PAYMENT",
-        metadata,
-      },
-    },
-    { upsert: true, ...(session ? { session } : {}) },
-  );
-}
-
-async function applyPartialRefundReviewAtomic({
-  tenantId,
-  payment,
-  refund,
-  refundAmountPaise,
-  providerRefundId,
-  payload,
-}) {
-  await withTransaction(async (session) => {
-    await Payment.updateOne(
-      { _id: payment._id, tenantId },
-      {
-        $set: {
-          requiresReview: true,
-          reviewReason: "PARTIAL_REFUND_REQUIRES_REVIEW",
-        },
-      },
-      { session },
-    );
-    gatewayTxFaultCheckpoint("partialRefund:payment-updated");
-
-    await PaymentRefund.updateOne(
-      { _id: refund._id, tenantId },
-      {
-        $set: {
-          status: GatewayRefundStatus.COMPLETED,
-          completedAt: new Date(),
-          amountPaise: refundAmountPaise,
-          providerPayload: payload,
-          requiresReview: true,
-          reviewReason: "PARTIAL_REFUND",
-        },
-      },
-      { session },
-    );
-    gatewayTxFaultCheckpoint("partialRefund:refund-updated");
-
-    await upsertRefundAlert({
-      tenantId,
-      type: "GATEWAY_REFUND_PARTIAL",
-      entityId: payment._id,
-      title: "Partial gateway refund requires review",
-      message: "Refund amount differs from the original payment amount.",
-      metadata: {
-        providerRefundId,
-        expectedPaise: payment.amountPaise,
-        receivedPaise: refundAmountPaise,
-      },
-      session,
-    });
-    gatewayTxFaultCheckpoint("partialRefund:alert-upserted");
-
-    await writeAudit({
-      req: {
-        auth: { id: "phonepe-refund", tenantId, type: "WEBHOOK" },
-        headers: {},
-        ip: "provider",
-      },
-      action: "GATEWAY_REFUND_PARTIAL_REVIEW",
-      entityType: AuditEntityType.PAYMENT,
-      entityId: payment._id,
-      after: { paymentId: payment._id, refundId: refund._id },
-      metadata: { providerRefundId, refundAmountPaise },
-      actorType: "WEBHOOK",
-      session,
-    });
-    gatewayTxFaultCheckpoint("partialRefund:audit-written");
-  });
 }
 
 async function resolvePaymentForRefund({ tenantId, payload }) {
@@ -149,6 +67,156 @@ async function resolvePaymentForRefund({ tenantId, payload }) {
   }).lean();
 }
 
+async function applyGatewayRefundCompletion({
+  tenantId,
+  payment,
+  refund,
+  refundAmountPaise,
+  providerRefundId,
+  payload,
+}) {
+  const priorRefundedAmount = payment.refundedAmountPaise ?? 0;
+  const priorRefundedWeight = payment.refundedWeightMg ?? 0;
+  const remainingPaise = payment.amountPaise - priorRefundedAmount;
+  if (refundAmountPaise > remainingPaise) {
+    await upsertOperationalAlert({
+      tenantId,
+      type: AlertType.GATEWAY_REFUND_INVALID,
+      entityId: payment._id,
+      title: "Gateway refund exceeds remaining amount",
+      message: "Refund callback amount exceeds the remaining refundable balance.",
+      metadata: { providerRefundId, refundAmountPaise, remainingPaise },
+    });
+    return { outcome: "EXCEEDS_REMAINING" };
+  }
+
+  const weightDeltaMg = refundWeightDeltaMg({
+    originalPaymentWeightMg: payment.weightMg ?? 0,
+    originalPaymentAmountPaise: payment.amountPaise,
+    priorRefundedAmountPaise: priorRefundedAmount,
+    priorRefundedWeightMg: priorRefundedWeight,
+    refundAmountPaise,
+  });
+
+  await withTransaction(async (session) => {
+    const lockedRefund = await PaymentRefund.findOne({
+      _id: refund._id,
+      tenantId,
+      status: { $ne: GatewayRefundStatus.COMPLETED },
+    }).session(session);
+    if (!lockedRefund) return;
+
+    const lockedPayment = await Payment.findOne({
+      _id: payment._id,
+      tenantId,
+      status: { $in: [...REFUNDABLE_PAYMENT_STATUSES] },
+    }).session(session);
+    if (!lockedPayment) {
+      throw errors.business("REFUND_PAYMENT_NOT_REFUNDABLE", "Refund completed but payment is not refundable.");
+    }
+
+    const scheme = await Scheme.findOne({
+      _id: payment.schemeId,
+      tenantId: payment.tenantId,
+    }).session(session);
+    if (!scheme) throw errors.notFound("Scheme");
+
+    const sequence = await nextSchemeLedgerSequence(
+      payment.tenantId,
+      payment.schemeId,
+      session,
+    );
+    await LedgerEntry.create(
+      [
+        {
+          _id: createId("ledger"),
+          tenantId: payment.tenantId,
+          branchId: payment.branchId,
+          schemeId: payment.schemeId,
+          customerId: payment.customerId,
+          paymentId: payment._id,
+          type: LedgerEntryType.REVERSAL,
+          sequence,
+          amountPaise: refundAmountPaise,
+          weightMg: weightDeltaMg,
+          ratePerGramPaise: payment.ratePerGramPaise,
+          cycle: payment.targetCycle,
+          actorType: "WEBHOOK",
+          actorId: "phonepe-refund",
+          reversalOf: payment._id,
+          description: `Gateway refund ${providerRefundId ?? ""}`.trim(),
+          metadata: { paymentRefundId: lockedRefund._id, providerRefundId },
+        },
+      ],
+      { session },
+    );
+
+    const entries = await LedgerEntry.find({
+      tenantId: payment.tenantId,
+      schemeId: payment.schemeId,
+    })
+      .sort({ sequence: 1 })
+      .session(session)
+      .lean();
+    rebuildSchemeProjection(scheme, entries);
+    scheme.version += 1;
+    await scheme.save({ session });
+
+    const newRefundedAmount = priorRefundedAmount + refundAmountPaise;
+    const newRefundedWeight = priorRefundedWeight + weightDeltaMg;
+    lockedPayment.refundedAmountPaise = newRefundedAmount;
+    lockedPayment.refundedWeightMg = newRefundedWeight;
+    lockedPayment.lastRefundedAt = new Date();
+    if (newRefundedAmount >= lockedPayment.amountPaise) {
+      lockedPayment.status = PaymentStatus.REVERSED;
+      lockedPayment.reversedAt = new Date();
+      lockedPayment.reversedBy = "phonepe-refund";
+      lockedPayment.reversalReason = "GATEWAY_REFUND_COMPLETED";
+    } else {
+      lockedPayment.status = PaymentStatus.PARTIALLY_REFUNDED;
+    }
+    await lockedPayment.save({ session });
+
+    lockedRefund.status = GatewayRefundStatus.COMPLETED;
+    lockedRefund.completedAt = new Date();
+    lockedRefund.amountPaise = refundAmountPaise;
+    lockedRefund.providerPayload = payload;
+    lockedRefund.requiresReview = false;
+    lockedRefund.reviewReason = undefined;
+    await lockedRefund.save({ session });
+
+    if (TERMINAL_SCHEME_STATUSES.has(scheme.status)) {
+      await upsertOperationalAlert({
+        tenantId,
+        type: AlertType.GATEWAY_REFUND_PARTIAL,
+        entityId: payment._id,
+        title: "Gateway refund on terminal scheme",
+        message: "A gateway refund was applied while the scheme is matured, redeemed, or closed — review may be required.",
+        metadata: { providerRefundId, schemeStatus: scheme.status, refundAmountPaise },
+        session,
+      });
+    }
+
+    await writeAudit({
+      req: {
+        auth: { id: "phonepe-refund", tenantId, type: "WEBHOOK" },
+        headers: {},
+        ip: "provider",
+      },
+      action: newRefundedAmount >= lockedPayment.amountPaise ? "PAYMENT_REVERSED" : "PAYMENT_PARTIALLY_REFUNDED",
+      entityType: AuditEntityType.PAYMENT,
+      entityId: payment._id,
+      after: lockedPayment.toObject(),
+      metadata: { refundId: lockedRefund._id, providerRefundId, refundAmountPaise, weightDeltaMg },
+      actorType: "WEBHOOK",
+      session,
+    });
+    gatewayTxFaultCheckpoint("refund:completed");
+  });
+
+  return { outcome: "COMPLETED" };
+}
+
 export async function processPhonePeRefundWebhook({
   tenantId,
   type,
@@ -163,26 +231,26 @@ export async function processPhonePeRefundWebhook({
     ?? payload.merchantRefundId
     ?? providerEventId;
   if (!providerRefundId) {
-    await upsertRefundAlert({
+    await upsertOperationalAlert({
       tenantId,
-      type: "GATEWAY_REFUND_INVALID",
+      type: AlertType.GATEWAY_REFUND_INVALID,
       entityId: providerEventId ?? createId("pref"),
       title: "Invalid gateway refund callback",
       message: "Refund webhook missing refund identifier.",
-      metadata: { type },
+      metadata: { type: callbackTypeKey(type) },
     });
     return { outcome: "INVALID_REFUND_ID" };
   }
 
   const payment = await resolvePaymentForRefund({ tenantId, payload });
   if (!payment) {
-    await upsertRefundAlert({
+    await upsertOperationalAlert({
       tenantId,
-      type: "GATEWAY_REFUND_UNMATCHED",
+      type: AlertType.GATEWAY_REFUND_UNMATCHED,
       entityId: providerRefundId,
       title: "Unmatched gateway refund",
       message: "Refund callback did not match a tenant payment.",
-      metadata: { providerRefundId, type },
+      metadata: { providerRefundId, type: callbackTypeKey(type) },
     });
     recordPhonePeRefundOutcome("UNMATCHED");
     return { outcome: "UNMATCHED" };
@@ -193,9 +261,9 @@ export async function processPhonePeRefundWebhook({
 
   if (kind === "COMPLETED") {
     if (!validatedAmount) {
-      await upsertRefundAlert({
+      await upsertOperationalAlert({
         tenantId,
-        type: "GATEWAY_REFUND_INVALID",
+        type: AlertType.GATEWAY_REFUND_INVALID,
         entityId: payment._id,
         title: "Invalid gateway refund amount",
         message: "Refund completed callback missing a finite positive amount.",
@@ -204,9 +272,9 @@ export async function processPhonePeRefundWebhook({
       return { outcome: "INVALID_AMOUNT" };
     }
     if (!refundCurrencyValid(payload)) {
-      await upsertRefundAlert({
+      await upsertOperationalAlert({
         tenantId,
-        type: "GATEWAY_REFUND_CURRENCY_MISMATCH",
+        type: AlertType.GATEWAY_REFUND_CURRENCY_MISMATCH,
         entityId: payment._id,
         title: "Gateway refund currency mismatch",
         message: "Refund callback currency is not supported for automatic reversal.",
@@ -261,8 +329,11 @@ export async function processPhonePeRefundWebhook({
   }
 
   if (kind === "FAILED") {
+    if (refund.status === GatewayRefundStatus.COMPLETED) {
+      return { outcome: "ALREADY_COMPLETED", refundId: refund._id };
+    }
     await PaymentRefund.updateOne(
-      { _id: refund._id, tenantId },
+      { _id: refund._id, tenantId, status: { $ne: GatewayRefundStatus.COMPLETED } },
       {
         $set: {
           status: GatewayRefundStatus.FAILED,
@@ -278,37 +349,13 @@ export async function processPhonePeRefundWebhook({
   if (kind === "COMPLETED") {
     const refundAmountPaise = validatedAmount;
     if (refund.status === GatewayRefundStatus.COMPLETED) {
-      if (refund.requiresReview && refund.reviewReason === "PARTIAL_REFUND") {
-        await applyPartialRefundReviewAtomic({
-          tenantId,
-          payment,
-          refund,
-          refundAmountPaise,
-          providerRefundId,
-          payload,
-        });
-        return { outcome: "PARTIAL_REVIEW_REPAIRED", refundId: refund._id };
-      }
       return { outcome: "DUPLICATE", refundId: refund._id };
     }
 
-    if (refundAmountPaise !== payment.amountPaise) {
-      await applyPartialRefundReviewAtomic({
+    if (!REFUNDABLE_PAYMENT_STATUSES.has(payment.status)) {
+      await upsertOperationalAlert({
         tenantId,
-        payment,
-        refund,
-        refundAmountPaise,
-        providerRefundId,
-        payload,
-      });
-      recordPhonePeRefundOutcome("PARTIAL_REVIEW");
-      return { outcome: "PARTIAL_REVIEW", refundId: refund._id };
-    }
-
-    if (payment.status !== PaymentStatus.SUCCESS) {
-      await upsertRefundAlert({
-        tenantId,
-        type: "GATEWAY_REFUND_NON_SUCCESS_PAYMENT",
+        type: AlertType.GATEWAY_REFUND_NON_SUCCESS_PAYMENT,
         entityId: payment._id,
         title: "Refund on non-success payment",
         message: "A completed refund callback arrived for a payment that is not successful.",
@@ -332,111 +379,23 @@ export async function processPhonePeRefundWebhook({
     }
 
     try {
-      await withTransaction(async (session) => {
-        const lockedRefund = await PaymentRefund.findOne({
-          _id: refund._id,
-          tenantId,
-          status: { $ne: GatewayRefundStatus.COMPLETED },
-        }).session(session);
-        if (!lockedRefund) return;
-
-        const lockedPayment = await Payment.findOne({
-          _id: payment._id,
-          tenantId,
-          status: PaymentStatus.SUCCESS,
-        }).session(session);
-        if (!lockedPayment) {
-          throw errors.business("REFUND_PAYMENT_NOT_SUCCESS", "Refund completed but payment is not successful.");
-        }
-
-        const existingReversal = await LedgerEntry.exists({
-          tenantId,
-          paymentId: payment._id,
-          type: LedgerEntryType.REVERSAL,
-        }).session(session);
-        if (!existingReversal) {
-          const scheme = await Scheme.findOne({
-            _id: payment.schemeId,
-            tenantId: payment.tenantId,
-          }).session(session);
-          if (!scheme) throw errors.notFound("Scheme");
-          const sequence = await nextSchemeLedgerSequence(
-            payment.tenantId,
-            payment.schemeId,
-            session,
-          );
-          await LedgerEntry.create(
-            [
-              {
-                _id: createId("ledger"),
-                tenantId: payment.tenantId,
-                branchId: payment.branchId,
-                schemeId: payment.schemeId,
-                customerId: payment.customerId,
-                paymentId: payment._id,
-                type: LedgerEntryType.REVERSAL,
-                sequence,
-                amountPaise: payment.amountPaise,
-                weightMg: payment.weightMg,
-                ratePerGramPaise: payment.ratePerGramPaise,
-                cycle: payment.targetCycle,
-                actorType: "WEBHOOK",
-                actorId: "phonepe-refund",
-                reversalOf: payment._id,
-                description: `Gateway refund ${providerRefundId ?? ""}`.trim(),
-              },
-            ],
-            { session },
-          );
-          const entries = await LedgerEntry.find({
-            tenantId: payment.tenantId,
-            schemeId: payment.schemeId,
-          })
-            .sort({ sequence: 1 })
-            .session(session)
-            .lean();
-          rebuildSchemeProjection(scheme, entries);
-          scheme.version += 1;
-          await scheme.save({ session });
-          gatewayTxFaultCheckpoint("fullRefund:scheme-saved");
-          gatewayTxFaultCheckpoint("fullRefund:ledger-created");
-        }
-
-        lockedPayment.status = PaymentStatus.REVERSED;
-        lockedPayment.reversedAt = new Date();
-        lockedPayment.reversedBy = "phonepe-refund";
-        lockedPayment.reversalReason = "GATEWAY_REFUND_COMPLETED";
-        await lockedPayment.save({ session });
-        gatewayTxFaultCheckpoint("fullRefund:payment-reversed");
-
-        lockedRefund.status = GatewayRefundStatus.COMPLETED;
-        lockedRefund.completedAt = new Date();
-        lockedRefund.amountPaise = refundAmountPaise;
-        lockedRefund.providerPayload = payload;
-        await lockedRefund.save({ session });
-        gatewayTxFaultCheckpoint("fullRefund:refund-completed");
-
-        await writeAudit({
-          req: {
-            auth: { id: "phonepe-refund", tenantId, type: "WEBHOOK" },
-            headers: {},
-            ip: "provider",
-          },
-          action: "PAYMENT_REVERSED",
-          entityType: AuditEntityType.PAYMENT,
-          entityId: payment._id,
-          after: lockedPayment.toObject(),
-          metadata: { refundId: lockedRefund._id, providerRefundId },
-          actorType: "WEBHOOK",
-          session,
-        });
-        gatewayTxFaultCheckpoint("fullRefund:audit-written");
+      const applied = await applyGatewayRefundCompletion({
+        tenantId,
+        payment,
+        refund,
+        refundAmountPaise,
+        providerRefundId,
+        payload,
       });
+      if (applied.outcome === "EXCEEDS_REMAINING") {
+        recordPhonePeRefundOutcome("EXCEEDS_REMAINING");
+        return { outcome: "EXCEEDS_REMAINING", refundId: refund._id };
+      }
     } catch (error) {
-      if (error.code === "REFUND_PAYMENT_NOT_SUCCESS" || error.message?.includes("REFUND_PAYMENT_NOT_SUCCESS")) {
-        await upsertRefundAlert({
+      if (error.code === "REFUND_PAYMENT_NOT_REFUNDABLE" || error.message?.includes("REFUND_PAYMENT_NOT_REFUNDABLE")) {
+        await upsertOperationalAlert({
           tenantId,
-          type: "GATEWAY_REFUND_DUPLICATE_CONFLICT",
+          type: AlertType.GATEWAY_REFUND_DUPLICATE_CONFLICT,
           entityId: payment._id,
           title: "Gateway refund conflict",
           message: "Refund completion could not apply atomically due to payment state conflict.",

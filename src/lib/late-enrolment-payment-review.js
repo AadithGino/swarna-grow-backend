@@ -1,6 +1,6 @@
-import { Alert } from "../models/index.js";
 import { OutboxEvent } from "../models/index.js";
-import { SchemeStatus } from "../constants/enums.js";
+import { AlertType, SchemeStatus } from "../constants/enums.js";
+import { upsertOperationalAlert } from "./operational-alert.js";
 
 /** Idempotent suspense routing when gateway success arrives after enrolment expired. */
 export async function recordLateSuccessOnExpiredEnrolment({
@@ -10,31 +10,23 @@ export async function recordLateSuccessOnExpiredEnrolment({
   payment,
 }) {
   if (!scheme || scheme.status !== SchemeStatus.ENROLMENT_EXPIRED) return { recorded: false };
-  await Alert.findOneAndUpdate(
-    {
-      tenantId,
-      type: "PAYMENT_REVIEW",
-      entityId: payment._id,
-      status: "OPEN",
+  await upsertOperationalAlert({
+    tenantId,
+    type: AlertType.PAYMENT_REVIEW,
+    entityId: payment._id,
+    title: "Late payment after enrolment expired",
+    message:
+      "A gateway payment succeeded after the pending enrolment expired. Funds require manual review and suspense allocation.",
+    entityType: "PAYMENT",
+    metadata: {
+      branchId: payment.branchId ?? scheme.branchId,
+      schemeId: scheme._id,
+      customerId: scheme.customerId,
+      paymentId: payment._id,
+      reason: "LATE_SUCCESS_ENROLMENT_EXPIRED",
     },
-    {
-      $setOnInsert: {
-        branchId: payment.branchId ?? scheme.branchId,
-        severity: "CRITICAL",
-        title: "Late payment after enrolment expired",
-        message:
-          "A gateway payment succeeded after the pending enrolment expired. Funds require manual review and suspense allocation.",
-        entityType: "PAYMENT",
-        metadata: {
-          schemeId: scheme._id,
-          customerId: scheme.customerId,
-          paymentId: payment._id,
-          reason: "LATE_SUCCESS_ENROLMENT_EXPIRED",
-        },
-      },
-    },
-    { upsert: true, session },
-  );
+    session,
+  });
   try {
     await OutboxEvent.create(
       [

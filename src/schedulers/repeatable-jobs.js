@@ -21,4 +21,5 @@ export const schedulerRepeatableJobs = [
   job(QueueKind.MAINTENANCE, "dispatch-reclaim", { every: 60_000 }, "dispatch-reclaim"),
   job(QueueKind.MAINTENANCE, "push-broadcast-recover", { every: 60_000 }, "push-broadcast-recover"),
   job(QueueKind.MAINTENANCE, "export-artifact-cleanup", { pattern: "30 2 * * *", tz: "Asia/Kolkata" }, "export-artifact-cleanup"),
+  job(QueueKind.SCHEDULER, "gateway-settlement-daily", { pattern: "35 0 * * *", tz: "Asia/Kolkata" }, "gateway-settlement"),
 ];

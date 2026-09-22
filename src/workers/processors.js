@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { once } from "node:events";
 import path from "node:path";
 import { PushOutcomeKind } from "../lib/fcm-outcomes.js";
-import { Alert, Customer, ExportJob, Message, OutboxEvent, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
+import { Customer, ExportJob, Message, OutboxEvent, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
 import { whatsappProvider } from "../integrations/whatsapp.provider.js";
 import { updateDelivery } from "../services/messaging.service.js";
 import { env } from "../config/env.js";
@@ -11,6 +11,8 @@ import { logger } from "../config/logger.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { unseal } from "../lib/crypto.js";
 import { AppError } from "../lib/app-error.js";
+import { AlertType } from "../constants/enums.js";
+import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { PhonePeCallbackClass } from "../lib/phonepe-callback-classification.js";
 import { normalizePhonePeWebhookEvent } from "../lib/phonepe-webhook-payload.js";
 import { isPhonePeRefundCallback } from "../integrations/phonepe.provider.js";
@@ -336,7 +338,7 @@ export async function processMessage(job) {
 export async function processWebhook(job) {
   const eventId = job.data.webhookEventId;
   const existing = await WebhookEvent.findById(eventId).lean();
-  if (!existing || existing.status === "COMPLETED") return;
+  if (!existing || existing.status === "COMPLETED" || existing.status === "UNSUPPORTED") return;
   const { claimWebhookForProcessing, finalizeWebhookStorage } = await import("../services/webhook-event.service.js");
   const { incrementWebhookMetric, observeWebhookProcessingMs, WebhookMetric } = await import("../lib/webhook-metrics.js");
   const leaseOwner = String(job.id ?? job.name ?? "worker");
@@ -347,7 +349,9 @@ export async function processWebhook(job) {
     if (event.provider === "PHONEPE") {
       const normalized = normalizePhonePeWebhookEvent(event.payload);
       const { reference, payload, transactionId } = normalized;
+      let phonePeHandled = false;
       if (normalized.refund || isPhonePeRefundCallback(event.payload?.type)) {
+        phonePeHandled = true;
         const { processPhonePeRefundWebhook } = await import("../services/phonepe-refund.service.js");
         await processPhonePeRefundWebhook({
           tenantId: event.tenantId,
@@ -359,6 +363,7 @@ export async function processWebhook(job) {
         normalized.completed
         || normalized.classification === PhonePeCallbackClass.ORDER_COMPLETED
       ) {
+        phonePeHandled = true;
         const intent = reference
           ? await PaymentIntent.findOne({
             tenantId: event.tenantId,
@@ -400,30 +405,21 @@ export async function processWebhook(job) {
             && !intent
             && !link
           ) {
-            await Alert.findOneAndUpdate(
-              {
-                tenantId: event.tenantId,
-                type: "GATEWAY_WEBHOOK_UNMATCHED",
-                entityId: reference ?? event._id,
-                status: "OPEN",
+            await upsertOperationalAlert({
+              tenantId: event.tenantId,
+              type: AlertType.GATEWAY_WEBHOOK_UNMATCHED,
+              entityId: reference ?? event._id,
+              title: "Unmatched gateway webhook",
+              message: "A completed gateway callback did not match any payment intent or link.",
+              metadata: {
+                provider: event.provider,
+                reference,
               },
-              {
-                $setOnInsert: {
-                  severity: "CRITICAL",
-                  title: "Unmatched gateway webhook",
-                  message: "A completed gateway callback did not match any payment intent or link.",
-                  entityType: "WEBHOOK",
-                  metadata: {
-                    provider: event.provider,
-                    reference,
-                  },
-                },
-              },
-              { upsert: true },
-            );
+            });
           }
         }
       } else if (normalized.attemptFailed) {
+        phonePeHandled = true;
         logger.info(
           {
             type: normalized.type,
@@ -437,6 +433,7 @@ export async function processWebhook(job) {
         normalized.failed
         || normalized.classification === PhonePeCallbackClass.ORDER_TERMINAL_FAILED
       ) {
+        phonePeHandled = true;
         const result = await applyTerminalGatewayFailure({
           tenantId: event.tenantId,
           transactionId,
@@ -451,7 +448,26 @@ export async function processWebhook(job) {
           );
         }
       }
+      if (!phonePeHandled) {
+        const { finalizeUnsupportedPhonePeCallback } = await import("../services/phonepe-unsupported-callback.service.js");
+        await finalizeUnsupportedPhonePeCallback({
+          tenantId: event.tenantId,
+          webhookEventId: event._id,
+          providerEventId: event.providerEventId,
+          type: event.payload?.type,
+          payload,
+        });
+        await finalizeWebhookStorage(event._id);
+        observeWebhookProcessingMs(Date.now() - started);
+        return;
+      }
     } else if (event.provider === "WHATSAPP") {
+      const { persistWhatsAppInboundFromWebhook } = await import("../services/inbound-message.service.js");
+      await persistWhatsAppInboundFromWebhook({
+        tenantId: event.tenantId,
+        webhookEventId: event._id,
+        payload: event.payload,
+      });
       const status = event.payload?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
       if (status) await updateDelivery(status.id, status.status?.toUpperCase(), status.errors?.[0]);
     }
@@ -467,19 +483,14 @@ export async function processWebhook(job) {
     await event.save();
     if (event.status === "DEAD_LETTER") {
       incrementWebhookMetric(WebhookMetric.DEAD_LETTER);
-      await Alert.findOneAndUpdate(
-        { tenantId: event.tenantId, type: "WEBHOOK_FAILURE", entityId: event._id, status: "OPEN" },
-        {
-          $setOnInsert: {
-            severity: "CRITICAL",
-            title: "Webhook processing failed",
-            message: error.message,
-            entityType: "WEBHOOK",
-            metadata: { provider: event.provider },
-          },
-        },
-        { upsert: true },
-      );
+      await upsertOperationalAlert({
+        tenantId: event.tenantId,
+        type: AlertType.WEBHOOK_FAILURE,
+        entityId: event._id,
+        title: "Webhook processing failed",
+        message: error.message,
+        metadata: { provider: event.provider },
+      });
     } else {
       incrementWebhookMetric(WebhookMetric.PROCESSING_FAILED);
     }
@@ -605,11 +616,15 @@ export async function processOutbox(job) {
     event.status = "DEAD_LETTER";
     event.error = `Unhandled outbox topic: ${event.topic}`;
     await event.save();
-    await Alert.findOneAndUpdate(
-      { tenantId: event.tenantId, type: "SYSTEM_ERROR", entityId: String(event._id), status: "OPEN" },
-      { $setOnInsert: { severity: "CRITICAL", title: "Unknown outbox topic", message: event.error, entityType: "OUTBOX_EVENT", metadata: { topic: event.topic } } },
-      { upsert: true },
-    );
+    await upsertOperationalAlert({
+      tenantId: event.tenantId,
+      type: AlertType.SYSTEM_ERROR,
+      entityId: String(event._id),
+      title: "Unknown outbox topic",
+      message: event.error,
+      entityType: "OUTBOX_EVENT",
+      metadata: { topic: event.topic },
+    });
     logger.error({ outboxEventId: event._id, topic: event.topic }, "Unknown outbox topic moved to dead letter");
     return;
   }
@@ -815,6 +830,10 @@ export async function processScheduler(job) {
   if (job.name === "defaulting") await runDefaultingMaintenance();
   if (job.name === "apply-flexible-locks") await runFlexibleLockMaintenance({ today });
   if (job.name === "grievance-auto-close") await runGrievanceAutoCloseMaintenance(now);
+  if (job.name === "gateway-settlement") {
+    const { runDailyGatewaySettlementBatch } = await import("../services/gateway-settlement.service.js");
+    await runDailyGatewaySettlementBatch();
+  }
 }
 
 export async function processPaymentsMaintenance(job) {

@@ -9,7 +9,7 @@ import {
 } from "../constants/enums.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
 import { paginate } from "../lib/pagination.js";
-import { escaped } from "../lib/query-filters.js";
+import { boundedSearchQuery, containsSearchRegex, escaped } from "../lib/query-filters.js";
 import { withTransaction } from "../lib/transaction.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { seal } from "../lib/crypto.js";
@@ -187,20 +187,24 @@ export async function listTenants(req) {
   if (req.query.tier && req.query.tier !== "ALL") filters["subscription.tier"] = req.query.tier;
   if (req.query.setupPending === "true") filters.status = TenantStatus.PENDING_SETUP;
   if (req.query.q) {
-    const q = String(req.query.q).trim();
-    const ownerTenantIds = q.length >= 2
-      ? await User.find({
-        role: TenantRole.TENANT_OWNER,
-        $or: [{ name: new RegExp(q, "i") }, { mobile: q }, { email: new RegExp(q, "i") }],
-      }).distinct("tenantId")
-      : [];
-    filters.$or = [
-      { name: new RegExp(q, "i") },
-      { mobile: q },
-      { "address.city": new RegExp(q, "i") },
-      { code: q.toUpperCase() },
-      ...(ownerTenantIds.length ? [{ _id: { $in: ownerTenantIds } }] : []),
-    ];
+    const q = boundedSearchQuery(req.query.q);
+    if (q) {
+      const nameRe = containsSearchRegex(q);
+      const ownerTenantIds = q.length >= 2
+        ? await User.find({
+          role: TenantRole.TENANT_OWNER,
+          $or: [{ name: nameRe }, { mobile: q }, { email: nameRe }],
+        }).distinct("tenantId")
+        : [];
+      filters.$or = [
+        { name: nameRe },
+        { mobile: q },
+        { email: q },
+        { "address.city": nameRe },
+        { code: q.toUpperCase() },
+        ...(ownerTenantIds.length ? [{ _id: { $in: ownerTenantIds } }] : []),
+      ];
+    }
   }
   const page = await paginate(Tenant, { filters, cursor: req.query.cursor, limit: req.query.limit, sort: "createdAt:desc" });
   const ownerByTenant = {};

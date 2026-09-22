@@ -313,6 +313,66 @@ adminSchemeRouter.post(
   ),
 );
 adminSchemeRouter.post(
+  "/payments/:paymentId/refunds",
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    idempotent,
+    asyncHandler(async (req, res) => {
+      const { initiateAdminPaymentRefund } = await import("../services/payment-refund-initiation.service.js");
+      const { sendSuccess } = await import("../lib/response.js");
+      return sendSuccess(res, await initiateAdminPaymentRefund(req), {}, 202);
+    }),
+  ),
+);
+adminSchemeRouter.get(
+  "/payments/:paymentId/refunds",
+  ...guarded(
+    Permission.PAYMENT_READ,
+    asyncHandler(async (req, res) => {
+      const { listPaymentRefunds } = await import("../services/payment-refund-initiation.service.js");
+      const { sendSuccess } = await import("../lib/response.js");
+      return sendSuccess(res, await listPaymentRefunds(req));
+    }),
+  ),
+);
+adminSchemeRouter.get(
+  "/gateway/settlement-runs",
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => {
+    const { listSettlementRuns } = await import("../services/gateway-settlement.service.js");
+    const { sendSuccess } = await import("../lib/response.js");
+    return sendSuccess(res, await listSettlementRuns(req));
+  })),
+);
+adminSchemeRouter.get(
+  "/gateway/settlement-runs/:runId",
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(async (req, res) => {
+    const { getSettlementRun } = await import("../services/gateway-settlement.service.js");
+    const { sendSuccess } = await import("../lib/response.js");
+    return sendSuccess(res, await getSettlementRun(req));
+  })),
+);
+adminSchemeRouter.post(
+  "/gateway/settlement-runs/upload",
+  ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async (req, res) => {
+    const { uploadGatewaySettlementStatement } = await import("../services/gateway-settlement.service.js");
+    const { sendSuccess } = await import("../lib/response.js");
+    return sendSuccess(res, await uploadGatewaySettlementStatement(req), {}, 201);
+  })),
+);
+adminSchemeRouter.post(
+  "/gateway/settlement-runs/:runId/retry",
+  ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async (req, res) => {
+    const { getSettlementRun, runDailyGatewaySettlementForTenant } = await import("../services/gateway-settlement.service.js");
+    const { sendSuccess } = await import("../lib/response.js");
+    const run = await getSettlementRun(req);
+    return sendSuccess(res, await runDailyGatewaySettlementForTenant({
+      tenantId: req.auth.tenantId,
+      businessDate: run.businessDate,
+      leaseOwner: req.auth.id,
+    }));
+  })),
+);
+adminSchemeRouter.post(
   "/payment-links",
   ...guarded(
     Permission.PAYMENT_RECORD,

@@ -39,7 +39,7 @@ export const InstallmentStatus = makeEnum("PENDING", "DUE", "PARTIALLY_PAID", "P
 export const PaymentMode = makeEnum("CASH", "CARD", "UPI", "BANK_TRANSFER", "ONLINE_GATEWAY", "LEGACY_ONLINE");
 export const ManualPaymentMode = makeEnum("CASH", "CARD", "UPI", "BANK_TRANSFER");
 export const PaymentIntentStatus = makeEnum("PENDING", "SUCCEEDED", "FAILED", "EXPIRED", "CANCELLED");
-export const PaymentStatus = makeEnum("PENDING", "SUCCESS", "FAILED", "AMOUNT_MISMATCH_PENDING_REVIEW", "UNALLOCATED_PENDING_REVIEW", "REVERSED");
+export const PaymentStatus = makeEnum("PENDING", "SUCCESS", "FAILED", "AMOUNT_MISMATCH_PENDING_REVIEW", "UNALLOCATED_PENDING_REVIEW", "PARTIALLY_REFUNDED", "REVERSED");
 export const PaymentSource = makeEnum("PORTAL", "STAFF_APP", "CUSTOMER_APP", "WEBHOOK", "SYSTEM");
 export const LinkStatus = makeEnum("CREATED", "SENT", "OPENED", "PAID", "EXPIRED", "CANCELLED");
 export const LedgerEntryType = makeEnum("INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "UNALLOCATED_PAYMENT", "BENEFIT_CREDIT", "REVERSAL", "CLOSURE_PENALTY", "REDEMPTION_DEBIT", "ADJUSTMENT");
@@ -67,7 +67,7 @@ export const CarryForwardMode = makeEnum("NONE");
 export const ExportType = makeEnum("DUE", "OVERDUE", "DEFAULTER", "MATURITY", "COLLECTION", "OUTSTANDING", "GOLD_ACCRUAL", "STAFF_PERFORMANCE", "CUSTOMER", "SCHEME", "AUDIT");
 export const UploadPurpose = makeEnum("TENANT_LOGO", "KYC_DOCUMENT", "GRIEVANCE_ATTACHMENT", "PUSH_BROADCAST_IMAGE");
 export const WebhookProvider = makeEnum("PHONEPE", "WHATSAPP");
-export const JobStatus = makeEnum("QUEUED", "PROCESSING", "COMPLETED", "FAILED", "SIGNATURE_FAILED", "DEAD_LETTER");
+export const JobStatus = makeEnum("QUEUED", "PROCESSING", "COMPLETED", "FAILED", "SIGNATURE_FAILED", "DEAD_LETTER", "UNSUPPORTED");
 /** Queue dispatch lifecycle (messages, outbox, webhooks) — separate from worker JobStatus. */
 export const DispatchState = makeEnum("PENDING", "DISPATCHING", "DISPATCHED");
 export const BillingCycle = makeEnum("MONTHLY", "ANNUAL");
@@ -102,7 +102,30 @@ export const GoldRateSource = makeEnum("TENANT_DAILY_RATE");
 export const WeightRoundingMode = makeEnum("HALF_UP", "ROUND_DOWN", "ROUND_UP");
 export const AlertSeverity = makeEnum("INFO", "WARNING", "CRITICAL");
 export const AlertStatus = makeEnum("OPEN", "DISMISSED", "RESOLVED");
-export const AlertType = makeEnum("MISSING_GOLD_RATE", "GATEWAY_AMOUNT_MISMATCH", "GATEWAY_WEBHOOK_UNMATCHED", "WEBHOOK_FAILURE", "MESSAGE_FAILURE", "PAYMENT_REVIEW", "FLEX_SETTLEMENT_REQUIRED", "SYSTEM_ERROR");
+export const AlertType = makeEnum(
+  "MISSING_GOLD_RATE",
+  "GATEWAY_AMOUNT_MISMATCH",
+  "GATEWAY_WEBHOOK_UNMATCHED",
+  "GATEWAY_WEBHOOK_INVALID_COMPLETED",
+  "GATEWAY_REFUND_PARTIAL",
+  "GATEWAY_REFUND_INVALID",
+  "GATEWAY_REFUND_UNMATCHED",
+  "GATEWAY_REFUND_CURRENCY_MISMATCH",
+  "GATEWAY_REFUND_NON_SUCCESS_PAYMENT",
+  "GATEWAY_REFUND_DUPLICATE_CONFLICT",
+  "GATEWAY_RECONCILE_EXHAUSTED",
+  "GATEWAY_UNSUPPORTED_CALLBACK",
+  "GATEWAY_SETTLEMENT_MISMATCH",
+  "GATEWAY_SETTLEMENT_MISSING",
+  "GATEWAY_SETTLEMENT_FAILURE",
+  "GATEWAY_REFUND_INITIATION_EXHAUSTED",
+  "WEBHOOK_FAILURE",
+  "MESSAGE_FAILURE",
+  "PAYMENT_REVIEW",
+  "FLEX_SETTLEMENT_REQUIRED",
+  "FCM_DELIVERY_EXHAUSTED",
+  "SYSTEM_ERROR",
+);
 export const CashAdjustmentDirection = makeEnum("CREDIT", "DEBIT");
 
 export const enumValues = (enumeration) => Object.values(enumeration);
