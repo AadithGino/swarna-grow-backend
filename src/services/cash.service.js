@@ -12,6 +12,8 @@ import { cashPaymentBranchMatch } from "../lib/payment-scope.js";
 import { branchDto, loadBranchMap, loadUserMap, userDto } from "../lib/relation-maps.js";
 import {
   netCollectionStatusFilter,
+  paymentFinancialHistoryStatusFilter,
+  paymentNetFieldsFromDoc,
   sumNetAmountPaise,
 } from "../lib/payment-net-aggregation.js";
 
@@ -200,20 +202,35 @@ export async function adminStaffBalanceDetail(req) {
     cashBalance({ tenantId, branchId: scopeBranch, staffId: staff._id }),
     staffCashExtras({ tenantId, branchId: scopeBranch, staffId: staff._id }),
     Payment.find({
-      tenantId, collectedBy: staff._id, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS,
+      tenantId,
+      collectedBy: staff._id,
+      mode: PaymentMode.CASH,
+      ...paymentFinancialHistoryStatusFilter(),
       ...(scopeBranch ? { branchId: scopeBranch } : {}),
     }).sort({ paidAt: -1 }).limit(100).lean(),
     staff.branchId ? Branch.findOne({ _id: staff.branchId, tenantId }).select("_id name code").lean() : null,
   ]);
   const customerIds = [...new Set(paymentRows.map((row) => row.customerId).filter(Boolean))];
   const customers = customerIds.length
-    ? await Customer.find({ _id: { $in: customerIds } }).select("_id name").lean()
+    ? await Customer.find({ tenantId, _id: { $in: customerIds } }).select("_id name").lean()
     : [];
   const customerMap = new Map(customers.map((row) => [row._id, row.name]));
-  const collections = paymentRows.map((row) => ({
-    ...row,
-    customer: row.customerId ? { id: row.customerId, name: customerMap.get(row.customerId) ?? row.customerId } : undefined,
-  }));
+  let collectionsNetTotalPaise = 0;
+  const collections = paymentRows.map((row) => {
+    const netFields = paymentNetFieldsFromDoc(row);
+    if (netFields.netAmountPaise > 0) {
+      collectionsNetTotalPaise += netFields.netAmountPaise;
+    }
+    return {
+      ...row,
+      grossAmount: moneyRef(netFields.grossAmountPaise),
+      refundedAmount: moneyRef(netFields.refundedAmountPaise),
+      netAmount: moneyRef(netFields.netAmountPaise),
+      customer: row.customerId
+        ? { id: row.customerId, name: customerMap.get(row.customerId) ?? row.customerId }
+        : undefined,
+    };
+  });
   return {
     staff: { _id: staff._id, id: staff._id, name: staff.name, mobile: staff.mobile, role: staff.role },
     branchId: staff.branchId,
@@ -227,6 +244,7 @@ export async function adminStaffBalanceDetail(req) {
     status: staff.status,
     riskFlag: riskFlag(balance.cashInHandPaise, extras.lastHandoverAt),
     collections,
+    collectionsNetTotal: moneyRef(collectionsNetTotalPaise),
     receiptCount: paymentRows.length,
   };
 }
