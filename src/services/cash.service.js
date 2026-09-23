@@ -301,26 +301,43 @@ export async function adminCashReport(req) {
   return { totals, groups, groupBy: req.query.groupBy ?? "STAFF" };
 }
 
+async function assertCashStaffForCustody(req, { staffId, branchId, session }) {
+  const tenantId = req.auth.tenantId;
+  const staff = await User.findOne({
+    _id: staffId,
+    tenantId,
+    type: UserType.TENANT_USER,
+  })
+    .select("branchId role status")
+    .session(session)
+    .lean();
+  if (!staff) throw errors.notFound("Staff");
+  if (staff.status !== UserStatus.ACTIVE) {
+    throw errors.business("STAFF_NOT_ACTIVE", "This staff member is not active.");
+  }
+  if (!CASH_STAFF_ROLES.includes(staff.role)) {
+    throw errors.business("STAFF_NOT_CASH_HANDLER", "This user is not allowed to hold cash custody.");
+  }
+  const effectiveBranch = branchId ?? req.scope.branchId ?? req.body.branchId ?? staff.branchId ?? null;
+  if (effectiveBranch && staff.branchId && staff.branchId !== effectiveBranch) {
+    throw errors.notFound("Staff");
+  }
+  return { branchId: effectiveBranch ?? staff.branchId ?? null };
+}
+
 async function resolveHandoverContext(req, initiator, session) {
   const tenantId = req.auth.tenantId;
   const staffId = initiator === HandoverInitiator.STAFF ? req.auth.id : req.body.staffId;
   if (!staffId) {
     throw errors.validation([{ field: "staffId", message: "Staff is required for this handover." }]);
   }
-  let branchId = req.scope.branchId ?? req.body.branchId ?? null;
-  if (!branchId) {
-    const staff = await User.findOne({
-      _id: staffId,
-      tenantId,
-      type: UserType.TENANT_USER,
-    })
-      .select("branchId")
-      .session(session)
-      .lean();
-    if (!staff) throw errors.notFound("Staff");
-    branchId = staff.branchId ?? null;
-  }
-  return { tenantId, staffId, branchId };
+  const branchId = req.scope.branchId ?? req.body.branchId ?? null;
+  const { branchId: resolvedBranch } = await assertCashStaffForCustody(req, {
+    staffId,
+    branchId,
+    session,
+  });
+  return { tenantId, staffId, branchId: resolvedBranch };
 }
 
 async function lockCashStaffCustody(session, { tenantId, branchId, staffId }) {
@@ -508,4 +525,37 @@ export async function getHandoverForStaff(req) {
     timeline,
   };
 }
-export async function createCashAdjustment(req) { return withTransaction(async (session) => { const row = (await CashAdjustment.create([{ _id: createId("cashAdjustment"), tenantId: req.auth.tenantId, branchId: req.scope.branchId ?? req.body.branchId, staffId: req.body.staffId, direction: req.body.direction, amountPaise: req.body.amountPaise, reason: req.body.reason, createdBy: req.auth.id }], { session }))[0]; const auditEventId = await writeAudit({ req, action: "CASH_ADJUSTMENT_CREATED", entityType: AuditEntityType.CASH_HANDOVER, entityId: row._id, after: row.toObject(), session }); return { ...row.toObject(), auditEventId }; }); }
+export async function createCashAdjustment(req) {
+  return withTransaction(async (session) => {
+    const branchId = req.scope.branchId ?? req.body.branchId ?? null;
+    const { branchId: resolvedBranch } = await assertCashStaffForCustody(req, {
+      staffId: req.body.staffId,
+      branchId,
+      session,
+    });
+    await lockCashStaffCustody(session, {
+      tenantId: req.auth.tenantId,
+      branchId: resolvedBranch,
+      staffId: req.body.staffId,
+    });
+    const row = (await CashAdjustment.create([{
+      _id: createId("cashAdjustment"),
+      tenantId: req.auth.tenantId,
+      branchId: resolvedBranch,
+      staffId: req.body.staffId,
+      direction: req.body.direction,
+      amountPaise: req.body.amountPaise,
+      reason: req.body.reason,
+      createdBy: req.auth.id,
+    }], { session }))[0];
+    const auditEventId = await writeAudit({
+      req,
+      action: "CASH_ADJUSTMENT_CREATED",
+      entityType: AuditEntityType.CASH_HANDOVER,
+      entityId: row._id,
+      after: row.toObject(),
+      session,
+    });
+    return { ...row.toObject(), auditEventId };
+  });
+}
