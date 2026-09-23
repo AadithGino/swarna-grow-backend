@@ -187,7 +187,6 @@ export const customerBody = z
   .strict();
 export const customerPatchBody = customerBody
   .partial()
-  .omit({ mobile: true })
   .extend({ expectedVersion: z.number().int().positive().optional() })
   .strict();
 export const nomineeBody = z.object({ name: z.string().min(2).max(120), relationship: enumSchema(E.NomineeRelationship), mobile: mobile.optional(), address: z.string().max(1000).optional(), expectedVersion: z.number().int().positive() });
