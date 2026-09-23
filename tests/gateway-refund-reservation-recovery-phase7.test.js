@@ -11,6 +11,7 @@ import {
   configureTenantPhonePe,
   refundHeaders,
   seedAdminGatewayContext,
+  seedBranchManagerContext,
 } from "./helpers/gateway-http-fixture.js";
 import { resetTestDb, startTestDb, stopTestDb } from "./helpers/db.js";
 
@@ -108,7 +109,7 @@ test("retry after timeout reuses same refund and succeeds", async () => {
     assert.equal(await PaymentRefund.countDocuments({ paymentId: ctx.paymentId }), 1);
     const refund = await PaymentRefund.findOne({ paymentId: ctx.paymentId }).lean();
     assert.equal(refund.status, GatewayRefundStatus.PENDING);
-    assert.equal(refund.providerInitiationError, null);
+    assert.equal(refund.providerInitiationError ?? null, null);
     assert.equal(calls, 2);
   } finally {
     phonePeProvider.initiateRefund = original;
@@ -166,4 +167,100 @@ test("provider reconcile FAILED releases reservation once", async () => {
   });
   assert.equal((await Payment.findById(ctx.paymentId).lean()).gatewayRefundReservedPaise, 0);
   phonePeProvider.getRefundStatus = originalStatus;
+});
+
+test("branch manager list/reconcile/release own branch; off-branch returns 404", async () => {
+  const { ownerCtx, otherPayment, manager } = await seedBranchManagerContext();
+  await configureTenantPhonePe(ownerCtx.tenant._id);
+  await postRefund(
+    ownerCtx.token,
+    ownerCtx.paymentId,
+    { amountPaise: 5000, reason: "Scope list" },
+    "idem-scope-list",
+  );
+  const refund = await PaymentRefund.findOne({ paymentId: ownerCtx.paymentId }).lean();
+  const listOk = await request(app)
+    .get(`/api/v1/admin/payments/${ownerCtx.paymentId}/refunds`)
+    .set("authorization", `Bearer ${manager.token}`);
+  assert.equal(listOk.status, 200);
+  const listDenied = await request(app)
+    .get(`/api/v1/admin/payments/${otherPayment.paymentId}/refunds`)
+    .set("authorization", `Bearer ${manager.token}`);
+  assert.equal(listDenied.status, 404);
+  const reconDenied = await request(app)
+    .post(`/api/v1/admin/payments/${otherPayment.paymentId}/refunds/${refund._id}/reconcile`)
+    .set("authorization", `Bearer ${manager.token}`)
+    .set(refundHeaders("idem-scope-recon-deny"))
+    .send({});
+  assert.equal(reconDenied.status, 404);
+  const releaseDenied = await request(app)
+    .post(`/api/v1/admin/payments/${otherPayment.paymentId}/refunds/${refund._id}/release`)
+    .set("authorization", `Bearer ${manager.token}`)
+    .set(refundHeaders("idem-scope-release-deny"))
+    .send({
+      reason: "Should not apply",
+      providerConfirmedNotAccepted: true,
+      evidence: "Off-branch attempt documented",
+    });
+  assert.equal(releaseDenied.status, 404);
+});
+
+test("manual release without evidence when providerConfirmedNotAccepted returns 400", async () => {
+  const ctx = await seedAdminGatewayContext();
+  const refundId = createId("pref");
+  await PaymentRefund.create({
+    _id: refundId,
+    tenantId: ctx.tenant._id,
+    paymentId: ctx.paymentId,
+    providerRefundId: refundId,
+    amountPaise: 5000,
+    status: GatewayRefundStatus.PENDING_RECONCILIATION,
+    reason: "Stuck",
+  });
+  const res = await request(app)
+    .post(`/api/v1/admin/payments/${ctx.paymentId}/refunds/${refundId}/release`)
+    .set("authorization", `Bearer ${ctx.token}`)
+    .set(refundHeaders("idem-release-no-evidence"))
+    .send({
+      reason: "Ops confirmed not accepted",
+      providerConfirmedNotAccepted: true,
+    });
+  assert.equal(res.status, 400);
+});
+
+test("insufficient reserved balance blocks manual release without audit", async () => {
+  const ctx = await seedAdminGatewayContext();
+  const refundId = createId("pref");
+  await Payment.updateOne({ _id: ctx.paymentId }, { $set: { gatewayRefundReservedPaise: 0 } });
+  await PaymentRefund.create({
+    _id: refundId,
+    tenantId: ctx.tenant._id,
+    paymentId: ctx.paymentId,
+    providerRefundId: refundId,
+    amountPaise: 9000,
+    status: GatewayRefundStatus.PENDING_RECONCILIATION,
+    reason: "Mismatch reservation",
+  });
+  const beforeAudits = await import("../src/models/index.js").then((m) => m.AuditEvent.countDocuments({
+    action: "GATEWAY_REFUND_RESERVATION_RELEASED",
+    entityId: ctx.paymentId,
+  }));
+  const res = await request(app)
+    .post(`/api/v1/admin/payments/${ctx.paymentId}/refunds/${refundId}/release`)
+    .set("authorization", `Bearer ${ctx.token}`)
+    .set(refundHeaders("idem-release-insufficient"))
+    .send({
+      reason: "Ops verified provider never accepted refund",
+      providerConfirmedNotAccepted: true,
+      evidence: "PhonePe support ticket #9988776655 confirms rejection",
+    });
+  assert.equal(res.status, 422);
+  assert.equal(res.body?.error?.code, "GATEWAY_REFUND_RESERVATION_INCONSISTENT");
+  const refund = await PaymentRefund.findById(refundId).lean();
+  assert.equal(refund.status, GatewayRefundStatus.PENDING_RECONCILIATION);
+  const afterAudits = await import("../src/models/index.js").then((m) => m.AuditEvent.countDocuments({
+    action: "GATEWAY_REFUND_RESERVATION_RELEASED",
+    entityId: ctx.paymentId,
+  }));
+  assert.equal(afterAudits, beforeAudits);
 });

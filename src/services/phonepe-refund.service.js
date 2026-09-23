@@ -3,6 +3,7 @@ import { AuditEntityType, AlertType, GatewayRefundStatus, LedgerEntryType, Payme
 import { callbackTypeKey } from "../integrations/phonepe.provider.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { refundWeightDeltaMg } from "../lib/gateway-refund-accounting.js";
+import { decrementGatewayRefundReservation } from "../lib/gateway-refund-reservation.js";
 import { createId } from "../lib/ids.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -287,27 +288,13 @@ async function applyGatewayRefundCompletion({
       lockedPayment.status = PaymentStatus.PARTIALLY_REFUNDED;
     }
     await lockedPayment.save({ session });
-    await Payment.updateOne(
-      { _id: payment._id, tenantId },
-      [
-        {
-          $set: {
-            gatewayRefundReservedPaise: {
-              $max: [
-                0,
-                {
-                  $subtract: [
-                    { $ifNull: ["$gatewayRefundReservedPaise", 0] },
-                    refundAmountPaise,
-                  ],
-                },
-              ],
-            },
-          },
-        },
-      ],
-      { session },
-    );
+    await decrementGatewayRefundReservation({
+      tenantId,
+      paymentId: payment._id,
+      releaseAmount: refundAmountPaise,
+      session,
+      skipWhenNoReservation: true,
+    });
     gatewayTxFaultCheckpoint("refund:payment-saved");
 
     claimedRefund.status = GatewayRefundStatus.COMPLETED;
@@ -477,27 +464,13 @@ export async function processPhonePeRefundWebhook({
       if (!failedRefund) return;
       const failedAmount = failedRefund.amountPaise ?? validatedAmount ?? 0;
       if (failedAmount > 0) {
-        await Payment.updateOne(
-          { _id: payment._id, tenantId },
-          [
-            {
-              $set: {
-                gatewayRefundReservedPaise: {
-                  $max: [
-                    0,
-                    {
-                      $subtract: [
-                        { $ifNull: ["$gatewayRefundReservedPaise", 0] },
-                        failedAmount,
-                      ],
-                    },
-                  ],
-                },
-              },
-            },
-          ],
-          { session },
-        );
+        await decrementGatewayRefundReservation({
+          tenantId,
+          paymentId: payment._id,
+          releaseAmount: failedAmount,
+          session,
+          skipWhenNoReservation: true,
+        });
       }
     });
     recordPhonePeRefundOutcome("FAILED");

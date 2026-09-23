@@ -2,7 +2,8 @@ import { GatewayRefundStatus } from "../constants/enums.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import { ResourceNotFound } from "@phonepe-pg/pg-sdk-node";
 import { errors } from "../lib/app-error.js";
-import { Payment, PaymentIntent, PaymentRefund, Tenant } from "../models/index.js";
+import { Payment, PaymentIntent, Tenant } from "../models/index.js";
+import { loadBranchScopedPaymentRefund } from "../lib/refund-authority.js";
 import { processPhonePeRefundWebhook } from "./phonepe-refund.service.js";
 
 function normalizeProviderRefundState(raw) {
@@ -14,12 +15,7 @@ function normalizeProviderRefundState(raw) {
 }
 
 export async function reconcileGatewayRefundById(req) {
-  const refund = await PaymentRefund.findOne({
-    _id: req.params.refundId,
-    tenantId: req.auth.tenantId,
-    paymentId: req.params.paymentId,
-  }).lean();
-  if (!refund) throw errors.notFound("Refund");
+  const { refund } = await loadBranchScopedPaymentRefund(req);
   return reconcileGatewayRefundRecord({ tenantId: req.auth.tenantId, refund });
 }
 

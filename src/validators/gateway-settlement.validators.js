@@ -28,11 +28,26 @@ export const paymentRefundInitiationBody = z.object({
   reason: z.string().trim().min(3).max(500),
 }).strict();
 
-export const paymentRefundReleaseBody = z.object({
-  reason: z.string().trim().min(3).max(500),
-  evidence: z.string().trim().max(2000).optional(),
-  providerConfirmedNotAccepted: z.boolean().optional(),
-}).strict();
+export const paymentRefundReleaseBody = z
+  .object({
+    reason: z.string().trim().min(3).max(500),
+    evidence: z.string().trim().max(2000).optional(),
+    providerConfirmedNotAccepted: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (body.providerConfirmedNotAccepted === true) {
+      const evidence = body.evidence?.trim() ?? "";
+      if (evidence.length < 10) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "evidence is required and must be sufficiently descriptive when providerConfirmedNotAccepted is true",
+          path: ["evidence"],
+        });
+      }
+    }
+  });
 
 export const settlementMismatchResolveBody = z.object({
   category: z.enum(Object.values(SettlementResolutionCategory)),

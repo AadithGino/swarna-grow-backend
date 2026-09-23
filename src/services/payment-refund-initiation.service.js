@@ -19,6 +19,7 @@ import { withTransaction } from "../lib/transaction.js";
 import { errors } from "../lib/app-error.js";
 import { Payment, PaymentIntent, PaymentRefund, Tenant } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
+import { loadBranchScopedPayment, loadBranchScopedPaymentRefund } from "../lib/refund-authority.js";
 import { reconcileGatewayRefundRecord } from "./phonepe-refund-reconcile.service.js";
 
 const REFUNDABLE = new Set([PaymentStatus.SUCCESS, PaymentStatus.PARTIALLY_REFUNDED]);
@@ -64,12 +65,7 @@ export async function initiateAdminPaymentRefund(req) {
         return;
       }
 
-      const payment = await Payment.findOne({
-        _id: req.params.paymentId,
-        tenantId: req.auth.tenantId,
-        ...(req.scope.branchId ? { branchId: req.scope.branchId } : {}),
-      }).session(session);
-      if (!payment) throw errors.notFound("Payment");
+      const payment = await loadBranchScopedPayment(req, { session });
       if (payment.mode !== PaymentMode.ONLINE_GATEWAY) {
         throw errors.business("REFUND_NOT_GATEWAY", "Only PhonePe gateway payments support provider refunds.");
       }
@@ -210,10 +206,12 @@ export async function initiateAdminPaymentRefund(req) {
         $inc: { providerInitiationAttempts: 1 },
         $set: {
           lastInitiationAt: new Date(),
-          providerInitiationError: null,
           status: GatewayRefundStatus.PENDING,
           requiresReview: false,
-          reviewReason: undefined,
+        },
+        $unset: {
+          providerInitiationError: "",
+          reviewReason: "",
         },
       },
     );
@@ -274,12 +272,7 @@ export async function releaseAdminPaymentRefundReservation(req) {
   if (!trimmedReason) {
     throw errors.business("REFUND_RELEASE_REASON_REQUIRED", "Release reason is required.");
   }
-  const refund = await PaymentRefund.findOne({
-    _id: req.params.refundId,
-    tenantId: req.auth.tenantId,
-    paymentId: req.params.paymentId,
-  }).lean();
-  if (!refund) throw errors.notFound("Refund");
+  const { refund } = await loadBranchScopedPaymentRefund(req);
   if (refund.status === GatewayRefundStatus.COMPLETED) {
     throw errors.business("REFUND_ALREADY_COMPLETED", "Completed refunds cannot release reservations.");
   }
@@ -307,19 +300,23 @@ export async function releaseAdminPaymentRefundReservation(req) {
     );
   }
 
-  await releaseGatewayRefundReservation({
-    tenantId: req.auth.tenantId,
-    paymentId: req.params.paymentId,
-    refundId: refund._id,
-    amountPaise: refund.amountPaise,
-    reviewReason: "MANUAL_RESERVATION_RELEASE",
-  });
-  await writeAudit({
-    req,
-    action: "GATEWAY_REFUND_RESERVATION_RELEASED",
-    entityType: AuditEntityType.PAYMENT,
-    entityId: req.params.paymentId,
-    after: { refundId: refund._id, reason: trimmedReason, evidence: evidence ?? null },
+  await withTransaction(async (session) => {
+    await releaseGatewayRefundReservation({
+      tenantId: req.auth.tenantId,
+      paymentId: req.params.paymentId,
+      refundId: refund._id,
+      amountPaise: refund.amountPaise,
+      reviewReason: "MANUAL_RESERVATION_RELEASE",
+      session,
+    });
+    await writeAudit({
+      req,
+      action: "GATEWAY_REFUND_RESERVATION_RELEASED",
+      entityType: AuditEntityType.PAYMENT,
+      entityId: req.params.paymentId,
+      after: { refundId: refund._id, reason: trimmedReason, evidence: evidence ?? null },
+      session,
+    });
   });
   const payment = await Payment.findById(req.params.paymentId).lean();
   return {
@@ -330,6 +327,7 @@ export async function releaseAdminPaymentRefundReservation(req) {
 }
 
 export async function listPaymentRefunds(req) {
+  await loadBranchScopedPayment(req);
   const rows = await PaymentRefund.find({
     tenantId: req.auth.tenantId,
     paymentId: req.params.paymentId,

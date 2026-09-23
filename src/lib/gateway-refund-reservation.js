@@ -1,7 +1,44 @@
-import { GatewayRefundStatus } from "../constants/enums.js";
+import { AlertType, GatewayRefundStatus } from "../constants/enums.js";
 import { assertNonNegativeGatewayRefundReserved } from "./gateway-refundable-balance.js";
+import { errors } from "./app-error.js";
+import { upsertOperationalAlert } from "./operational-alert.js";
 import { withTransaction } from "./transaction.js";
 import { Payment, PaymentRefund } from "../models/index.js";
+
+export async function decrementGatewayRefundReservation({
+  tenantId,
+  paymentId,
+  releaseAmount,
+  session,
+  skipWhenNoReservation = false,
+}) {
+  if (!Number.isSafeInteger(releaseAmount) || releaseAmount <= 0) {
+    return { releasedPaise: 0, skipped: true };
+  }
+  const current = await Payment.findOne({ _id: paymentId, tenantId }).session(session).lean();
+  const reserved = current?.gatewayRefundReservedPaise ?? 0;
+  if (reserved === 0) {
+    if (skipWhenNoReservation) return { releasedPaise: 0, skipped: true };
+  }
+  const updated = await Payment.findOneAndUpdate(
+    {
+      _id: paymentId,
+      tenantId,
+      gatewayRefundReservedPaise: { $gte: releaseAmount },
+    },
+    { $inc: { gatewayRefundReservedPaise: -releaseAmount } },
+    { session, new: true },
+  );
+  if (!updated) {
+    throw errors.business(
+      "GATEWAY_REFUND_RESERVATION_INCONSISTENT",
+      "Gateway refund reservation balance is insufficient for release.",
+      { paymentId, releaseAmount },
+    );
+  }
+  assertNonNegativeGatewayRefundReserved(updated);
+  return { releasedPaise: releaseAmount, payment: updated };
+}
 
 const RELEASABLE_REFUND_STATUSES = new Set([
   GatewayRefundStatus.PENDING,
@@ -43,27 +80,26 @@ export async function releaseGatewayRefundReservation({
     const releaseAmount = amountPaise ?? refund.amountPaise ?? 0;
     const shouldReleaseReservation = RELEASABLE_REFUND_STATUSES.has(refund.status);
     if (shouldReleaseReservation && releaseAmount > 0) {
-      await Payment.updateOne(
-        { _id: paymentId, tenantId },
-        [
-          {
-            $set: {
-              gatewayRefundReservedPaise: {
-                $max: [
-                  0,
-                  {
-                    $subtract: [
-                      { $ifNull: ["$gatewayRefundReservedPaise", 0] },
-                      releaseAmount,
-                    ],
-                  },
-                ],
-              },
-            },
-          },
-        ],
-        { session },
-      );
+      try {
+        await decrementGatewayRefundReservation({
+          tenantId,
+          paymentId,
+          releaseAmount,
+          session,
+        });
+      } catch (error) {
+        if (error?.code === "GATEWAY_REFUND_RESERVATION_INCONSISTENT" && !externalSession) {
+          await upsertOperationalAlert({
+            tenantId,
+            type: AlertType.GATEWAY_REFUND_INVALID,
+            entityId: paymentId,
+            title: "Gateway refund reservation inconsistency",
+            message: error.message,
+            metadata: { refundId, releaseAmount },
+          });
+        }
+        throw error;
+      }
     }
 
     await PaymentRefund.updateOne(
