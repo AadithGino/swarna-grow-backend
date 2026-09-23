@@ -51,7 +51,7 @@ test("upload rejects malformed amounts and oversized row count", async () => {
 
 test("safe filename stored without path segments", async () => {
   const { tenant } = await seedTenantUser();
-  const businessDate = "2026-09-22";
+  const businessDate = "2026-03-18";
   const upload = await uploadGatewaySettlementStatement(mockReq(tenant._id, {
     businessDate,
     sourceFileName: "../../etc/passwd.csv",
@@ -60,6 +60,7 @@ test("safe filename stored without path segments", async () => {
   assert.equal(upload.duplicate, false);
   assert.ok(upload.runId);
   const run = await SettlementRun.findOne({ _id: upload.runId, tenantId: tenant._id }).lean();
+  assert.ok(run, "expected settlement run to persist for upload.runId");
   assert.equal(run.sourceFileName, "passwd.csv");
   assert.equal(await SettlementItem.countDocuments({ tenantId: tenant._id }), 1);
 });
