@@ -457,7 +457,13 @@ export async function processPhonePeRefundWebhook({
         {
           _id: refund._id,
           tenantId,
-          status: { $in: [GatewayRefundStatus.PENDING, GatewayRefundStatus.ACCEPTED] },
+          status: {
+            $in: [
+              GatewayRefundStatus.PENDING,
+              GatewayRefundStatus.PENDING_RECONCILIATION,
+              GatewayRefundStatus.ACCEPTED,
+            ],
+          },
         },
         {
           $set: {

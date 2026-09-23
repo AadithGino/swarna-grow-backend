@@ -345,8 +345,16 @@ export const phonePeProvider = {
     tenantId,
   }) {
     if (env.PROVIDER_MODE === "mock") {
+      if (String(merchantRefundId).includes("__mock_init_reject__")) {
+        throw new AppError("PHONEPE_REFUND_REJECTED", "Mock PhonePe refund rejected by provider.", 422);
+      }
       if (String(merchantRefundId).includes("__mock_init_fail__")) {
         throw new AppError("DEPENDENCY_UNAVAILABLE", "Mock PhonePe refund initiation failure.", 503);
+      }
+      if (String(merchantRefundId).includes("__mock_init_timeout__")) {
+        const err = new Error("Mock provider timeout ETIMEDOUT");
+        err.code = "ETIMEDOUT";
+        throw err;
       }
       return {
         refundId: merchantRefundId,
@@ -362,6 +370,35 @@ export const phonePeProvider = {
       .amount(amountPaise)
       .build();
     return client.refund(request);
+  },
+
+  async getRefundStatus({ merchantRefundId, originalMerchantOrderId, credentials, tenantId }) {
+    if (env.PROVIDER_MODE === "mock") {
+      const id = String(merchantRefundId);
+      if (id.includes("__mock_refund_missing__")) {
+        throw new ResourceNotFound("Mock refund not found at provider.");
+      }
+      if (id.includes("__mock_refund_failed__")) {
+        return { state: "FAILED", merchantRefundId: id, amount: 0 };
+      }
+      if (id.includes("__mock_refund_completed__")) {
+        return { state: "COMPLETED", merchantRefundId: id, amount: 50_000 };
+      }
+      if (id.includes("__mock_init_fail__")) {
+        return { state: "FAILED", merchantRefundId: id, amount: 0 };
+      }
+      return { state: "PENDING", merchantRefundId: id, amount: 0 };
+    }
+    assertLiveCredentials(credentials);
+    const client = getClientFor(credentials, tenantId);
+    if (typeof client.getRefundStatus !== "function") {
+      throw new AppError(
+        "REFUND_STATUS_UNSUPPORTED",
+        "PhonePe refund status lookup is not available in this SDK version.",
+        501,
+      );
+    }
+    return client.getRefundStatus(merchantRefundId, originalMerchantOrderId);
   },
 
   verifyCallback(rawBody, authorizationHeader, credentials, tenantId) {

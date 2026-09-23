@@ -6,6 +6,12 @@ import {
   PaymentStatus,
 } from "../constants/enums.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
+import { classifyRefundInitiationError } from "../lib/gateway-refund-initiation-classifier.js";
+import {
+  markRefundPendingReconciliation,
+  refundInitiationMayRetry,
+  releaseGatewayRefundReservation,
+} from "../lib/gateway-refund-reservation.js";
 import { refundInitiationTestCheckpoint } from "../lib/gateway-refund-initiation-test-hooks.js";
 import { createId } from "../lib/ids.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
@@ -13,6 +19,7 @@ import { withTransaction } from "../lib/transaction.js";
 import { errors } from "../lib/app-error.js";
 import { Payment, PaymentIntent, PaymentRefund, Tenant } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
+import { reconcileGatewayRefundRecord } from "./phonepe-refund-reconcile.service.js";
 
 const REFUNDABLE = new Set([PaymentStatus.SUCCESS, PaymentStatus.PARTIALLY_REFUNDED]);
 
@@ -164,7 +171,8 @@ export async function initiateAdminPaymentRefund(req) {
 
   refundInitiationTestCheckpoint("post-commit");
 
-  if (reused && (refund.providerInitiationAttempts ?? 0) > 0 && !refund.providerInitiationError) {
+  refund = await PaymentRefund.findById(refund._id).lean();
+  if (reused && !refundInitiationMayRetry(refund)) {
     return { refundId: refund._id, status: refund.status, reused: true };
   }
 
@@ -178,6 +186,13 @@ export async function initiateAdminPaymentRefund(req) {
   const tenant = await Tenant.findById(payment.tenantId).select("+integrationSecrets").lean();
   const credentials = resolvePhonePeCredentials(tenant);
   if (!credentials) {
+    await releaseGatewayRefundReservation({
+      tenantId: payment.tenantId,
+      paymentId: payment._id,
+      refundId: refund._id,
+      amountPaise: refund.amountPaise,
+      reviewReason: "PAYMENT_GATEWAY_NOT_CONFIGURED",
+    });
     throw errors.business("PAYMENT_GATEWAY_NOT_CONFIGURED", "PhonePe is not configured.");
   }
 
@@ -193,28 +208,54 @@ export async function initiateAdminPaymentRefund(req) {
       { _id: refund._id },
       {
         $inc: { providerInitiationAttempts: 1 },
-        $set: { lastInitiationAt: new Date(), providerInitiationError: null },
+        $set: {
+          lastInitiationAt: new Date(),
+          providerInitiationError: null,
+          status: GatewayRefundStatus.PENDING,
+          requiresReview: false,
+          reviewReason: undefined,
+        },
       },
     );
   } catch (error) {
     const attempts = (refund.providerInitiationAttempts ?? 0) + 1;
-    await PaymentRefund.updateOne(
-      { _id: refund._id },
-      {
-        $inc: { providerInitiationAttempts: 1 },
-        $set: {
-          lastInitiationAt: new Date(),
-          providerInitiationError: String(error?.message ?? "initiation_failed").slice(0, 500),
+    const failureClass = classifyRefundInitiationError(error);
+    if (failureClass === "DEFINITIVE_REJECT") {
+      await releaseGatewayRefundReservation({
+        tenantId: payment.tenantId,
+        paymentId: payment._id,
+        refundId: refund._id,
+        amountPaise: refund.amountPaise,
+        reviewReason: "REFUND_INITIATION_REJECTED",
+      });
+      await PaymentRefund.updateOne(
+        { _id: refund._id },
+        {
+          $inc: { providerInitiationAttempts: 1 },
+          $set: {
+            lastInitiationAt: new Date(),
+            providerInitiationError: String(error?.message ?? "rejected").slice(0, 500),
+          },
         },
-      },
-    );
+      );
+      throw error instanceof Error && error.statusCode
+        ? error
+        : errors.business("PHONEPE_REFUND_REJECTED", "PhonePe rejected the refund request.", 422);
+    }
+
+    await markRefundPendingReconciliation({
+      tenantId: payment.tenantId,
+      refundId: refund._id,
+      providerInitiationError: error?.message,
+      attempts,
+    });
     if (attempts >= 5) {
       await upsertOperationalAlert({
         tenantId: payment.tenantId,
         type: AlertType.GATEWAY_REFUND_INITIATION_EXHAUSTED,
         entityId: payment._id,
         title: "Gateway refund initiation exhausted",
-        message: "Automatic PhonePe refund initiation retries were exhausted.",
+        message: "Automatic PhonePe refund initiation retries were exhausted; reservation retained for reconciliation.",
         metadata: { refundId: refund._id },
       });
     }
@@ -223,7 +264,69 @@ export async function initiateAdminPaymentRefund(req) {
     );
   }
 
-  return { refundId: refund._id, status: GatewayRefundStatus.PENDING, reused };
+  const latest = await PaymentRefund.findById(refund._id).lean();
+  return { refundId: refund._id, status: latest?.status ?? GatewayRefundStatus.PENDING, reused };
+}
+
+export async function releaseAdminPaymentRefundReservation(req) {
+  const { reason, evidence, providerConfirmedNotAccepted } = req.body ?? {};
+  const trimmedReason = String(reason ?? "").trim();
+  if (!trimmedReason) {
+    throw errors.business("REFUND_RELEASE_REASON_REQUIRED", "Release reason is required.");
+  }
+  const refund = await PaymentRefund.findOne({
+    _id: req.params.refundId,
+    tenantId: req.auth.tenantId,
+    paymentId: req.params.paymentId,
+  }).lean();
+  if (!refund) throw errors.notFound("Refund");
+  if (refund.status === GatewayRefundStatus.COMPLETED) {
+    throw errors.business("REFUND_ALREADY_COMPLETED", "Completed refunds cannot release reservations.");
+  }
+
+  let providerEvidence = providerConfirmedNotAccepted === true;
+  if (providerConfirmedNotAccepted === true && !trimmedReason) {
+    throw errors.business("REFUND_RELEASE_REASON_REQUIRED", "Release reason is required.");
+  }
+  if (!providerEvidence) {
+    const reconcile = await reconcileGatewayRefundRecord({
+      tenantId: req.auth.tenantId,
+      refund,
+    });
+    providerEvidence = reconcile.outcome === "PROVIDER_NOT_FOUND"
+      || reconcile.providerState === "FAILED";
+    if (reconcile.outcome === "ALREADY_COMPLETED") {
+      throw errors.business("REFUND_ALREADY_COMPLETED", "Provider reports refund completed.");
+    }
+  }
+
+  if (!providerEvidence) {
+    throw errors.business(
+      "REFUND_RELEASE_NOT_ALLOWED",
+      "Release requires provider proof the refund was never accepted, or set providerConfirmedNotAccepted with documented evidence.",
+    );
+  }
+
+  await releaseGatewayRefundReservation({
+    tenantId: req.auth.tenantId,
+    paymentId: req.params.paymentId,
+    refundId: refund._id,
+    amountPaise: refund.amountPaise,
+    reviewReason: "MANUAL_RESERVATION_RELEASE",
+  });
+  await writeAudit({
+    req,
+    action: "GATEWAY_REFUND_RESERVATION_RELEASED",
+    entityType: AuditEntityType.PAYMENT,
+    entityId: req.params.paymentId,
+    after: { refundId: refund._id, reason: trimmedReason, evidence: evidence ?? null },
+  });
+  const payment = await Payment.findById(req.params.paymentId).lean();
+  return {
+    refundId: refund._id,
+    status: GatewayRefundStatus.FAILED,
+    gatewayRefundReservedPaise: payment?.gatewayRefundReservedPaise ?? 0,
+  };
 }
 
 export async function listPaymentRefunds(req) {
@@ -244,5 +347,7 @@ export async function listPaymentRefunds(req) {
     requiresReview: row.requiresReview,
     reviewReason: row.reviewReason,
     reason: row.reason,
+    providerInitiationError: row.providerInitiationError ?? null,
+    providerInitiationAttempts: row.providerInitiationAttempts ?? 0,
   }));
 }

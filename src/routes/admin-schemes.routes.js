@@ -21,6 +21,7 @@ import { sendList, sendSuccess } from "../lib/response.js";
 import {
   gatewaySettlementUploadBody,
   paymentRefundInitiationBody,
+  paymentRefundReleaseBody,
   settlementMismatchReopenBody,
   settlementMismatchResolveBody,
 } from "../validators/gateway-settlement.validators.js";
@@ -339,6 +340,31 @@ adminSchemeRouter.get(
       const { listPaymentRefunds } = await import("../services/payment-refund-initiation.service.js");
       const { sendSuccess } = await import("../lib/response.js");
       return sendSuccess(res, await listPaymentRefunds(req));
+    }),
+  ),
+);
+adminSchemeRouter.post(
+  "/payments/:paymentId/refunds/:refundId/reconcile",
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    idempotent,
+    asyncHandler(async (req, res) => {
+      const { reconcileGatewayRefundById } = await import("../services/phonepe-refund-reconcile.service.js");
+      const { sendSuccess } = await import("../lib/response.js");
+      return sendSuccess(res, await reconcileGatewayRefundById(req));
+    }),
+  ),
+);
+adminSchemeRouter.post(
+  "/payments/:paymentId/refunds/:refundId/release",
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    validate({ body: paymentRefundReleaseBody }),
+    idempotent,
+    asyncHandler(async (req, res) => {
+      const { releaseAdminPaymentRefundReservation } = await import("../services/payment-refund-initiation.service.js");
+      const { sendSuccess } = await import("../lib/response.js");
+      return sendSuccess(res, await releaseAdminPaymentRefundReservation(req));
     }),
   ),
 );

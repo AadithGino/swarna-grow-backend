@@ -28,6 +28,12 @@ export const paymentRefundInitiationBody = z.object({
   reason: z.string().trim().min(3).max(500),
 }).strict();
 
+export const paymentRefundReleaseBody = z.object({
+  reason: z.string().trim().min(3).max(500),
+  evidence: z.string().trim().max(2000).optional(),
+  providerConfirmedNotAccepted: z.boolean().optional(),
+}).strict();
+
 export const settlementMismatchResolveBody = z.object({
   category: z.enum(Object.values(SettlementResolutionCategory)),
   reason: z.string().trim().min(3).max(500),

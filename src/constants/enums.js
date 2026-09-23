@@ -44,7 +44,13 @@ export const PaymentSource = makeEnum("PORTAL", "STAFF_APP", "CUSTOMER_APP", "WE
 export const LinkStatus = makeEnum("CREATED", "SENT", "OPENED", "PAID", "EXPIRED", "CANCELLED");
 export const LedgerEntryType = makeEnum("INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "UNALLOCATED_PAYMENT", "BENEFIT_CREDIT", "REVERSAL", "CLOSURE_PENALTY", "REDEMPTION_DEBIT", "ADJUSTMENT");
 export const LateSuccessDetection = makeEnum("WEBHOOK", "RECONCILIATION_JOB");
-export const GatewayRefundStatus = makeEnum("PENDING", "ACCEPTED", "COMPLETED", "FAILED");
+export const GatewayRefundStatus = makeEnum(
+  "PENDING",
+  "PENDING_RECONCILIATION",
+  "ACCEPTED",
+  "COMPLETED",
+  "FAILED",
+);
 export const RedemptionMode = makeEnum("CASH", "GOLD_HANDOVER", "PURCHASE_ADJUSTMENT");
 export const RedemptionStatus = makeEnum("REQUESTED", "PENDING_APPROVAL", "APPROVED", "COMPLETED", "REJECTED");
 export const ClosureType = makeEnum("MATURITY_REDEMPTION", "PREMATURE_CLOSURE");
