@@ -17,6 +17,10 @@ import {
 import { dateMatch, effectiveScope, fuzzyMongoFilter, searchRegex } from "../lib/query-filters.js";
 import { generatedAtIst } from "./report-builders/report-envelope.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
+import {
+  countAllocatedBusinessPayments,
+  lifetimePaidPaiseFromLedgerEntries,
+} from "../lib/customer-financial-totals.js";
 import { loadUserMap, userDto } from "../lib/relation-maps.js";
 
 const CUSTOMER_LIST_SEARCH_FIELDS = ["name", "mobile", "customerNumber", "passbookNumber", "email"];
@@ -585,15 +589,14 @@ export async function customer360(req) {
   const customer = await getCustomer(req);
   const [schemes, payments, ledgers, branch] = await Promise.all([
     Scheme.find({ tenantId: customer.tenantId, customerId: customer._id }).lean(),
-    Payment.find({ tenantId: customer.tenantId, customerId: customer._id, status: "SUCCESS" }).lean(),
+    Payment.find({ tenantId: customer.tenantId, customerId: customer._id }).lean(),
     LedgerEntry.find({ tenantId: customer.tenantId, customerId: customer._id }).lean(),
     customer.branchId
       ? Branch.findOne({ _id: customer.branchId, tenantId: customer.tenantId }).select("_id name code").lean()
       : null,
   ]);
-  const lifetimePaidPaise = ledgers
-    .filter((row) => ["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT"].includes(row.type))
-    .reduce((sum, row) => sum + row.amountPaise, 0);
+  const lifetimePaidPaise = lifetimePaidPaiseFromLedgerEntries(ledgers);
+  const paymentCount = countAllocatedBusinessPayments(payments);
   const activeSchemesRaw = schemes.filter((row) => ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status));
   const activeSchemesWithTotals = await attachLedgerTotals(customer.tenantId, activeSchemesRaw);
   const activeSchemes = activeSchemesWithTotals.map(schemeAgentCollectPreview);
@@ -638,7 +641,7 @@ export async function customer360(req) {
       activeSchemes: activeSchemes.length,
       pastSchemes: schemes.filter((row) => ["REDEEMED", "CLOSED_PREMATURE"].includes(row.status)).length,
       lifetimePaidPaise,
-      paymentCount: payments.length,
+      paymentCount,
     },
     schemes,
   };

@@ -1,6 +1,7 @@
 import {
   Branch,
   Customer,
+  LedgerEntry,
   Message,
   Payment,
   PaymentLink,
@@ -9,7 +10,6 @@ import {
   Tenant,
 } from "../models/index.js";
 import { errors } from "../lib/app-error.js";
-import { moneyPaiseFromWeightMg } from "../lib/money.js";
 import { mobileLookupVariants } from "../lib/mobile.js";
 import { customerNotificationDedupeKey } from "../lib/customer-notification-dto.js";
 import {
@@ -41,6 +41,18 @@ import { currentGoldRate } from "./tenant.service.js";
 import { enrichCustomerKycRecord } from "../lib/customer-kyc-enrichment.js";
 import { paymentRecordedByLabel } from "../lib/payment-scope.js";
 import { loadUserMap } from "../lib/relation-maps.js";
+import {
+  isAllocatedBusinessPayment,
+  lifetimePaidPaiseFromLedgerEntries,
+  netGoldWeightMgFromLedgerEntries,
+} from "../lib/customer-financial-totals.js";
+import { buildCustomerGoldValuation } from "../lib/customer-gold-valuation.js";
+import {
+  netAmountPaiseFromDoc,
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+  sumNetWeightMg,
+} from "../lib/payment-net-aggregation.js";
 
 export async function resolveTenants(query) {
   if (query.deepLinkToken) {
@@ -131,7 +143,8 @@ export async function completeAppProfile(auth, body) {
 export async function buildHome(auth, tenant, query = {}) {
   const includeTrends = query.includeTrends === "true" || query.includeTrends === true;
   const trendMonths = Number(query.trendMonths) || 6;
-  const [customer, activeSchemesRaw, pastSchemes, unreadRows, goldRate] = await Promise.all([
+  const [customer, activeSchemesRaw, pastSchemes, unreadRows, goldRate, ledgers, goldWeightSchemes] =
+    await Promise.all([
     Customer.findById(auth.id).lean(),
     Scheme.find({
       tenantId: auth.tenantId,
@@ -151,35 +164,26 @@ export async function buildHome(auth, tenant, query = {}) {
       .limit(200)
       .lean(),
     currentGoldRate({ tenantId: auth.tenantId, branchId: auth.branchId }, today()),
-  ]);
-  const unreadCount = countUnreadDedupedNotifications(unreadRows);
-  const activeSchemes = await schemes.attachLedgerTotals(auth.tenantId, activeSchemesRaw);
-  const hasGoldAccumulationScheme = Boolean(
-    await Scheme.exists({
+    LedgerEntry.find({ tenantId: auth.tenantId, customerId: auth.id }).lean(),
+    Scheme.find({
       tenantId: auth.tenantId,
       customerId: auth.id,
       valueBasis: ValueBasis.GOLD_WEIGHT,
-    }),
-  );
-  const payments = await Payment.find({
-    tenantId: auth.tenantId,
-    customerId: auth.id,
-    status: { $in: [PaymentStatus.SUCCESS, PaymentStatus.PARTIALLY_REFUNDED] },
-  })
-    .select("amountPaise weightMg refundedAmountPaise refundedWeightMg paidAt")
-    .lean();
-  const totalPaidPaise = payments.reduce(
-    (s, p) => s + (p.amountPaise ?? 0) - (p.refundedAmountPaise ?? 0),
-    0,
-  );
-  const goldMg = payments.reduce(
-    (s, p) => s + (p.weightMg ?? 0) - (p.refundedWeightMg ?? 0),
-    0,
-  );
-  const currentValuePaise =
-    goldRate?.ratePerGramPaise && goldMg > 0
-      ? moneyPaiseFromWeightMg(goldMg, goldRate.ratePerGramPaise)
-      : totalPaidPaise;
+    })
+      .select("_id")
+      .lean(),
+  ]);
+  const unreadCount = countUnreadDedupedNotifications(unreadRows);
+  const activeSchemes = await schemes.attachLedgerTotals(auth.tenantId, activeSchemesRaw);
+  const hasGoldAccumulationScheme = goldWeightSchemes.length > 0;
+  const totalPaidPaise = lifetimePaidPaiseFromLedgerEntries(ledgers);
+  const goldSchemeIds = new Set(goldWeightSchemes.map((row) => String(row._id)));
+  const goldMg = netGoldWeightMgFromLedgerEntries(ledgers, goldSchemeIds);
+  const valuation = buildCustomerGoldValuation({
+    hasGoldAccumulationScheme,
+    netGoldWeightMg: goldMg,
+    ratePerGramPaise: goldRate?.ratePerGramPaise ?? 0,
+  });
   const firstName = customer?.name?.trim()?.split(/\s+/)[0] ?? "there";
   const hour = new Date().getHours();
   const greetingText =
@@ -214,7 +218,9 @@ export async function buildHome(auth, tenant, query = {}) {
       pastSchemeCount: pastSchemes.length,
       totalPaid: moneyRef(totalPaidPaise),
       goldAccumulated: hasGoldAccumulationScheme ? weightRef(goldMg) : undefined,
-      currentValuation: hasGoldAccumulationScheme ? moneyRef(currentValuePaise) : undefined,
+      currentValuation: valuation.currentValuation,
+      valuationAvailable: hasGoldAccumulationScheme ? valuation.valuationAvailable : undefined,
+      valuationBlocker: hasGoldAccumulationScheme ? valuation.valuationBlocker : undefined,
     },
     goldRate:
       hasGoldAccumulationScheme && goldRate
@@ -349,14 +355,14 @@ async function contributionTrend(auth, months) {
       $match: {
         tenantId: auth.tenantId,
         customerId: auth.id,
-        status: PaymentStatus.SUCCESS,
+        ...netCollectionStatusFilter(),
         paidAt: { $gte: since },
       },
     },
     {
       $group: {
         _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
-        amountPaise: { $sum: "$amountPaise" },
+        amountPaise: sumNetAmountPaise(),
       },
     },
     { $sort: { _id: 1 } },
@@ -372,15 +378,14 @@ async function goldTrend(auth, months) {
       $match: {
         tenantId: auth.tenantId,
         customerId: auth.id,
-        status: PaymentStatus.SUCCESS,
+        ...netCollectionStatusFilter(),
         paidAt: { $gte: since },
-        weightMg: { $gt: 0 },
       },
     },
     {
       $group: {
         _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
-        weightMg: { $sum: "$weightMg" },
+        weightMg: sumNetWeightMg(),
       },
     },
     { $sort: { _id: 1 } },
@@ -557,15 +562,18 @@ export async function listPaymentsForApp(req) {
     };
     return mapCustomerPaymentListItem(enriched, scheme);
   });
-  const successRows = result.data.filter((row) => row.status === PaymentStatus.SUCCESS);
-  const totalPaidPaise = successRows.reduce((sum, row) => sum + (row.amountPaise ?? 0), 0);
+  const collectedRows = result.data.filter(isAllocatedBusinessPayment);
+  const totalPaidPaise = collectedRows.reduce(
+    (sum, row) => sum + netAmountPaiseFromDoc(row),
+    0,
+  );
   return {
     data,
     meta: {
       ...result.meta,
       summary: {
         totalPaidPaise,
-        successCount: successRows.length,
+        successCount: collectedRows.length,
         activeSchemeCount,
       },
     },
