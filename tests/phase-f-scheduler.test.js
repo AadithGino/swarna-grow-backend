@@ -59,6 +59,14 @@ test("defaulting job uses keyset batches with CAS transitions", async () => {
 test("maturity batch is idempotent on rerun", async () => {
   const { tenant, branch } = await seedTenantUser();
   const today = "2026-09-19";
+  const installments = Array.from({ length: 9 }, (_, index) => ({
+    number: index + 1,
+    dueDate: `2026-${String(index + 1).padStart(2, "0")}-01`,
+    amountPaise: 10_000,
+    paidPaise: 10_000,
+    status: "PAID",
+    graceEndsAt: `2026-${String(index + 1).padStart(2, "0")}-05`,
+  }));
   await Scheme.create({
     _id: createId("scheme"),
     tenantId: tenant._id,
@@ -72,7 +80,7 @@ test("maturity batch is idempotent on rerun", async () => {
     status: SchemeStatus.ACTIVE,
     startDate: "2026-01-01",
     maturityDate: "2026-09-18",
-    installments: [],
+    installments,
   });
   const first = await runMaturityTransitionBatch({ today });
   assert.equal(first.processed, 1);
@@ -380,7 +388,14 @@ test("maintenance batches converge maturity, defaulting, and flexible expiry", a
       status: SchemeStatus.ACTIVE,
       startDate: "2026-01-01",
       maturityDate: "2026-09-18",
-      installments: [],
+      installments: Array.from({ length: 9 }, (_, index) => ({
+        number: index + 1,
+        dueDate: `2026-${String(index + 1).padStart(2, "0")}-01`,
+        amountPaise: 10_000,
+        paidPaise: 10_000,
+        status: "PAID",
+        graceEndsAt: `2026-${String(index + 1).padStart(2, "0")}-05`,
+      })),
     },
     {
       _id: createId("scheme"),

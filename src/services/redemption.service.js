@@ -43,6 +43,7 @@ import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js"
 import { addMonthsClamped, elapsedSchemeMonths, today } from "../lib/date.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
 import { isSystemPolicyClosureSettlement } from "../lib/system-policy-closure.js";
+import { assessMaturityContributionEligibility } from "../lib/maturity-eligibility.js";
 
 const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.REQUESTED,
@@ -310,6 +311,20 @@ export async function settlementPreview(req, closureType) {
       message: "The scheme has not matured yet.",
       eligibleFrom: scheme.maturityDate,
     });
+  } else if (
+    !isPremature &&
+    !systemPolicyClosure &&
+    scheme.status === SchemeStatus.MATURED
+  ) {
+    const maturityContributions = assessMaturityContributionEligibility(scheme);
+    if (!maturityContributions.paymentEligible) {
+      blockers.push({
+        code: "MATURITY_CONTRIBUTIONS_INCOMPLETE",
+        message:
+          maturityContributions.message ??
+          "Required contributions must be complete before normal redemption.",
+      });
+    }
   }
 
   if (

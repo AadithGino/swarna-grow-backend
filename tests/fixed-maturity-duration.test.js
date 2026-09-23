@@ -89,8 +89,16 @@ test("maturity job does not transition before maturityDate", async () => {
   assert.equal(row.status, SchemeStatus.ACTIVE);
 });
 
-test("maturity job transitions on or after maturityDate", async () => {
+test("maturity job transitions on or after maturityDate when instalments are complete", async () => {
   const { tenant, branch } = await seedTenantUser();
+  const installments = Array.from({ length: 6 }, (_, index) => ({
+    number: index + 1,
+    dueDate: `2026-${String(index + 1).padStart(2, "0")}-01`,
+    amountPaise: 100_000,
+    paidPaise: 100_000,
+    status: "PAID",
+    graceEndsAt: `2026-${String(index + 1).padStart(2, "0")}-05`,
+  }));
   await Scheme.create({
     _id: createId("scheme"),
     tenantId: tenant._id,
@@ -104,7 +112,7 @@ test("maturity job transitions on or after maturityDate", async () => {
     status: SchemeStatus.ACTIVE,
     startDate: "2026-01-01",
     maturityDate: "2026-06-30",
-    installments: [],
+    installments,
   });
   const batch = await runMaturityTransitionBatch({ today: "2026-07-01" });
   assert.equal(batch.processed, 1);

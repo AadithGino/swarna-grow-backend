@@ -449,7 +449,9 @@ async function runMaturityReminders({ tenant, config, today, lease, budget }) {
       };
       if (cursor) query._id = { $gt: cursor };
       return Scheme.find(query)
-        .select("_id customerId branchId enrollmentNumber maturityDate")
+        .select(
+          "_id customerId branchId enrollmentNumber maturityDate paymentPattern planSnapshot installments cycles",
+        )
         .sort({ _id: 1 })
         .limit(limit)
         .lean();
@@ -467,9 +469,14 @@ async function runMaturityReminders({ tenant, config, today, lease, budget }) {
           dayYmd: today,
         }),
       ]);
+      const { assessMaturityContributionEligibility } = await import("../lib/maturity-eligibility.js");
       for (const scheme of schemes) {
         const customer = customersById.get(scheme.customerId);
         if (!customer) {
+          skipped += 1;
+          continue;
+        }
+        if (!assessMaturityContributionEligibility(scheme).paymentEligible) {
           skipped += 1;
           continue;
         }

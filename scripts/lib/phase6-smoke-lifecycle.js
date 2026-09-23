@@ -340,7 +340,14 @@ export async function smokeMaturityTransition(ctx) {
     startDate: dayjs(maturityDate).subtract(11, "month").format("YYYY-MM-DD"),
     maturityDate,
     installmentAmountPaise: 100_000,
-    installments: [],
+    installments: Array.from({ length: 12 }, (_, index) => ({
+      number: index + 1,
+      dueDate: dayjs(maturityDate).subtract(11 - index, "month").format("YYYY-MM-DD"),
+      amountPaise: 100_000,
+      paidPaise: 100_000,
+      status: "PAID",
+      graceEndsAt: dayjs(maturityDate).subtract(11 - index, "month").add(4, "day").format("YYYY-MM-DD"),
+    })),
     version: 1,
     createdBy: ctx.user._id,
   });

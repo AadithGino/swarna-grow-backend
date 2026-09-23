@@ -9,6 +9,7 @@ import {
   MaintenanceScanStream,
   runRotatingMaintenanceScan,
 } from "../lib/maintenance-scan-cursor.js";
+import { assessNormalMaturityTransitionEligibility } from "../lib/maturity-eligibility.js";
 
 function batchSize() {
   return env.SCHEME_MAINTENANCE_BATCH_SIZE ?? 200;
@@ -34,12 +35,48 @@ export async function runMaturityTransitionBatch({ today, cursor = null }) {
   const rows = await Scheme.find(query)
     .sort({ _id: 1 })
     .limit(limit)
-    .select("_id tenantId branchId customerId enrollmentNumber maturityDate status")
+    .select(
+      "_id tenantId branchId customerId enrollmentNumber maturityDate status paymentPattern planSnapshot installments cycles version",
+    )
     .lean();
 
   let processed = 0;
   let notifications = 0;
   for (const scheme of rows) {
+    const transition = assessNormalMaturityTransitionEligibility(scheme, today);
+    if (!transition.eligible) {
+      if (
+        transition.calendarEligible &&
+        !transition.paymentEligible &&
+        [SchemeStatus.ACTIVE, SchemeStatus.LOCKED].includes(scheme.status)
+      ) {
+        const defaulted = await Scheme.findOneAndUpdate(
+          {
+            _id: scheme._id,
+            status: scheme.status,
+            maturityDate: scheme.maturityDate,
+          },
+          { $set: { status: SchemeStatus.DEFAULTED }, $inc: { version: 1 } },
+          { new: true },
+        );
+        if (defaulted) {
+          await writeAudit({
+            req: {
+              auth: { id: "scheduler", tenantId: scheme.tenantId, type: "SYSTEM" },
+              headers: {},
+              ip: "scheduler",
+            },
+            action: "SCHEME_DEFAULTED",
+            entityType: AuditEntityType.SCHEME,
+            entityId: scheme._id,
+            before: scheme,
+            after: defaulted.toObject(),
+            actorType: "SYSTEM",
+          });
+        }
+      }
+      continue;
+    }
     const updated = await Scheme.findOneAndUpdate(
       {
         _id: scheme._id,

@@ -48,6 +48,7 @@ import { dateMatch, calendarDateMatch, effectiveScope, searchRegex } from "../li
 import { moneyRef } from "../lib/money.js";
 import { generatedAtIst } from "./report-builders/report-envelope.js";
 import { isFlexibleMaturityOnlyCycleIndex } from "../lib/flexible-plan-duration.js";
+import { assessMaturityContributionEligibility } from "../lib/maturity-eligibility.js";
 import { buildFlexibleEnrolPreview } from "./plan.service.js";
 import {
   buildCalendarMonthCycles,
@@ -124,7 +125,11 @@ async function schemePresentationExtras(scheme) {
     [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED].includes(
       scheme.status,
     );
-  const canRedeem = !open && scheme.status === SchemeStatus.MATURED;
+  const maturityContributions = assessMaturityContributionEligibility(scheme);
+  const canRedeem =
+    !open &&
+    scheme.status === SchemeStatus.MATURED &&
+    maturityContributions.paymentEligible;
   return {
     uiStatus: open ? "REDEMPTION_PENDING" : scheme.status,
     actions: { canRecordPayment, canRedeem },
