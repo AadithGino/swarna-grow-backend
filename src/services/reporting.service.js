@@ -34,7 +34,12 @@ import {
   buildCountTrendPoints,
   buildCurrencyTrendPoints,
   reportTrendGroupBy,
+  rollupDailyMetric,
 } from "./report-builders/report-envelope.js";
+import {
+  displayNetGoldWeightMg,
+  goldAccrualMongoWeightDeltaExpr,
+} from "../lib/gold-accrual-netting.js";
 import {
   assertExportJobAccessible,
   exportJobListQuery,
@@ -268,41 +273,63 @@ export async function chart(req, key) {
     ]);
   }
   if (key === "gold-accrual-trend") {
-    const dailyRows = await LedgerEntry.aggregate([
-      {
-        $match: {
-          ...scope,
-          weightMg: { $gt: 0 },
-          ...dateMatch("effectiveAt", range),
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $dateToString: {
-              format: "%Y-%m-%d",
-              date: "$effectiveAt",
-              timezone: "Asia/Kolkata",
-            },
-          },
-          count: { $sum: "$weightMg" },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+    const weightDeltaExpr = goldAccrualMongoWeightDeltaExpr();
     const { from, to } = range;
     const groupBy = reportTrendGroupBy(from, to, req.query);
-    const trend =
-      from && to
-        ? buildCountTrendPoints(dailyRows, from, to, groupBy).map((point) => ({
-            ...point,
-            yDisplay: weightRef(point.y).weightDisplay,
-          }))
-        : dailyRows.map((row) => ({
+    const [openingRow, dailyRows] = await Promise.all([
+      from
+        ? LedgerEntry.aggregate([
+          {
+            $match: {
+              ...scope,
+              effectiveAt: { $lt: new Date(`${from}T00:00:00+05:30`) },
+            },
+          },
+          { $group: { _id: null, weightMg: { $sum: weightDeltaExpr } } },
+        ])
+        : Promise.resolve([]),
+      LedgerEntry.aggregate([
+        {
+          $match: {
+            ...scope,
+            ...dateMatch("effectiveAt", range),
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$effectiveAt",
+                timezone: "Asia/Kolkata",
+              },
+            },
+            weightMg: { $sum: weightDeltaExpr },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+    ]);
+    let cumulative = openingRow[0]?.weightMg ?? 0;
+    const trend = from && to
+      ? rollupDailyMetric(dailyRows, from, to, groupBy, "weightMg").map((bucket) => {
+          cumulative += bucket.value;
+          const y = displayNetGoldWeightMg(cumulative);
+          return {
+            x: bucket.key,
+            y,
+            yDisplay: weightRef(y).weightDisplay,
+          };
+        })
+      : dailyRows.map((row) => {
+          cumulative += row.weightMg;
+          const y = displayNetGoldWeightMg(cumulative);
+          return {
             x: row._id,
-            y: row.count,
-            yDisplay: weightRef(row.count).weightDisplay,
-          }));
+            y,
+            yDisplay: weightRef(y).weightDisplay,
+          };
+        });
     return {
       chartType: "line",
       title: "Gold accrual",

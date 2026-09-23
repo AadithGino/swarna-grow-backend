@@ -3,11 +3,17 @@ import { moneyRef, weightRef } from "../../lib/money.js";
 import { forEachSchemeBatch } from "../../lib/scheme-batch-loader.js";
 import { paginate } from "../../lib/pagination.js";
 import {
+  displayNetGoldWeightMg,
+  goldAccrualMongoWeightDeltaExpr,
+} from "../../lib/gold-accrual-netting.js";
+import {
   baseEnvelope,
   reportDataScope,
   schemeInstallmentStats,
   statusBadge,
 } from "./report-envelope.js";
+
+const weightDeltaExpr = goldAccrualMongoWeightDeltaExpr();
 
 const COLUMNS = [
   { key: "schemeNumber", label: "Scheme", type: "text", sticky: true },
@@ -46,9 +52,7 @@ async function summarizePortfolioBatched(scope, filters, asOfYmd, tenantId) {
     },
   });
 
-  const ledgerPipeline = [
-    { $match: { tenantId, weightMg: { $gt: 0 } } },
-  ];
+  const ledgerPipeline = [{ $match: { tenantId } }];
   if (scope.branchId) {
     ledgerPipeline.push(
       {
@@ -76,12 +80,12 @@ async function summarizePortfolioBatched(scope, filters, asOfYmd, tenantId) {
       { $match: { "scheme.planId": filters.planId } },
     );
   }
-  ledgerPipeline.push({ $group: { _id: null, weightMg: { $sum: "$weightMg" } } });
+  ledgerPipeline.push({ $group: { _id: null, weightMg: { $sum: weightDeltaExpr } } });
   const [gramsRow] = await LedgerEntry.aggregate(ledgerPipeline);
 
   return {
     portfolioOutstanding,
-    portfolioGrams: gramsRow?.weightMg ?? 0,
+    portfolioGrams: displayNetGoldWeightMg(gramsRow?.weightMg ?? 0),
     activeCount,
   };
 }
@@ -127,10 +131,9 @@ export async function buildSchemeRegisterReport(req) {
           $match: {
             tenantId: req.auth.tenantId,
             schemeId: { $in: pageSchemeIds },
-            weightMg: { $gt: 0 },
           },
         },
-        { $group: { _id: "$schemeId", weightMg: { $sum: "$weightMg" } } },
+        { $group: { _id: "$schemeId", weightMg: { $sum: weightDeltaExpr } } },
       ])
       : [],
   ]);
@@ -146,7 +149,7 @@ export async function buildSchemeRegisterReport(req) {
       0,
       stats.expectedToDate + stats.futureExpected - paid,
     );
-    const grams = pageWeightMap.get(scheme._id) ?? 0;
+    const grams = displayNetGoldWeightMg(pageWeightMap.get(scheme._id) ?? 0);
     const customer = customerMap.get(scheme.customerId);
     return {
       key: scheme._id,
