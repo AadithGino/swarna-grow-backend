@@ -162,5 +162,6 @@ test("gold partial refund includes net weight fields on scheme detail payment ro
   assert.equal(row.netAmountPaise, 75_000);
   assert.equal(row.grossAmountPaise, 100_000);
   assert.equal(row.refundedAmountPaise, 25_000);
-  assert.ok(row.goldAccrual);
+  assert.equal(row.goldAccrual.weightMg, 150);
+  assert.equal(row.goldAccrual.grossGoldAccrual.weightMg, 200);
 });
