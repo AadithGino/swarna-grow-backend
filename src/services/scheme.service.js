@@ -194,9 +194,7 @@ function buildFlexibleAdminEnrollmentContext(scheme) {
     return { flexible: { phase: "CAPPED" } };
   }
   const remaining = Math.max(0, cycle.capPaise - (cycle.paidPaise ?? 0));
-  const paidCycles = cappedCycles.filter(
-    (row) => row.capPaise > 0 && (row.paidPaise ?? 0) >= row.capPaise,
-  ).length;
+  const paidCycles = cappedCycles.filter((row) => (row.paidPaise ?? 0) > 0).length;
   const capDisplay = moneyField(
     scheme.lockedAveragePaise ?? cycle.capPaise,
   ).amountDisplay;
@@ -1259,9 +1257,7 @@ export async function listSchemes(req) {
     const installments = scheme.installments ?? [];
     const paidInstallments = installments.filter((row) => ["PAID", "WAIVED"].includes(row.status)).length;
     const cappedCycles = (scheme.cycles ?? []).filter((row) => row.capPaise > 0);
-    const paidCappedCycles = cappedCycles.filter(
-      (row) => (row.paidPaise ?? 0) >= row.capPaise,
-    ).length;
+    const paidCappedCycles = cappedCycles.filter((row) => (row.paidPaise ?? 0) > 0).length;
     const amountPaidPaise =
       scheme.paymentPattern === PaymentPattern.FIXED
         ? installments.reduce((sum, row) => sum + (row.paidPaise ?? 0), 0)
@@ -1428,7 +1424,7 @@ export async function attachLedgerTotals(tenantId, schemeRows) {
     };
   });
 }
-export function rebuildSchemeProjection(scheme, entries) { const businessEntries = entries.filter((entry) => ["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "REVERSAL"].includes(entry.type)); if (scheme.paymentPattern === PaymentPattern.FIXED) { let remaining = businessEntries.reduce((sum, entry) => sum + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise), 0); const current = today(); for (const row of scheme.installments) { row.paidPaise = Math.max(0, Math.min(row.amountPaise, remaining)); remaining = Math.max(0, remaining - row.paidPaise); row.status = row.paidPaise >= row.amountPaise ? "PAID" : row.graceEndsAt < current ? "OVERDUE" : row.paidPaise > 0 ? "PARTIALLY_PAID" : row.dueDate <= current ? "DUE" : "PENDING"; } } else { const amounts = new Map(); for (const entry of businessEntries) if (entry.cycle) amounts.set(entry.cycle, (amounts.get(entry.cycle) ?? 0) + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise)); for (const row of scheme.cycles) { row.paidPaise = Math.max(0, amounts.get(row.cycle) ?? 0); const closed = row.status === "EXPIRED" || row.expiresAt < today(); row.remainingPaise = closed ? 0 : Math.max(0, row.capPaise - row.paidPaise); row.status = closed ? "EXPIRED" : row.capPaise > 0 && row.paidPaise >= row.capPaise ? "PAID" : row.paidPaise > 0 ? "PARTIALLY_PAID" : "UPCOMING"; } scheme.positionVersion += 1; } return scheme; }
+export function rebuildSchemeProjection(scheme, entries) { const businessEntries = entries.filter((entry) => ["INSTALLMENT_PAYMENT", "FREE_WINDOW_PAYMENT", "REVERSAL"].includes(entry.type)); if (scheme.paymentPattern === PaymentPattern.FIXED) { let remaining = businessEntries.reduce((sum, entry) => sum + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise), 0); const current = today(); for (const row of scheme.installments) { row.paidPaise = Math.max(0, Math.min(row.amountPaise, remaining)); remaining = Math.max(0, remaining - row.paidPaise); row.status = row.paidPaise >= row.amountPaise ? "PAID" : row.graceEndsAt < current ? "OVERDUE" : row.paidPaise > 0 ? "PARTIALLY_PAID" : row.dueDate <= current ? "DUE" : "PENDING"; } } else { const amounts = new Map(); for (const entry of businessEntries) if (entry.cycle) amounts.set(entry.cycle, (amounts.get(entry.cycle) ?? 0) + (entry.type === "REVERSAL" ? -entry.amountPaise : entry.amountPaise)); for (const row of scheme.cycles) { row.paidPaise = Math.max(0, amounts.get(row.cycle) ?? 0); const closed = row.status === "EXPIRED" || row.expiresAt < today(); row.remainingPaise = closed ? 0 : Math.max(0, row.capPaise - row.paidPaise); row.status = closed ? "EXPIRED" : row.paidPaise > 0 ? "PAID" : "UPCOMING"; } scheme.positionVersion += 1; } return scheme; }
 export async function recomputeScheme(req) { return withTransaction(async (session) => { const scheme = await Scheme.findOne({ _id: req.params.schemeId, ...req.scope }).session(session); if (!scheme) throw errors.notFound("Scheme"); const entries = await LedgerEntry.find({ tenantId: scheme.tenantId, schemeId: scheme._id }).sort({ sequence: 1 }).session(session).lean(); rebuildSchemeProjection(scheme, entries); scheme.version += 1; await scheme.save({ session }); const auditEventId = await writeAudit({ req, action: "SCHEME_PROJECTION_RECOMPUTED", entityType: AuditEntityType.SCHEME, entityId: scheme._id, after: scheme.toObject(), session }); return { ...scheme.toObject(), auditEventId }; }); }
 export async function getLedger(req) {
   const scheme = await getScheme(req);
