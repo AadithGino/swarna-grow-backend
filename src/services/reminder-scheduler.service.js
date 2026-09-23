@@ -125,15 +125,28 @@ async function loadCustomersById(tenantId, customerIds) {
 
 async function latestPaymentsByScheme(tenantId, schemeIds) {
   if (!schemeIds.length) return new Map();
+  const netPaise = {
+    $max: [
+      0,
+      {
+        $subtract: [
+          { $ifNull: ["$amountPaise", 0] },
+          { $ifNull: ["$refundedAmountPaise", 0] },
+        ],
+      },
+    ],
+  };
   const rows = await Payment.aggregate([
     {
       $match: {
         tenantId,
         schemeId: { $in: schemeIds },
-        status: "SUCCESS",
+        status: { $in: ["SUCCESS", "PARTIALLY_REFUNDED"] },
       },
     },
-    { $sort: { paidAt: -1 } },
+    { $addFields: { netPaise } },
+    { $match: { netPaise: { $gt: 0 } } },
+    { $sort: { paidAt: -1, createdAt: -1 } },
     {
       $group: {
         _id: "$schemeId",

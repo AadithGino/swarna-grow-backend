@@ -85,3 +85,16 @@ export function isPositiveNetContributionPayment(payment) {
   if (!NET_COLLECTION_PAYMENT_STATUSES.includes(payment?.status)) return false;
   return netAmountPaiseFromDoc(payment) > 0;
 }
+
+/** Staff/admin DTO fields: legacy `amount` reflects net retained. */
+export function paymentNetMoneyRefs(payment) {
+  const net = paymentNetFieldsFromDoc(payment);
+  return {
+    grossAmountPaise: net.grossAmountPaise,
+    refundedAmountPaise: net.refundedAmountPaise,
+    netAmountPaise: net.netAmountPaise,
+    grossWeightMg: net.grossWeightMg,
+    refundedWeightMg: net.refundedWeightMg,
+    netWeightMg: net.netWeightMg,
+  };
+}

@@ -61,6 +61,13 @@ import { buildSchedulePreview, resolveFixedSchemeMaturityDate } from "./schedule
 import { writeAudit } from "./audit.service.js";
 import { today, addMonthsClamped, monthKey } from "../lib/date.js";
 import { mapAdminLedgerEntry, paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
+import {
+  isPositiveNetContributionPayment,
+  netAmountPaiseFromDoc,
+  netCollectionStatusFilter,
+  paymentNetMoneyRefs,
+} from "../lib/payment-net-aggregation.js";
+import { isKycMandatoryForEnrolment } from "../lib/kyc-policy.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { nextSequence } from "./sequence.service.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
@@ -241,7 +248,7 @@ function moneyField(paise) {
 function assignPaymentsToInstallments(installments, payments) {
   const links = new Map();
   const sortedPay = [...payments]
-    .filter((row) => row.status === "SUCCESS")
+    .filter(isPositiveNetContributionPayment)
     .sort((a, b) => new Date(a.paidAt).getTime() - new Date(b.paidAt).getTime());
   const insts = [...installments].sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
   let index = 0;
@@ -253,7 +260,7 @@ function assignPaymentsToInstallments(installments, payments) {
     while (required > 0 && index < sortedPay.length) {
       if (available <= 0) {
         current = sortedPay[index++];
-        available = current.amountPaise ?? 0;
+        available = netAmountPaiseFromDoc(current);
       }
       const applied = Math.min(required, available);
       available -= applied;
@@ -281,7 +288,8 @@ function buildFixedPassbook(scheme, payments) {
           _id: pay._id,
           receiptNumber: pay.receiptNumber,
           paidAt: pay.paidAt,
-          amountPaid: moneyField(pay.amountPaise),
+          amountPaid: moneyField(netAmountPaiseFromDoc(pay)),
+          ...paymentNetMoneyRefs(pay),
           mode: pay.mode,
           goldAccrual: paymentGoldAccrualDto(pay),
         }
@@ -370,7 +378,9 @@ export async function validateEnrolment(req) {
   }
   if (plan.flexibleRules?.extensionMode === "EXTEND_FLEXIBLE_PHASE") throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "Flexible-phase extension is not supported and cannot be used in a plan.");
   if (customer.status !== "ACTIVE") throw errors.business("CUSTOMER_NOT_ACTIVE", "This customer is not active.");
-  if (req.tenant.settings?.requireKycForEnrolment && customer.kyc?.status !== "VERIFIED") throw errors.business("KYC_REQUIRED", "Verified KYC is required before enrolment.");
+  if (isKycMandatoryForEnrolment(req.tenant) && customer.kyc?.status !== "VERIFIED") {
+    throw errors.business("KYC_REQUIRED", "Verified KYC is required before enrolment.");
+  }
   if (
     req.tenant.settings?.oneActiveSchemePerCustomer
     && await Scheme.exists({
@@ -794,7 +804,11 @@ export async function getScheme(req) {
   const [customer, ledger, payments] = await Promise.all([
     Customer.findOne({ _id: scheme.customerId, tenantId: scheme.tenantId }).select("_id name mobile branchId").lean(),
     LedgerEntry.find({ tenantId: scheme.tenantId, schemeId: scheme._id }).sort({ sequence: 1 }).lean(),
-    Payment.find({ tenantId: scheme.tenantId, schemeId: scheme._id, status: "SUCCESS" }).sort({ paidAt: 1 }).lean(),
+    Payment.find({
+      tenantId: scheme.tenantId,
+      schemeId: scheme._id,
+      ...netCollectionStatusFilter(),
+    }).sort({ paidAt: 1 }).lean(),
   ]);
   const effectiveBranchId = scheme.branchId ?? customer?.branchId;
   const branch = effectiveBranchId
@@ -812,7 +826,11 @@ export async function getScheme(req) {
     branch: branch ? { _id: branch._id, id: branch._id, name: branch.name, code: branch.code } : undefined,
     totals: ledgerTotals(ledger),
     passbook,
-    payments,
+    payments: payments.map((row) => ({
+      ...row,
+      ...paymentNetMoneyRefs(row),
+      amount: moneyField(netAmountPaiseFromDoc(row)),
+    })),
     displayMode: scheme.paymentPattern === "FIXED" ? "FIXED" : scheme.flexiblePhase === "FLEXIBLE" ? "FLEXIBLE_FREE_WINDOW" : "FLEXIBLE_LOCK_WINDOW",
     uiStatus: presentation.uiStatus,
     actions: presentation.actions,
@@ -848,23 +866,34 @@ export async function getPassbook(req) {
       totals: scheme.passbook.totals,
     };
   }
-  const payments = await Payment.find({ tenantId: scheme.tenantId, schemeId: scheme._id, status: "SUCCESS" }).sort({ paidAt: 1 }).lean();
+  const payments = await Payment.find({
+    tenantId: scheme.tenantId,
+    schemeId: scheme._id,
+    ...netCollectionStatusFilter(),
+  }).sort({ paidAt: 1 }).lean();
+  const contributing = payments.filter(isPositiveNetContributionPayment);
   return {
     scheme: { id: scheme._id, schemeNumber: scheme.enrollmentNumber, displayMode },
-    rows: payments.map((pay, index) => ({
+    rows: contributing.map((pay, index) => ({
       entryNumber: index + 1,
       paidAt: pay.paidAt,
-      amountPaid: moneyField(pay.amountPaise),
+      amountPaid: moneyField(netAmountPaiseFromDoc(pay)),
+      ...paymentNetMoneyRefs(pay),
       mode: pay.mode,
+      status: pay.status,
       receiptNumber: pay.receiptNumber,
       goldAccrual: paymentGoldAccrualDto(pay),
       payment: {
         id: pay._id,
         receiptNumber: pay.receiptNumber,
         goldAccrual: paymentGoldAccrualDto(pay),
+        ...paymentNetMoneyRefs(pay),
       },
     })),
-    totals: { paid: moneyField(payments.reduce((s, p) => s + p.amountPaise, 0)), paymentCount: payments.length },
+    totals: {
+      paid: moneyField(contributing.reduce((s, p) => s + netAmountPaiseFromDoc(p), 0)),
+      paymentCount: contributing.length,
+    },
   };
 }
 const SCHEME_STATUS_LABELS = {

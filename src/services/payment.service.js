@@ -53,6 +53,12 @@ import {
   resolvePaymentBranchId,
 } from "../lib/payment-scope.js";
 import { moneyRef } from "../lib/money.js";
+import {
+  NET_COLLECTION_PAYMENT_STATUSES,
+  netAmountPaiseExpression,
+  paymentNetMoneyRefs,
+  sumNetAmountPaise,
+} from "../lib/payment-net-aggregation.js";
 import { assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
 import { cashBalance } from "./cash.service.js";
 import {
@@ -75,7 +81,7 @@ function fillPaymentModes(modeRows) {
       mode,
       label: PAYMENT_MODE_LABELS[mode] ?? mode,
       count: row?.count ?? 0,
-      amount: moneyRef(row?.amountPaise ?? 0),
+      amount: moneyRef(row?.netAmountPaise ?? row?.amountPaise ?? 0),
     };
   });
 }
@@ -83,16 +89,19 @@ function fillPaymentModes(modeRows) {
 async function paymentListSummary(req, filters, query) {
   const match = { ...(await paymentListScope(req)), ...filters };
   const modeMatch = { ...match };
-  if (!filters.status) modeMatch.status = PaymentStatus.SUCCESS;
+  if (!filters.status) {
+    modeMatch.status = { $in: [...NET_COLLECTION_PAYMENT_STATUSES] };
+  }
+  const netExpr = netAmountPaiseExpression();
 
-  const [totals, byStatus, byModeAgg] = await Promise.all([
+  const [totals, byStatus, byModeAgg, netSettled] = await Promise.all([
     Payment.aggregate([
       { $match: match },
       {
         $group: {
           _id: null,
           count: { $sum: 1 },
-          totalAmountPaise: { $sum: "$amountPaise" },
+          totalNetAmountPaise: sumNetAmountPaise(),
         },
       },
     ]),
@@ -102,7 +111,7 @@ async function paymentListSummary(req, filters, query) {
         $group: {
           _id: "$status",
           count: { $sum: 1 },
-          amountPaise: { $sum: "$amountPaise" },
+          netAmountPaise: { $sum: netExpr },
         },
       },
     ]),
@@ -112,7 +121,24 @@ async function paymentListSummary(req, filters, query) {
         $group: {
           _id: "$mode",
           count: { $sum: 1 },
-          amountPaise: { $sum: "$amountPaise" },
+          netAmountPaise: { $sum: netExpr },
+        },
+      },
+    ]),
+    Payment.aggregate([
+      {
+        $match: {
+          ...match,
+          status: { $in: [...NET_COLLECTION_PAYMENT_STATUSES] },
+        },
+      },
+      { $addFields: { netPaise: netExpr } },
+      { $match: { netPaise: { $gt: 0 } } },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          totalNetPaise: { $sum: "$netPaise" },
         },
       },
     ]),
@@ -121,30 +147,42 @@ async function paymentListSummary(req, filters, query) {
   const statusRow = (status) =>
     byStatus.find((row) => row._id === status) ?? {
       count: 0,
-      amountPaise: 0,
+      netAmountPaise: 0,
     };
-  const success = statusRow(PaymentStatus.SUCCESS);
+  const partial = statusRow(PaymentStatus.PARTIALLY_REFUNDED);
   const pending = statusRow(PaymentStatus.PENDING);
   const failed = statusRow(PaymentStatus.FAILED);
   const reversed = statusRow(PaymentStatus.REVERSED);
-  const byMode = fillPaymentModes(byModeAgg);
+  const byMode = fillPaymentModes(
+    byModeAgg.map((row) => ({ ...row, amountPaise: row.netAmountPaise })),
+  );
+  const settledCount = netSettled[0]?.count ?? 0;
+  const settledNetPaise = netSettled[0]?.totalNetPaise ?? 0;
 
   const summary = {
     count: totals[0]?.count ?? 0,
-    successfulCount: success.count,
+    successfulCount: settledCount,
     pendingCount: pending.count,
     failedCount: failed.count,
     reversedCount: reversed.count,
-    totalAmount: moneyRef(totals[0]?.totalAmountPaise ?? 0),
-    successfulAmount: moneyRef(success.amountPaise),
-    reversedAmount: moneyRef(reversed.amountPaise),
+    partialRefundedCount: partial.count,
+    totalAmount: moneyRef(totals[0]?.totalNetAmountPaise ?? 0),
+    totalNetAmount: moneyRef(totals[0]?.totalNetAmountPaise ?? 0),
+    successfulAmount: moneyRef(settledNetPaise),
+    netCollectedAmount: moneyRef(settledNetPaise),
+    reversedAmount: moneyRef(reversed.netAmountPaise),
     averageSuccessfulPayment:
-      success.count > 0
-        ? moneyRef(Math.round(success.amountPaise / success.count))
+      settledCount > 0
+        ? moneyRef(Math.round(settledNetPaise / settledCount))
+        : moneyRef(0),
+    averageNetPayment:
+      settledCount > 0
+        ? moneyRef(Math.round(settledNetPaise / settledCount))
         : moneyRef(0),
     byMode,
     byStatus: [
       PaymentStatus.SUCCESS,
+      PaymentStatus.PARTIALLY_REFUNDED,
       PaymentStatus.PENDING,
       PaymentStatus.FAILED,
       PaymentStatus.REVERSED,
@@ -153,7 +191,8 @@ async function paymentListSummary(req, filters, query) {
       return {
         status,
         count: row.count,
-        amount: moneyRef(row.amountPaise),
+        amount: moneyRef(row.netAmountPaise),
+        netAmount: moneyRef(row.netAmountPaise),
       };
     }),
   };
@@ -291,11 +330,12 @@ async function assertMaxPaymentsPerCycle({ scheme, targetCycle, session }) {
   const maxPayments =
     scheme.planSnapshot?.flexibleRules?.flexiblePhase?.maxPaymentsPerCycle;
   if (!maxPayments || scheme.paymentPattern !== "FLEXIBLE") return;
+  // Partial refunds still consume the slot (payment was recorded in-cycle).
   const confirmed = await Payment.countDocuments({
     tenantId: scheme.tenantId,
     schemeId: scheme._id,
     targetCycle,
-    status: PaymentStatus.SUCCESS,
+    status: { $in: [...NET_COLLECTION_PAYMENT_STATUSES] },
   }).session(session);
   const openIntents = await PaymentIntent.countDocuments({
     tenantId: scheme.tenantId,
@@ -837,9 +877,14 @@ async function enrichPaymentRows(tenantId, rows) {
     const customer = customerMap.get(row.customerId);
     const scheme = schemeMap.get(row.schemeId);
     const collector = staffMap.get(row.collectedBy);
+    const netFields = paymentNetMoneyRefs(row);
     return {
       ...row,
-      amount: { amountPaise: row.amountPaise },
+      ...netFields,
+      amount: { amountPaise: netFields.netAmountPaise },
+      grossAmount: moneyRef(netFields.grossAmountPaise),
+      refundedAmount: moneyRef(netFields.refundedAmountPaise),
+      netAmount: moneyRef(netFields.netAmountPaise),
       goldAccrual: paymentGoldAccrualDto(row),
       customer: customer
         ? {

@@ -1,5 +1,5 @@
-import PDFDocument from "pdfkit";
 import { Customer, Message, Payment, Scheme } from "../models/index.js";
+import { streamCustomerStatementPdf } from "../lib/customer-statement-pdf.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import * as customers from "../services/customer.service.js";
 import * as messaging from "../services/messaging.service.js";
@@ -32,7 +32,17 @@ export const checkMobile = async (req, res) => {
 export const analytics = async (req, res) => sendSuccess(res, await customers.customerAnalytics(req));
 export const shareStatement = async (req, res) =>
   sendSuccess(res, await messaging.shareCustomerStatement(req), {}, 202);
-export const statement = async (req, res) => { const customer = await customers.customer360(req); const payments = await Payment.find({ tenantId: req.auth.tenantId, customerId: customer._id }).sort({ paidAt: 1 }).lean(); const doc = new PDFDocument({ margin: 48 }); res.setHeader("Content-Type", "application/pdf"); res.setHeader("Content-Disposition", `attachment; filename="${customer.customerNumber}-statement.pdf"`); doc.pipe(res); doc.fontSize(20).text(req.tenant.name).fontSize(14).text("Customer statement").moveDown(); doc.text(`${customer.name} · ${customer.customerNumber}`).moveDown(); for (const payment of payments) doc.fontSize(10).text(`${payment.paidAt.toISOString().slice(0, 10)}   ${payment.receiptNumber}   ${(payment.amountPaise / 100).toFixed(2)}   ${payment.mode}   ${payment.status}`); doc.end(); };
+export const statement = async (req, res) => {
+  const customer = await customers.customer360(req);
+  const payments = await Payment.find({ tenantId: req.auth.tenantId, customerId: customer._id })
+    .sort({ paidAt: 1, createdAt: 1 })
+    .lean();
+  streamCustomerStatementPdf(res, {
+    tenantName: req.tenant.name,
+    customer,
+    payments,
+  });
+};
 export const appProfile = async (req, res) => sendSuccess(res, await Customer.findOne({ _id: req.auth.id, tenantId: req.auth.tenantId }).select("-fcmTokens").lean());
 export const updateAppProfile = async (req, res) => {
   const customerApp = await import("../services/customer-app.service.js");
