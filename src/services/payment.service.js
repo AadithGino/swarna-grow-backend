@@ -57,7 +57,6 @@ import {
   NET_COLLECTION_PAYMENT_STATUSES,
   netAmountPaiseExpression,
   paymentNetMoneyRefs,
-  sumNetAmountPaise,
 } from "../lib/payment-net-aggregation.js";
 import { assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
 import { cashBalance } from "./cash.service.js";
@@ -94,6 +93,13 @@ async function paymentListSummary(req, filters, query) {
   }
   const netExpr = netAmountPaiseExpression();
 
+  const statusGroupFields = {
+    count: { $sum: 1 },
+    grossAmountPaise: { $sum: { $ifNull: ["$amountPaise", 0] } },
+    refundedAmountPaise: { $sum: { $ifNull: ["$refundedAmountPaise", 0] } },
+    netAmountPaise: { $sum: netExpr },
+  };
+
   const [totals, byStatus, byModeAgg, netSettled] = await Promise.all([
     Payment.aggregate([
       { $match: match },
@@ -101,19 +107,13 @@ async function paymentListSummary(req, filters, query) {
         $group: {
           _id: null,
           count: { $sum: 1 },
-          totalNetAmountPaise: sumNetAmountPaise(),
+          totalGrossAmountPaise: { $sum: { $ifNull: ["$amountPaise", 0] } },
         },
       },
     ]),
     Payment.aggregate([
       { $match: match },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-          netAmountPaise: { $sum: netExpr },
-        },
-      },
+      { $group: { _id: "$status", ...statusGroupFields } },
     ]),
     Payment.aggregate([
       { $match: modeMatch },
@@ -147,12 +147,20 @@ async function paymentListSummary(req, filters, query) {
   const statusRow = (status) =>
     byStatus.find((row) => row._id === status) ?? {
       count: 0,
+      grossAmountPaise: 0,
+      refundedAmountPaise: 0,
       netAmountPaise: 0,
     };
+  const success = statusRow(PaymentStatus.SUCCESS);
   const partial = statusRow(PaymentStatus.PARTIALLY_REFUNDED);
   const pending = statusRow(PaymentStatus.PENDING);
   const failed = statusRow(PaymentStatus.FAILED);
   const reversed = statusRow(PaymentStatus.REVERSED);
+  const collectedGrossPaise =
+    success.grossAmountPaise + partial.grossAmountPaise;
+  const collectedRefundedPaise =
+    success.refundedAmountPaise + partial.refundedAmountPaise;
+  const fullyReversedGrossPaise = reversed.grossAmountPaise;
   const byMode = fillPaymentModes(
     byModeAgg.map((row) => ({ ...row, amountPaise: row.netAmountPaise })),
   );
@@ -166,11 +174,16 @@ async function paymentListSummary(req, filters, query) {
     failedCount: failed.count,
     reversedCount: reversed.count,
     partialRefundedCount: partial.count,
-    totalAmount: moneyRef(totals[0]?.totalNetAmountPaise ?? 0),
-    totalNetAmount: moneyRef(totals[0]?.totalNetAmountPaise ?? 0),
+    totalAmount: moneyRef(totals[0]?.totalGrossAmountPaise ?? 0),
+    totalNetAmount: moneyRef(settledNetPaise),
     successfulAmount: moneyRef(settledNetPaise),
     netCollectedAmount: moneyRef(settledNetPaise),
-    reversedAmount: moneyRef(reversed.netAmountPaise),
+    grossSuccessfulAmount: moneyRef(collectedGrossPaise),
+    refundedAmount: moneyRef(collectedRefundedPaise),
+    fullyReversedAmount: moneyRef(fullyReversedGrossPaise),
+    pendingAmount: moneyRef(pending.grossAmountPaise),
+    failedAmount: moneyRef(failed.grossAmountPaise),
+    reversedAmount: moneyRef(fullyReversedGrossPaise),
     averageSuccessfulPayment:
       settledCount > 0
         ? moneyRef(Math.round(settledNetPaise / settledCount))
