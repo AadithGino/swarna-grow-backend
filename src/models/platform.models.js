@@ -25,6 +25,16 @@ const invoiceSchema = new mongoose.Schema({
   pdfUrl: String, paidAt: Date, reference: String, version: versionField,
 }, baseOptions);
 invoiceSchema.index({ tenantId: 1, createdAt: -1 });
+invoiceSchema.index(
+  { invoiceNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      invoiceNumber: { $exists: true, $type: "string", $gt: "" },
+    },
+    name: "invoice_number_unique_nonempty",
+  },
+);
 
 const subscriptionUpgradeRequestSchema = new mongoose.Schema({
   _id: stringId("upg"),

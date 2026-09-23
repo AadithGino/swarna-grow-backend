@@ -33,7 +33,7 @@ import {
 } from "../lib/customer-app-dto.js";
 import { moneyRef, weightRef, rateRef } from "../lib/money.js";
 import { monthKey, today } from "../lib/date.js";
-import { SchemeStatus, RedemptionStatus, PaymentStatus, ValueBasis } from "../constants/enums.js";
+import { SchemeStatus, RedemptionStatus, ValueBasis } from "../constants/enums.js";
 import * as schemes from "./scheme.service.js";
 import {
   mapCustomerPaymentListItem,

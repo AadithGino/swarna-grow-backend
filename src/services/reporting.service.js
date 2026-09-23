@@ -31,7 +31,6 @@ import { Branch } from "../models/index.js";
 import { redemptionPeriodSummary } from "./redemption-period-summary.js";
 import { moneyRef, weightRef } from "../lib/money.js";
 import {
-  buildCountTrendPoints,
   buildCurrencyTrendPoints,
   reportTrendGroupBy,
   rollupDailyMetric,

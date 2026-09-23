@@ -80,8 +80,17 @@ export function subscriptionInvoiceTaxBreakdown(invoice) {
   return { taxable: totalPaise - gst, gst, total: totalPaise };
 }
 
+export function displayInvoiceNumber(invoice) {
+  const allocated = invoice.invoiceNumber?.trim();
+  if (allocated) return allocated;
+  if (invoice.reference?.trim()) return invoice.reference.trim();
+  return String(invoice._id);
+}
+
 export function streamSubscriptionInvoicePdf(res, { invoice, tenant }) {
-  const number = invoice.reference ?? invoice._id;
+  const number = displayInvoiceNumber(invoice);
+  const taxPercentLabel =
+    typeof invoice.taxPercent === "number" ? invoice.taxPercent : 18;
   const period = invoice.dueDate ?? "—";
   const { taxable, gst, total: amountPaise } = subscriptionInvoiceTaxBreakdown(invoice);
 
@@ -153,7 +162,7 @@ export function streamSubscriptionInvoicePdf(res, { invoice, tenant }) {
       width: pageWidth,
       align: "right",
     });
-    doc.text(`GST (18%): ${formatInr(gst)}`, { width: pageWidth, align: "right" });
+    doc.text(`GST (${taxPercentLabel}%): ${formatInr(gst)}`, { width: pageWidth, align: "right" });
   }
   doc.font("Helvetica-Bold").fontSize(12);
   doc.text(`Total: ${formatInr(amountPaise)}`, { width: pageWidth, align: "right" });
