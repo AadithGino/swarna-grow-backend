@@ -37,8 +37,16 @@ export function paymentGoldAccrualDto(payment) {
   return grossGoldAccrual ? { ...goldAccrual, grossGoldAccrual } : goldAccrual;
 }
 
+/** Receipt / immutable record: original gross weight booked on the payment. */
+export function paymentGrossGoldAccrualDto(payment) {
+  const grossWeightMg = Number(payment?.weightMg ?? 0);
+  const ratePerGramPaise = Number(payment?.ratePerGramPaise ?? 0);
+  const purchasedAt = payment?.paidAt ?? payment?.createdAt ?? null;
+  return buildGoldAccrualBlock(grossWeightMg, ratePerGramPaise, purchasedAt);
+}
+
 export function paymentReceiptExtraLines(payment) {
-  const accrual = paymentGoldAccrualDto(payment);
+  const accrual = paymentGrossGoldAccrualDto(payment);
   if (!accrual) return [];
   const lines = [];
   if (accrual.weightMg > 0) {
@@ -59,13 +67,11 @@ export function mapAdminLedgerEntry(entry, payment) {
   const weightMg = Number(entry?.weightMg ?? payment?.weightMg ?? 0);
   const ratePerGramPaise = Number(entry?.ratePerGramPaise ?? payment?.ratePerGramPaise ?? 0);
   const bookedAt = payment?.paidAt ?? entry?.createdAt ?? entry?.effectiveAt;
-  const goldAccrual = paymentGoldAccrualDto({
+  const goldAccrual = buildGoldAccrualBlock(
     weightMg,
-    refundedWeightMg: payment?.refundedWeightMg ?? 0,
     ratePerGramPaise,
-    paidAt: bookedAt,
-    createdAt: entry?.createdAt,
-  });
+    bookedAt ?? entry?.createdAt,
+  );
   return {
     id: String(entry._id ?? entry.id ?? ""),
     sequence: entry.sequence ?? null,
