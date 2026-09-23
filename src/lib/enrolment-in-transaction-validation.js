@@ -8,6 +8,7 @@ import {
   ONE_ACTIVE_SCHEME_CONFLICT_STATUSES,
 } from "./scheme-enrollment-status.js";
 import { assertFeatureEntitled } from "./tenant-limits.js";
+import { isKycMandatoryForEnrolment } from "./kyc-policy.js";
 
 export async function assertOneActiveSchemePolicy(session, tenantId, customerId) {
   const conflicts = await Scheme.countDocuments({
@@ -93,7 +94,7 @@ export async function revalidateLockedPlanForEnrolment(
   if (customer.status !== "ACTIVE") {
     throw errors.business("CUSTOMER_NOT_ACTIVE", "This customer is not active.");
   }
-  if (req.tenant.settings?.requireKycForEnrolment && customer.kyc?.status !== "VERIFIED") {
+  if (isKycMandatoryForEnrolment(req.tenant) && customer.kyc?.status !== "VERIFIED") {
     throw errors.business("KYC_REQUIRED", "Verified KYC is required before enrolment.");
   }
   await assertActiveEnrolBranch(req.auth.tenantId, branchId);

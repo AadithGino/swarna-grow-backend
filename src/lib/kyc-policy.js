@@ -18,11 +18,17 @@ export function assertKycTypeAllowed(tenant, type) {
   }
 }
 
-/** Customer app self-service KYC is allowed only when KYC is mandatory for the tenant. */
-export function isCustomerSelfKycEnabled(tenant) {
+/** Resolves ops.kycMandatory and legacy settings.requireKycForEnrolment (tenant-settings parity). */
+export function isKycMandatoryForEnrolment(tenant) {
   const ops = tenant?.operations ?? {};
   const settings = tenant?.settings ?? {};
-  return ops.kycMandatory === true || settings.requireKycForEnrolment === true;
+  if (ops.kycMandatory != null) return ops.kycMandatory === true;
+  return settings.requireKycForEnrolment === true;
+}
+
+/** Customer app self-service KYC is allowed only when KYC is mandatory for the tenant. */
+export function isCustomerSelfKycEnabled(tenant) {
+  return isKycMandatoryForEnrolment(tenant);
 }
 
 export function pickKycSubmitFields(body) {

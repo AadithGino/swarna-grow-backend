@@ -44,6 +44,7 @@ import { paginate } from "../lib/pagination.js";
 import { getPublicLink } from "./payment.service.js";
 import { currentGoldRate } from "./tenant.service.js";
 import { enrichCustomerKycRecord } from "../lib/customer-kyc-enrichment.js";
+import { isKycMandatoryForEnrolment } from "../lib/kyc-policy.js";
 import { paymentRecordedByLabel } from "../lib/payment-scope.js";
 import { loadUserMap } from "../lib/relation-maps.js";
 import {
@@ -114,7 +115,7 @@ export async function getAppProfile(auth, tenant) {
   ]);
   if (!customer) throw errors.notFound("Customer");
   const profile = customerProfileDto(customer, tenant, branch);
-  const kycMandatory = Boolean(tenant?.settings?.requireKycForEnrolment);
+  const kycMandatory = isKycMandatoryForEnrolment(tenant);
   if (kycMandatory) {
     profile.kyc = await enrichCustomerKycRecord(customer, profile.kyc);
   } else {
@@ -148,7 +149,7 @@ export async function completeAppProfile(auth, body, { requireComplete = false }
     ? await Branch.findById(customer.branchId).lean()
     : null;
   const profile = customerProfileDto(customer, tenant, branch);
-  if (tenant?.settings?.requireKycForEnrolment !== true) {
+  if (!isKycMandatoryForEnrolment(tenant)) {
     delete profile.kyc;
   }
   return profile;

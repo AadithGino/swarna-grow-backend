@@ -8,6 +8,7 @@ import {
   customerHasRequiredProfileFields,
   hasNonEmptyCustomerAddress,
 } from "./customer-profile-completion.js";
+import { isKycMandatoryForEnrolment } from "./kyc-policy.js";
 
 export function withId(doc) {
   if (!doc || typeof doc !== "object") return doc;
@@ -37,7 +38,7 @@ export function tenantPortalCapabilitiesDto(tenant) {
   return {
     customerSelfEnrol: ops.customerSelfEnrolEnabled !== false,
     customerSelfRegistration: ops.customerSelfRegistrationEnabled !== false,
-    kycMandatory: Boolean(settings.requireKycForEnrolment),
+    kycMandatory: isKycMandatoryForEnrolment(tenant),
     multiScheme: !oneSchemeOnly,
     customerLoginMode: ops.customerLoginMode ?? "OTP_ONLY",
     customerAppWriteEnabled: ops.customerAppWriteEnabled !== false,
