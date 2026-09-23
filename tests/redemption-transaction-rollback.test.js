@@ -15,6 +15,7 @@ import {
   transitionRedemption,
 } from "../src/services/redemption.service.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import { buildEligibleMaturedFixedSchemeFields } from "./helpers/maturity-fixtures.js";
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
@@ -56,10 +57,11 @@ test("failed redemption complete rolls back all redemption ledger rows", async (
     valueBasis: "CASH",
     paymentPattern: "FIXED",
     status: SchemeStatus.MATURED,
-    startDate: "2024-01-01",
-    maturityDate: "2025-12-01",
-    installmentAmountPaise: paid / 3,
-    installments: [],
+    ...buildEligibleMaturedFixedSchemeFields({
+      totalPaidPaise: paid,
+      startDate: "2024-01-01",
+      maturityDate: "2025-12-01",
+    }),
     version: 1,
     createdBy: user._id,
   });

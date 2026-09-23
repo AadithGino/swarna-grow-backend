@@ -31,6 +31,10 @@ import { now, today } from "../src/lib/date.js";
 import { ClosureType } from "../src/constants/enums.js";
 import { recordPayment } from "../src/services/payment.service.js";
 import { resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import {
+  buildEligibleMaturedFixedSchemeFields,
+  paidFixedInstallmentsForTotal,
+} from "./helpers/maturity-fixtures.js";
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
@@ -58,10 +62,7 @@ async function seedCashMaturedWithGoldHandover({ settlementPaise = 300000 } = {}
     valueBasis: "CASH",
     paymentPattern: "FIXED",
     status: SchemeStatus.MATURED,
-    startDate: "2025-01-01",
-    maturityDate: "2025-12-01",
-    installmentAmountPaise: settlementPaise / 3,
-    installments: [],
+    ...buildEligibleMaturedFixedSchemeFields({ totalPaidPaise: settlementPaise }),
     version: 1,
     createdBy: user._id,
   });
@@ -273,10 +274,11 @@ async function seedGoldWeightMaturedHandover({ weightMg = 600, amountPaise = 300
     valueBasis: "GOLD_WEIGHT",
     paymentPattern: "FIXED",
     status: SchemeStatus.MATURED,
-    startDate: "2024-01-01",
-    maturityDate: "2025-12-01",
-    installmentAmountPaise: amountPaise,
-    installments: [],
+    ...buildEligibleMaturedFixedSchemeFields({
+      totalPaidPaise: amountPaise,
+      startDate: "2024-01-01",
+      maturityDate: "2025-12-01",
+    }),
     version: 1,
     createdBy: user._id,
   });
@@ -437,7 +439,7 @@ async function seedPrematureScheme({ benefitTreatment }) {
     startDate: "2020-01-01",
     maturityDate: "2030-12-01",
     installmentAmountPaise: paid,
-    installments: [],
+    installments: paidFixedInstallmentsForTotal(paid, 3, { startYear: 2020 }),
     version: 1,
     createdBy: user._id,
   });

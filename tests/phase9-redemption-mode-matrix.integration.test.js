@@ -16,6 +16,7 @@ import { LedgerEntry, Redemption, Scheme, Session } from "../src/models/index.js
 import { setGoldRate } from "../src/services/tenant.service.js";
 import { signAccessToken } from "../src/services/token.service.js";
 import { bearerFor, resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import { buildEligibleMaturedFixedSchemeFields } from "./helpers/maturity-fixtures.js";
 
 const app = createApp();
 
@@ -68,10 +69,11 @@ async function seedMaturedScheme({ valueBasis, allowedModes, amountPaise = 300_0
     valueBasis,
     paymentPattern: "FIXED",
     status: SchemeStatus.MATURED,
-    startDate: "2024-01-01",
-    maturityDate: "2025-12-01",
-    installmentAmountPaise: amountPaise,
-    installments: [],
+    ...buildEligibleMaturedFixedSchemeFields({
+      totalPaidPaise: amountPaise,
+      startDate: "2024-01-01",
+      maturityDate: "2025-12-01",
+    }),
     version: 1,
     createdBy: user._id,
   });

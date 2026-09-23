@@ -44,6 +44,7 @@ import {
   transitionRedemption,
 } from "../src/services/redemption.service.js";
 import { resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import { buildEligibleMaturedFixedSchemeFields } from "./helpers/maturity-fixtures.js";
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
@@ -86,10 +87,11 @@ async function seedCashMatured({ paid = 300_000, allowedModes = [RedemptionMode.
     valueBasis: ValueBasis.CASH,
     paymentPattern: "FIXED",
     status: SchemeStatus.MATURED,
-    startDate: "2020-01-01",
-    maturityDate: "2025-01-01",
-    installmentAmountPaise: paid,
-    installments: [],
+    ...buildEligibleMaturedFixedSchemeFields({
+      totalPaidPaise: paid,
+      startDate: "2020-01-01",
+      maturityDate: "2025-01-01",
+    }),
     version: 1,
     createdBy: user._id,
   });
@@ -142,10 +144,11 @@ async function seedGoldWeightMatured({
     valueBasis: ValueBasis.GOLD_WEIGHT,
     paymentPattern: "FIXED",
     status: SchemeStatus.MATURED,
-    startDate: "2020-01-01",
-    maturityDate: "2025-01-01",
-    installmentAmountPaise: amountPaise,
-    installments: [],
+    ...buildEligibleMaturedFixedSchemeFields({
+      totalPaidPaise: amountPaise,
+      startDate: "2020-01-01",
+      maturityDate: "2025-01-01",
+    }),
     version: 1,
     createdBy: user._id,
   });

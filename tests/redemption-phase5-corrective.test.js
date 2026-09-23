@@ -30,6 +30,7 @@ import {
 import { redemptionPeriodSummary } from "../src/services/redemption-period-summary.js";
 import { today } from "../src/lib/date.js";
 import { resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import { buildEligibleMaturedFixedSchemeFields } from "./helpers/maturity-fixtures.js";
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
@@ -90,10 +91,18 @@ async function seedCashScheme({
     valueBasis: ValueBasis.CASH,
     paymentPattern: "FIXED",
     status,
-    startDate: "2020-01-01",
-    maturityDate: status === SchemeStatus.MATURED ? "2025-01-01" : "2030-12-01",
-    installmentAmountPaise: paid,
-    installments: [],
+    ...(status === SchemeStatus.MATURED
+      ? buildEligibleMaturedFixedSchemeFields({
+          totalPaidPaise: paid,
+          startDate: "2020-01-01",
+          maturityDate: "2025-01-01",
+        })
+      : {
+          startDate: "2020-01-01",
+          maturityDate: "2030-12-01",
+          installmentAmountPaise: paid,
+          installments: [],
+        }),
     version: 1,
     createdBy: user._id,
   });
@@ -146,10 +155,18 @@ async function seedGoldWeightScheme({
     valueBasis: ValueBasis.GOLD_WEIGHT,
     paymentPattern: "FIXED",
     status,
-    startDate: "2020-01-01",
-    maturityDate: status === SchemeStatus.MATURED ? "2025-01-01" : "2030-12-01",
-    installmentAmountPaise: amountPaise,
-    installments: [],
+    ...(status === SchemeStatus.MATURED
+      ? buildEligibleMaturedFixedSchemeFields({
+          totalPaidPaise: amountPaise,
+          startDate: "2020-01-01",
+          maturityDate: "2025-01-01",
+        })
+      : {
+          startDate: "2020-01-01",
+          maturityDate: "2030-12-01",
+          installmentAmountPaise: amountPaise,
+          installments: [],
+        }),
     version: 1,
     createdBy: user._id,
   });
