@@ -5,6 +5,14 @@ function isDuplicateKeyError(error) {
   return error?.code === 11000;
 }
 
+async function updateOpenOperationalAlert(filter, fields, session = null) {
+  return Alert.findOneAndUpdate(
+    { ...filter, status: AlertStatus.OPEN },
+    { $set: fields },
+    { new: true, runValidators: true, ...(session ? { session } : {}) },
+  );
+}
+
 /** Idempotent open operational alert (schema-validated). */
 export async function upsertOperationalAlert({
   tenantId,
@@ -20,22 +28,24 @@ export async function upsertOperationalAlert({
   if (!isEnumValue(AlertType, type)) {
     throw new TypeError(`Unknown AlertType: ${type}`);
   }
+  const base = { tenantId, type, entityId };
+  const fields = { severity, title, message, entityType, metadata };
   try {
     await Alert.findOneAndUpdate(
-      { tenantId, type, entityId, status: AlertStatus.OPEN },
+      { ...base, status: AlertStatus.OPEN },
       {
-        $setOnInsert: {
-          severity,
-          title,
-          message,
-          entityType,
-          metadata,
-        },
+        $set: fields,
+        $setOnInsert: { status: AlertStatus.OPEN },
       },
-      { upsert: true, runValidators: true, ...(session ? { session } : {}) },
+      {
+        upsert: true,
+        runValidators: true,
+        ...(session ? { session } : {}),
+      },
     );
   } catch (error) {
     if (!isDuplicateKeyError(error)) throw error;
+    await updateOpenOperationalAlert(base, fields, session);
   }
 }
 
@@ -67,21 +77,35 @@ export async function reopenOperationalAlert({
   if (!isEnumValue(AlertType, type)) {
     throw new TypeError(`Unknown AlertType: ${type}`);
   }
+  const base = { tenantId, type, entityId };
+  const fields = {
+    title: title ?? "Operational alert reopened",
+    message: message ?? "",
+    metadata,
+    resolvedAt: null,
+  };
+  const updated = await updateOpenOperationalAlert(base, fields, session);
+  if (updated) return;
+
   try {
-    await Alert.findOneAndUpdate(
-      { tenantId, type, entityId },
-      {
-        $set: {
-          status: AlertStatus.OPEN,
-          title: title ?? "Operational alert reopened",
-          message: message ?? "",
-          metadata,
-          resolvedAt: null,
-        },
-      },
-      { upsert: true, runValidators: true, ...(session ? { session } : {}) },
+    const createOpts = session ? { session } : undefined;
+    await Alert.create(
+      [{
+        tenantId,
+        type,
+        entityId,
+        status: AlertStatus.OPEN,
+        severity: AlertSeverity.WARNING,
+        ...fields,
+      }],
+      createOpts,
     );
   } catch (error) {
     if (!isDuplicateKeyError(error)) throw error;
+    const open = await Alert.findOne({ ...base, status: AlertStatus.OPEN }).session(session ?? null);
+    if (!open) {
+      throw new Error("Operational alert duplicate key but no OPEN row found after concurrent reopen.");
+    }
+    await updateOpenOperationalAlert(base, fields, session);
   }
 }
