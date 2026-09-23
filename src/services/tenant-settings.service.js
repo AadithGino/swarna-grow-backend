@@ -570,7 +570,9 @@ export async function listSubscriptionInvoicesForAdmin(req) {
     .lean();
   return rows.map((row) => ({
     id: row._id,
-    number: row.reference ?? row._id,
+    number: row.invoiceNumber ?? row.reference ?? row._id,
+    invoiceNumber: row.invoiceNumber ?? null,
+    reference: row.reference ?? null,
     periodLabel: invoicePeriodLabel(row),
     dueDate: row.dueDate ?? null,
     amount: moneyRef(row.amountPaise ?? 0),
