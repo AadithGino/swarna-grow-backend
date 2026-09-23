@@ -29,6 +29,10 @@ export async function startTestDb() {
       await replSet.waitUntilRunning();
       await mongoose.connect(replSet.getUri("swarnagrow_test"));
       await mongoose.connection.db.admin().command({ ping: 1 });
+      // Build all indexes deterministically so unique-constraint tests don't race autoIndex.
+      await Promise.all(
+        Object.values(mongoose.models).map((model) => model.syncIndexes()),
+      );
       return;
     } catch (error) {
       lastError = error;
