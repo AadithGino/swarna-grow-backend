@@ -89,10 +89,9 @@ export function otpRequestDto(payload) {
   };
 }
 
-/** True when required profile fields are present or onboarding was marked complete explicitly. */
+/** True when all required profile fields are present (name, mobile, address, branch). */
 export function isCustomerProfileComplete(customer) {
   if (!customer) return false;
-  if (customer.profileCompletedAt) return true;
   return customerHasRequiredProfileFields(customer);
 }
 
