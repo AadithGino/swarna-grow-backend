@@ -7,6 +7,7 @@ const PREFIXES = Object.freeze({
   export: "exp", session: "ses", webhook: "whk", signup: "sgn", invoice: "inv",
   passwordReset: "prt", goldRate: "grt", grt: "grt", platformUser: "pusr",
   signupToken: "sgt", setupPassword: "spt", paymentSession: "psn", subscriptionPlan: "splan",
+  csc: "csc",
 });
 
 export function createId(kind) { return `${PREFIXES[kind] ?? kind}_${ulid()}`; }

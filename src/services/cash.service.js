@@ -1,5 +1,5 @@
 import { AuditEntityType, CashAdjustmentDirection, CashHandoverStatus, HandoverInitiator, PaymentMode, PaymentStatus, TenantRole, UserStatus, UserType } from "../constants/enums.js";
-import { Branch, CashAdjustment, CashHandover, Customer, Payment, User } from "../models/index.js";
+import { Branch, CashAdjustment, CashHandover, CashStaffCustody, Customer, Payment, User } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -305,9 +305,21 @@ async function resolveHandoverContext(req, initiator, session) {
   return { tenantId, staffId, branchId };
 }
 
+async function lockCashStaffCustody(session, { tenantId, branchId, staffId }) {
+  await CashStaffCustody.findOneAndUpdate(
+    { tenantId, branchId, staffId },
+    {
+      $inc: { version: 1 },
+      $setOnInsert: { _id: createId("csc"), tenantId, branchId, staffId },
+    },
+    { upsert: true, session },
+  );
+}
+
 export async function createHandover(req, initiator) {
   return withTransaction(async (session) => {
     const { tenantId, staffId, branchId } = await resolveHandoverContext(req, initiator, session);
+    await lockCashStaffCustody(session, { tenantId, branchId, staffId });
     const balance = await cashBalance({ tenantId, branchId, staffId }, session);
     if (req.body.amountPaise > balance.availableForHandoverPaise) {
       throw errors.business(

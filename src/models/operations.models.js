@@ -124,6 +124,16 @@ alertSchema.index(
 const cashAdjustmentSchema = new mongoose.Schema({ _id: stringId("cad"), tenantId: tenantField, branchId: branchField, staffId: { type: String, required: true, index: true }, direction: enumField(CashAdjustmentDirection, { required: true }), amountPaise: integerField({ required: true, min: 1 }), reason: { type: String, required: true }, createdBy: String }, baseOptions);
 cashAdjustmentSchema.plugin(immutablePlugin);
 
+/** Serializes concurrent cash handovers/adjustments per staff custody position. */
+const cashStaffCustodySchema = new mongoose.Schema({
+  _id: stringId("csc"),
+  tenantId: tenantField,
+  branchId: branchField,
+  staffId: { type: String, required: true },
+  version: versionField,
+}, baseOptions);
+cashStaffCustodySchema.index({ tenantId: 1, branchId: 1, staffId: 1 }, { unique: true });
+
 export const GoldRate = mongoose.model("GoldRate", goldRateSchema);
 export const CashHandover = mongoose.model("CashHandover", handoverSchema);
 export const Redemption = mongoose.model("Redemption", redemptionSchema);
@@ -133,3 +143,4 @@ export const Upload = mongoose.model("Upload", uploadSchema);
 export const ExportJob = mongoose.model("ExportJob", exportSchema);
 export const Alert = mongoose.model("Alert", alertSchema);
 export const CashAdjustment = mongoose.model("CashAdjustment", cashAdjustmentSchema);
+export const CashStaffCustody = mongoose.model("CashStaffCustody", cashStaffCustodySchema);
