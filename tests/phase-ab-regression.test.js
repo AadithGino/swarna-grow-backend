@@ -15,6 +15,10 @@ import {
   clearReconcileTestHooks,
 } from "../src/lib/phonepe-reconcile-test-hooks.js";
 import {
+  armMockOrderStatusTemplate,
+  clearPhonePeProviderTestHooks,
+} from "../src/lib/phonepe-provider-test-hooks.js";
+import {
   Alert,
   Customer,
   LedgerEntry,
@@ -45,6 +49,7 @@ test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => {
   await resetTestDb();
   clearReconcileTestHooks();
+  clearPhonePeProviderTestHooks();
 });
 
 async function seedGatewayPayment({ mockSuffix = "", link = false } = {}) {
@@ -91,7 +96,8 @@ async function seedGatewayPayment({ mockSuffix = "", link = false } = {}) {
     version: 1,
     createdBy: user._id,
   });
-  const orderId = `${createId(link ? "paymentLink" : "paymentIntent")}${mockSuffix}`;
+  const orderId = createId(link ? "paymentLink" : "paymentIntent");
+  if (mockSuffix) armMockOrderStatusTemplate(orderId, mockSuffix);
   const paymentId = createId("payment");
   await Payment.create({
     _id: paymentId,

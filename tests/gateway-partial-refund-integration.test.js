@@ -8,6 +8,10 @@ import {
 } from "../src/constants/enums.js";
 import { clearGatewayTxFaults, setGatewayTxFaultAfter } from "../src/lib/gateway-tx-faults.js";
 import {
+  armMockOrderStatusTemplate,
+  clearPhonePeProviderTestHooks,
+} from "../src/lib/phonepe-provider-test-hooks.js";
+import {
   Alert,
   Customer,
   LedgerEntry,
@@ -31,6 +35,7 @@ test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => {
   await resetTestDb();
   clearGatewayTxFaults();
+  clearPhonePeProviderTestHooks();
 });
 
 async function seedPaidGatewayPayment({
@@ -49,7 +54,8 @@ async function seedPaidGatewayPayment({
     mobile: `+9188${String(Date.now()).slice(-8)}`,
   });
   const schemeId = createId("scheme");
-  const intentId = `${createId("paymentIntent")}__mock_completed__`;
+  const intentId = createId("paymentIntent");
+  armMockOrderStatusTemplate(intentId, "__mock_completed__");
   const paymentId = createId("payment");
   await Scheme.create({
     _id: schemeId,

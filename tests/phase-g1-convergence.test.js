@@ -11,6 +11,7 @@ import {
   SchemeStatus,
 } from "../src/constants/enums.js";
 import { createId } from "../src/lib/ids.js";
+import { armMockOrderStatusTemplate } from "../src/lib/phonepe-provider-test-hooks.js";
 import {
   MaintenanceScanStream,
   clearMaintenanceScanCursor,
@@ -239,7 +240,8 @@ test("flexible-lock cross-run rotation locks due schemes beyond not-yet-due pref
 
 async function seedGatewayDeferredIntent({ tenantId, branchId, suffix = "" }) {
   const paymentId = createId("payment");
-  const intentId = `${createId("paymentIntent")}${suffix}`;
+  const intentId = createId("paymentIntent");
+  if (suffix) armMockOrderStatusTemplate(intentId, suffix);
   await Payment.create({
     _id: paymentId,
     tenantId,

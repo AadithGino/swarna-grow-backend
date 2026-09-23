@@ -5,11 +5,18 @@ import { PaymentIntentStatus, PaymentMode, PaymentStatus } from "../src/constant
 import { reconcileGatewayPayment } from "../src/services/phonepe-reconcile.service.js";
 import { Customer, Payment, PaymentIntent, Scheme } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
+import {
+  armMockOrderStatusTemplate,
+  clearPhonePeProviderTestHooks,
+} from "../src/lib/phonepe-provider-test-hooks.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => { await resetTestDb(); });
+test.beforeEach(async () => {
+  await resetTestDb();
+  clearPhonePeProviderTestHooks();
+});
 
 async function seedGatewayFixture() {
   const { tenant, branch, user } = await seedTenantUser();
@@ -55,7 +62,8 @@ async function seedGatewayFixture() {
 
 async function seedPendingGatewayPayment({ mockSuffix }) {
   const { tenant, branch, customer, scheme } = await seedGatewayFixture();
-  const intentId = `${createId("paymentIntent")}${mockSuffix}`;
+  const intentId = createId("paymentIntent");
+  if (mockSuffix) armMockOrderStatusTemplate(intentId, mockSuffix);
   const paymentId = createId("payment");
   await Payment.create({
     _id: paymentId,

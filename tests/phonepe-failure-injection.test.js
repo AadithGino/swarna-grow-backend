@@ -9,6 +9,10 @@ import {
 } from "../src/constants/enums.js";
 import { clearGatewayTxFaults, setGatewayTxFaultAfter } from "../src/lib/gateway-tx-faults.js";
 import {
+  armMockOrderStatusTemplate,
+  clearPhonePeProviderTestHooks,
+} from "../src/lib/phonepe-provider-test-hooks.js";
+import {
   Alert,
   AuditEvent,
   Customer,
@@ -35,6 +39,7 @@ test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => {
   await resetTestDb();
   clearGatewayTxFaults();
+  clearPhonePeProviderTestHooks();
 });
 
 async function seedPending({ mockSuffix = "" } = {}) {
@@ -69,7 +74,8 @@ async function seedPending({ mockSuffix = "" } = {}) {
     version: 1,
     createdBy: user._id,
   });
-  const intentId = `${createId("paymentIntent")}${mockSuffix}`;
+  const intentId = createId("paymentIntent");
+  if (mockSuffix) armMockOrderStatusTemplate(intentId, mockSuffix);
   const paymentId = createId("payment");
   await Payment.create({
     _id: paymentId,

@@ -20,6 +20,7 @@ import {
 } from "../../src/models/index.js";
 import { ROLE_PERMISSIONS } from "../../src/constants/permissions.js";
 import { UserStatus, UserType } from "../../src/constants/enums.js";
+import { armMockOrderStatusTemplate } from "../../src/lib/phonepe-provider-test-hooks.js";
 import { bearerFor, seedBranch, seedCustomer, seedTenantUser } from "./db.js";
 
 export async function configureTenantPhonePe(tenantId) {
@@ -50,7 +51,10 @@ export async function seedSuccessfulGatewayPayment({
   intentSuffix = "__mock_completed__",
 } = {}) {
   const schemeId = createId("scheme");
-  const intentId = `${createId("paymentIntent")}${intentSuffix}`;
+  const intentId = createId("paymentIntent");
+  if (intentSuffix) {
+    armMockOrderStatusTemplate(intentId, intentSuffix);
+  }
   const paymentId = createId("payment");
   await Scheme.create({
     _id: schemeId,

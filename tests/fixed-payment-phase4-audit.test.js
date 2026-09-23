@@ -14,6 +14,10 @@ import {
   sumActiveFixedReservationPaise,
 } from "../src/lib/fixed-payment-reservation.js";
 import { createId } from "../src/lib/ids.js";
+import {
+  armMockOrderStatusTemplate,
+  clearPhonePeProviderTestHooks,
+} from "../src/lib/phonepe-provider-test-hooks.js";
 import { withTransaction } from "../src/lib/transaction.js";
 import {
   Customer,
@@ -47,7 +51,10 @@ const app = createApp();
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => { await resetTestDb(); });
+test.beforeEach(async () => {
+  await resetTestDb();
+  clearPhonePeProviderTestHooks();
+});
 
 const installmentsBase = [
   { number: 1, amountPaise: 100_000, paidPaise: 100_000, status: "PAID" },
@@ -257,7 +264,8 @@ test("legacy gateway intent without reservation finalizes to SUCCESS", async () 
     minPaymentPaise: 1000,
   });
   const paymentId = createId("payment");
-  const intentId = `${createId("paymentIntent")}__mock_completed__`;
+  const intentId = createId("paymentIntent");
+  armMockOrderStatusTemplate(intentId, "__mock_completed__");
   await Payment.create({
     _id: paymentId,
     tenantId: tenant._id,

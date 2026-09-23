@@ -10,6 +10,10 @@ import {
 } from "../src/constants/enums.js";
 import { clearGatewayTxFaults, setGatewayTxFaultAfter } from "../src/lib/gateway-tx-faults.js";
 import {
+  armMockOrderStatusTemplate,
+  clearPhonePeProviderTestHooks,
+} from "../src/lib/phonepe-provider-test-hooks.js";
+import {
   getTransactionSessionStartsForTests,
   resetTransactionTestMetrics,
 } from "../src/lib/transaction.js";
@@ -49,6 +53,7 @@ test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => {
   await resetTestDb();
   clearGatewayTxFaults();
+  clearPhonePeProviderTestHooks();
   resetTransactionTestMetrics();
 });
 
@@ -101,7 +106,8 @@ async function seedGatewayFixture() {
 
 async function seedPendingGatewayPayment({ mockSuffix }) {
   const { tenant, branch, customer, scheme } = await seedGatewayFixture();
-  const intentId = `${createId("paymentIntent")}${mockSuffix}`;
+  const intentId = createId("paymentIntent");
+  if (mockSuffix) armMockOrderStatusTemplate(intentId, mockSuffix);
   const paymentId = createId("payment");
   await Payment.create({
     _id: paymentId,

@@ -10,6 +10,11 @@ import {
 import { env } from "../config/env.js";
 import { AppError } from "../lib/app-error.js";
 import { sha256, unseal } from "../lib/crypto.js";
+import {
+  resolveMockOrderStatus,
+  resolveMockRefundInit,
+  resolveMockRefundStatus,
+} from "../lib/phonepe-provider-test-hooks.js";
 
 const CLIENT_CACHE_MAX = 64;
 /** @type {Map<string, StandardCheckoutClient>} */
@@ -278,66 +283,8 @@ export const phonePeProvider = {
   async getOrderStatus(merchantOrderId, credentials, tenantId) {
     if (env.PROVIDER_MODE === "mock") {
       const id = String(merchantOrderId ?? "");
-      if (id.includes("__mock_completed_49000__")) {
-        return {
-          state: "COMPLETED",
-          merchantOrderId: id,
-          amount: 49_000,
-          orderId: `mock_order_${id}`,
-          paymentDetails: [
-            {
-              state: "COMPLETED",
-              transactionId: `mock_txn_${id}`,
-              amount: 49_000,
-            },
-          ],
-        };
-      }
-      if (id.includes("__mock_completed__")) {
-        return {
-          state: "COMPLETED",
-          merchantOrderId: id,
-          amount: 50_000,
-          orderId: `mock_order_${id}`,
-          paymentDetails: [
-            {
-              state: "COMPLETED",
-              transactionId: `mock_txn_${id}`,
-              amount: 50_000,
-            },
-          ],
-        };
-      }
-      if (id.includes("__mock_failed__")) {
-        return {
-          state: "FAILED",
-          merchantOrderId: id,
-          amount: 50_000,
-          orderId: `mock_order_${id}`,
-          paymentDetails: [{ state: "FAILED", transactionId: `mock_txn_${id}`, amount: 50_000 }],
-        };
-      }
-      if (id.includes("__mock_completed_no_txn__")) {
-        return {
-          state: "COMPLETED",
-          merchantOrderId: id,
-          amount: 50_000,
-          orderId: `mock_order_${id}`,
-          paymentDetails: [{ state: "PENDING", transactionId: "", amount: 50_000 }],
-        };
-      }
-      if (id.includes("__mock_completed_zero__")) {
-        return {
-          state: "COMPLETED",
-          merchantOrderId: id,
-          amount: 0,
-          orderId: `mock_order_${id}`,
-          paymentDetails: [{ state: "COMPLETED", transactionId: `mock_txn_zero_${id}`, amount: 0 }],
-        };
-      }
-      if (id.includes("__mock_transient__")) {
-        throw new Error("mock transient provider error");
-      }
+      const hooked = resolveMockOrderStatus(id);
+      if (hooked) return hooked;
       return {
         state: "PENDING",
         merchantOrderId: id,
@@ -359,17 +306,12 @@ export const phonePeProvider = {
     tenantId,
   }) {
     if (env.PROVIDER_MODE === "mock") {
-      if (String(merchantRefundId).includes("__mock_init_reject__")) {
-        throw new AppError("PHONEPE_REFUND_REJECTED", "Mock PhonePe refund rejected by provider.", 422);
-      }
-      if (String(merchantRefundId).includes("__mock_init_fail__")) {
-        throw new AppError("DEPENDENCY_UNAVAILABLE", "Mock PhonePe refund initiation failure.", 503);
-      }
-      if (String(merchantRefundId).includes("__mock_init_timeout__")) {
-        const err = new Error("Mock provider timeout ETIMEDOUT");
-        err.code = "ETIMEDOUT";
-        throw err;
-      }
+      const hooked = resolveMockRefundInit(merchantRefundId, {
+        merchantRefundId,
+        originalMerchantOrderId,
+        amountPaise,
+      });
+      if (hooked !== undefined) return hooked;
       return {
         refundId: merchantRefundId,
         state: "PENDING",
@@ -389,18 +331,8 @@ export const phonePeProvider = {
   async getRefundStatus({ merchantRefundId, originalMerchantOrderId, credentials, tenantId }) {
     if (env.PROVIDER_MODE === "mock") {
       const id = String(merchantRefundId);
-      if (id.includes("__mock_refund_missing__")) {
-        throw new ResourceNotFound("Mock refund not found at provider.");
-      }
-      if (id.includes("__mock_refund_failed__")) {
-        return { state: "FAILED", merchantRefundId: id, amount: 0 };
-      }
-      if (id.includes("__mock_refund_completed__")) {
-        return { state: "COMPLETED", merchantRefundId: id, amount: 50_000 };
-      }
-      if (id.includes("__mock_init_fail__")) {
-        return { state: "FAILED", merchantRefundId: id, amount: 0 };
-      }
+      const hooked = resolveMockRefundStatus(id);
+      if (hooked) return hooked;
       return { state: "PENDING", merchantRefundId: id, amount: 0 };
     }
     assertLiveCredentials(credentials);
