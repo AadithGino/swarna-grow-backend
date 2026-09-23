@@ -1,9 +1,15 @@
 import PDFDocument from "pdfkit";
+import { PaymentStatus } from "../constants/enums.js";
 import {
   isPositiveNetContributionPayment,
   netAmountPaiseFromDoc,
   paymentNetFieldsFromDoc,
 } from "./payment-net-aggregation.js";
+
+function includeInStatementPdf(payment) {
+  if (payment?.status === PaymentStatus.REVERSED) return true;
+  return isPositiveNetContributionPayment(payment);
+}
 
 function formatInr(paise) {
   return (paise / 100).toFixed(2);
@@ -33,9 +39,11 @@ export function streamCustomerStatementPdf(res, { tenantName, customer, payments
   doc.moveDown(0.5);
   let netTotal = 0;
   for (const payment of payments) {
-    if (!isPositiveNetContributionPayment(payment)) continue;
+    if (!includeInStatementPdf(payment)) continue;
     const net = paymentNetFieldsFromDoc(payment);
-    netTotal += net.netAmountPaise;
+    if (isPositiveNetContributionPayment(payment)) {
+      netTotal += net.netAmountPaise;
+    }
     doc.fontSize(9).text(
       `${formatDate(payment).padEnd(12)} ${String(payment.receiptNumber ?? "—").slice(0, 16).padEnd(17)} `
       + `${formatInr(net.grossAmountPaise).padStart(8)} ${formatInr(net.refundedAmountPaise).padStart(10)} `

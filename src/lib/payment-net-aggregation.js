@@ -10,6 +10,13 @@ export function netCollectionStatusFilter() {
   return { status: { $in: NET_COLLECTION_PAYMENT_STATUSES } };
 }
 
+/** Financial history rows: collected payments plus fully reversed (audit visibility). */
+export function paymentFinancialHistoryStatusFilter() {
+  return {
+    status: { $in: [...NET_COLLECTION_PAYMENT_STATUSES, PaymentStatus.REVERSED] },
+  };
+}
+
 /** Mongo aggregation expression: max(0, amountPaise - refundedAmountPaise). */
 export function netAmountPaiseExpression() {
   return {

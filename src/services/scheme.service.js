@@ -64,7 +64,7 @@ import { mapAdminLedgerEntry, paymentGoldAccrualDto } from "../lib/payment-gold-
 import {
   isPositiveNetContributionPayment,
   netAmountPaiseFromDoc,
-  netCollectionStatusFilter,
+  paymentFinancialHistoryStatusFilter,
   paymentNetMoneyRefs,
 } from "../lib/payment-net-aggregation.js";
 import { isKycMandatoryForEnrolment } from "../lib/kyc-policy.js";
@@ -807,7 +807,7 @@ export async function getScheme(req) {
     Payment.find({
       tenantId: scheme.tenantId,
       schemeId: scheme._id,
-      ...netCollectionStatusFilter(),
+      ...paymentFinancialHistoryStatusFilter(),
     }).sort({ paidAt: 1 }).lean(),
   ]);
   const effectiveBranchId = scheme.branchId ?? customer?.branchId;
@@ -869,12 +869,12 @@ export async function getPassbook(req) {
   const payments = await Payment.find({
     tenantId: scheme.tenantId,
     schemeId: scheme._id,
-    ...netCollectionStatusFilter(),
+    ...paymentFinancialHistoryStatusFilter(),
   }).sort({ paidAt: 1 }).lean();
   const contributing = payments.filter(isPositiveNetContributionPayment);
   return {
     scheme: { id: scheme._id, schemeNumber: scheme.enrollmentNumber, displayMode },
-    rows: contributing.map((pay, index) => ({
+    rows: payments.map((pay, index) => ({
       entryNumber: index + 1,
       paidAt: pay.paidAt,
       amountPaid: moneyField(netAmountPaiseFromDoc(pay)),
