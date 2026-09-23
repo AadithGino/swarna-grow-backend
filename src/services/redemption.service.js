@@ -662,45 +662,17 @@ export async function settlementPreview(req, closureType) {
     maxSettlementPaise: systemPolicyClosure ? principalPaise : undefined,
   };
 }
-export async function requestCustomerRedemption(req) {
-  const scheme = await Scheme.findOne({
-    _id: req.params.schemeId,
-    tenantId: req.auth.tenantId,
-    customerId: req.auth.id,
-  }).lean();
-  if (!scheme) throw errors.notFound("Scheme");
-  assertRedemptionModeAllowed(scheme.planSnapshot?.redemptionRules, req.body.preferredMode);
-  if (req.body.expectedVersion !== scheme.version) {
-    throw new AppError("VERSION_CONFLICT", "This scheme changed. Refresh and try again.", 409);
-  }
-  const preview = await settlementPreview(
-    {
-      ...req,
-      body: {
-        ...req.body,
-        mode: req.body.preferredMode ?? req.body.mode,
-      },
-    },
-    ClosureType.MATURITY_REDEMPTION,
-  );
-  if (!preview.eligible) {
-    throw errors.business(
-      preview.blockers[0]?.code ?? "NOT_ELIGIBLE",
-      preview.blockers[0]?.message ?? "This scheme is not eligible for redemption.",
-    );
-  }
-  await assertRedemptionKyc(req, scheme.customerId);
-  const existingOpen = await Redemption.findOne({
-    tenantId: req.auth.tenantId,
-    schemeId: scheme._id,
-    status: { $in: OPEN_REDEMPTION_STATUSES },
-  }).lean();
-  if (existingOpen) {
+function mapRedemptionDuplicateKeyError(error) {
+  if (error?.code === 11000 || error?.code === 11001) {
     throw errors.business(
       "REDEMPTION_ALREADY_OPEN",
       "A redemption request is already in progress for this scheme.",
     );
   }
+  throw error;
+}
+
+export async function requestCustomerRedemption(req) {
   if (req.body.preferredMode === RedemptionMode.PURCHASE_ADJUSTMENT) {
     const billNumber = String(req.body.modeDetails?.billNumber ?? "").trim();
     if (!billNumber || billNumber.length > 64) {
@@ -710,48 +682,93 @@ export async function requestCustomerRedemption(req) {
       );
     }
   }
-  const row = await Redemption.create({
-    _id: createId("redemption"),
-    tenantId: scheme.tenantId,
-    branchId: scheme.branchId,
-    schemeId: scheme._id,
-    customerId: scheme.customerId,
-    closureType: ClosureType.MATURITY_REDEMPTION,
-    mode: req.body.preferredMode,
-    modeDetails: {
-      preferredDate: req.body.preferredDate,
-      remarks: req.body.remarks,
-      ...(req.body.modeDetails?.billNumber
-        ? { billNumber: String(req.body.modeDetails.billNumber).trim() }
-        : {}),
-      settlementSnapshot: buildSettlementSnapshotFromPreview(
-        preview,
-        scheme.version,
-        req.body.preferredMode,
-      ),
-    },
-    status: RedemptionStatus.REQUESTED,
-    principalPaise: preview.principalPaise,
-    benefitPaise: preview.benefitPaise,
-    benefitWeightMg: preview.benefitWeightMg,
-    benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
-    penaltyPaise: preview.penaltyPaise,
-    penaltyWeightMg: preview.penaltyWeightMg,
-    settlementPaise: preview.settlementPaise,
-    weightMg:
-      preview.weightMg
-      ?? (preview.goldWeightMg ?? 0) + (preview.benefitWeightMg ?? 0),
-    requestedBy: req.auth.id,
-    requestedAt: new Date(),
+  return withTransaction(async (session) => {
+    const scheme = await Scheme.findOne({
+      _id: req.params.schemeId,
+      tenantId: req.auth.tenantId,
+      customerId: req.auth.id,
+    }).session(session);
+    if (!scheme) throw errors.notFound("Scheme");
+    assertRedemptionModeAllowed(scheme.planSnapshot?.redemptionRules, req.body.preferredMode);
+    if (req.body.expectedVersion !== scheme.version) {
+      throw new AppError("VERSION_CONFLICT", "This scheme changed. Refresh and try again.", 409);
+    }
+    await assertRedemptionKyc(req, scheme.customerId, { session });
+    const existingOpen = await Redemption.findOne({
+      tenantId: req.auth.tenantId,
+      schemeId: scheme._id,
+      status: { $in: OPEN_REDEMPTION_STATUSES },
+    }).session(session);
+    if (existingOpen) {
+      throw errors.business(
+        "REDEMPTION_ALREADY_OPEN",
+        "A redemption request is already in progress for this scheme.",
+      );
+    }
+    const preview = await settlementPreview(
+      {
+        ...req,
+        body: {
+          ...req.body,
+          mode: req.body.preferredMode ?? req.body.mode,
+        },
+      },
+      ClosureType.MATURITY_REDEMPTION,
+    );
+    if (!preview.eligible) {
+      throw errors.business(
+        preview.blockers[0]?.code ?? "NOT_ELIGIBLE",
+        preview.blockers[0]?.message ?? "This scheme is not eligible for redemption.",
+      );
+    }
+    let row;
+    try {
+      row = (await Redemption.create([{
+        _id: createId("redemption"),
+        tenantId: scheme.tenantId,
+        branchId: scheme.branchId,
+        schemeId: scheme._id,
+        customerId: scheme.customerId,
+        closureType: ClosureType.MATURITY_REDEMPTION,
+        mode: req.body.preferredMode,
+        modeDetails: {
+          preferredDate: req.body.preferredDate,
+          remarks: req.body.remarks,
+          ...(req.body.modeDetails?.billNumber
+            ? { billNumber: String(req.body.modeDetails.billNumber).trim() }
+            : {}),
+          settlementSnapshot: buildSettlementSnapshotFromPreview(
+            preview,
+            scheme.version,
+            req.body.preferredMode,
+          ),
+        },
+        status: RedemptionStatus.REQUESTED,
+        principalPaise: preview.principalPaise,
+        benefitPaise: preview.benefitPaise,
+        benefitWeightMg: preview.benefitWeightMg,
+        benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
+        penaltyPaise: preview.penaltyPaise,
+        penaltyWeightMg: preview.penaltyWeightMg,
+        settlementPaise: preview.settlementPaise,
+        weightMg:
+          preview.weightMg
+          ?? (preview.goldWeightMg ?? 0) + (preview.benefitWeightMg ?? 0),
+        requestedBy: req.auth.id,
+        requestedAt: new Date(),
+      }], { session }))[0];
+    } catch (error) {
+      mapRedemptionDuplicateKeyError(error);
+    }
+    return {
+      id: row._id,
+      status: row.status,
+      preferredMode: req.body.preferredMode,
+      preferredDate: req.body.preferredDate ?? null,
+      remarks: req.body.remarks ?? null,
+      settlementPaise: row.settlementPaise,
+    };
   });
-  return {
-    id: row._id,
-    status: row.status,
-    preferredMode: req.body.preferredMode,
-    preferredDate: req.body.preferredDate ?? null,
-    remarks: req.body.remarks ?? null,
-    settlementPaise: row.settlementPaise,
-  };
 }
 
 export async function initiateRedemption(
