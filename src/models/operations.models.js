@@ -113,6 +113,14 @@ exportSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
 exportSchema.index({ status: 1, updatedAt: 1 });
 const alertSchema = new mongoose.Schema({ _id: stringId("alt"), tenantId: tenantField, branchId: branchField, type: enumField(AlertType, { required: true }), severity: enumField(AlertSeverity, { default: AlertSeverity.WARNING }), status: enumField(AlertStatus, { default: AlertStatus.OPEN }), title: String, message: String, entityType: String, entityId: String, metadata: mongoose.Schema.Types.Mixed, dismissedAt: Date, dismissedBy: String, resolvedAt: Date }, baseOptions);
 alertSchema.index({ tenantId: 1, status: 1, severity: 1, createdAt: -1 });
+alertSchema.index(
+  { tenantId: 1, type: 1, entityId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: AlertStatus.OPEN },
+    name: "alert_open_tenant_type_entity_unique",
+  },
+);
 const cashAdjustmentSchema = new mongoose.Schema({ _id: stringId("cad"), tenantId: tenantField, branchId: branchField, staffId: { type: String, required: true, index: true }, direction: enumField(CashAdjustmentDirection, { required: true }), amountPaise: integerField({ required: true, min: 1 }), reason: { type: String, required: true }, createdBy: String }, baseOptions);
 cashAdjustmentSchema.plugin(immutablePlugin);
 

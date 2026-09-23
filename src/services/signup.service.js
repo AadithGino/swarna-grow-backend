@@ -9,7 +9,7 @@ import { limitsFromApi, normalizePlanFeatures } from "../constants/plan-features
 import { env } from "../config/env.js";
 import { BillingCycle, PasswordTokenPurpose, PlanTier, SignupAvailabilityReason, SignupStatus, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
-import { moneyRef } from "../lib/money.js";
+import { moneyRef, percentOfPaiseHalfUp } from "../lib/money.js";
 import { withTransaction } from "../lib/transaction.js";
 import { otpProvider } from "../integrations/otp.provider.js";
 const GST_PERCENT = 18;
@@ -105,7 +105,7 @@ export async function selectSignupPlan(signupId, body) {
   if (!plan?.active) throw errors.notFound("Subscription plan");
   const billingCycle = body.billingCycle ?? BillingCycle.MONTHLY;
   const amountPaise = planAmountPaise(plan, billingCycle);
-  const taxPaise = Math.round((amountPaise * GST_PERCENT) / 100);
+  const taxPaise = percentOfPaiseHalfUp(amountPaise, GST_PERCENT, { fieldName: "gstPercent" });
   signup.selectedPlanTier = plan.tier;
   signup.subscriptionPlanId = plan._id;
   signup.billingCycle = billingCycle;

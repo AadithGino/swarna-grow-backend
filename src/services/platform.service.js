@@ -18,7 +18,8 @@ function isSealedSecret(value) {
   const parts = String(value ?? "").split(".");
   return parts.length === 3 && parts[0].length >= 8;
 }
-import { moneyRef } from "../lib/money.js";
+import { moneyRef, percentOfPaiseHalfUp } from "../lib/money.js";
+import { allocatePlatformInvoiceNumber } from "../lib/platform-invoice-sequence.js";
 import { generateTemporaryPassword } from "../lib/password-generator.js";
 import {
   PASSWORD_PIN_MESSAGE,
@@ -639,9 +640,9 @@ export async function createInvoice(tenantId, body, req) {
     : [{ description: body.description ?? "Platform subscription", amountPaise: body.amountPaise ?? 0 }];
   const subtotalPaise = lineItems.reduce((sum, row) => sum + (row.amountPaise ?? 0), 0);
   const taxPercent = body.taxPercent ?? 0;
-  const taxPaise = Math.round((subtotalPaise * taxPercent) / 100);
+  const taxPaise = percentOfPaiseHalfUp(subtotalPaise, taxPercent, { fieldName: "taxPercent" });
   const totalPaise = subtotalPaise + taxPaise;
-  const invoiceNumber = body.invoiceNumber ?? `PLT/${dayjs().format("YYYY")}/${String(await Invoice.countDocuments() + 1).padStart(4, "0")}`;
+  const invoiceNumber = body.invoiceNumber ?? (await allocatePlatformInvoiceNumber());
   const row = await Invoice.create({
     _id: createId("invoice"),
     tenantId,

@@ -28,6 +28,36 @@ function safeIntegerFromDecimal(decimal, name = "amountPaise") {
  * Percentage of an integer paise base, rounded down to whole paise (no float intermediates).
  * Percent must be 0–100 inclusive.
  */
+/**
+ * Invoice GST and platform tax lines: percentage of integer paise base, HALF_UP to whole paise.
+ * Uses Decimal only (no float intermediates). Percent must be 0–100 inclusive.
+ */
+export function percentOfPaiseHalfUp(basePaise, percent, { fieldName = "percent" } = {}) {
+  const base = assertInteger(Math.max(0, basePaise), "basePaise");
+  if (typeof percent !== "number" || !Number.isFinite(percent)) {
+    throw new AppError(
+      "INVALID_PERCENT",
+      `${fieldName} must be a finite number.`,
+      400,
+      { fieldName, percent },
+    );
+  }
+  if (percent < 0 || percent > 100) {
+    throw new AppError(
+      "INVALID_PERCENT",
+      `${fieldName} must be between 0 and 100.`,
+      400,
+      { fieldName, percent },
+    );
+  }
+  if (percent === 0 || base === 0) return 0;
+  return new Decimal(base)
+    .mul(percent)
+    .div(100)
+    .toDecimalPlaces(0, MONEY_PAISE_ROUNDING)
+    .toNumber();
+}
+
 export function percentOfPaiseFloor(basePaise, percent, { fieldName = "percent" } = {}) {
   const base = assertInteger(Math.max(0, basePaise), "basePaise");
   if (typeof percent !== "number" || !Number.isFinite(percent)) {

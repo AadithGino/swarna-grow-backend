@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AppError } from "../src/lib/app-error.js";
-import { percentOfPaiseFloor } from "../src/lib/money.js";
+import { percentOfPaiseFloor, percentOfPaiseHalfUp } from "../src/lib/money.js";
+
+test("percentOfPaiseHalfUp: GST-style half-up on paise", () => {
+  assert.equal(percentOfPaiseHalfUp(999, 18), 180);
+  assert.equal(percentOfPaiseHalfUp(994, 18), 179);
+});
 
 test("percentOfPaiseFloor: ₹1 principal with fractional result rounds down", () => {
   assert.equal(percentOfPaiseFloor(1, 33), 0);

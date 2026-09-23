@@ -8,7 +8,7 @@ import {
   Redemption,
   Scheme,
 } from "../models/index.js";
-import { ExportStatus, RedemptionStatus } from "../constants/enums.js";
+import { ExportStatus, ExportType, RedemptionStatus, isEnumValue } from "../constants/enums.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { errors } from "../lib/app-error.js";
 import { PAYMENT_MODE_ORDER, PAYMENT_MODE_LABELS } from "../constants/enums.js";
@@ -345,6 +345,15 @@ export function toExportJobDto(job) {
 }
 
 export async function createExport(req) {
+  const exportType = req.body.type;
+  if (!isEnumValue(ExportType, exportType)) {
+    throw new AppError(
+      "EXPORT_TYPE_INVALID",
+      `Unsupported export type: ${exportType}`,
+      422,
+      { supported: Object.values(ExportType) },
+    );
+  }
   const format = req.body.format ?? "CSV";
   if (!["CSV", "PDF"].includes(format)) {
     throw new AppError(
@@ -368,7 +377,7 @@ export async function createExport(req) {
     _id: createId("export"),
     tenantId: req.auth.tenantId,
     requestedBy: req.auth.id,
-    type: req.body.type,
+    type: exportType,
     scopeSnapshot,
     filters: { ...sanitizedExportFilters(req.body.filters), format },
   });

@@ -8,7 +8,6 @@ import {
   StandardCheckoutPayRequest,
 } from "@phonepe-pg/pg-sdk-node";
 import { env } from "../config/env.js";
-import { logger } from "../config/logger.js";
 import { AppError } from "../lib/app-error.js";
 import { sha256, unseal } from "../lib/crypto.js";
 
@@ -176,6 +175,46 @@ function withRestrictedUpiModes(request, { upiApps = [], upiFlows = ["INTENT"] }
   return request;
 }
 
+export async function submitPhonePeCheckoutPayment(
+  client,
+  {
+    merchantOrderId,
+    amountPaise,
+    redirectUrl,
+    preferUpiIntentOnly = false,
+    upiApps = env.PHONEPE_UPI_APPS,
+    upiFlows = env.PHONEPE_UPI_FLOWS,
+  },
+) {
+  const standardRequest = StandardCheckoutPayRequest.builder()
+    .merchantOrderId(merchantOrderId)
+    .amount(amountPaise)
+    .redirectUrl(redirectUrl)
+    .build();
+  if (!preferUpiIntentOnly) {
+    return client.pay(standardRequest);
+  }
+  const intentRequest = withRestrictedUpiModes(
+    StandardCheckoutPayRequest.builder()
+      .merchantOrderId(merchantOrderId)
+      .amount(amountPaise)
+      .redirectUrl(redirectUrl)
+      .build(),
+    { upiApps, upiFlows },
+  );
+  try {
+    return await client.pay(intentRequest);
+  } catch (error) {
+    if (!isRestrictedModeValidationError(error)) throw error;
+    throw new AppError(
+      "PHONEPE_UPI_CHECKOUT_UNAVAILABLE",
+      "UPI-only checkout could not be created with the configured payment modes. Standard checkout was not attempted because UPI-only mode is enabled.",
+      422,
+      { merchantOrderId, reason: error?.message ?? String(error) },
+    );
+  }
+}
+
 export const phonePeProvider = {
   async createPayment({
     merchantOrderId,
@@ -196,39 +235,14 @@ export const phonePeProvider = {
     }
     assertLiveCredentials(credentials);
     const client = getClientFor(credentials, tenantId);
-    const standardRequest = StandardCheckoutPayRequest.builder()
-      .merchantOrderId(merchantOrderId)
-      .amount(amountPaise)
-      .redirectUrl(redirectUrl)
-      .build();
-    let response;
-    if (preferUpiIntentOnly) {
-      const intentRequest = withRestrictedUpiModes(
-        StandardCheckoutPayRequest.builder()
-          .merchantOrderId(merchantOrderId)
-          .amount(amountPaise)
-          .redirectUrl(redirectUrl)
-          .build(),
-        { upiApps, upiFlows },
-      );
-      try {
-        response = await client.pay(intentRequest);
-      } catch (error) {
-        if (!isRestrictedModeValidationError(error)) throw error;
-        logger.warn(
-          {
-            merchantOrderId,
-            reason: error?.message,
-            upiApps,
-            upiFlows,
-          },
-          "PhonePe restricted UPI checkout rejected; retrying with standard checkout",
-        );
-        response = await client.pay(standardRequest);
-      }
-    } else {
-      response = await client.pay(standardRequest);
-    }
+    const response = await submitPhonePeCheckoutPayment(client, {
+      merchantOrderId,
+      amountPaise,
+      redirectUrl,
+      preferUpiIntentOnly,
+      upiApps,
+      upiFlows,
+    });
     return {
       providerOrderId: response.orderId,
       redirectUrl: response.redirectUrl,
