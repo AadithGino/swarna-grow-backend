@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { CustomerLoginMode, PlanTier, SignupStatus, SubscriptionStatus, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
+import { CustomerLoginMode, KycType, PlanTier, SignupStatus, SubscriptionStatus, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
 import { baseOptions, branchField, enumField, integerField, stringId, tenantField, versionField } from "./schema-helpers.js";
 
 const subscriptionSchema = new mongoose.Schema({
@@ -43,7 +43,19 @@ const tenantOperationsSchema = new mongoose.Schema(
   {
     multiSchemePerCustomer: { type: Boolean, default: true },
     kycMandatory: { type: Boolean, default: false },
-    kycAllowedTypes: { type: [String], default: ["AADHAAR", "PAN"] },
+    kycAllowedTypes: {
+      type: [String],
+      default: ["AADHAAR", "PAN"],
+      validate: {
+        validator(values) {
+          if (!Array.isArray(values) || values.length === 0) return false;
+          const allowed = new Set(Object.values(KycType));
+          if (values.length !== new Set(values).size) return false;
+          return values.every((value) => allowed.has(value));
+        },
+        message: "kycAllowedTypes must be unique enum-backed KYC types",
+      },
+    },
     customerSelfEnrolEnabled: { type: Boolean, default: true },
     customerSelfRegistrationEnabled: { type: Boolean, default: true },
     customerLoginMode: enumField(CustomerLoginMode, { default: CustomerLoginMode.OTP_ONLY }),

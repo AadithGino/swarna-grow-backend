@@ -515,7 +515,12 @@ export const tenantOperationsPatchBody = z
     expectedVersion: z.number().int().positive(),
     multiSchemePerCustomer: z.boolean().optional(),
     kycMandatory: z.boolean().optional(),
-    kycAllowedTypes: z.array(z.string()).optional(),
+    kycAllowedTypes: z
+      .array(enumSchema(E.KycType))
+      .min(1)
+      .max(8)
+      .transform((values) => [...new Set(values)])
+      .optional(),
     customerSelfEnrolEnabled: z.boolean().optional(),
     customerSelfRegistrationEnabled: z.boolean().optional(),
     customerLoginMode: enumSchema(E.CustomerLoginMode).optional(),
