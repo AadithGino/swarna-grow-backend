@@ -29,13 +29,13 @@ test("staff customer create rejects unknown fields", () => {
   assert.equal(parsed.success, false);
 });
 
-test("staff customer patch rejects mobile change and unknown fields", () => {
+test("staff customer patch allows mobile and rejects unknown fields", () => {
   const patch = customerPatchBody.safeParse({
     name: "Updated",
     mobile: "+919111122233",
     expectedVersion: 1,
   });
-  assert.equal(patch.success, false);
+  assert.equal(patch.success, true);
   const unknown = customerPatchBody.safeParse({
     name: "Updated",
     hackerField: true,
