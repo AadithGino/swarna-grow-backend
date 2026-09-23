@@ -8,7 +8,7 @@ This document supersedes the 2026-09-18 **NOT READY** note for the **backend rep
 
 ```bash
 npm run check
-npm test   # expect 1083 pass, 0 fail, 0 skip — run twice
+npm test   # expect 1089 pass, 0 fail, 0 skip — run twice
 ```
 
 Archive: `git archive --format=zip HEAD` from the RC commit (see `docs/RELEASE_MANIFEST_v1_RC.md`).

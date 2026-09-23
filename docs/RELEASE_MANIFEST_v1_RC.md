@@ -19,7 +19,7 @@ npm run check
 npm test
 ```
 
-**Expected (2026-09-24 gate):** 1083 tests, 0 fail, 0 skip (includes corrective-pass regression tests). Run twice back-to-back before shipping; both must be green.
+**Expected (2026-09-24 gate):** 1089 tests, 0 fail, 0 skip (includes corrective-pass regression tests). Run twice back-to-back before shipping; both must be green.
 
 Test DB: `tests/helpers/db.js` calls `model.syncIndexes()` once after MongoMemory replSet connect so unique-index tests are deterministic.
 
