@@ -56,10 +56,15 @@ function installment(overdue) {
 }
 
 async function seedDefaultingMatrix({ tenant, branch, user, ineligibleFirst, eligibleCount }) {
+  let schemeSeq = 0;
+  const nextSchemeId = () => {
+    schemeSeq += 1;
+    return `sch_${String(schemeSeq).padStart(10, "0")}`;
+  };
   const docs = [];
   for (let i = 0; i < ineligibleFirst; i += 1) {
     docs.push({
-      _id: createId("scheme"),
+      _id: nextSchemeId(),
       tenantId: tenant._id,
       branchId: branch._id,
       customerId: createId("customer"),
@@ -79,7 +84,7 @@ async function seedDefaultingMatrix({ tenant, branch, user, ineligibleFirst, eli
   }
   for (let i = 0; i < eligibleCount; i += 1) {
     docs.push({
-      _id: createId("scheme"),
+      _id: nextSchemeId(),
       tenantId: tenant._id,
       branchId: branch._id,
       customerId: createId("customer"),

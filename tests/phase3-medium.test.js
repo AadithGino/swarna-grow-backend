@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { AppError } from "../src/lib/app-error.js";
 import { sanitize } from "../src/services/audit.service.js";
 import { beginIdempotency, completeIdempotency } from "../src/services/idempotency.service.js";
 import { IdempotencyRecord } from "../src/models/index.js";
@@ -16,12 +17,27 @@ test("sanitize preserves arrays instead of converting them to objects", () => {
   assert.equal(result.password, undefined);
 });
 
-test("stale PROCESSING idempotency records can be reclaimed after 60 seconds", async () => {
+test("stale PROCESSING idempotency records are reclaimed once the lease expires", async () => {
   const key = `idem-${Date.now()}`;
-  const first = await beginIdempotency({ tenantId: "tnt_1", actorId: "user_1", endpoint: "POST /x", key, body: { a: 1 } });
+  const ctx = { tenantId: "tnt_1", actorId: "user_1", endpoint: "POST /x", key, body: { a: 1 } };
+  const first = await beginIdempotency(ctx);
   assert.equal(first.replay, false);
-  await IdempotencyRecord.updateOne({ _id: first.record._id }, { $set: { createdAt: new Date(Date.now() - 61_000) } });
-  const second = await beginIdempotency({ tenantId: "tnt_1", actorId: "user_1", endpoint: "POST /x", key, body: { a: 1 } });
+  await IdempotencyRecord.updateOne(
+    { _id: first.record._id },
+    { $set: { leaseExpiresAt: new Date(Date.now() - 1000) } },
+  );
+  const second = await beginIdempotency(ctx);
   assert.equal(second.replay, false);
+  assert.notEqual(second.record.leaseOwner, first.record.leaseOwner);
   await completeIdempotency(second.record, 200, { success: true });
+});
+
+test("PROCESSING idempotency with active lease rejects duplicate begin", async () => {
+  const key = `idem-active-${Date.now()}`;
+  const ctx = { tenantId: "tnt_1", actorId: "user_1", endpoint: "POST /x", key, body: { a: 1 } };
+  await beginIdempotency(ctx);
+  await assert.rejects(
+    () => beginIdempotency(ctx),
+    (err) => err instanceof AppError && err.code === "REQUEST_IN_PROGRESS" && err.statusCode === 409,
+  );
 });
