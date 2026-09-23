@@ -323,6 +323,23 @@ function resolveEnrolBranchId(req, customer) {
   return req.body.branchId ?? customer?.branchId ?? null;
 }
 
+function resolveFirstInstallmentMode(req, plan) {
+  const schedule = plan.scheduleRules ?? {};
+  if (schedule.firstInstallmentModeEditable === false) {
+    return schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
+  }
+  if (req.auth?.type === "CUSTOMER") {
+    if (req.body.payNow === false) return FirstInstallmentMode.START_NEXT_CYCLE;
+    if (req.body.payNow === true) return FirstInstallmentMode.COLLECT_NOW;
+    return schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
+  }
+  return (
+    req.body.firstInstallmentMode
+    ?? schedule.firstInstallmentModeDefault
+    ?? FirstInstallmentMode.COLLECT_NOW
+  );
+}
+
 async function assertActiveEnrolBranch(tenantId, branchId) {
   if (!branchId) throw errors.business("BRANCH_REQUIRED", "An active enrolment branch is required.");
   const branch = await Branch.findOne({ _id: branchId, tenantId, active: true }).select("_id").lean();
@@ -382,7 +399,7 @@ export async function validateEnrolment(req) {
     throw errors.business("KYC_REQUIRED", "Verified KYC is required before enrolment.");
   }
   if (
-    req.tenant.settings?.oneActiveSchemePerCustomer
+    req.tenant.settings?.oneActiveSchemePerCustomer === true
     && await Scheme.exists({
       tenantId: req.auth.tenantId,
       customerId: customer._id,
@@ -396,26 +413,7 @@ export async function validateEnrolment(req) {
   assertPlanAvailableAtBranch(plan, branchId);
   const amount = defaultInstallmentAmountPaise(plan, req.body.installmentAmountPaise);
   if (amount != null) validateAmount(plan, amount);
-  const schedule = plan.scheduleRules ?? {};
-  let firstInstallmentMode;
-  if (schedule.firstInstallmentModeEditable === false) {
-    firstInstallmentMode =
-      schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
-  } else if (req.auth?.type === "CUSTOMER") {
-    if (req.body.payNow === false) {
-      firstInstallmentMode = FirstInstallmentMode.START_NEXT_CYCLE;
-    } else if (req.body.payNow === true) {
-      firstInstallmentMode = FirstInstallmentMode.COLLECT_NOW;
-    } else {
-      firstInstallmentMode =
-        schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
-    }
-  } else {
-    firstInstallmentMode =
-      req.body.firstInstallmentMode ??
-      schedule.firstInstallmentModeDefault ??
-      FirstInstallmentMode.COLLECT_NOW;
-  }
+  const firstInstallmentMode = resolveFirstInstallmentMode(req, plan);
   return { customer, plan, branchId, installmentAmountPaise: amount, firstInstallmentMode, firstInstallmentRequired: firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW };
 }
 
@@ -559,12 +557,20 @@ export async function createEnrolmentInSession(req, validation, session) {
       validation.plan._id,
     );
     const plan = lockedPlan.toObject();
+    const customerDoc = await Customer.findOne({
+      _id: validation.customer._id,
+      tenantId: req.auth.tenantId,
+    }).session(session);
+    if (!customerDoc) throw errors.notFound("Customer");
+    const customer = customerDoc.toObject();
+    const branchId = resolveEnrolBranchId(req, customer);
+    const firstInstallmentMode = resolveFirstInstallmentMode(req, plan);
     const txValidation = await revalidateLockedPlanForEnrolment(req, session, {
       plan,
-      customer: validation.customer,
-      branchId: validation.branchId,
+      customer,
+      branchId,
       installmentAmountPaise: validation.installmentAmountPaise,
-      firstInstallmentMode: validation.firstInstallmentMode,
+      firstInstallmentMode,
       validateAmount,
       assertPlanAvailableAtBranch,
       assertActiveEnrolBranch,
@@ -603,7 +609,9 @@ export async function createEnrolmentInSession(req, validation, session) {
         firstInstallmentMode: txValidation.firstInstallmentMode,
       })
       : [];
-    const initialStatus = validation.firstInstallmentRequired
+    const firstInstallmentRequired =
+      txValidation.firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW;
+    const initialStatus = firstInstallmentRequired
       ? SchemeStatus.PENDING_PAYMENT
       : SchemeStatus.ACTIVE;
     const scheme = (await Scheme.create([{
