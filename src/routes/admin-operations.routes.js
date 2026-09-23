@@ -6,6 +6,19 @@ import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { handoverBody, messageBody, uploadBody } from "../validators/common.validators.js";
+import {
+  bulkMessageResendBody,
+  cashAdjustmentBody,
+  grievanceAssignBody,
+  grievancePriorityBody,
+  grievanceStatusBody,
+  handoverSettleBody,
+  paymentReconcileBody,
+  pushBroadcastAudiencePreviewBody,
+  pushBroadcastBody,
+  reminderConfigPatchBody,
+  uploadCompleteBody,
+} from "../validators/admin-mutation.validators.js";
 import { presignUpload } from "../services/upload.service.js";
 import * as upload from "../controllers/upload.controller.js";
 import { CashHandover, Customer, Message, WebhookEvent } from "../models/index.js";
@@ -27,16 +40,48 @@ adminOperationsRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.C
   if (!row) throw errors.notFound("Cash handover");
   return sendSuccess(res, row);
 })));
-adminOperationsRouter.post("/cash/handovers/:handoverId/accept", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("accept"))));
-adminOperationsRouter.post("/cash/handovers/:handoverId/reject", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("reject"))));
-adminOperationsRouter.post("/cash/handovers/:handoverId/resolve-discrepancy", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.settleHandover("resolve-discrepancy"))));
+adminOperationsRouter.post(
+  "/cash/handovers/:handoverId/accept",
+  ...guarded(
+    Permission.CASH_HANDOVER_ACCEPT,
+    validate({ body: handoverSettleBody }),
+    idempotent,
+    asyncHandler(controller.settleHandover("accept")),
+  ),
+);
+adminOperationsRouter.post(
+  "/cash/handovers/:handoverId/reject",
+  ...guarded(
+    Permission.CASH_HANDOVER_ACCEPT,
+    validate({ body: handoverSettleBody }),
+    idempotent,
+    asyncHandler(controller.settleHandover("reject")),
+  ),
+);
+adminOperationsRouter.post(
+  "/cash/handovers/:handoverId/resolve-discrepancy",
+  ...guarded(
+    Permission.CASH_HANDOVER_ACCEPT,
+    validate({ body: handoverSettleBody }),
+    idempotent,
+    asyncHandler(controller.settleHandover("resolve-discrepancy")),
+  ),
+);
 adminOperationsRouter.get("/cash/report", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashReport)));
 adminOperationsRouter.get("/cash/handovers/:handoverId/audit-events", ...guarded(Permission.AUDIT_READ, asyncHandler(async (req, res) => {
   const handover = await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).lean();
   if (!handover) throw errors.notFound("Cash handover");
   return sendList(res, await audit.listEntityAudit(req, "CASH_HANDOVER", handover._id));
 })));
-adminOperationsRouter.post("/cash/adjustments", ...guarded(Permission.CASH_HANDOVER_ACCEPT, idempotent, asyncHandler(controller.cashAdjustment)));
+adminOperationsRouter.post(
+  "/cash/adjustments",
+  ...guarded(
+    Permission.CASH_HANDOVER_ACCEPT,
+    validate({ body: cashAdjustmentBody }),
+    idempotent,
+    asyncHandler(controller.cashAdjustment),
+  ),
+);
 adminOperationsRouter.get("/messaging/templates", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.templates)));
 adminOperationsRouter.get("/messaging/templates/:messageType/preview", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.templatePreview)));
 adminOperationsRouter.get("/messaging/summary", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.messageSummary)));
@@ -47,6 +92,7 @@ adminOperationsRouter.post(
   "/messaging/messages/bulk-resend",
   ...guarded(
     Permission.MESSAGE_SEND,
+    validate({ body: bulkMessageResendBody }),
     idempotent,
     asyncHandler(async (req, res) =>
       sendSuccess(res, await messaging.bulkResendMessages(req), {}, 202),
@@ -88,14 +134,31 @@ adminOperationsRouter.post("/messaging/inbound/:id/read", ...guarded(Permission.
   return sendSuccess(res, await markInboundMessageRead(req));
 })));
 adminOperationsRouter.get("/reminders/config", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.reminderConfig)));
-adminOperationsRouter.put("/reminders/config", ...guarded(Permission.SETTINGS_WRITE, idempotent, asyncHandler(controller.updateReminderConfig)));
+adminOperationsRouter.put(
+  "/reminders/config",
+  ...guarded(
+    Permission.SETTINGS_WRITE,
+    validate({ body: reminderConfigPatchBody }),
+    idempotent,
+    asyncHandler(controller.updateReminderConfig),
+  ),
+);
 adminOperationsRouter.post(
   "/push/broadcasts/audience-preview",
-  ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.pushBroadcastAudiencePreview)),
+  ...guarded(
+    Permission.MESSAGE_READ,
+    validate({ body: pushBroadcastAudiencePreviewBody }),
+    asyncHandler(controller.pushBroadcastAudiencePreview),
+  ),
 );
 adminOperationsRouter.post(
   "/push/broadcasts",
-  ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(controller.createPushBroadcast)),
+  ...guarded(
+    Permission.MESSAGE_SEND,
+    validate({ body: pushBroadcastBody }),
+    idempotent,
+    asyncHandler(controller.createPushBroadcast),
+  ),
 );
 adminOperationsRouter.get(
   "/push/broadcasts",
@@ -125,26 +188,62 @@ adminOperationsRouter.post(
 );
 adminOperationsRouter.post(
   "/push/uploads/:uploadId/complete",
-  ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(upload.complete)),
+  ...guarded(
+    Permission.MESSAGE_SEND,
+    validate({ body: uploadCompleteBody }),
+    idempotent,
+    asyncHandler(upload.complete),
+  ),
 );
 adminOperationsRouter.get("/grievances", ...guarded(Permission.GRIEVANCE_READ, asyncHandler(controller.grievances)));
 adminOperationsRouter.get("/grievances/:grievanceId/audit-events", ...guarded(Permission.AUDIT_READ, asyncHandler(controller.grievanceAudit)));
 adminOperationsRouter.get("/grievances/:grievanceId", ...guarded(Permission.GRIEVANCE_READ, asyncHandler(controller.grievanceDetail)));
-adminOperationsRouter.post("/grievances/:grievanceId/assign", ...guarded(Permission.GRIEVANCE_ASSIGN, idempotent, asyncHandler(controller.mutateGrievance("assign"))));
-adminOperationsRouter.post("/grievances/:grievanceId/priority", ...guarded(Permission.GRIEVANCE_ASSIGN, idempotent, asyncHandler(controller.mutateGrievance("priority"))));
+adminOperationsRouter.post(
+  "/grievances/:grievanceId/assign",
+  ...guarded(
+    Permission.GRIEVANCE_ASSIGN,
+    validate({ body: grievanceAssignBody }),
+    idempotent,
+    asyncHandler(controller.mutateGrievance("assign")),
+  ),
+);
+adminOperationsRouter.post(
+  "/grievances/:grievanceId/priority",
+  ...guarded(
+    Permission.GRIEVANCE_ASSIGN,
+    validate({ body: grievancePriorityBody }),
+    idempotent,
+    asyncHandler(controller.mutateGrievance("priority")),
+  ),
+);
 adminOperationsRouter.post("/grievances/:grievanceId/messages", ...guarded(Permission.GRIEVANCE_REPLY, validate({ body: messageBody }), idempotent, asyncHandler(controller.grievanceMessage)));
-adminOperationsRouter.post("/grievances/:grievanceId/status", ...guarded(Permission.GRIEVANCE_RESOLVE, idempotent, asyncHandler(controller.mutateGrievance("status"))));
+adminOperationsRouter.post(
+  "/grievances/:grievanceId/status",
+  ...guarded(
+    Permission.GRIEVANCE_RESOLVE,
+    validate({ body: grievanceStatusBody }),
+    idempotent,
+    asyncHandler(controller.mutateGrievance("status")),
+  ),
+);
 adminOperationsRouter.post("/payments/:paymentId/poll-status", ...guarded(Permission.PAYMENT_READ, idempotent, asyncHandler(async (req, res) => {
   const { pollPaymentGatewayStatus } = await import("../services/payment-poll-status.service.js");
   return sendSuccess(res, await pollPaymentGatewayStatus(req));
 })));
-adminOperationsRouter.post("/payments/:paymentId/reconcile", ...guarded(Permission.PAYMENT_REVERSE, idempotent, asyncHandler(async (req, res) => {
+adminOperationsRouter.post(
+  "/payments/:paymentId/reconcile",
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    validate({ body: paymentReconcileBody }),
+    idempotent,
+    asyncHandler(async (req, res) => {
   const { reconcilePaymentById } = await import("../services/phonepe-reconcile.service.js");
-  const forceReplay = req.body?.forceReplay === true || req.body?.forceReplay === "true";
+  const forceReplay = req.body?.forceReplay === true;
   const result = await reconcilePaymentById({
     tenantId: req.auth.tenantId,
     paymentId: req.params.paymentId,
     forceReplay,
   });
   sendSuccess(res, result);
-})));
+})),
+);

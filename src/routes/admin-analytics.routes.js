@@ -5,6 +5,11 @@ import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { cursorQuery, exportBody } from "../validators/common.validators.js";
+import {
+  bulkMessagingSchemeIdsBody,
+  reportExportAliasBody,
+  reportExportAliasParam,
+} from "../validators/admin-mutation.validators.js";
 import { sendSuccess } from "../lib/response.js";
 import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
@@ -32,7 +37,22 @@ adminAnalyticsRouter.get(
     asyncHandler(controller.report),
   ),
 );
-adminAnalyticsRouter.post("/reports/:reportKey/export", ...guarded(Permission.REPORT_EXPORT, idempotent, asyncHandler(async (req, res) => { req.body = { type: req.params.reportKey, filters: req.body.filters ?? req.query, format: req.body.format ?? "CSV" }; return controller.createExport(req, res); })));
+adminAnalyticsRouter.post(
+  "/reports/:reportKey/export",
+  ...guarded(
+    Permission.REPORT_EXPORT,
+    validate({ params: reportExportAliasParam, body: reportExportAliasBody }),
+    idempotent,
+    asyncHandler(async (req, res) => {
+      req.body = {
+        type: req.params.reportKey,
+        filters: req.body.filters ?? {},
+        format: req.body.format ?? "CSV",
+      };
+      return controller.createExport(req, res);
+    }),
+  ),
+);
 adminAnalyticsRouter.get(
   "/dues",
   ...guarded(
@@ -59,6 +79,7 @@ adminAnalyticsRouter.post(
   "/dues/bulk-send-links",
   ...guarded(
     Permission.MESSAGE_SEND,
+    validate({ body: bulkMessagingSchemeIdsBody }),
     idempotent,
     asyncHandler(async (req, res) => {
       const data = await (
@@ -72,6 +93,7 @@ adminAnalyticsRouter.post(
   "/overdues/bulk-send-reminders",
   ...guarded(
     Permission.MESSAGE_SEND,
+    validate({ body: bulkMessagingSchemeIdsBody }),
     idempotent,
     asyncHandler(async (req, res) => {
       const data = await (

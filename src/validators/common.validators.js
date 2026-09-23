@@ -590,5 +590,18 @@ export const publicPaymentInitiateBody = z.object({
   redirectUrl: z.string().url(),
   mobile: mobile.optional(),
 });
-export const uploadBody = z.object({ purpose: enumSchema(E.UploadPurpose), fileName: z.string().min(1).max(255), contentType: z.string(), sizeBytes: z.number().int().positive() });
-export const exportBody = z.object({ type: enumSchema(E.ExportType), filters: z.record(z.string(), z.unknown()).default({}), format: z.enum(["CSV", "PDF"]).default("CSV") });
+export const uploadBody = z
+  .object({
+    purpose: enumSchema(E.UploadPurpose),
+    fileName: z.string().min(1).max(255),
+    contentType: z.string().min(1).max(120),
+    sizeBytes: z.number().int().positive(),
+  })
+  .strict();
+export const exportBody = z
+  .object({
+    type: enumSchema(E.ExportType),
+    filters: z.record(z.string(), z.unknown()).default({}),
+    format: z.enum(["CSV", "PDF"]).default("CSV"),
+  })
+  .strict();

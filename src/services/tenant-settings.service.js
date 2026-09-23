@@ -595,8 +595,7 @@ export async function patchSettingsProfile(req) {
     const tenant = await Tenant.findById(req.auth.tenantId).session(session);
     if (!tenant) throw errors.notFound("Tenant");
     enforceVersion(tenant, req.body.expectedVersion);
-    const patch = { ...req.body };
-    delete patch.expectedVersion;
+    const patch = req.body;
 
     if (patch.businessName != null) tenant.name = String(patch.businessName).trim();
     if (patch.displayName != null) tenant.displayName = String(patch.displayName).trim();
@@ -645,18 +644,16 @@ export async function patchSettingsBranding(req) {
       await validateUploadReferences({ req, uploadIds: [req.body.logoUploadId], purpose: UploadPurpose.TENANT_LOGO, session, subjectId: req.auth.id, entityType: "TENANT_BRANDING", entityId: tenant._id });
     }
     const patch = { ...req.body };
-    delete patch.expectedVersion;
-    if (patch.secondaryColor != null) {
-      patch.accentColor = patch.secondaryColor;
-      delete patch.secondaryColor;
-    }
-    if (patch.appDisplayName != null) {
-      patch.displayName = patch.appDisplayName;
-      delete patch.appDisplayName;
-    }
+    const brandingPatch = {};
+    if (patch.logoUploadId != null) brandingPatch.logoUploadId = patch.logoUploadId;
+    if (patch.primaryColor != null) brandingPatch.primaryColor = patch.primaryColor;
+    if (patch.accentColor != null) brandingPatch.accentColor = patch.accentColor;
+    if (patch.secondaryColor != null) brandingPatch.accentColor = patch.secondaryColor;
+    if (patch.displayName != null) brandingPatch.displayName = patch.displayName;
+    if (patch.appDisplayName != null) brandingPatch.displayName = patch.appDisplayName;
     tenant.branding = {
       ...(tenant.branding?.toObject?.() ?? tenant.branding ?? {}),
-      ...patch,
+      ...brandingPatch,
     };
     tenant.version += 1;
     await tenant.save({ session });
