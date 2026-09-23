@@ -487,9 +487,9 @@ async function findStaffForPerformance(req) {
   return user;
 }
 
-async function loadCustomerMap(customerIds) {
+async function loadCustomerMap(tenantId, customerIds) {
   if (!customerIds.length) return new Map();
-  const rows = await Customer.find({ _id: { $in: customerIds } })
+  const rows = await Customer.find({ tenantId, _id: { $in: customerIds } })
     .select("_id name")
     .lean();
   return new Map(rows.map((row) => [row._id, row]));
@@ -837,6 +837,7 @@ export async function listStaffPerformanceSection(req) {
         "_id receiptNumber amountPaise mode source paidAt customerId schemeId",
     });
     const customerMap = await loadCustomerMap(
+      tenantId,
       page.data.map((row) => row.customerId).filter(Boolean),
     );
     const schemeMap = await loadSchemeEnrollmentMap(
@@ -857,6 +858,7 @@ export async function listStaffPerformanceSection(req) {
       projection: "_id enrollmentNumber customerId planId createdAt status",
     });
     const customerMap = await loadCustomerMap(
+      tenantId,
       page.data.map((row) => row.customerId).filter(Boolean),
     );
     const planMap = await loadPlanMap(
@@ -1124,6 +1126,7 @@ export async function listBranchPerformanceSection(req) {
         "_id receiptNumber amountPaise mode source paidAt customerId collectedBy schemeId",
     });
     const customerMap = await loadCustomerMap(
+      tenantId,
       page.data.map((row) => row.customerId).filter(Boolean),
     );
     const staffMap = await loadStaffMap(
@@ -1152,6 +1155,7 @@ export async function listBranchPerformanceSection(req) {
       projection: "_id enrollmentNumber customerId planId createdAt status",
     });
     const customerMap = await loadCustomerMap(
+      tenantId,
       page.data.map((row) => row.customerId).filter(Boolean),
     );
     const planMap = await loadPlanMap(

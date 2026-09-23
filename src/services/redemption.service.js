@@ -526,7 +526,7 @@ export async function settlementPreview(req, closureType) {
     note:
       mode === RedemptionMode.GOLD_HANDOVER &&
       scheme.valueBasis !== ValueBasis.GOLD_WEIGHT
-        ? "Available when plan is gold-weight based"
+        ? "Cash savings can be taken as gold at the 22K rate on the handover date; weight is calculated at completion."
         : mode === RedemptionMode.GOLD_HANDOVER
           ? "Gold weight is handed over at completion; rupee value uses the gold rate on the handover date."
           : mode === RedemptionMode.CASH && scheme.valueBasis === ValueBasis.GOLD_WEIGHT
