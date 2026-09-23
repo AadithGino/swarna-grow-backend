@@ -87,6 +87,20 @@ export async function reopenOperationalAlert({
   const updated = await updateOpenOperationalAlert(base, fields, session);
   if (updated) return;
 
+  const resolved = await Alert.findOne({ ...base, status: AlertStatus.RESOLVED })
+    .sort({ resolvedAt: -1, updatedAt: -1 })
+    .select("_id")
+    .session(session ?? null)
+    .lean();
+  if (resolved) {
+    const reopened = await Alert.findOneAndUpdate(
+      { _id: resolved._id, status: AlertStatus.RESOLVED },
+      { $set: { ...fields, status: AlertStatus.OPEN } },
+      { new: true, runValidators: true, ...(session ? { session } : {}) },
+    );
+    if (reopened) return;
+  }
+
   try {
     const createOpts = session ? { session } : undefined;
     await Alert.create(
@@ -104,7 +118,9 @@ export async function reopenOperationalAlert({
     if (!isDuplicateKeyError(error)) throw error;
     const open = await Alert.findOne({ ...base, status: AlertStatus.OPEN }).session(session ?? null);
     if (!open) {
-      throw new Error("Operational alert duplicate key but no OPEN row found after concurrent reopen.");
+      throw new Error("Operational alert duplicate key but no OPEN row found after concurrent reopen.", {
+        cause: error,
+      });
     }
     await updateOpenOperationalAlert(base, fields, session);
   }

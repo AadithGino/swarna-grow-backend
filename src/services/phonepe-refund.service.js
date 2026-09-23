@@ -129,7 +129,7 @@ async function loadOrCreatePaymentRefund({
   idempotencyKey,
   providerRefundId,
   validatedAmount,
-  kind,
+  kind: _kind,
   payload,
 }) {
   let refund = await PaymentRefund.findOne({
