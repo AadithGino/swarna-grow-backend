@@ -1,30 +1,31 @@
-# Swarnagrow backend — controlled V1 release candidate manifest
+# Swarnagrow backend — V1 release candidate manifest
 
-## Git commit
+## Git commit (cut)
 
-Record the exact commit after checkout:
+**Branch:** `chore/production-hardening-phase-0`
+
+Record at archive time:
 
 ```bash
 git rev-parse HEAD
 ```
 
-Release-blocker round (Phases 1–8 + admin/refund/KYC pass) is on branch `chore/production-hardening-phase-0`.
-Record `git rev-parse HEAD` at cut time (includes commits through release-blocker phases).
+After the corrective pass (KYC default, mobile patch, payment summary, gold DTO, reversed history, test harness): use the commit tagged in the release zip filename.
 
-## Test counts
-
-- Phase 6.1 targeted tests: 17 (gold accrual report, plan benefit liability, maturity projection).
-- Full regression gate: run once after Phase 6.1 production changes:
+## Full regression gate
 
 ```bash
+npm run check
 npm test
 ```
 
-Document the final pass/fail count from that single run in your release notes.
+**Expected (2026-09-24 gate):** 1083 tests, 0 fail, 0 skip (includes corrective-pass regression tests). Run twice back-to-back before shipping; both must be green.
+
+Test DB: `tests/helpers/db.js` calls `model.syncIndexes()` once after MongoMemory replSet connect so unique-index tests are deterministic.
 
 ## Build date
 
-2026-09-23 (IST)
+2026-09-24 (IST)
 
 ## Deployment commands
 
@@ -36,18 +37,24 @@ node --env-file=.env scripts/sync-indexes.js --apply
 # start API / workers per environment runbook
 ```
 
+After pulling the KYC schema change (no `operations.kycMandatory` default), reset or reseed disposable dev tenants so legacy `settings.requireKycForEnrolment` is not masked by stale `kycMandatory: false`.
+
 ## Release archive
 
-Produce from tracked Git content only (no working-tree folder zip):
+Tracked Git content only:
 
 ```bash
 git archive --format=zip --output swarnagrow-backend-v1-rc.zip HEAD
 ```
 
-Verify the archive excludes local artifacts (`fix.md`, `.env`, `node_modules`, `.git`, keys, coverage, logs).
+Verify the archive excludes local artifacts (`.env`, `node_modules`, `.git`, keys, coverage, logs, uncommitted WIP).
 
-## Phase 6.1 corrections (summary)
+## Corrective pass (summary)
 
-- Gold accrual report: net INSTALLMENT/FREE_WINDOW payments minus REVERSAL; weighted avg rate; `moneyPaiseFromWeightMg` liability.
-- Plan stats benefit liability: per-scheme `computeConfiguredBenefitPaise` from ledger net paid; MATURED unredeemed included; REDEEMED/CLOSED excluded.
-- Maturity projection: shared helper + service; no inline float math; flexible ONE_FREE_INSTALLMENT returns zero benefit.
+| Area | Fix |
+|------|-----|
+| KYC | Drop Mongoose default on `operations.kycMandatory`; resolver honours `settings.requireKycForEnrolment`. |
+| Customers | Admin/staff PATCH may change mobile; app self-service profile cannot. |
+| Payment summary | Distinct net collected, gross successful, refunded, fully reversed (gross), pending, failed. |
+| Gold DTO | Primary `goldAccrual` is net weight; optional `grossGoldAccrual`. |
+| History | Reversed payments visible in scheme history / statement rows; totals remain net-only. |
