@@ -51,6 +51,13 @@ export function appErrorFromDuplicateKey(error) {
     });
   }
 
+  if (keyValue.code != null || indexName.includes("tenantId_1_code")) {
+    details.push({
+      field: "body.code",
+      message: "This branch code is already in use for this jewellery.",
+    });
+  }
+
   if (
     !details.length &&
     indexName.includes("passbookNumber") &&
@@ -65,11 +72,13 @@ export function appErrorFromDuplicateKey(error) {
 
   const code = details.some((d) => d.field === "body.mobile")
     ? "CUSTOMER_MOBILE_EXISTS"
-    : details.some((d) => d.field === "body.email")
-      ? "CUSTOMER_EMAIL_EXISTS"
-      : details.some((d) => d.field === "body.passbookNumber")
-        ? "CUSTOMER_PASSBOOK_EXISTS"
-        : "DUPLICATE_RESOURCE";
+    : details.some((d) => d.field === "body.code")
+      ? "BRANCH_CODE_EXISTS"
+      : details.some((d) => d.field === "body.email")
+        ? "CUSTOMER_EMAIL_EXISTS"
+        : details.some((d) => d.field === "body.passbookNumber")
+          ? "CUSTOMER_PASSBOOK_EXISTS"
+          : "DUPLICATE_RESOURCE";
 
   const message =
     details.length === 1

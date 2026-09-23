@@ -506,6 +506,43 @@ export const tenantOperationsPatchBody = z
   })
   .strict();
 
+const branchAddressBody = z
+  .object({
+    line1: z.string().trim().min(1).max(500).optional(),
+    city: z.string().trim().min(1).max(120).optional(),
+    pincode: z.string().trim().min(1).max(12).optional(),
+  })
+  .strict();
+
+export const branchCreateBody = z
+  .object({
+    code: z
+      .string()
+      .trim()
+      .min(1)
+      .max(32)
+      .transform((value) => value.toUpperCase()),
+    name: z.string().trim().min(1).max(160),
+    address: z.union([z.string().trim().min(1).max(500), branchAddressBody]).optional(),
+    email: z.string().email().optional(),
+    contactNumber: mobile.optional(),
+    mobile: mobile.optional(),
+    isHeadOffice: z.boolean().optional(),
+  })
+  .strict();
+
+export const branchUpdateBody = z
+  .object({
+    name: z.string().trim().min(1).max(160).optional(),
+    address: z.union([z.string().trim().min(1).max(500), branchAddressBody]).optional(),
+    email: z.string().email().optional(),
+    contactNumber: mobile.optional(),
+    mobile: mobile.optional(),
+    isHeadOffice: z.boolean().optional(),
+    expectedVersion: z.number().int().min(0).optional(),
+  })
+  .strict();
+
 export const goldRateBody = z.object({
   branchId: z.string().nullable().optional(),
   ratePerGramPaise: positivePaise,

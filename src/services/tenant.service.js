@@ -77,6 +77,21 @@ const OPEN_SCHEME_STATUSES = [
   SchemeStatus.DEFAULTED,
 ];
 
+function branchAddressForCreate(address) {
+  if (address == null) return undefined;
+  if (typeof address === "string") {
+    const line1 = address.trim();
+    return line1 ? { line1 } : undefined;
+  }
+  if (typeof address !== "object" || Array.isArray(address)) return undefined;
+  const next = {};
+  for (const key of ["line1", "city", "pincode"]) {
+    const value = address[key];
+    if (typeof value === "string" && value.trim()) next[key] = value.trim();
+  }
+  return Object.keys(next).length ? next : undefined;
+}
+
 function normalizeBranchAddress(branch) {
   const address = branch?.address;
   if (address && typeof address === "object") {
@@ -1259,13 +1274,37 @@ export async function updateTenantSettings(req, section, patch) {
   });
 }
 export async function createBranch(req) {
+  const {
+    code,
+    name,
+    email,
+    contactNumber,
+    mobile: mobileInput,
+    isHeadOffice,
+    address: addressInput,
+  } = req.body;
+  const address = branchAddressForCreate(addressInput);
+  const contact = contactNumber ?? mobileInput;
   return withTransaction(async (session) => {
     const tenant = await Tenant.findById(req.auth.tenantId).session(session);
     const used = await Branch.countDocuments({ tenantId: tenant._id, active: true }).session(session);
     await assertWithinLimit({ tenant, limitKey: "branches", used, errorCode: "LIMIT_BRANCHES", label: "branches" });
+    const branchId = createId("branch");
+    const tenantId = req.auth.tenantId;
     const branch = (
       await Branch.create(
-        [{ _id: createId("branch"), tenantId: req.auth.tenantId, ...req.body }],
+        [
+          {
+            _id: branchId,
+            tenantId,
+            code,
+            name: String(name).trim(),
+            ...(email != null ? { email } : {}),
+            ...(contact != null ? { contactNumber: contact, mobile: contact } : {}),
+            ...(address ? { address } : {}),
+            ...(isHeadOffice != null ? { isHeadOffice } : {}),
+          },
+        ],
         { session },
       )
     )[0];
@@ -1471,34 +1510,36 @@ export async function updateBranch(req) {
       409,
     );
   }
-  const patch = { ...req.body };
-  delete patch.expectedVersion;
-  delete patch.code;
-  if (patch.name != null)
-    branch.name = String(patch.name).trim() || branch.name;
-  if (patch.email != null) branch.email = patch.email;
-  if (patch.contactNumber != null) {
-    branch.contactNumber = patch.contactNumber;
-    branch.mobile = patch.contactNumber;
-  } else if (patch.mobile != null) {
-    branch.mobile = patch.mobile;
-    branch.contactNumber = patch.mobile;
+  const {
+    name,
+    email,
+    contactNumber,
+    mobile: mobileInput,
+    isHeadOffice,
+    address: addressInput,
+  } = req.body;
+  if (name != null) branch.name = String(name).trim() || branch.name;
+  if (email != null) branch.email = email;
+  const contact = contactNumber ?? mobileInput;
+  if (contact != null) {
+    branch.contactNumber = contact;
+    branch.mobile = contact;
   }
-  if (patch.isHeadOffice != null) branch.isHeadOffice = patch.isHeadOffice;
-  if (patch.address != null) {
+  if (isHeadOffice != null) branch.isHeadOffice = isHeadOffice;
+  if (addressInput != null) {
     const prev = branch.address?.toObject?.() ?? branch.address ?? {};
-    if (typeof patch.address === "object") {
+    if (typeof addressInput === "object") {
       branch.address = {
         line1:
-          patch.address.line1 !== undefined ? patch.address.line1 : prev.line1,
-        city: patch.address.city !== undefined ? patch.address.city : prev.city,
+          addressInput.line1 !== undefined ? addressInput.line1 : prev.line1,
+        city: addressInput.city !== undefined ? addressInput.city : prev.city,
         pincode:
-          patch.address.pincode !== undefined
-            ? patch.address.pincode
+          addressInput.pincode !== undefined
+            ? addressInput.pincode
             : prev.pincode,
       };
-    } else if (typeof patch.address === "string") {
-      branch.address = { ...prev, line1: patch.address };
+    } else if (typeof addressInput === "string") {
+      branch.address = { ...prev, line1: addressInput };
     }
   }
   branch.version += 1;

@@ -7,6 +7,8 @@ import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import {
+  branchCreateBody,
+  branchUpdateBody,
   goldRateBody,
   tenantOperationsPatchBody,
   uploadBody,
@@ -30,7 +32,15 @@ adminConfigRouter.patch(
   ),
 );
 adminConfigRouter.get("/branches", ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branches)));
-adminConfigRouter.post("/branches", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.createBranch)));
+adminConfigRouter.post(
+  "/branches",
+  ...guarded(
+    Permission.BRANCH_WRITE,
+    validate({ body: branchCreateBody }),
+    idempotent,
+    asyncHandler(controller.createBranch),
+  ),
+);
 adminConfigRouter.get(
   "/branches/:branchId/performance/summary",
   ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branchPerformanceSummary)),
@@ -40,7 +50,15 @@ adminConfigRouter.get(
   ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branchPerformanceSection)),
 );
 adminConfigRouter.get("/branches/:branchId", ...guarded(Permission.BRANCH_READ, asyncHandler(controller.branchDetail)));
-adminConfigRouter.patch("/branches/:branchId", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.updateBranch)));
+adminConfigRouter.patch(
+  "/branches/:branchId",
+  ...guarded(
+    Permission.BRANCH_WRITE,
+    validate({ body: branchUpdateBody }),
+    idempotent,
+    asyncHandler(controller.updateBranch),
+  ),
+);
 adminConfigRouter.post("/branches/:branchId/deactivate", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.setBranchActive(false))));
 adminConfigRouter.post("/branches/:branchId/activate", ...guarded(Permission.BRANCH_WRITE, idempotent, asyncHandler(controller.setBranchActive(true))));
 adminConfigRouter.get("/access/summary", ...guarded(Permission.STAFF_READ, asyncHandler(controller.accessSummary)));
