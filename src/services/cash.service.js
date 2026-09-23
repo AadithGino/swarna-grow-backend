@@ -10,6 +10,10 @@ import { now } from "../lib/date.js";
 import { dateMatch, effectiveScope } from "../lib/query-filters.js";
 import { cashPaymentBranchMatch } from "../lib/payment-scope.js";
 import { branchDto, loadBranchMap, loadUserMap, userDto } from "../lib/relation-maps.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../lib/payment-net-aggregation.js";
 
 async function sumAggregate(model, pipeline, session) {
   const query = model.aggregate(pipeline);
@@ -19,13 +23,23 @@ async function sumAggregate(model, pipeline, session) {
 }
 
 export async function cashBalance({ tenantId, branchId, staffId, paidAtRange, handoverSettledRange, adjustmentRange }, session) {
-  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...cashPaymentBranchMatch(branchId, staffId) };
+  const paymentMatch = {
+    tenantId,
+    mode: PaymentMode.CASH,
+    ...netCollectionStatusFilter(),
+    collectedBy: staffId,
+    ...cashPaymentBranchMatch(branchId, staffId),
+  };
   if (paidAtRange) paymentMatch.paidAt = paidAtRange;
   const handoverBase = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
   if (handoverSettledRange) handoverBase.settledAt = handoverSettledRange;
   const adjustmentMatch = { tenantId, staffId, ...(branchId ? { branchId } : {}) };
   if (adjustmentRange) adjustmentMatch.createdAt = adjustmentRange;
-  const cashCollectedPaise = await sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
+  const cashCollectedPaise = await sumAggregate(
+    Payment,
+    [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: sumNetAmountPaise() } }],
+    session,
+  );
   const acceptedPaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.ACCEPTED } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
   const discrepancyAcceptedPaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.DISCREPANCY } }, { $group: { _id: null, amountPaise: { $sum: { $ifNull: ["$acceptedAmountPaise", { $subtract: ["$amountPaise", { $ifNull: ["$discrepancyPaise", 0] }] }] } } } }], session);
   const cashPendingAcceptancePaise = await sumAggregate(CashHandover, [{ $match: { ...handoverBase, status: CashHandoverStatus.PENDING } }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }], session);
@@ -68,10 +82,17 @@ async function branchMap(tenantId, branchIds) {
 }
 
 async function staffCashExtras({ tenantId, branchId, staffId }) {
-  const paymentMatch = { tenantId, mode: PaymentMode.CASH, status: PaymentStatus.SUCCESS, collectedBy: staffId, ...cashPaymentBranchMatch(branchId, staffId), paidAt: { $gte: dayStart() } };
+  const paymentMatch = {
+    tenantId,
+    mode: PaymentMode.CASH,
+    ...netCollectionStatusFilter(),
+    collectedBy: staffId,
+    ...cashPaymentBranchMatch(branchId, staffId),
+    paidAt: { $gte: dayStart() },
+  };
   const handoverMatch = { tenantId, staffId, ...(branchId ? { branchId } : {}), status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY, CashHandoverStatus.REJECTED] } };
   const [collectedToday, lastHandover] = await Promise.all([
-    sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } }]),
+    sumAggregate(Payment, [{ $match: paymentMatch }, { $group: { _id: null, amountPaise: sumNetAmountPaise() } }]),
     CashHandover.findOne(handoverMatch).sort({ settledAt: -1, submittedAt: -1 }).select("settledAt submittedAt").lean(),
   ]);
   return { cashCollectedTodayPaise: collectedToday, lastHandoverAt: lastHandover?.settledAt ?? lastHandover?.submittedAt ?? null };

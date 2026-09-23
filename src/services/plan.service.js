@@ -1,4 +1,4 @@
-import { AuditEntityType, PaymentPattern, PaymentStatus, SchemePlanStatus } from "../constants/enums.js";
+import { AuditEntityType, PaymentPattern, SchemePlanStatus } from "../constants/enums.js";
 import { LedgerEntry, Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
 import { assertFeatureEntitled, assertWithinLimit } from "../lib/tenant-limits.js";
 import { createId } from "../lib/ids.js";
@@ -23,6 +23,10 @@ import {
   maturityDateFromCalendarCycles,
 } from "../lib/calendar-cycle.js";
 import { buildSchedulePreview, resolveFixedSchemeMaturityDate } from "./schedule.service.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../lib/payment-net-aggregation.js";
 
 const ACTIVE_SCHEME_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED"];
 const PLAN_BENEFIT_LIABILITY_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED", "MATURED"];
@@ -192,10 +196,10 @@ async function planCollectedPaise(tenantId, planId) {
       $match: {
         tenantId,
         schemeId: { $in: schemeIds.map((row) => row._id) },
-        status: PaymentStatus.SUCCESS,
+        ...netCollectionStatusFilter(),
       },
     },
-    { $group: { _id: null, total: { $sum: "$amountPaise" } } },
+    { $group: { _id: null, total: sumNetAmountPaise() } },
   ]);
   return rows[0]?.total ?? 0;
 }

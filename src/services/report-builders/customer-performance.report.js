@@ -9,6 +9,10 @@ import {
   reportDataScope,
   reportTrendGroupBy,
 } from "./report-envelope.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../../lib/payment-net-aggregation.js";
 import { buildCustomerLedgerDetail } from "./customer-ledger.report.js";
 
 const COMPARISON_COLUMNS = [
@@ -75,14 +79,14 @@ export async function buildCustomerPerformanceReport(req) {
       {
         $match: {
           ...customerScope,
-          status: "SUCCESS",
+          ...netCollectionStatusFilter(),
           ...dateMatch("paidAt", { from, to }),
         },
       },
       {
         $group: {
           _id: "$customerId",
-          amountPaise: { $sum: "$amountPaise" },
+          amountPaise: sumNetAmountPaise(),
           count: { $sum: 1 },
         },
       },
@@ -130,7 +134,7 @@ export async function buildCustomerPerformanceReport(req) {
       {
         $match: {
           ...customerScope,
-          status: "SUCCESS",
+          ...netCollectionStatusFilter(),
           ...dateMatch("paidAt", { from, to }),
         },
       },
@@ -143,7 +147,7 @@ export async function buildCustomerPerformanceReport(req) {
               timezone: "Asia/Kolkata",
             },
           },
-          amountPaise: { $sum: "$amountPaise" },
+          amountPaise: sumNetAmountPaise(),
         },
       },
       { $sort: { _id: 1 } },

@@ -1,4 +1,5 @@
 import { Customer, Payment, Redemption, Scheme } from "../models/index.js";
+import { netCollectionStatusFilter } from "../lib/payment-net-aggregation.js";
 import { fuzzyMongoFilter } from "../lib/query-filters.js";
 
 const MIN_QUERY_LEN = 2;
@@ -113,10 +114,10 @@ export async function globalSearch(req) {
       ? Payment.find({
           tenantId,
           ...branch,
-          status: "SUCCESS",
+          ...netCollectionStatusFilter(),
           $or: paymentOr,
         })
-          .select("_id receiptNumber amountPaise paidAt customerId schemeId")
+          .select("_id receiptNumber amountPaise refundedAmountPaise paidAt customerId schemeId")
           .sort({ paidAt: -1 })
           .limit(limit)
           .lean()

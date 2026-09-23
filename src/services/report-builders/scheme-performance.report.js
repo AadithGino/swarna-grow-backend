@@ -11,6 +11,10 @@ import {
   reportDataScope,
   reportTrendGroupBy,
 } from "./report-envelope.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../../lib/payment-net-aggregation.js";
 
 const COMPARISON_COLUMNS = [
   { key: "label", label: "Scheme plan", type: "text", sticky: true, sortable: true },
@@ -76,7 +80,7 @@ export async function buildSchemePerformanceReport(req) {
   const planSchemeIds = schemeIdsForPayments.map((s) => s._id);
   const paymentMatch = {
     tenantId,
-    status: "SUCCESS",
+    ...netCollectionStatusFilter(),
     schemeId: { $in: planSchemeIds.length ? planSchemeIds : ["__none__"] },
     ...dateMatch("paidAt", { from, to }),
     ...(scope.branchId ? { branchId: scope.branchId } : {}),
@@ -98,7 +102,7 @@ export async function buildSchemePerformanceReport(req) {
         {
           $group: {
             _id: "$scheme.planId",
-            amountPaise: { $sum: "$amountPaise" },
+            amountPaise: sumNetAmountPaise(),
             count: { $sum: 1 },
           },
         },
@@ -159,7 +163,7 @@ export async function buildSchemePerformanceReport(req) {
                   timezone: "Asia/Kolkata",
                 },
               },
-              amountPaise: { $sum: "$amountPaise" },
+              amountPaise: sumNetAmountPaise(),
             },
           },
           { $sort: { _id: 1 } },
@@ -201,7 +205,7 @@ export async function buildSchemePerformanceReport(req) {
           {
             $group: {
               _id: "$branchId",
-              amountPaise: { $sum: "$amountPaise" },
+              amountPaise: sumNetAmountPaise(),
             },
           },
         ]),

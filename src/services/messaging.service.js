@@ -339,15 +339,18 @@ export async function shareCustomerStatement(req) {
   if (customer.whatsappOptedOutAt) {
     throw errors.business("WHATSAPP_OPTED_OUT", "The customer has opted out of WhatsApp messages.");
   }
+  const { netAmountPaiseFromDoc, netCollectionStatusFilter } = await import(
+    "../lib/payment-net-aggregation.js"
+  );
   const payments = await Payment.find({
     tenantId: req.auth.tenantId,
     customerId: customer._id,
-    status: "SUCCESS",
+    ...netCollectionStatusFilter(),
   })
     .sort({ paidAt: -1 })
     .limit(100)
     .lean();
-  const totalPaise = payments.reduce((sum, row) => sum + (row.amountPaise ?? 0), 0);
+  const totalPaise = payments.reduce((sum, row) => sum + netAmountPaiseFromDoc(row), 0);
   return queueMessage(req, {
     branchId: customer.branchId,
     customerId: customer._id,

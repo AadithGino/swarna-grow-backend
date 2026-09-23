@@ -11,6 +11,11 @@ import {
   reportTrendGroupBy,
   schemeIdsForPlan,
 } from "./report-envelope.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+  sumNetWeightMg,
+} from "../../lib/payment-net-aggregation.js";
 
 const MODE_ROW_KEY = {
   CASH: "cash",
@@ -53,7 +58,7 @@ export async function buildCollectionReport(req) {
   const schemeIds = await schemeIdsForPlan(scope, req.query.planId);
   const match = {
     ...scope,
-    status: "SUCCESS",
+    ...netCollectionStatusFilter(),
     ...dateMatch("paidAt", { from, to }),
     ...(schemeIds ? { schemeId: { $in: schemeIds } } : {}),
   };
@@ -64,9 +69,9 @@ export async function buildCollectionReport(req) {
       {
         $group: {
           _id: { branchId: "$branchId", mode: "$mode" },
-          amountPaise: { $sum: "$amountPaise" },
+          amountPaise: sumNetAmountPaise(),
           count: { $sum: 1 },
-          weightMg: { $sum: { $ifNull: ["$weightMg", 0] } },
+          weightMg: sumNetWeightMg(),
         },
       },
     ]),
@@ -77,7 +82,7 @@ export async function buildCollectionReport(req) {
           _id: {
             $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" },
           },
-          amountPaise: { $sum: "$amountPaise" },
+          amountPaise: sumNetAmountPaise(),
         },
       },
       { $sort: { _id: 1 } },

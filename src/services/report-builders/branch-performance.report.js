@@ -11,6 +11,10 @@ import {
   reportDataScope,
   reportTrendGroupBy,
 } from "./report-envelope.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../../lib/payment-net-aggregation.js";
 
 const COMPARISON_COLUMNS = [
   { key: "label", label: "Showroom", type: "text", sticky: true, sortable: true },
@@ -81,14 +85,14 @@ export async function buildBranchPerformanceReport(req) {
         {
           $match: {
             ...aggregateScope,
-            status: "SUCCESS",
+            ...netCollectionStatusFilter(),
             ...dateMatch("paidAt", { from, to }),
           },
         },
         {
           $group: {
             _id: "$branchId",
-            amountPaise: { $sum: "$amountPaise" },
+            amountPaise: sumNetAmountPaise(),
             count: { $sum: 1 },
           },
         },
@@ -130,7 +134,7 @@ export async function buildBranchPerformanceReport(req) {
           {
             $match: {
               ...branchScope,
-              status: "SUCCESS",
+              ...netCollectionStatusFilter(),
               ...dateMatch("paidAt", { from, to }),
             },
           },
@@ -143,7 +147,7 @@ export async function buildBranchPerformanceReport(req) {
                   timezone: "Asia/Kolkata",
                 },
               },
-              amountPaise: { $sum: "$amountPaise" },
+              amountPaise: sumNetAmountPaise(),
             },
           },
           { $sort: { _id: 1 } },
@@ -173,7 +177,7 @@ export async function buildBranchPerformanceReport(req) {
           {
             $match: {
               ...branchScope,
-              status: "SUCCESS",
+              ...netCollectionStatusFilter(),
               ...dateMatch("paidAt", { from, to }),
             },
           },
@@ -189,7 +193,7 @@ export async function buildBranchPerformanceReport(req) {
           {
             $group: {
               _id: "$scheme.planId",
-              amountPaise: { $sum: "$amountPaise" },
+              amountPaise: sumNetAmountPaise(),
               label: { $first: "$scheme.planSnapshot.name" },
             },
           },

@@ -17,6 +17,7 @@ import {
   reportTrendGroupBy,
   schemeInstallmentStats,
 } from "./report-envelope.js";
+import { netCollectionStatusFilter } from "../../lib/payment-net-aggregation.js";
 
 const COLUMNS = [
   { key: "customer", label: "Customer", type: "customer", sticky: true },
@@ -95,7 +96,13 @@ export async function buildOutstandingReport(req) {
       : [],
     schemeIds.length
       ? Payment.aggregate([
-        { $match: { tenantId: req.auth.tenantId, schemeId: { $in: schemeIds }, status: "SUCCESS" } },
+        {
+          $match: {
+            tenantId: req.auth.tenantId,
+            schemeId: { $in: schemeIds },
+            ...netCollectionStatusFilter(),
+          },
+        },
         { $group: { _id: "$schemeId", paidAt: { $max: "$paidAt" } } },
       ])
       : [],

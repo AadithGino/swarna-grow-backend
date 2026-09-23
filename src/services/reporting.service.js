@@ -35,6 +35,10 @@ import {
   buildCurrencyTrendPoints,
   reportTrendGroupBy,
 } from "./report-builders/report-envelope.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../lib/payment-net-aggregation.js";
 
 export { collectionSummary };
 
@@ -107,7 +111,10 @@ export async function dashboard(req) {
     openRedemptions,
     redemptions,
   ] = await Promise.all([
-    Payment.aggregate([{ $match: { ...scope, status: "SUCCESS", paidAt: { $gte: start } } }, { $group: { _id: "$mode", amountPaise: { $sum: "$amountPaise" }, count: { $sum: 1 } } }]),
+    Payment.aggregate([
+      { $match: { ...scope, ...netCollectionStatusFilter(), paidAt: { $gte: start } } },
+      { $group: { _id: "$mode", amountPaise: sumNetAmountPaise(), count: { $sum: 1 } } },
+    ]),
     Customer.countDocuments({ ...scope, status: "ACTIVE" }),
     Scheme.countDocuments({ ...scope, status: { $in: OPEN_ENROLLMENT_STATUSES } }),
     Scheme.countDocuments({ ...scope, status: { $in: ACTIVE_AND_LOCKED_STATUSES } }),
@@ -155,7 +162,7 @@ async function collectionTrendChart(req, scope) {
     {
       $match: {
         ...scope,
-        status: "SUCCESS",
+        ...netCollectionStatusFilter(),
         ...dateMatch("paidAt", range),
       },
     },
@@ -173,7 +180,7 @@ async function collectionTrendChart(req, scope) {
             $cond: [{ $eq: ["$mode", "CASH"] }, "CASH", "DIGITAL"],
           },
         },
-        value: { $sum: "$amountPaise" },
+        value: sumNetAmountPaise(),
       },
     },
     { $sort: { "_id.day": 1 } },
@@ -299,7 +306,12 @@ export async function chart(req, key) {
     };
   }
   const group = key === "collection-by-branch" ? "$branchId" : key === "collection-by-mode" ? "$mode" : { $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" } };
-  return Payment.aggregate([{ $match: { ...scope, status: "SUCCESS", ...dateMatch("paidAt", range) } }, { $group: { _id: group, value: { $sum: "$amountPaise" }, count: { $sum: 1 } } }, { $sort: { _id: 1 } }, { $project: { _id: 0, key: "$_id", label: "$_id", value: 1, count: 1 } }]);
+  return Payment.aggregate([
+    { $match: { ...scope, ...netCollectionStatusFilter(), ...dateMatch("paidAt", range) } },
+    { $group: { _id: group, value: sumNetAmountPaise(), count: { $sum: 1 } } },
+    { $sort: { _id: 1 } },
+    { $project: { _id: 0, key: "$_id", label: "$_id", value: 1, count: 1 } },
+  ]);
 }
 export async function report(req, reportKey) {
   const built = await buildAdminReport(req, reportKey);

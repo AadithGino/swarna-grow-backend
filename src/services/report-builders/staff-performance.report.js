@@ -10,6 +10,10 @@ import {
   reportDataScope,
   schemeIdsForPlan,
 } from "./report-envelope.js";
+import {
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../../lib/payment-net-aggregation.js";
 
 const COLUMNS = [
   { key: "staff", label: "Staff", type: "staff", sticky: true },
@@ -51,7 +55,7 @@ export async function buildStaffPerformanceReport(req) {
   const schemeIds = await schemeIdsForPlan(scope, req.query.planId);
   const paymentMatch = {
     tenantId,
-    status: "SUCCESS",
+    ...netCollectionStatusFilter(),
     collectedBy: { $in: staffIds },
     ...dateMatch("paidAt", { from, to }),
     ...(schemeIds ? { schemeId: { $in: schemeIds } } : {}),
@@ -60,7 +64,7 @@ export async function buildStaffPerformanceReport(req) {
   const [collections, enrolments, discrepancies] = await Promise.all([
     Payment.aggregate([
       { $match: paymentMatch },
-      { $group: { _id: "$collectedBy", amountPaise: { $sum: "$amountPaise" }, payments: { $sum: 1 } } },
+      { $group: { _id: "$collectedBy", amountPaise: sumNetAmountPaise(), payments: { $sum: 1 } } },
     ]),
     Scheme.aggregate([
       {

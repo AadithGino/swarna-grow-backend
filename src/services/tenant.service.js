@@ -4,7 +4,6 @@ import {
   CashHandoverStatus,
   CustomerStatus,
   PaymentMode,
-  PaymentStatus,
   RedemptionStatus,
   SchemeStatus,
   TenantRole,
@@ -28,6 +27,11 @@ import {
   User,
 } from "../models/index.js";
 import { createId } from "../lib/ids.js";
+import {
+  NET_COLLECTION_PAYMENT_STATUSES,
+  netCollectionStatusFilter,
+  sumNetAmountPaise,
+} from "../lib/payment-net-aggregation.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { paginate } from "../lib/pagination.js";
@@ -133,7 +137,7 @@ async function branchCashTotals(tenantId, branchId) {
     tenantId,
     branchId,
     mode: PaymentMode.CASH,
-    status: PaymentStatus.SUCCESS,
+    ...netCollectionStatusFilter(),
   };
   const [staffBalances, cashCollectedRow, handedOverRow, lastHandover] =
     await Promise.all([
@@ -144,7 +148,7 @@ async function branchCashTotals(tenantId, branchId) {
       ),
       Payment.aggregate([
         { $match: paymentCashMatch },
-        { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
+        { $group: { _id: null, amountPaise: sumNetAmountPaise() } },
       ]),
       CashHandover.aggregate([
         {
@@ -312,7 +316,7 @@ export async function listStaffForAdmin(req) {
           {
             $match: {
               tenantId: req.auth.tenantId,
-              status: PaymentStatus.SUCCESS,
+              ...netCollectionStatusFilter(),
               collectedBy: { $in: staffIds },
               paidAt: { $gte: dayStart() },
             },
@@ -320,7 +324,7 @@ export async function listStaffForAdmin(req) {
           {
             $group: {
               _id: "$collectedBy",
-              amountPaise: { $sum: "$amountPaise" },
+              amountPaise: sumNetAmountPaise(),
             },
           },
         ])
@@ -407,7 +411,7 @@ async function staffMonthPerformance(tenantId, staffId) {
   const since = monthStart();
   const paymentMatch = {
     tenantId,
-    status: PaymentStatus.SUCCESS,
+    ...netCollectionStatusFilter(),
     collectedBy: staffId,
     paidAt: { $gte: since },
   };
@@ -415,7 +419,7 @@ async function staffMonthPerformance(tenantId, staffId) {
     await Promise.all([
       Payment.aggregate([
         { $match: paymentMatch },
-        { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
+        { $group: { _id: null, amountPaise: sumNetAmountPaise() } },
       ]),
       Scheme.countDocuments({
         tenantId,
@@ -533,7 +537,7 @@ async function aggregateCollectionByMode(paymentMatch) {
     {
       $group: {
         _id: "$mode",
-        amountPaise: { $sum: "$amountPaise" },
+        amountPaise: sumNetAmountPaise(),
         count: { $sum: 1 },
       },
     },
@@ -558,7 +562,7 @@ async function aggregateCollectionTrend(paymentMatch) {
             timezone: "Asia/Kolkata",
           },
         },
-        amountPaise: { $sum: "$amountPaise" },
+        amountPaise: sumNetAmountPaise(),
         count: { $sum: 1 },
       },
     },
@@ -655,7 +659,7 @@ async function aggregateTopCollectors(paymentMatch, limit = 5) {
     {
       $group: {
         _id: "$collectedBy",
-        amountPaise: { $sum: "$amountPaise" },
+        amountPaise: sumNetAmountPaise(),
         count: { $sum: 1 },
       },
     },
@@ -722,7 +726,7 @@ export async function getStaffPerformanceSummary(req) {
   const trendGroupBy = performanceTrendGroupBy(range, req.query?.groupBy);
   const paymentMatch = {
     tenantId,
-    status: PaymentStatus.SUCCESS,
+    ...netCollectionStatusFilter(),
     collectedBy: user._id,
     ...dateMatch("paidAt", rangedQuery),
   };
@@ -748,7 +752,7 @@ export async function getStaffPerformanceSummary(req) {
       {
         $group: {
           _id: null,
-          amountPaise: { $sum: "$amountPaise" },
+          amountPaise: sumNetAmountPaise(),
           count: { $sum: 1 },
         },
       },
@@ -817,7 +821,11 @@ export async function listStaffPerformanceSection(req) {
 
   if (section === "collections") {
     const page = await paginate(Payment, {
-      scope: { tenantId, status: PaymentStatus.SUCCESS, collectedBy: user._id },
+      scope: {
+        tenantId,
+        status: { $in: NET_COLLECTION_PAYMENT_STATUSES },
+        collectedBy: user._id,
+      },
       filters: dateMatch("paidAt", rangedQuery),
       cursor: req.query.cursor,
       limit: req.query.limit,
@@ -960,11 +968,11 @@ export async function getBranchDetailForAdmin(req) {
         $match: {
           tenantId,
           branchId,
-          status: PaymentStatus.SUCCESS,
+          ...netCollectionStatusFilter(),
           paidAt: { $gte: since },
         },
       },
-      { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
+      { $group: { _id: null, amountPaise: sumNetAmountPaise() } },
     ]),
     branchTotalCashInHandPaise(tenantId, branchId),
   ]);
@@ -1009,7 +1017,7 @@ export async function getBranchPerformanceSummary(req) {
   const paymentMatch = {
     tenantId,
     branchId,
-    status: PaymentStatus.SUCCESS,
+    ...netCollectionStatusFilter(),
     ...dateMatch("paidAt", rangedQuery),
   };
   const schemeMatch = {
@@ -1034,7 +1042,7 @@ export async function getBranchPerformanceSummary(req) {
       {
         $group: {
           _id: null,
-          amountPaise: { $sum: "$amountPaise" },
+          amountPaise: sumNetAmountPaise(),
           count: { $sum: 1 },
         },
       },
@@ -1100,7 +1108,11 @@ export async function listBranchPerformanceSection(req) {
 
   if (section === "collections") {
     const page = await paginate(Payment, {
-      scope: { tenantId, branchId, status: PaymentStatus.SUCCESS },
+      scope: {
+        tenantId,
+        branchId,
+        status: { $in: NET_COLLECTION_PAYMENT_STATUSES },
+      },
       filters: dateMatch("paidAt", rangedQuery),
       cursor: req.query.cursor,
       limit: req.query.limit,
@@ -1198,7 +1210,7 @@ export async function getStaffDetailForAdmin(req) {
     ]);
   const paymentCountRow = await Payment.countDocuments({
     tenantId,
-    status: PaymentStatus.SUCCESS,
+    ...netCollectionStatusFilter(),
     collectedBy: user._id,
     paidAt: { $gte: monthStart() },
   });
