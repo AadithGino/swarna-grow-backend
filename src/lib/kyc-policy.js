@@ -31,6 +31,16 @@ export function isCustomerSelfKycEnabled(tenant) {
   return isKycMandatoryForEnrolment(tenant);
 }
 
+/** Resolves ops + legacy settings.requireKycForRedemption (schema default true). */
+export function isKycRequiredForRedemption(tenant) {
+  const ops = tenant?.operations ?? {};
+  const settings = tenant?.settings ?? {};
+  if (ops.requireKycForRedemption != null) {
+    return ops.requireKycForRedemption === true;
+  }
+  return settings.requireKycForRedemption !== false;
+}
+
 export function pickKycSubmitFields(body) {
   const picked = {};
   for (const key of ["type", "number", "numberMasked", "frontUploadId", "backUploadId"]) {

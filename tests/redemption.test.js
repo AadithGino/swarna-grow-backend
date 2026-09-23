@@ -32,6 +32,7 @@ async function seedMaturedScheme({ status = SchemeStatus.MATURED, amountPaidPais
     customerNumber: `C${Date.now()}`,
     name: "Redemption Customer",
     mobile: `+9188${String(Date.now()).slice(-8)}`,
+    kyc: { status: "VERIFIED", type: "PAN", numberMasked: "XXXX1234" },
   });
   const installments = [1, 2, 3].map((number) => ({
     number,

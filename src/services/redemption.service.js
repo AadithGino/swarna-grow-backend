@@ -42,6 +42,7 @@ import { goldRateForExactDate } from "../lib/gold-rate-lookup.js";
 import { dateMatch, effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, elapsedSchemeMonths, today } from "../lib/date.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
+import { isKycRequiredForRedemption } from "../lib/kyc-policy.js";
 import { isSystemPolicyClosureSettlement } from "../lib/system-policy-closure.js";
 import { assessMaturityContributionEligibility } from "../lib/maturity-eligibility.js";
 
@@ -50,6 +51,24 @@ const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.PENDING_APPROVAL,
   RedemptionStatus.APPROVED,
 ];
+
+async function assertRedemptionKyc(req, customerId, { session } = {}) {
+  const tenant =
+    req.tenant ?? await Tenant.findById(req.auth.tenantId).lean();
+  if (!isKycRequiredForRedemption(tenant)) return;
+  let query = Customer.findOne({
+    _id: customerId,
+    tenantId: req.auth.tenantId,
+  }).select("kyc.status");
+  if (session) query = query.session(session);
+  const customer = await query.lean();
+  if (customer?.kyc?.status !== "VERIFIED") {
+    throw errors.business(
+      "KYC_REQUIRED",
+      "Verified KYC is required before redemption.",
+    );
+  }
+}
 
 const REDEMPTION_MODE_LABELS = {
   CASH: "Cash payout",
@@ -670,6 +689,7 @@ export async function requestCustomerRedemption(req) {
       preview.blockers[0]?.message ?? "This scheme is not eligible for redemption.",
     );
   }
+  await assertRedemptionKyc(req, scheme.customerId);
   const existingOpen = await Redemption.findOne({
     tenantId: req.auth.tenantId,
     schemeId: scheme._id,
@@ -777,6 +797,7 @@ export async function initiateRedemption(
       preview.blockers[0]?.message ?? "This scheme is not eligible for closure.",
     );
   }
+  await assertRedemptionKyc(req, schemeRow.customerId);
   const modeDetails = {
     ...(req.body.modeDetails ?? {}),
     settlementSnapshot: buildSettlementSnapshotFromPreview(
@@ -946,6 +967,7 @@ export async function transitionRedemption(req, action) {
       row.approvedAt = new Date();
     }
     if (action === "complete") {
+      await assertRedemptionKyc(req, row.customerId, { session });
       row.completedBy = req.auth.id;
       row.completedAt = new Date();
       if (req.body?.mode != null && req.body.mode !== row.mode) {
