@@ -12,6 +12,7 @@ import { LedgerEntry, Payment, PaymentIntent, PaymentRefund, Scheme } from "../m
 import { writeAudit } from "./audit.service.js";
 import { nextSchemeLedgerSequence } from "./sequence.service.js";
 import { recordPhonePeRefundOutcome } from "../lib/ops-metrics.js";
+import { netAmountPaiseFromDoc } from "../lib/payment-net-aggregation.js";
 import { rebuildSchemeProjection } from "./scheme.service.js";
 
 const REFUNDABLE_PAYMENT_STATUSES = new Set([
@@ -140,10 +141,15 @@ async function loadOrCreatePaymentRefund({
   });
   if (refund) return refund;
 
-  const amountPaiseForCreate =
-    validatedAmount
-    ?? (kind === "ACCEPTED" ? payment.amountPaise : null);
-  if (!amountPaiseForCreate) return null;
+  if (!validatedAmount) return null;
+  const amountPaiseForCreate = validatedAmount;
+  if (
+    !Number.isSafeInteger(amountPaiseForCreate)
+    || amountPaiseForCreate <= 0
+    || amountPaiseForCreate > netAmountPaiseFromDoc(payment)
+  ) {
+    return null;
+  }
 
   try {
     refund = await PaymentRefund.create({
@@ -402,6 +408,28 @@ export async function processPhonePeRefundWebhook({
         metadata: { providerRefundId, paymentId: payment._id, currency: payload.currency },
       });
       return { outcome: "CURRENCY_MISMATCH" };
+    }
+  }
+
+  if (kind === "ACCEPTED" && !validatedAmount) {
+    const existingAccepted = await PaymentRefund.findOne({
+      tenantId,
+      $or: [
+        { providerEventId: idempotencyKey },
+        ...(providerRefundId ? [{ providerRefundId }] : []),
+      ],
+    }).lean();
+    if (!existingAccepted) {
+      await upsertOperationalAlert({
+        tenantId,
+        type: AlertType.GATEWAY_REFUND_AMOUNT_UNRESOLVED,
+        entityId: payment._id,
+        title: "Gateway refund amount unresolved",
+        message: "Accepted refund callback had no parseable amount and no matching initiated refund.",
+        metadata: { providerRefundId, paymentId: payment._id, providerEventId: idempotencyKey, payload },
+      });
+      recordPhonePeRefundOutcome("NEEDS_REVIEW");
+      return { outcome: "NEEDS_REVIEW" };
     }
   }
 
