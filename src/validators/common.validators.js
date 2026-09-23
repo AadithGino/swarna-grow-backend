@@ -169,20 +169,27 @@ const mobileField = z.preprocess(
   (value) => (value == null || value === "" ? value : canonicalMobile(value)),
   mobile,
 );
-export const customerBody = z.object({
-  branchId: z.string().optional(),
-  name: z.string().trim().min(2).max(120),
-  mobile: mobileField,
-  email: z
-    .union([z.string().email(), z.literal("")])
-    .optional()
-    .transform((value) => (value === "" ? undefined : value)),
-  address: customerAddressValue,
-  passbookNumber: z
-    .union([z.string().max(80), z.literal("")])
-    .optional()
-    .transform((value) => (value === "" ? undefined : value)),
-});
+export const customerBody = z
+  .object({
+    branchId: z.string().optional(),
+    name: z.string().trim().min(2).max(120),
+    mobile: mobileField,
+    email: z
+      .union([z.string().email(), z.literal("")])
+      .optional()
+      .transform((value) => (value === "" ? undefined : value)),
+    address: customerAddressValue,
+    passbookNumber: z
+      .union([z.string().max(80), z.literal("")])
+      .optional()
+      .transform((value) => (value === "" ? undefined : value)),
+  })
+  .strict();
+export const customerPatchBody = customerBody
+  .partial()
+  .omit({ mobile: true })
+  .extend({ expectedVersion: z.number().int().positive().optional() })
+  .strict();
 export const nomineeBody = z.object({ name: z.string().min(2).max(120), relationship: enumSchema(E.NomineeRelationship), mobile: mobile.optional(), address: z.string().max(1000).optional(), expectedVersion: z.number().int().positive() });
 export const nomineeVersionBody = z.object({ expectedVersion: z.number().int().positive() });
 const nullablePaise = z.number().int().safe().nonnegative().nullable().optional();
@@ -497,7 +504,6 @@ export const paymentLinkBody = z.object({
   positionVersion: z.number().int().nonnegative().nullish(),
   expiresInMinutes: z.number().int().positive().max(30).nullish(),
 });
-export const customerPatchBody = customerBody.partial().extend({ expectedVersion: z.number().int().positive().optional() });
 export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(4000) });
 export const whatsappOptBody = z.object({ optedIn: z.boolean() });
 export const kycSubmitBody = z
