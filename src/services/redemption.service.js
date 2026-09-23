@@ -130,7 +130,7 @@ function installmentsPaidCount(scheme) {
         .filter((cycle) => cycle.paidPaise > 0).length;
     }
     return (scheme.cycles ?? []).filter(
-      (cycle) => cycle.capPaise > 0 && cycle.paidPaise >= cycle.capPaise,
+      (cycle) => cycle.capPaise > 0 && (cycle.paidPaise ?? 0) > 0,
     ).length;
   }
   return (scheme.installments ?? []).filter((row) =>
@@ -341,7 +341,7 @@ export async function settlementPreview(req, closureType) {
   const requiredPaid =
     scheme.paymentPattern === "FLEXIBLE"
       ? cappedCycles.length > 0 &&
-        cappedCycles.every((cycle) => cycle.paidPaise >= cycle.capPaise)
+        assessMaturityContributionEligibility(scheme).paymentEligible
       : (scheme.installments ?? []).every((row) =>
           ["PAID", "WAIVED"].includes(row.status),
         );

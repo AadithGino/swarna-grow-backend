@@ -148,6 +148,71 @@ test("defaulted scheme with incomplete instalments stays non-mature", async () =
   assert.equal(row.status, SchemeStatus.DEFAULTED);
 });
 
+test("flexible capped cycle with partial cap consumption qualifies for maturity", () => {
+  const startDate = "2026-01-10";
+  const cycles = buildFlexibleSchemeCycleRows({
+    startDate,
+    durationMonths: 12,
+    firstInstallmentMode: "COLLECT_NOW",
+  });
+  for (let i = 6; i < 11; i += 1) {
+    cycles[i].capPaise = 100_000;
+    cycles[i].paidPaise = i === 8 ? 40_000 : 100_000;
+    cycles[i].status = "PARTIALLY_PAID";
+  }
+  const scheme = {
+    paymentPattern: "FLEXIBLE",
+    planSnapshot: {
+      paymentPattern: "FLEXIBLE",
+      durationMonths: 12,
+      installmentCount: 11,
+      flexibleRules: flexRules6_5,
+    },
+    cycles,
+  };
+  assert.equal(assessMaturityContributionEligibility(scheme).paymentEligible, true);
+});
+
+test("flexible capped cycle with zero net contribution blocks maturity", async () => {
+  const startDate = "2026-01-10";
+  const cycles = buildFlexibleSchemeCycleRows({
+    startDate,
+    durationMonths: 12,
+    firstInstallmentMode: "COLLECT_NOW",
+  });
+  for (let i = 6; i < 11; i += 1) {
+    cycles[i].capPaise = 100_000;
+    cycles[i].paidPaise = i === 10 ? 0 : 100_000;
+    cycles[i].status = i === 10 ? "UPCOMING" : "PAID";
+  }
+  const { tenant, branch } = await seedTenantUser();
+  await Scheme.create({
+    _id: createId("scheme"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerId: createId("customer"),
+    planId: createId("schemePlan"),
+    enrollmentNumber: "MAT-FLX-ZERO",
+    planSnapshot: {
+      paymentPattern: "FLEXIBLE",
+      durationMonths: 12,
+      installmentCount: 11,
+      flexibleRules: flexRules6_5,
+    },
+    valueBasis: "CASH",
+    paymentPattern: "FLEXIBLE",
+    status: SchemeStatus.LOCKED,
+    startDate,
+    maturityDate: cycles[11].expiresAt,
+    cycles,
+  });
+  const runDay = dayjs(cycles[11].expiresAt).add(1, "day").format("YYYY-MM-DD");
+  const batch = await runMaturityTransitionBatch({ today: runDay });
+  assert.equal(batch.processed, 0);
+  const row = await Scheme.findOne({ enrollmentNumber: "MAT-FLX-ZERO" }).lean();
+  assert.notEqual(row.status, SchemeStatus.MATURED);
+});
+
 test("flexible scheme with all capped cycles complete can mature", async () => {
   const startDate = "2026-01-10";
   const cycles = buildFlexibleSchemeCycleRows({
@@ -186,44 +251,6 @@ test("flexible scheme with all capped cycles complete can mature", async () => {
   assert.equal(batch.processed, 1);
 });
 
-test("flexible incomplete capped cycle blocks maturity", async () => {
-  const startDate = "2026-01-10";
-  const cycles = buildFlexibleSchemeCycleRows({
-    startDate,
-    durationMonths: 12,
-    firstInstallmentMode: "COLLECT_NOW",
-  });
-  for (let i = 6; i < 11; i += 1) {
-    cycles[i].capPaise = 100_000;
-    cycles[i].paidPaise = i === 10 ? 40_000 : 100_000;
-    cycles[i].status = i === 10 ? "PARTIALLY_PAID" : "PAID";
-  }
-  const { tenant, branch } = await seedTenantUser();
-  await Scheme.create({
-    _id: createId("scheme"),
-    tenantId: tenant._id,
-    branchId: branch._id,
-    customerId: createId("customer"),
-    planId: createId("schemePlan"),
-    enrollmentNumber: "MAT-FLX-BAD",
-    planSnapshot: {
-      paymentPattern: "FLEXIBLE",
-      durationMonths: 12,
-      installmentCount: 11,
-      flexibleRules: flexRules6_5,
-    },
-    valueBasis: "CASH",
-    paymentPattern: "FLEXIBLE",
-    status: SchemeStatus.LOCKED,
-    startDate,
-    maturityDate: cycles[11].expiresAt,
-    cycles,
-  });
-  const runDay = dayjs(cycles[11].expiresAt).add(1, "day").format("YYYY-MM-DD");
-  const batch = await runMaturityTransitionBatch({ today: runDay });
-  assert.equal(batch.processed, 0);
-});
-
 test("maturity-only final cycle is not required for contributions", () => {
   const startDate = "2026-01-10";
   const cycles = buildFlexibleSchemeCycleRows({
@@ -248,6 +275,85 @@ test("maturity-only final cycle is not required for contributions", () => {
   };
   assert.equal(assessMaturityContributionEligibility(scheme).paymentEligible, true);
   assert.equal(cycles[11].capPaise ?? 0, 0);
+});
+
+test("free-window cycles are not required for flexible maturity contributions", () => {
+  const startDate = "2026-01-10";
+  const cycles = buildFlexibleSchemeCycleRows({
+    startDate,
+    durationMonths: 12,
+    firstInstallmentMode: "COLLECT_NOW",
+  });
+  for (let i = 0; i < 6; i += 1) {
+    cycles[i].paidPaise = 0;
+    cycles[i].status = "EXPIRED";
+  }
+  for (let i = 6; i < 11; i += 1) {
+    cycles[i].capPaise = 100_000;
+    cycles[i].paidPaise = 50_000;
+    cycles[i].status = "PARTIALLY_PAID";
+  }
+  const scheme = {
+    paymentPattern: "FLEXIBLE",
+    planSnapshot: {
+      paymentPattern: "FLEXIBLE",
+      durationMonths: 12,
+      installmentCount: 11,
+      flexibleRules: flexRules6_5,
+    },
+    cycles,
+  };
+  assert.equal(assessMaturityContributionEligibility(scheme).paymentEligible, true);
+});
+
+test("flexible redemption preview allows net-positive capped cycles below cap", async () => {
+  const { tenant, branch, user } = await seedTenantUser();
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const startDate = "2026-01-10";
+  const cycles = buildFlexibleSchemeCycleRows({
+    startDate,
+    durationMonths: 12,
+    firstInstallmentMode: "COLLECT_NOW",
+  });
+  for (let i = 6; i < 11; i += 1) {
+    cycles[i].capPaise = 100_000;
+    cycles[i].paidPaise = 40_000;
+    cycles[i].status = "PARTIALLY_PAID";
+  }
+  const scheme = await Scheme.create({
+    _id: createId("scheme"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerId: customer._id,
+    planId: createId("schemePlan"),
+    enrollmentNumber: "MAT-FLX-REDEEM",
+    planSnapshot: {
+      paymentPattern: "FLEXIBLE",
+      durationMonths: 12,
+      installmentCount: 11,
+      flexibleRules: flexRules6_5,
+      redemptionRules: { allowedModes: ["CASH"], prematureClosureAllowed: false },
+    },
+    valueBasis: "CASH",
+    paymentPattern: "FLEXIBLE",
+    status: SchemeStatus.MATURED,
+    startDate,
+    maturityDate: cycles[11].expiresAt,
+    cycles,
+  });
+  const preview = await settlementPreview(
+    {
+      auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
+      scope: { tenantId: tenant._id, branchId: branch._id },
+      params: { schemeId: scheme._id },
+      body: { mode: "CASH" },
+    },
+    ClosureType.MATURITY_REDEMPTION,
+  );
+  assert.equal(
+    preview.blockers.some((b) => b.code === "MATURITY_CONTRIBUTIONS_INCOMPLETE"),
+    false,
+  );
 });
 
 test("no maturity notification when contributions incomplete", async () => {

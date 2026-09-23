@@ -72,15 +72,16 @@ function assessFlexibleMaturityContributions(scheme) {
     const cycle = cycles[index];
     const capPaise = Number(cycle?.capPaise ?? 0);
     if (capPaise <= 0) continue;
-    const paidPaise = Number(cycle?.paidPaise ?? 0);
-    if (paidPaise < capPaise) {
+    const netContributedPaise = Math.max(0, Number(cycle?.paidPaise ?? 0));
+    if (netContributedPaise <= 0) {
       return {
         paymentEligible: false,
         contributionEligible: false,
-        reason: "FLEX_CYCLE_INCOMPLETE",
-        message: "Required contribution cycles are not complete.",
+        reason: "FLEX_CYCLE_NO_NET_CONTRIBUTION",
+        message: "Each required capped cycle must have a net-positive contribution.",
         cycleIndex: index,
         cycle: cycle?.cycle ?? null,
+        netContributedPaise,
       };
     }
   }
