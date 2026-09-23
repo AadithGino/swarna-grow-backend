@@ -10,6 +10,11 @@ import {
   Tenant,
 } from "../models/index.js";
 import { errors } from "../lib/app-error.js";
+import {
+  assertCustomerProfileCompleteFields,
+  mergeCustomerProfileFields,
+  profileCompletionUpdateOps,
+} from "../lib/customer-profile-completion.js";
 import { mobileLookupVariants } from "../lib/mobile.js";
 import { customerNotificationDedupeKey } from "../lib/customer-notification-dto.js";
 import {
@@ -116,15 +121,22 @@ export async function getAppProfile(auth, tenant) {
   return profile;
 }
 
-export async function completeAppProfile(auth, body) {
-  const allowed = {};
-  for (const key of ["name", "email", "address"]) {
-    if (body[key] !== undefined) allowed[key] = body[key];
+export async function completeAppProfile(auth, body, { requireComplete = false } = {}) {
+  const existing = await Customer.findOne({ _id: auth.id, tenantId: auth.tenantId })
+    .select("-fcmTokens")
+    .lean();
+  if (!existing) throw errors.notFound("Customer");
+  const mergedFields = mergeCustomerProfileFields(existing, body);
+  if (requireComplete) {
+    assertCustomerProfileCompleteFields({ ...existing, ...mergedFields });
   }
-  allowed.profileCompletedAt = new Date();
+  const { $set, $unset } = profileCompletionUpdateOps(existing, mergedFields);
+  const update = { $inc: { version: 1 } };
+  if (Object.keys($set).length) update.$set = $set;
+  if (Object.keys($unset).length) update.$unset = $unset;
   const customer = await Customer.findOneAndUpdate(
     { _id: auth.id, tenantId: auth.tenantId },
-    { $set: allowed, $inc: { version: 1 } },
+    update,
     { new: true },
   )
     .select("-fcmTokens")

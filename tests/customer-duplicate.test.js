@@ -36,6 +36,7 @@ test("duplicate mobile within same tenant returns CUSTOMER_MOBILE_EXISTS", async
       name: "Another Person",
       mobile,
       branchId: fixture.branch._id,
+      address: "1 Test Street, City",
     })
     .expect(409);
 
@@ -64,6 +65,7 @@ test("duplicate mobile is detected when formats differ (+91 vs 10-digit)", async
       name: "Format Mismatch New",
       mobile: "9876543299",
       branchId: fixture.branch._id,
+      address: "2 Test Street, City",
     })
     .expect(409);
 
@@ -84,6 +86,7 @@ test("same mobile may exist on different tenants", async () => {
       name: "Cross Tenant OK",
       mobile,
       branchId: b.branch._id,
+      address: "3 Test Street, City",
     })
     .expect(201);
 

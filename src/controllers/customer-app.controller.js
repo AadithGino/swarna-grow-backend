@@ -17,7 +17,12 @@ export const profile = async (req, res) =>
   sendSuccess(res, await customerApp.getAppProfile(req.auth, req.tenant));
 
 export const completeProfile = async (req, res) =>
-  sendSuccess(res, await customerApp.completeAppProfile(req.auth, req.body));
+  sendSuccess(
+    res,
+    await customerApp.completeAppProfile(req.auth, req.body, {
+      requireComplete: req.method === "POST",
+    }),
+  );
 
 export const payableRange = async (req, res) =>
   sendSuccess(res, await customerApp.payableRangeForApp(req));

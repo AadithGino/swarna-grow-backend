@@ -22,6 +22,8 @@ import {
   lifetimePaidPaiseFromLedgerEntries,
 } from "../lib/customer-financial-totals.js";
 import { loadUserMap, userDto } from "../lib/relation-maps.js";
+import { normalizeCustomerAddress } from "../lib/customer-profile-completion.js";
+import { assertKycTypeAllowed, pickKycSubmitFields } from "../lib/kyc-policy.js";
 
 const CUSTOMER_LIST_SEARCH_FIELDS = ["name", "mobile", "customerNumber", "passbookNumber", "email"];
 
@@ -500,9 +502,8 @@ function buildCustomerWritePayload(body, { branchId }) {
   if (body.email != null && String(body.email).trim()) {
     payload.email = String(body.email).trim();
   }
-  if (body.address != null && String(body.address).trim()) {
-    payload.address = String(body.address).trim();
-  }
+  const address = normalizeCustomerAddress(body.address);
+  if (address) payload.address = address;
   if (body.passbookNumber != null && String(body.passbookNumber).trim()) {
     payload.passbookNumber = String(body.passbookNumber).trim();
   }
@@ -656,8 +657,10 @@ export async function updateKyc(req, verify = false) {
         throw new AppError("KYC_ALREADY_VERIFIED", "Verified KYC cannot be replaced. Contact your branch for corrections.", 409);
       }
       const { validateKycUploadReferences } = await import("./upload.service.js");
-      await validateKycUploadReferences(req, req.body, session);
-      customer.kyc = { ...req.body, status: KycStatus.SUBMITTED, submittedAt: new Date() };
+      assertKycTypeAllowed(req.tenant, req.body.type);
+      const kycFields = pickKycSubmitFields(req.body);
+      await validateKycUploadReferences(req, kycFields, session);
+      customer.kyc = { ...kycFields, status: KycStatus.SUBMITTED, submittedAt: new Date() };
     }
     customer.version += 1; await customer.save({ session }); const auditEventId = await writeAudit({ req, action: verify ? "CUSTOMER_KYC_REVIEWED" : "CUSTOMER_KYC_SUBMITTED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, before, after: customer.toObject(), session });
     const saved = customer.toObject();
@@ -721,8 +724,11 @@ export async function updateCustomer(req) {
       }
       customer.branchId = req.body.branchId;
     }
-    for (const key of ["name", "email", "address"]) {
+    for (const key of ["name", "email"]) {
       if (req.body[key] !== undefined) customer[key] = req.body[key];
+    }
+    if (req.body.address !== undefined) {
+      customer.address = normalizeCustomerAddress(req.body.address);
     }
     if (req.body.passbookNumber !== undefined) {
       const trimmed = String(req.body.passbookNumber ?? "").trim();

@@ -4,6 +4,10 @@ import { maskMobile } from "./mobile.js";
 import { buildAmountSummary, planBenefitLabel } from "./plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "./plan-amount-normalize.js";
 import { monthKey } from "./date.js";
+import {
+  customerHasRequiredProfileFields,
+  hasNonEmptyCustomerAddress,
+} from "./customer-profile-completion.js";
 
 export function withId(doc) {
   if (!doc || typeof doc !== "object") return doc;
@@ -84,12 +88,11 @@ export function otpRequestDto(payload) {
   };
 }
 
-/** True when onboarding was finished explicitly or the customer predates profileCompletedAt tracking. */
+/** True when required profile fields are present or onboarding was marked complete explicitly. */
 export function isCustomerProfileComplete(customer) {
   if (!customer) return false;
   if (customer.profileCompletedAt) return true;
-  const name = String(customer.name ?? "").trim();
-  return name.length >= 2 && name !== "Customer";
+  return customerHasRequiredProfileFields(customer);
 }
 
 export function customerProfileDto(customer, tenant, branch) {
@@ -136,12 +139,13 @@ function parseAddress(raw) {
 }
 
 function profileCompleteness(customer) {
-  const fields = ["name", "email", "address"];
-  const filled = fields.filter((key) => {
-    const v = customer[key];
-    return v != null && String(v).trim() !== "";
-  }).length;
-  return { filled, total: fields.length, complete: isCustomerProfileComplete(customer) };
+  const slots = [
+    Boolean(String(customer.name ?? "").trim() && customer.name !== "Customer"),
+    hasNonEmptyCustomerAddress(customer.address),
+    Boolean(customer.branchId),
+  ];
+  const filled = slots.filter(Boolean).length;
+  return { filled, total: slots.length, complete: isCustomerProfileComplete(customer) };
 }
 
 function kycStatusLabel(status) {

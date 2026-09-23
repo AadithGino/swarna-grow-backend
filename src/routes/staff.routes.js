@@ -14,7 +14,9 @@ import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import {
   customerBody,
+  customerPatchBody,
   customerSetPasswordBody,
+  kycSubmitBody,
   enrolBody,
   fcmDeleteBody,
   fcmTokenBody,
@@ -51,7 +53,12 @@ staffRouter.post(
 staffRouter.get("/customers/:customerId", ...guarded(Permission.CUSTOMER_READ, asyncHandler(customer.detail)));
 staffRouter.patch(
   "/customers/:customerId",
-  ...guarded(Permission.CUSTOMER_WRITE, idempotent, asyncHandler(customer.update)),
+  ...guarded(
+    Permission.CUSTOMER_WRITE,
+    validate({ body: customerPatchBody }),
+    idempotent,
+    asyncHandler(customer.update),
+  ),
 );
 staffRouter.post(
   "/customers/:customerId/set-password",
@@ -64,7 +71,12 @@ staffRouter.post(
 );
 staffRouter.put(
   "/customers/:customerId/kyc",
-  ...guarded(Permission.CUSTOMER_KYC, idempotent, asyncHandler(customer.kyc(false))),
+  ...guarded(
+    Permission.CUSTOMER_KYC,
+    validate({ body: kycSubmitBody }),
+    idempotent,
+    asyncHandler(customer.kyc(false)),
+  ),
 );
 staffRouter.get(
   "/customers/:customerId/nominee",

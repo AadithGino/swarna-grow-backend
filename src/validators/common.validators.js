@@ -10,6 +10,18 @@ const enumSchema = (enumeration) => z.enum(Object.values(enumeration));
 export const mobile = z.string().regex(/^\+?[1-9]\d{9,14}$/);
 export const paise = z.number().int().safe().nonnegative();
 export const positivePaise = z.number().int().safe().positive();
+export const customerAddressValue = z.union([
+  z.string().trim().min(3).max(1000),
+  z
+    .object({
+      line1: z.string().trim().min(1).max(200),
+      line2: z.string().trim().max(200).optional(),
+      city: z.string().trim().max(80).optional(),
+      state: z.string().trim().max(80).optional(),
+      pincode: z.string().trim().max(12).optional(),
+    })
+    .strict(),
+]);
 export const PASSWORD_PIN_MESSAGE =
   "Password must be at least 4 digits (numbers only).";
 export const passwordPolicySchema = z
@@ -67,20 +79,27 @@ export const appEnrolBody = z.object({
   payNow: z.boolean().optional(),
   redirectUrl: z.string().url().optional(),
 });
-export const appProfileCompleteBody = z.object({
-  name: z.string().min(2).max(120),
-  email: z.string().email().optional(),
-  address: z.union([
-    z.string().min(3).max(500),
-    z.object({
-      line1: z.string().min(1).max(200),
-      line2: z.string().max(200).optional(),
-      city: z.string().max(80).optional(),
-      state: z.string().max(80).optional(),
-      pincode: z.string().max(12).optional(),
-    }),
-  ]).optional(),
-});
+export const appProfileCompleteBody = z
+  .object({
+    name: z.string().trim().min(2).max(120),
+    email: z
+      .union([z.string().email(), z.literal("")])
+      .optional()
+      .transform((value) => (value === "" ? undefined : value)),
+    address: customerAddressValue,
+  })
+  .strict();
+
+export const appProfilePatchBody = z
+  .object({
+    name: z.string().trim().min(2).max(120).optional(),
+    email: z
+      .union([z.string().email(), z.literal("")])
+      .optional()
+      .transform((value) => (value === "" ? undefined : value)),
+    address: customerAddressValue.optional(),
+  })
+  .strict();
 export const customerGrievanceMessageBody = z.object({
   body: z.string().min(1).max(4000),
   attachmentUploadIds: z.array(z.string()).max(5).default([]),
@@ -158,7 +177,7 @@ export const customerBody = z.object({
     .union([z.string().email(), z.literal("")])
     .optional()
     .transform((value) => (value === "" ? undefined : value)),
-  address: z.string().max(1000).optional(),
+  address: customerAddressValue,
   passbookNumber: z
     .union([z.string().max(80), z.literal("")])
     .optional()
@@ -481,7 +500,15 @@ export const paymentLinkBody = z.object({
 export const customerPatchBody = customerBody.partial().extend({ expectedVersion: z.number().int().positive().optional() });
 export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(4000) });
 export const whatsappOptBody = z.object({ optedIn: z.boolean() });
-export const kycSubmitBody = z.object({ type: enumSchema(E.KycType), number: z.string().min(4).max(32).optional(), numberMasked: z.string().max(32).optional(), frontUploadId: z.string().optional(), backUploadId: z.string().optional() });
+export const kycSubmitBody = z
+  .object({
+    type: enumSchema(E.KycType),
+    number: z.string().min(4).max(32).optional(),
+    numberMasked: z.string().max(32).optional(),
+    frontUploadId: z.string().optional(),
+    backUploadId: z.string().optional(),
+  })
+  .strict();
 export const customerBlockBody = z.object({ reason: z.string().trim().min(3).max(500).optional() });
 export const tenantOperationsPatchBody = z
   .object({

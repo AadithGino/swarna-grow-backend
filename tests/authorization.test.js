@@ -35,7 +35,7 @@ const MATRIX = [
 
 const STAFF_MATRIX = [
   [Permission.CUSTOMER_READ, "get", "/api/v1/staff/customers"],
-  [Permission.CUSTOMER_WRITE, "post", "/api/v1/staff/customers", { name: "New", mobile: "+919811122233" }],
+  [Permission.CUSTOMER_WRITE, "post", "/api/v1/staff/customers", { name: "New", mobile: "+919811122233", address: "Staff test address" }],
   [Permission.CUSTOMER_KYC, "put", `/api/v1/staff/customers/${createId("customer")}/kyc`, {}],
   [Permission.CUSTOMER_PASSWORD_WRITE, "post", `/api/v1/staff/customers/${createId("customer")}/set-password`, { password: "1234" }],
   [Permission.PLAN_READ, "get", "/api/v1/staff/scheme-plans"],
@@ -163,7 +163,7 @@ test("COLLECTION_AGENT is forbidden on sensitive staff mutations", async () => {
   });
   const token = bearerFor(user);
   const forbidden = [
-    ["post", "/api/v1/staff/customers", { name: "New", mobile: "+919811122244" }],
+    ["post", "/api/v1/staff/customers", { name: "New", mobile: "+919811122244", address: "Blocked staff address" }],
     ["put", `/api/v1/staff/customers/${customer._id}/kyc`, {}],
     ["post", "/api/v1/staff/schemes/enrol", { customerId: customer._id, planId: createId("schemePlan") }],
     ["post", `/api/v1/staff/grievances/${createId("grievance")}/messages`, { body: "No access" }],

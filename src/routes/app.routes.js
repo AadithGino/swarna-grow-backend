@@ -10,6 +10,7 @@ import { validate } from "../middlewares/validation.middleware.js";
 import {
   appEnrolBody,
   appProfileCompleteBody,
+  appProfilePatchBody,
   cancelPaymentIntentBody,
   customerGrievanceMessageBody,
   customerRedemptionRequestBody,
@@ -55,7 +56,12 @@ appRouter.delete("/auth/devices/:deviceId", asyncHandler(auth.revokeDevice));
 
 appRouter.get("/home", asyncHandler(appCustomer.home));
 appRouter.get("/profile", asyncHandler(appCustomer.profile));
-appRouter.patch("/profile", requireCustomerAppWrite, asyncHandler(appCustomer.completeProfile));
+appRouter.patch(
+  "/profile",
+  requireCustomerAppWrite,
+  validate({ body: appProfilePatchBody }),
+  asyncHandler(appCustomer.completeProfile),
+);
 appRouter.post(
   "/profile/complete",
   requireCustomerAppWrite,
@@ -69,7 +75,8 @@ appRouter.put(
   validate({ body: kycSubmitBody }),
   idempotent,
   asyncHandler(async (req, res) => {
-    if (req.tenant?.settings?.requireKycForEnrolment !== true) {
+    const { isCustomerSelfKycEnabled } = await import("../lib/kyc-policy.js");
+    if (!isCustomerSelfKycEnabled(req.tenant)) {
       throw new AppError("KYC_NOT_ENABLED", "KYC is not enabled for this jeweller.", 403);
     }
     req.params.customerId = req.auth.id;
