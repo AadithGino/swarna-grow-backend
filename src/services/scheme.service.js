@@ -68,6 +68,7 @@ import {
   paymentNetMoneyRefs,
 } from "../lib/payment-net-aggregation.js";
 import { isKycMandatoryForEnrolment } from "../lib/kyc-policy.js";
+import { isOneActiveSchemePerCustomerEnforced } from "../lib/tenant-enrolment-policy.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { nextSequence } from "./sequence.service.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
@@ -399,7 +400,7 @@ export async function validateEnrolment(req) {
     throw errors.business("KYC_REQUIRED", "Verified KYC is required before enrolment.");
   }
   if (
-    req.tenant.settings?.oneActiveSchemePerCustomer === true
+    isOneActiveSchemePerCustomerEnforced(req.tenant)
     && await Scheme.exists({
       tenantId: req.auth.tenantId,
       customerId: customer._id,
@@ -538,7 +539,7 @@ async function lockPlanForEnrolment(session, tenantId, planId) {
 }
 
 export async function createEnrolmentInSession(req, validation, session) {
-    const oneActivePolicy = req.tenant.settings?.oneActiveSchemePerCustomer === true;
+    const oneActivePolicy = isOneActiveSchemePerCustomerEnforced(req.tenant);
     if (oneActivePolicy) {
       await serializeCustomerEnrolment(
         session,
