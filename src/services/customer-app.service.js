@@ -53,8 +53,10 @@ import {
 } from "../lib/customer-financial-totals.js";
 import { buildCustomerGoldValuation } from "../lib/customer-gold-valuation.js";
 import {
+  isPositiveNetContributionPayment,
   netAmountPaiseFromDoc,
   netCollectionStatusFilter,
+  paymentNetFieldsFromDoc,
   sumNetAmountPaise,
   sumNetWeightMg,
 } from "../lib/payment-net-aggregation.js";
@@ -304,18 +306,24 @@ export async function mapActiveSchemeCardsForCustomer(tenantId, customerId, pass
     tenantId,
     customerId,
     schemeId: { $in: schemeIds },
-    status: PaymentStatus.SUCCESS,
+    ...netCollectionStatusFilter(),
   })
     .sort({ paidAt: -1 })
     .lean();
   const recentByScheme = new Map();
   for (const payment of payments) {
+    if (!isPositiveNetContributionPayment(payment)) continue;
     const key = String(payment.schemeId);
     const list = recentByScheme.get(key) ?? [];
     if (list.length < 3) {
+      const net = paymentNetFieldsFromDoc(payment);
       list.push({
         id: payment._id,
-        amount: moneyRef(payment.amountPaise ?? 0),
+        amount: moneyRef(net.netAmountPaise),
+        grossAmount: moneyRef(net.grossAmountPaise),
+        refundedAmount: moneyRef(net.refundedAmountPaise),
+        netAmount: moneyRef(net.netAmountPaise),
+        status: payment.status,
         paidAt: payment.paidAt ?? payment.createdAt,
         receiptNumber: payment.receiptNumber ?? undefined,
       });
@@ -334,22 +342,28 @@ async function recentPaymentsForHome(auth, limit = 8) {
   const rows = await Payment.find({
     tenantId: auth.tenantId,
     customerId: auth.id,
-    status: PaymentStatus.SUCCESS,
+    ...netCollectionStatusFilter(),
   })
     .sort({ paidAt: -1 })
-    .limit(limit)
+    .limit(limit * 2)
     .lean();
-  if (!rows.length) return [];
-  const schemeIds = [...new Set(rows.map((row) => row.schemeId))];
+  const contributing = rows.filter(isPositiveNetContributionPayment).slice(0, limit);
+  if (!contributing.length) return [];
+  const schemeIds = [...new Set(contributing.map((row) => row.schemeId))];
   const schemeDocs = await Scheme.find({ _id: { $in: schemeIds } })
     .select("_id enrollmentNumber planSnapshot.name planSnapshot.displayName")
     .lean();
   const schemeMap = new Map(schemeDocs.map((row) => [String(row._id), row]));
-  return rows.map((payment) => {
+  return contributing.map((payment) => {
     const scheme = schemeMap.get(String(payment.schemeId));
+    const net = paymentNetFieldsFromDoc(payment);
     return {
       id: payment._id,
-      amount: moneyRef(payment.amountPaise ?? 0),
+      amount: moneyRef(net.netAmountPaise),
+      grossAmount: moneyRef(net.grossAmountPaise),
+      refundedAmount: moneyRef(net.refundedAmountPaise),
+      netAmount: moneyRef(net.netAmountPaise),
+      status: payment.status,
       paidAt: payment.paidAt ?? payment.createdAt,
       receiptNumber: payment.receiptNumber ?? undefined,
       schemeId: payment.schemeId,

@@ -61,3 +61,27 @@ export function netWeightMgFromDoc(payment) {
     Number(payment?.weightMg ?? 0) - Number(payment?.refundedWeightMg ?? 0),
   );
 }
+
+/** Shared gross / refunded / net fields for customer and staff payment DTOs. */
+export function paymentNetFieldsFromDoc(payment) {
+  const grossAmountPaise = Number(payment?.amountPaise ?? 0);
+  const refundedAmountPaise = Number(payment?.refundedAmountPaise ?? 0);
+  const netAmountPaise = netAmountPaiseFromDoc(payment);
+  const grossWeightMg = Number(payment?.weightMg ?? 0);
+  const refundedWeightMg = Number(payment?.refundedWeightMg ?? 0);
+  const netWeightMg = netWeightMgFromDoc(payment);
+  return {
+    grossAmountPaise,
+    refundedAmountPaise,
+    netAmountPaise,
+    grossWeightMg,
+    refundedWeightMg,
+    netWeightMg,
+    status: payment?.status ?? null,
+  };
+}
+
+export function isPositiveNetContributionPayment(payment) {
+  if (!NET_COLLECTION_PAYMENT_STATUSES.includes(payment?.status)) return false;
+  return netAmountPaiseFromDoc(payment) > 0;
+}

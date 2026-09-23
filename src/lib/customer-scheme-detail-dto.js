@@ -1,5 +1,6 @@
 import { moneyRef, weightRef } from "./money.js";
 import { paymentGoldAccrualDto } from "./payment-gold-dto.js";
+import { paymentNetFieldsFromDoc } from "./payment-net-aggregation.js";
 import { monthKey, today } from "./date.js";
 
 function statusLabel(scheme, uiStatus) {
@@ -146,9 +147,17 @@ export function mapCustomerPaymentListItem(payment, scheme) {
   const status = payment.status ?? "SUCCESS";
   const receiptNumber = sanitizeReceiptNumber(payment);
   const goldAccrual = paymentGoldAccrualDto(payment);
+  const netFields = paymentNetFieldsFromDoc(payment);
   return {
     id,
-    amount: moneyRef(payment.amountPaise ?? 0),
+    /** Legacy field: net retained amount after refunds. */
+    amount: moneyRef(netFields.netAmountPaise),
+    grossAmount: moneyRef(netFields.grossAmountPaise),
+    refundedAmount: moneyRef(netFields.refundedAmountPaise),
+    netAmount: moneyRef(netFields.netAmountPaise),
+    grossAmountPaise: netFields.grossAmountPaise,
+    refundedAmountPaise: netFields.refundedAmountPaise,
+    netAmountPaise: netFields.netAmountPaise,
     status,
     statusLabel: paymentStatusLabel(status),
     paidAt: payment.paidAt ?? payment.createdAt,
