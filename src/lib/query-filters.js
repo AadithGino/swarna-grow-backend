@@ -191,7 +191,7 @@ export function maturityListFilter(query = {}) {
   return filter;
 }
 
-function scopeBranchId(value) {
+export function scopeBranchId(value) {
   if (value == null) return null;
   const normalized = String(value).trim();
   if (!normalized || normalized.toUpperCase() === "ALL") return null;

@@ -1,6 +1,6 @@
 import { Customer, Payment, Redemption, Scheme } from "../models/index.js";
 import { netCollectionStatusFilter } from "../lib/payment-net-aggregation.js";
-import { fuzzyMongoFilter } from "../lib/query-filters.js";
+import { effectiveScope, fuzzyMongoFilter } from "../lib/query-filters.js";
 
 const MIN_QUERY_LEN = 2;
 const MAX_QUERY_LEN = 120;
@@ -8,9 +8,8 @@ const DEFAULT_LIMIT = 6;
 const MAX_LIMIT = 10;
 
 function branchFilter(req) {
-  if (req.scope.branchId) return { branchId: req.scope.branchId };
-  const branchId = req.query.branchId;
-  if (branchId && branchId !== "ALL") return { branchId };
+  const scope = effectiveScope(req);
+  if (scope.branchId) return { branchId: scope.branchId };
   return {};
 }
 

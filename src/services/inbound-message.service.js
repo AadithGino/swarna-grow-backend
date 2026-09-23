@@ -1,4 +1,5 @@
 import { canonicalMobile } from "../lib/mobile.js";
+import { effectiveScope } from "../lib/query-filters.js";
 import { paginate } from "../lib/pagination.js";
 import { errors } from "../lib/app-error.js";
 import { Customer, InboundMessage } from "../models/index.js";
@@ -86,9 +87,9 @@ export async function persistWhatsAppInboundFromWebhook({ tenantId, webhookEvent
 }
 
 export async function listInboundMessages(req) {
-  const filters = { tenantId: req.auth.tenantId };
-  if (req.scope.branchId) filters.branchId = req.scope.branchId;
-  if (req.query.branchId) filters.branchId = req.query.branchId;
+  const scope = effectiveScope(req);
+  const filters = { tenantId: scope.tenantId };
+  if (scope.branchId) filters.branchId = scope.branchId;
   if (req.query.customerId) filters.customerId = req.query.customerId;
   if (req.query.status) filters.status = req.query.status;
   if (req.query.q) {
@@ -110,21 +111,23 @@ export async function listInboundMessages(req) {
 }
 
 export async function getInboundMessage(req) {
+  const scope = effectiveScope(req);
   const row = await InboundMessage.findOne({
     _id: req.params.id,
-    tenantId: req.auth.tenantId,
-    ...(req.scope.branchId ? { branchId: req.scope.branchId } : {}),
+    tenantId: scope.tenantId,
+    ...(scope.branchId ? { branchId: scope.branchId } : {}),
   }).lean();
   if (!row) throw errors.notFound("Inbound message");
   return sanitizeInboundMessage(row);
 }
 
 export async function markInboundMessageRead(req) {
+  const scope = effectiveScope(req);
   const row = await InboundMessage.findOneAndUpdate(
     {
       _id: req.params.id,
-      tenantId: req.auth.tenantId,
-      ...(req.scope.branchId ? { branchId: req.scope.branchId } : {}),
+      tenantId: scope.tenantId,
+      ...(scope.branchId ? { branchId: scope.branchId } : {}),
     },
     {
       $set: {

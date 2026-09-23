@@ -1,5 +1,6 @@
 import { buildAdminReport } from "../services/report-builders/index.js";
 import { AppError } from "./app-error.js";
+import { exportScopeForWorker } from "./export-authority.js";
 import { assertExportRowCount, maxExportRows } from "./report-limits.js";
 import { Customer, Scheme } from "../models/index.js";
 
@@ -23,14 +24,13 @@ export function exportReportKey(type) {
 }
 
 export function exportReqFromJob(record) {
+  const scope = exportScopeForWorker(record);
+  const { branchId: _branchId, ...filterQuery } = record.filters ?? {};
   return {
     auth: { id: record.requestedBy, tenantId: record.tenantId, type: "TENANT_USER" },
-    scope: {
-      tenantId: record.tenantId,
-      ...(record.filters?.branchId ? { branchId: record.filters.branchId } : {}),
-    },
+    scope,
     query: {
-      ...record.filters,
+      ...filterQuery,
       _asyncExport: true,
       _exportAll: true,
       offset: 0,
@@ -60,10 +60,11 @@ async function buildDueOverdueExportRows(record) {
   ];
   const rows = [];
   const customerCache = new Map();
+  const scope = exportScopeForWorker(record);
   const query = {
     tenantId: record.tenantId,
     paymentPattern: "FIXED",
-    ...(record.filters?.branchId ? { branchId: record.filters.branchId } : {}),
+    ...(scope.branchId ? { branchId: scope.branchId } : {}),
   };
 
   for await (const scheme of Scheme.find(query).select("_id customerId enrollmentNumber branchId installments").lean().cursor()) {

@@ -205,6 +205,41 @@ test("invalid admin read does not write audit", async () => {
   assert.equal(await AuditEvent.countDocuments({}), before);
 });
 
+test("branch manager query branchId cannot list foreign-branch inbound messages", async () => {
+  const ctx = await seedAdminGatewayContext();
+  await seedTenantWhatsApp(ctx.tenant._id);
+  const otherBranch = await (await import("./helpers/db.js")).seedBranch({
+    tenantId: ctx.tenant._id,
+    code: "BR-OTHER",
+    name: "Other Branch",
+  });
+  const foreignCustomer = await seedCustomer({
+    tenantId: ctx.tenant._id,
+    branchId: otherBranch._id,
+    mobile: "+919666655544",
+  });
+  await postWhatsAppWebhook(
+    ctx.tenant._id,
+    inboundPayload({ messageId: "wamid.foreign", from: foreignCustomer.mobile.replace(/^\+/, "") }),
+  );
+  await processLatestWebhook();
+  const manager = await seedUserOnTenant({
+    tenantId: ctx.tenant._id,
+    branchId: ctx.branch._id,
+    role: TenantRole.BRANCH_MANAGER,
+    mobile: "+919700000012",
+  });
+  const res = await request(app)
+    .get("/api/v1/admin/messaging/inbound")
+    .query({ branchId: otherBranch._id })
+    .set("authorization", `Bearer ${manager.token}`)
+    .expect(200);
+  const ids = res.body.data.map((row) => row._id);
+  const foreignRow = await InboundMessage.findOne({ providerMessageId: "wamid.foreign" }).lean();
+  assert.ok(foreignRow);
+  assert.equal(ids.includes(foreignRow._id), false);
+});
+
 test("branch manager can read inbound for own branch", async () => {
   const ctx = await seedAdminGatewayContext();
   await seedTenantWhatsApp(ctx.tenant._id);

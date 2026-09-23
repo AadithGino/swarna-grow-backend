@@ -284,16 +284,19 @@ async function aggregateCountsByField(
 }
 
 export async function listStaffForAdmin(req) {
+  const scope = effectiveScope(req);
   const filters = { type: UserType.TENANT_USER };
   if (req.query.status) filters.status = req.query.status;
   if (req.query.role) filters.role = req.query.role;
-  if (req.query.branchId) filters.branchId = req.query.branchId;
   const pattern = searchRegex(req.query.q);
   if (pattern) {
     filters.$or = [{ name: pattern }, { mobile: pattern }, { email: pattern }];
   }
   const page = await paginate(User, {
-    scope: { tenantId: req.auth.tenantId },
+    scope: {
+      tenantId: scope.tenantId,
+      ...(scope.branchId ? { branchId: scope.branchId } : {}),
+    },
     filters,
     cursor: req.query.cursor,
     limit: req.query.limit,
@@ -1416,12 +1419,13 @@ export async function setGoldRate(req) {
 
 export async function listGoldRateHistory(req) {
   const filters = {};
-  const actingBranch = effectiveScope(req).branchId;
-  if (!req.scope.branchId && req.query.branchId) {
-    filters.branchId =
-      req.query.branchId === "null"
-        ? null
-        : (actingBranch ?? req.query.branchId);
+  const effective = effectiveScope(req);
+  if (effective.branchId) {
+    filters.branchId = effective.branchId;
+  } else if (req.query.branchId === "null") {
+    filters.branchId = null;
+  } else if (req.query.branchId && String(req.query.branchId).trim().toUpperCase() !== "ALL") {
+    filters.branchId = String(req.query.branchId).trim();
   }
   if (req.query.from || req.query.to) {
     const range = {};

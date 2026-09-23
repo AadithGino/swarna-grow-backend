@@ -8,6 +8,7 @@ import { cursorQuery, exportBody } from "../validators/common.validators.js";
 import { sendSuccess } from "../lib/response.js";
 import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
+import * as reporting from "../services/reporting.service.js";
 
 export const adminAnalyticsRouter = Router();
 adminAnalyticsRouter.get(
@@ -81,7 +82,7 @@ adminAnalyticsRouter.post(
   ),
 );
 adminAnalyticsRouter.post("/exports", ...guarded(Permission.REPORT_EXPORT, validate({ body: exportBody }), idempotent, asyncHandler(controller.createExport)));
-adminAnalyticsRouter.get("/exports", ...guarded(Permission.REPORT_EXPORT, asyncHandler(async (req, res) => sendSuccess(res, await (await import("../models/index.js")).ExportJob.find(req.scope).sort({ createdAt: -1 }).lean()))));
+adminAnalyticsRouter.get("/exports", ...guarded(Permission.REPORT_EXPORT, asyncHandler(async (req, res) => sendSuccess(res, await reporting.listExports(req)))));
 adminAnalyticsRouter.get("/exports/:exportId/file", ...guarded(Permission.REPORT_EXPORT, asyncHandler(controller.downloadExportFile)));
 adminAnalyticsRouter.get("/exports/:exportId", ...guarded(Permission.REPORT_EXPORT, asyncHandler(controller.getExport)));
 adminAnalyticsRouter.get("/audit-events", ...guarded(Permission.AUDIT_READ, asyncHandler(controller.auditEvents)));

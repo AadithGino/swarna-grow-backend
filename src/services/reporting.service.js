@@ -36,6 +36,12 @@ import {
   reportTrendGroupBy,
 } from "./report-builders/report-envelope.js";
 import {
+  assertExportJobAccessible,
+  exportJobListQuery,
+  resolveExportScopeSnapshot,
+  sanitizedExportFilters,
+} from "../lib/export-authority.js";
+import {
   netCollectionStatusFilter,
   sumNetAmountPaise,
 } from "../lib/payment-net-aggregation.js";
@@ -357,12 +363,14 @@ export async function createExport(req) {
   }
   const { assertExportConcurrency } = await import("../lib/report-limits.js");
   await assertExportConcurrency(req.auth.tenantId);
+  const scopeSnapshot = resolveExportScopeSnapshot(req);
   const job = await ExportJob.create({
     _id: createId("export"),
     tenantId: req.auth.tenantId,
     requestedBy: req.auth.id,
     type: req.body.type,
-    filters: { ...req.body.filters, format },
+    scopeSnapshot,
+    filters: { ...sanitizedExportFilters(req.body.filters), format },
   });
   const queue = getQueue("exports");
   await queue?.add(
@@ -372,7 +380,20 @@ export async function createExport(req) {
   );
   return toExportJobDto(job.toObject());
 }
-export async function getExport(req) { const job = await ExportJob.findOne({ _id: req.params.exportId ?? req.params.id, tenantId: req.auth.tenantId }).lean(); return job ? toExportJobDto(job) : null; }
+export async function listExports(req) {
+  const rows = await ExportJob.find(exportJobListQuery(req)).sort({ createdAt: -1 }).lean();
+  return rows.map((row) => toExportJobDto(row));
+}
+
+export async function getExport(req) {
+  const job = await ExportJob.findOne({
+    _id: req.params.exportId ?? req.params.id,
+    tenantId: req.auth.tenantId,
+  }).lean();
+  if (!job) return null;
+  assertExportJobAccessible(req, job);
+  return toExportJobDto(job);
+}
 
 export async function downloadExportFile(req, res) {
   const job = await ExportJob.findOne({
@@ -380,6 +401,7 @@ export async function downloadExportFile(req, res) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!job) throw errors.notFound("Export");
+  assertExportJobAccessible(req, job);
   if (job.status !== ExportStatus.READY || !job.objectKey) {
     throw new AppError("EXPORT_NOT_READY", "This export is not ready to download yet.", 409);
   }

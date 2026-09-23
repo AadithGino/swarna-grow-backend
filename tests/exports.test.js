@@ -31,6 +31,7 @@ test("processExport stores object key in shared storage and downloadExportFile r
     type: "CUSTOMER",
     status: ExportStatus.QUEUED,
     filters: { format: "CSV" },
+    scopeSnapshot: { tenantId: tenant._id, branchId: null },
   });
   await processExport({ data: { exportId } });
   const job = await ExportJob.findById(exportId).lean();
@@ -45,7 +46,8 @@ test("processExport stores object key in shared storage and downloadExportFile r
     send(body) { chunks.push(body); },
   };
   await downloadExportFile({
-    auth: { tenantId: tenant._id },
+    auth: { tenantId: tenant._id, type: "TENANT_USER" },
+    scope: { tenantId: tenant._id },
     params: { exportId },
   }, res);
   const csv = Buffer.concat(chunks).toString("utf8");
@@ -71,11 +73,13 @@ test("processExport escapes csv formula injection in customer names", async () =
     type: "CUSTOMER",
     status: ExportStatus.QUEUED,
     filters: { format: "CSV" },
+    scopeSnapshot: { tenantId: tenant._id, branchId: null },
   });
   await processExport({ data: { exportId } });
   const chunks = [];
   await downloadExportFile({
-    auth: { tenantId: tenant._id },
+    auth: { tenantId: tenant._id, type: "TENANT_USER" },
+    scope: { tenantId: tenant._id },
     params: { exportId },
   }, { setHeader() {}, send(body) { chunks.push(body); } });
   const csv = Buffer.concat(chunks).toString("utf8");
@@ -116,6 +120,7 @@ test("processExport uses report builder for COLLECTION instead of raw Payment ro
     type: "COLLECTION",
     status: ExportStatus.QUEUED,
     filters: { from: "2026-01-01", to: "2026-01-31", format: "CSV" },
+    scopeSnapshot: { tenantId: tenant._id, branchId: branch._id },
   });
   await processExport({ data: { exportId } });
   const job = await ExportJob.findById(exportId).lean();
@@ -140,6 +145,7 @@ test("processExport fails unsupported export types instead of dumping Payment ro
     type: "DUE",
     status: ExportStatus.QUEUED,
     filters: { format: "CSV" },
+    scopeSnapshot: { tenantId: tenant._id, branchId: null },
   });
   await assert.rejects(
     () => processExport({ data: { exportId } }),

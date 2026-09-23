@@ -21,6 +21,7 @@ import { upsertGatewayWebhookInvalidCompletedAlert } from "../lib/gateway-webhoo
 import { finalizeGatewaySuccess } from "../services/finalize-gateway-success.service.js";
 import { applyTerminalGatewayFailure } from "../services/gateway-terminal-failure.service.js";
 import { buildReportExportRows, exportReportKey, isRawExportType } from "../lib/report-export.js";
+import { exportScopeForWorker } from "../lib/export-authority.js";
 import PDFDocument from "pdfkit";
 import {
   recordExportRun,
@@ -667,8 +668,10 @@ async function writeRawModelExport(record, tempFile) {
       ? models.Customer
       : models.Scheme;
   const dateField = record.type === "AUDIT" ? "occurredAt" : "createdAt";
+  const workerScope = exportScopeForWorker(record);
   const query = { tenantId: record.tenantId };
-  for (const key of ["branchId", "status", "customerId", "schemeId", "mode"]) {
+  if (workerScope.branchId) query.branchId = workerScope.branchId;
+  for (const key of ["status", "customerId", "schemeId", "mode"]) {
     if (record.filters?.[key]) query[key] = record.filters[key];
   }
   if (record.filters?.from || record.filters?.to) {
@@ -715,8 +718,10 @@ async function writeRawModelPdf(record, tempFile) {
   const models = await import("../models/index.js");
   const model = record.type === "AUDIT" ? models.AuditEvent : record.type === "CUSTOMER" ? models.Customer : models.Scheme;
   const dateField = record.type === "AUDIT" ? "occurredAt" : "createdAt";
+  const workerScope = exportScopeForWorker(record);
   const query = { tenantId: record.tenantId };
-  for (const key of ["branchId", "status", "customerId", "schemeId", "mode"]) {
+  if (workerScope.branchId) query.branchId = workerScope.branchId;
+  for (const key of ["status", "customerId", "schemeId", "mode"]) {
     if (record.filters?.[key]) query[key] = record.filters[key];
   }
   if (record.filters?.from || record.filters?.to) {
