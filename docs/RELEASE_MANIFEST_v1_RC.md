@@ -8,7 +8,8 @@ Record the exact commit after checkout:
 git rev-parse HEAD
 ```
 
-Phase 6.1 corrective pass is committed on branch `chore/production-hardening-phase-0` immediately after Phase 6 commit `e342848`.
+Release-blocker round (Phases 1–8 + admin/refund/KYC pass) is on branch `chore/production-hardening-phase-0`.
+Record `git rev-parse HEAD` at cut time (includes commits through release-blocker phases).
 
 ## Test counts
 
@@ -23,7 +24,7 @@ Document the final pass/fail count from that single run in your release notes.
 
 ## Build date
 
-2026-09-21 (IST)
+2026-09-23 (IST)
 
 ## Deployment commands
 
