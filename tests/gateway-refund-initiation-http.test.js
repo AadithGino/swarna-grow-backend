@@ -81,6 +81,24 @@ test("branch manager may refund within branch; not another branch", async () => 
   assert.equal(denied.status, 404);
 });
 
+test("branch manager idempotency replay on off-branch payment returns 404", async () => {
+  const { ownerCtx, otherPayment, manager } = await seedBranchManagerContext();
+  const body = { amountPaise: 10_000, reason: "Admin initiated" };
+  const key = "idem-off-branch-replay";
+  await PaymentRefund.create({
+    _id: createId("pref"),
+    tenantId: ownerCtx.tenant._id,
+    paymentId: otherPayment.paymentId,
+    idempotencyKey: key,
+    amountPaise: 10_000,
+    reason: "Admin initiated",
+    status: "PENDING",
+  });
+  const replay = await postRefund(manager.token, otherPayment.paymentId, body, key);
+  assert.equal(replay.status, 404);
+  assert.equal(replay.body?.data?.refundId, undefined);
+});
+
 test("staff role without PAYMENT_REVERSE is rejected", async () => {
   const ctx = await seedAdminGatewayContext();
   const staff = await seedUserOnTenant({

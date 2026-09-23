@@ -48,9 +48,11 @@ export async function initiateAdminPaymentRefund(req) {
 
   try {
     await withTransaction(async (session) => {
+      const payment = await loadBranchScopedPayment(req, { session });
+
       const existing = await PaymentRefund.findOne({
         tenantId: req.auth.tenantId,
-        paymentId: req.params.paymentId,
+        paymentId: payment._id,
         idempotencyKey,
       }).session(session);
       if (existing) {
@@ -64,8 +66,6 @@ export async function initiateAdminPaymentRefund(req) {
         reused = true;
         return;
       }
-
-      const payment = await loadBranchScopedPayment(req, { session });
       if (payment.mode !== PaymentMode.ONLINE_GATEWAY) {
         throw errors.business("REFUND_NOT_GATEWAY", "Only PhonePe gateway payments support provider refunds.");
       }
@@ -146,6 +146,7 @@ export async function initiateAdminPaymentRefund(req) {
     });
   } catch (error) {
     if (error?.code === 11000) {
+      await loadBranchScopedPayment(req);
       const existing = await PaymentRefund.findOne({
         tenantId: req.auth.tenantId,
         paymentId: req.params.paymentId,
@@ -172,7 +173,7 @@ export async function initiateAdminPaymentRefund(req) {
     return { refundId: refund._id, status: refund.status, reused: true };
   }
 
-  const payment = await Payment.findById(refund.paymentId).lean();
+  const payment = await loadBranchScopedPayment(req);
   const intent = await PaymentIntent.findOne({
     tenantId: payment.tenantId,
     paymentId: payment._id,
@@ -272,19 +273,12 @@ export async function releaseAdminPaymentRefundReservation(req) {
   if (!trimmedReason) {
     throw errors.business("REFUND_RELEASE_REASON_REQUIRED", "Release reason is required.");
   }
-  const { refund } = await loadBranchScopedPaymentRefund(req);
-  if (refund.status === GatewayRefundStatus.COMPLETED) {
-    throw errors.business("REFUND_ALREADY_COMPLETED", "Completed refunds cannot release reservations.");
-  }
-
+  const scoped = await loadBranchScopedPaymentRefund(req);
   let providerEvidence = providerConfirmedNotAccepted === true;
-  if (providerConfirmedNotAccepted === true && !trimmedReason) {
-    throw errors.business("REFUND_RELEASE_REASON_REQUIRED", "Release reason is required.");
-  }
   if (!providerEvidence) {
     const reconcile = await reconcileGatewayRefundRecord({
       tenantId: req.auth.tenantId,
-      refund,
+      refund: scoped.refund,
     });
     providerEvidence = reconcile.outcome === "PROVIDER_NOT_FOUND"
       || reconcile.providerState === "FAILED";
@@ -300,29 +294,63 @@ export async function releaseAdminPaymentRefundReservation(req) {
     );
   }
 
+  let releaseOutcome;
+  let paymentAfter;
   await withTransaction(async (session) => {
-    await releaseGatewayRefundReservation({
+    const { payment, refund } = await loadBranchScopedPaymentRefund(req, { session });
+    if (refund.status === GatewayRefundStatus.COMPLETED) {
+      throw errors.business("REFUND_ALREADY_COMPLETED", "Completed refunds cannot release reservations.");
+    }
+    releaseOutcome = await releaseGatewayRefundReservation({
       tenantId: req.auth.tenantId,
-      paymentId: req.params.paymentId,
+      paymentId: payment._id,
       refundId: refund._id,
       amountPaise: refund.amountPaise,
       reviewReason: "MANUAL_RESERVATION_RELEASE",
       session,
     });
-    await writeAudit({
-      req,
-      action: "GATEWAY_REFUND_RESERVATION_RELEASED",
-      entityType: AuditEntityType.PAYMENT,
-      entityId: req.params.paymentId,
-      after: { refundId: refund._id, reason: trimmedReason, evidence: evidence ?? null },
-      session,
-    });
+    if (releaseOutcome.released) {
+      await writeAudit({
+        req,
+        action: "GATEWAY_REFUND_RESERVATION_RELEASED",
+        entityType: AuditEntityType.PAYMENT,
+        entityId: payment._id,
+        after: { refundId: refund._id, reason: trimmedReason, evidence: evidence ?? null },
+        session,
+      });
+    }
+    paymentAfter = await Payment.findById(payment._id).session(session).lean();
   });
-  const payment = await Payment.findById(req.params.paymentId).lean();
+
+  if (releaseOutcome.reason === "ALREADY_COMPLETED") {
+    throw errors.business("REFUND_ALREADY_COMPLETED", "Completed refunds cannot release reservations.");
+  }
+  if (releaseOutcome.reason === "NOT_RELEASABLE") {
+    throw errors.business(
+      "REFUND_RELEASE_NOT_ALLOWED",
+      "Refund is not in a releasable state.",
+    );
+  }
+  if (!releaseOutcome.released && releaseOutcome.reason === "ALREADY_FAILED") {
+    return {
+      refundId: scoped.refund._id,
+      status: GatewayRefundStatus.FAILED,
+      outcome: "ALREADY_FAILED",
+      gatewayRefundReservedPaise: paymentAfter?.gatewayRefundReservedPaise ?? 0,
+    };
+  }
+  if (!releaseOutcome.released) {
+    throw errors.business(
+      "REFUND_RELEASE_NOT_ALLOWED",
+      `Release did not apply (${releaseOutcome.reason ?? "UNKNOWN"}).`,
+    );
+  }
+
   return {
-    refundId: refund._id,
+    refundId: scoped.refund._id,
     status: GatewayRefundStatus.FAILED,
-    gatewayRefundReservedPaise: payment?.gatewayRefundReservedPaise ?? 0,
+    outcome: "RELEASED",
+    gatewayRefundReservedPaise: paymentAfter?.gatewayRefundReservedPaise ?? 0,
   };
 }
 
