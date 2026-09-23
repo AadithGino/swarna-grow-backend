@@ -360,6 +360,134 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
       message: "Fixed-day schedules require dueDayOfMonth between 1 and 31.",
     });
   }
+  const amountRules = value.amountRules ?? {};
+  if (amountRules.amountMode === E.AmountMode.JEWELLER_FIXED) {
+    if (amountRules.fixedAmountPaise == null || amountRules.fixedAmountPaise < 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["amountRules", "fixedAmountPaise"],
+        message: "Fixed amount mode requires fixedAmountPaise.",
+      });
+    }
+  }
+  if (amountRules.amountMode === E.AmountMode.JEWELLER_SLABS) {
+    if (!amountRules.slabsPaise?.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["amountRules", "slabsPaise"],
+        message: "Slab amount mode requires at least one slab.",
+      });
+    }
+  }
+  if (
+    amountRules.minInstallmentPaise != null
+    && amountRules.maxInstallmentPaise != null
+    && amountRules.minInstallmentPaise > amountRules.maxInstallmentPaise
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["amountRules", "maxInstallmentPaise"],
+      message: "minInstallmentPaise cannot exceed maxInstallmentPaise.",
+    });
+  }
+  const flex = value.flexibleRules;
+  if (flex?.flexiblePhase) {
+    const minP = flex.flexiblePhase.minimumPaymentPaise;
+    const maxP = flex.flexiblePhase.maximumPaymentPaise;
+    if (minP != null && maxP != null && minP > maxP) {
+      context.addIssue({
+        code: "custom",
+        path: ["flexibleRules", "flexiblePhase", "maximumPaymentPaise"],
+        message: "Flexible minimum payment cannot exceed maximum payment.",
+      });
+    }
+  }
+  if (flex?.capComputation) {
+    const minCap = flex.capComputation.minCycleCapPaise;
+    const maxCap = flex.capComputation.maxCycleCapPaise;
+    if (minCap != null && maxCap != null && minCap > maxCap) {
+      context.addIssue({
+        code: "custom",
+        path: ["flexibleRules", "capComputation", "maxCycleCapPaise"],
+        message: "minCycleCapPaise cannot exceed maxCycleCapPaise.",
+      });
+    }
+  }
+  const availabilityRules = value.availability ?? {};
+  if (availabilityRules.allBranches === false && !(availabilityRules.branchIds?.length)) {
+    context.addIssue({
+      code: "custom",
+      path: ["availability", "branchIds"],
+      message: "Select at least one branch when allBranches is false.",
+    });
+  }
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (availabilityRules.enrolmentOpenFrom && !dateRe.test(String(availabilityRules.enrolmentOpenFrom))) {
+    context.addIssue({
+      code: "custom",
+      path: ["availability", "enrolmentOpenFrom"],
+      message: "enrolmentOpenFrom must be YYYY-MM-DD.",
+    });
+  }
+  if (availabilityRules.enrolmentOpenTo && !dateRe.test(String(availabilityRules.enrolmentOpenTo))) {
+    context.addIssue({
+      code: "custom",
+      path: ["availability", "enrolmentOpenTo"],
+      message: "enrolmentOpenTo must be YYYY-MM-DD.",
+    });
+  }
+  if (
+    availabilityRules.enrolmentOpenFrom
+    && availabilityRules.enrolmentOpenTo
+    && availabilityRules.enrolmentOpenFrom > availabilityRules.enrolmentOpenTo
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["availability", "enrolmentOpenTo"],
+      message: "enrolmentOpenFrom cannot be after enrolmentOpenTo.",
+    });
+  }
+  const redemption = value.redemptionRules ?? {};
+  if (
+    redemption.lockInMonths != null
+    && value.durationMonths != null
+    && redemption.lockInMonths > value.durationMonths
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["redemptionRules", "lockInMonths"],
+      message: "lockInMonths cannot exceed durationMonths.",
+    });
+  }
+  const paymentRules = value.paymentRules ?? {};
+  if (
+    paymentRules.advancePaymentAllowed === false
+    && (paymentRules.maxAdvanceInstallments ?? 0) > 0
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["paymentRules", "maxAdvanceInstallments"],
+      message: "maxAdvanceInstallments must be 0 when advance payments are disabled.",
+    });
+  }
+  const benefit = value.benefit;
+  if (benefit?.type === E.BenefitType.FIXED_BONUS_AMOUNT && benefit.bonusBasis == null) {
+    context.addIssue({
+      code: "custom",
+      path: ["benefit", "bonusBasis"],
+      message: "Fixed bonus requires bonusBasis.",
+    });
+  }
+  const penalty = redemption.prematurePenalty;
+  if (penalty?.mode === E.PrematurePenaltyMode.PERCENT_OF_PAID) {
+    if (penalty.value == null || penalty.value < 0 || penalty.value > 100) {
+      context.addIssue({
+        code: "custom",
+        path: ["redemptionRules", "prematurePenalty", "value"],
+        message: "Percent penalty requires value from 0 to 100.",
+      });
+    }
+  }
 }
 
 const planFields = {
