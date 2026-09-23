@@ -1,6 +1,8 @@
+import Decimal from "decimal.js";
 import PDFDocument from "pdfkit";
 import { Invoice, Tenant } from "../models/index.js";
 import { errors } from "../lib/app-error.js";
+import { MONEY_PAISE_ROUNDING } from "../lib/money.js";
 
 const PLATFORM = Object.freeze({
   name: process.env.PLATFORM_BILLING_NAME ?? "Swarna Grow Technologies",
@@ -53,12 +55,35 @@ export async function loadSubscriptionInvoiceForTenant(tenantId, invoiceId) {
   return { invoice, tenant };
 }
 
+/** Prefer persisted subtotal/tax; legacy inclusive totals split with Decimal HALF_UP. */
+export function subscriptionInvoiceTaxBreakdown(invoice) {
+  const totalPaise = invoice.amountPaise ?? 0;
+  if (
+    Number.isInteger(invoice.subtotalPaise)
+    && Number.isInteger(invoice.taxPaise)
+  ) {
+    return {
+      taxable: invoice.subtotalPaise,
+      gst: invoice.taxPaise,
+      total: totalPaise || invoice.subtotalPaise + invoice.taxPaise,
+    };
+  }
+  const taxPercent = typeof invoice.taxPercent === "number" ? invoice.taxPercent : 18;
+  if (taxPercent <= 0 || totalPaise <= 0) {
+    return { taxable: totalPaise, gst: 0, total: totalPaise };
+  }
+  const gst = new Decimal(totalPaise)
+    .mul(taxPercent)
+    .div(100 + taxPercent)
+    .toDecimalPlaces(0, MONEY_PAISE_ROUNDING)
+    .toNumber();
+  return { taxable: totalPaise - gst, gst, total: totalPaise };
+}
+
 export function streamSubscriptionInvoicePdf(res, { invoice, tenant }) {
   const number = invoice.reference ?? invoice._id;
   const period = invoice.dueDate ?? "—";
-  const amountPaise = invoice.amountPaise ?? 0;
-  const taxable = Math.round(amountPaise / 1.18);
-  const gst = amountPaise - taxable;
+  const { taxable, gst, total: amountPaise } = subscriptionInvoiceTaxBreakdown(invoice);
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader(
