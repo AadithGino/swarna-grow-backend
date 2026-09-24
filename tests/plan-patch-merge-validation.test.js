@@ -356,26 +356,32 @@ test("PATCH to GOLD_WEIGHT with goldRules accepts", async () => {
   assert.equal(updated.goldRules.rateSource, "TENANT_DAILY_RATE");
 });
 
-test("PATCH FIXED to FLEXIBLE with complete flexibleRules accepts", async () => {
+test("PATCH FIXED to FLEXIBLE rejects when fixed implied txn cap remains", async () => {
   const { tenant, user } = await seedGrowthTenantUser();
   const body = { ...fixedPlanBase, code: "FIX2FLEX" };
   const created = await createPlan({
     ...planReq(tenant, user, undefined, body),
     body,
   });
+  assert.ok(
+    created.paymentRules?.maxPaymentPerTransactionPaise != null,
+    "FIXED create implies a per-transaction cap",
+  );
   const flexBody = flexiblePlanBody(3, 9);
-  const updated = await updatePlan(planReq(tenant, user, created._id, {
-    expectedVersion: created.version,
-    paymentPattern: "FLEXIBLE",
-    amountRules: flexBody.amountRules,
-    scheduleRules: flexBody.scheduleRules,
-    paymentRules: flexBody.paymentRules,
-    flexibleRules: flexBody.flexibleRules,
-    benefit: flexBody.benefit,
-  }));
-  assert.equal(updated.paymentPattern, "FLEXIBLE");
-  assert.equal(updated.flexibleRules.flexiblePhaseCycles, 3);
-  assert.equal(updated.flexibleRules.cappedPhaseCycles, 9);
+  await assert.rejects(
+    () => updatePlan(planReq(tenant, user, created._id, {
+      expectedVersion: created.version,
+      paymentPattern: "FLEXIBLE",
+      amountRules: flexBody.amountRules,
+      scheduleRules: flexBody.scheduleRules,
+      paymentRules: flexBody.paymentRules,
+      flexibleRules: flexBody.flexibleRules,
+      benefit: flexBody.benefit,
+    })),
+    (error) => error instanceof AppError
+      && error.code === "VALIDATION_FAILED"
+      && error.details?.some((d) => d.field === "paymentRules.maxPaymentPerTransactionPaise"),
+  );
 });
 
 test("flexible plan create accepts ROUND_UP cap rounding mode", async () => {

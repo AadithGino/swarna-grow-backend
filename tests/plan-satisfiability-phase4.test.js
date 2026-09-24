@@ -209,6 +209,19 @@ test("capped min>minCycleCap with finalRemainder true is accepted", () => {
   assert.equal(parsed.success, true);
 });
 
+test("flexible plan with maxPaymentPerTransactionPaise is rejected", () => {
+  const body = flexPlan({
+    code: "SATTXN1",
+    paymentRules: {
+      partialPaymentAllowed: true,
+      minPaymentPaise: 10_000,
+      maxPaymentPerTransactionPaise: 100_000,
+    },
+  });
+  const parsed = planBody.safeParse(body);
+  assert.equal(parsed.success, false);
+});
+
 test("benefit minMonthsCompleted above durationMonths is rejected", () => {
   const parsed = planBody.safeParse({
     ...planBase,

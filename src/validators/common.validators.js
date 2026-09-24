@@ -388,6 +388,22 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
       });
     }
   }
+  if (amountRules.amountMode === E.AmountMode.CUSTOMER_CHOSEN) {
+    if (amountRules.minInstallmentPaise == null || amountRules.minInstallmentPaise < 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["amountRules", "minInstallmentPaise"],
+        message: "Customer-chosen amount mode requires minInstallmentPaise.",
+      });
+    }
+    if (amountRules.maxInstallmentPaise == null || amountRules.maxInstallmentPaise < 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["amountRules", "maxInstallmentPaise"],
+        message: "Customer-chosen amount mode requires maxInstallmentPaise.",
+      });
+    }
+  }
   if (
     amountRules.minInstallmentPaise != null
     && amountRules.maxInstallmentPaise != null
@@ -466,6 +482,26 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
       code: "custom",
       path: ["paymentRules", "maxAdvanceInstallments"],
       message: "maxAdvanceInstallments must be 0 when advance payments are disabled.",
+    });
+  }
+  if (
+    paymentRules.advancePaymentAllowed === true
+    && (paymentRules.maxAdvanceInstallments ?? 0) < 1
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["paymentRules", "maxAdvanceInstallments"],
+      message: "maxAdvanceInstallments must be at least 1 when advance payments are enabled.",
+    });
+  }
+  if (
+    pattern === E.PaymentPattern.FLEXIBLE
+    && paymentRules.maxPaymentPerTransactionPaise != null
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["paymentRules", "maxPaymentPerTransactionPaise"],
+      message: "Per-transaction cap is not supported for flexible plans.",
     });
   }
   const benefit = value.benefit;

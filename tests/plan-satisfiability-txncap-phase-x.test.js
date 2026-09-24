@@ -144,3 +144,27 @@ test("slab>cap partial OFF is rejected", () => {
   });
   assert.equal(parsed.success, false);
 });
+
+test("customer-chosen with no bounds is rejected", () => {
+  const parsed = planBody.safeParse({
+    ...planBase,
+    code: "TXNCC3",
+    amountRules: { amountMode: "CUSTOMER_CHOSEN" },
+    paymentRules: { partialPaymentAllowed: true, minPaymentPaise: 10_000 },
+  });
+  assert.equal(parsed.success, false);
+});
+
+test("advance enabled with maxAdvanceInstallments 0 is rejected", () => {
+  const parsed = planBody.safeParse({
+    ...planBase,
+    code: "TXNADV1",
+    paymentRules: {
+      partialPaymentAllowed: false,
+      minPaymentPaise: 100_000,
+      advancePaymentAllowed: true,
+      maxAdvanceInstallments: 0,
+    },
+  });
+  assert.equal(parsed.success, false);
+});
