@@ -1058,6 +1058,8 @@ See [Record payment](#post-apiv1staffpayments).
 }
 ```
 
+When **`includeSummary=true`**, `meta.summary` adds payment rollups. Existing clients should keep using **`refundedAmount`** for partial refunds on collected rows only. **`totalRefundedAmount`** is the combined partial-refund total plus gross fully-reversed payments. **`fullyReversedAmount`** / **`reversedAmount`** remain the gross on `REVERSED` rows. List/detail payment and **`goldAccrual`** DTOs expose **`grossWeightMg`**, **`refundedWeightMg`**, and **`netWeightMg`**; PDF receipts print immutable gross weight per payment (not net retained).
+
 ### 16a. `GET /api/v1/staff/payments/:paymentId`
 
 **Access:** Collection agents only see payments where **`collectedBy`** matches their user id (same scope as list).

@@ -30,6 +30,7 @@ test("failed redemption complete rolls back all redemption ledger rows", async (
     customerNumber: `C${Date.now()}`,
     name: "Rollback Customer",
     mobile: `+9188${String(Date.now()).slice(-8)}`,
+    kyc: { status: "VERIFIED", type: "PAN", numberMasked: "XXXX1234" },
   });
   const paid = 300_000;
   const bonus = 50_000;

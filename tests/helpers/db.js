@@ -110,6 +110,8 @@ export async function seedTenantUser({
     name: `${code} Jewellers`,
     mobile: `+9197${String(10000000 + tenantCodeSeq).slice(-8)}`,
     status: TenantStatus.ACTIVE,
+    settings: { requireKycForRedemption: false },
+    operations: { requireKycForRedemption: false },
     subscription: {
       status: "ACTIVE",
       tier: "STARTER",
@@ -163,6 +165,15 @@ export async function seedCustomer({ tenantId, branchId, mobile = "+918800000001
     name,
     mobile,
   });
+}
+
+export async function seedVerifiedCustomer(params) {
+  const customer = await seedCustomer(params);
+  await Customer.updateOne(
+    { _id: customer._id },
+    { $set: { kyc: { status: "VERIFIED", type: "PAN", numberMasked: "XXXX1234" } } },
+  );
+  return customer;
 }
 
 /** Seeded tenant + HQ branch + staff + customer for integration tests. */

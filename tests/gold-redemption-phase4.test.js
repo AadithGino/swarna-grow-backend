@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  Customer,
   GoldRate,
   LedgerEntry,
   Redemption,
@@ -40,9 +41,18 @@ test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => { await resetTestDb(); });
 
+async function seedVerifiedCustomer(args) {
+  const customer = await seedCustomer(args);
+  await Customer.updateOne(
+    { _id: customer._id },
+    { $set: { kyc: { status: "VERIFIED", type: "PAN", numberMasked: "XXXX1234" } } },
+  );
+  return customer;
+}
+
 async function seedCashMaturedWithGoldHandover({ settlementPaise = 300000 } = {}) {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
-  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const customer = await seedVerifiedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const scheme = await Scheme.create({
     _id: createId("scheme"),
     tenantId: tenant._id,
@@ -250,7 +260,7 @@ test("gold benefit conversion precision matrix", () => {
 
 async function seedGoldWeightMaturedHandover({ weightMg = 600, amountPaise = 300_000 } = {}) {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
-  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const customer = await seedVerifiedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const scheme = await Scheme.create({
     _id: createId("scheme"),
     tenantId: tenant._id,
@@ -413,7 +423,7 @@ test("yesterday 22K rate does not satisfy exact handover-day requirement", async
 
 async function seedPrematureScheme({ benefitTreatment }) {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
-  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const customer = await seedVerifiedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const paid = 300000;
   const bonus = 50000;
   const scheme = await Scheme.create({
@@ -579,7 +589,7 @@ test("purchase adjustment completion has zero cash out and bill on ledger", asyn
 
 test("gold-weight payment rejected when amount rounds to zero weight", async () => {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
-  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const customer = await seedVerifiedCustomer({ tenantId: tenant._id, branchId: branch._id });
   await setGoldRate({
     auth: { id: user._id, tenantId: tenant._id },
     headers: { "user-agent": "test" },
@@ -634,7 +644,7 @@ test("gold-weight payment rejected when amount rounds to zero weight", async () 
 
 test("gold-weight payment rejected when today 22K rate is missing", async () => {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
-  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const customer = await seedVerifiedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const scheme = await Scheme.create({
     _id: createId("scheme"),
     tenantId: tenant._id,

@@ -93,7 +93,12 @@ async function tenantWithPolicy(oneActive) {
   const seeded = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
   await Tenant.updateOne(
     { _id: seeded.tenant._id },
-    { $set: { "settings.oneActiveSchemePerCustomer": oneActive } },
+    {
+      $set: {
+        "settings.oneActiveSchemePerCustomer": oneActive,
+        "operations.multiSchemePerCustomer": !oneActive,
+      },
+    },
   );
   const tenant = await Tenant.findById(seeded.tenant._id).lean();
   return { ...seeded, tenant };
@@ -276,7 +281,7 @@ test("transaction revalidation rejects stale installment amount after plan amoun
   const validation = await validateEnrolment(req);
   await SchemePlan.updateOne(
     { _id: plan._id },
-    { $set: { "amountRules.fixedAmountPaise": 200_000, "amountRules.minInstallmentPaise": 200_000 } },
+    { $set: { "amountRules.fixedAmountPaise": 200_000 } },
   );
   await assert.rejects(
     () => withTransaction((session) => createEnrolmentInSession(req, validation, session)),

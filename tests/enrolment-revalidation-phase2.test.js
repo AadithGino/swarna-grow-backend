@@ -255,7 +255,7 @@ test("revalidation rejects changed plan financial amount", async () => {
     mutatePlan: async (planId) => {
       await SchemePlan.updateOne(
         { _id: planId },
-        { $set: { "amountRules.fixedAmountPaise": 200_000, "amountRules.minInstallmentPaise": 200_000 } },
+        { $set: { "amountRules.fixedAmountPaise": 200_000 } },
       );
     },
   });
@@ -300,7 +300,13 @@ test("one-active policy bumps enrolmentSerializationVersion not profile version"
   const seeded = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
   await Tenant.updateOne(
     { _id: seeded.tenant._id },
-    { $set: { "settings.oneActiveSchemePerCustomer": true, "subscription.tier": PlanTier.GROWTH } },
+    {
+      $set: {
+        "settings.oneActiveSchemePerCustomer": true,
+        "operations.multiSchemePerCustomer": false,
+        "subscription.tier": PlanTier.GROWTH,
+      },
+    },
   );
   const tenant = await Tenant.findById(seeded.tenant._id).lean();
   const plan = buildPlan(tenant._id, "SERVER");
@@ -323,7 +329,12 @@ test("policy-disabled enrolment does not mutate enrolmentSerializationVersion", 
   const seeded = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
   await Tenant.updateOne(
     { _id: seeded.tenant._id },
-    { $set: { "settings.oneActiveSchemePerCustomer": false } },
+    {
+      $set: {
+        "settings.oneActiveSchemePerCustomer": false,
+        "operations.multiSchemePerCustomer": true,
+      },
+    },
   );
   const tenant = await Tenant.findById(seeded.tenant._id).lean();
   const plan = buildPlan(tenant._id, "NOSER");

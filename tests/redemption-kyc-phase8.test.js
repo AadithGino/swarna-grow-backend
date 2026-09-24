@@ -19,11 +19,15 @@ test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => { await resetTestDb(); });
 
-async function seedMatured({ kycStatus = "VERIFIED", tenantPatch = {} } = {}) {
+async function seedMatured({ kycStatus = "VERIFIED", tenantPatch = {}, policyOn = true } = {}) {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
-  if (Object.keys(tenantPatch).length) {
-    await Tenant.updateOne({ _id: tenant._id }, { $set: tenantPatch });
-  }
+  const policyPatch = policyOn
+    ? { "settings.requireKycForRedemption": true, "operations.requireKycForRedemption": true }
+    : {};
+  await Tenant.updateOne(
+    { _id: tenant._id },
+    { $set: { ...policyPatch, ...tenantPatch } },
+  );
   const tenantRow = await Tenant.findById(tenant._id).lean();
   const customer = await Customer.create({
     _id: createId("customer"),

@@ -19,7 +19,11 @@ npm run check
 npm test
 ```
 
-**Expected (2026-09-24 gate):** 1089 tests, 0 fail, 0 skip (includes corrective-pass regression tests). Run twice back-to-back before shipping; both must be green.
+**Recorded gate (2026-09-24, post phases 3–11):** `1125` tests, `1119` pass, `6` fail, `0` skip — **NOT READY** until blockers below are green. Re-run: `npm run check && npm test`.
+
+**Blockers (last full run):** `customer-enrol-checkout-resume` (PhonePe idempotent enrol expects 5xx, got 400); `customer-kyc-profile-phase6` (admin KYC type rejection status); `ledger-sequence-concurrency` (redemption KYC); three `uploads.test.js` KYC attachment cases (verified customer guard).
+
+**Cut commit at archive:** `f281d12` (phase 10); phase 11 commit adds summary field + docs + audit script + harness.
 
 Test DB: `tests/helpers/db.js` calls `model.syncIndexes()` once after MongoMemory replSet connect so unique-index tests are deterministic.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Deep audit: write flows, settlement math, flexible caps, platform API, 501 stubs, seed edge cases.
+ * Deep audit: write flows, settlement math, flexible caps, platform API, seed edge cases.
  * Usage: node --env-file=.env scripts/audit-gaps-full.js [--tenant KAIRALI]
  */
 import { randomUUID } from "node:crypto";
@@ -102,23 +102,6 @@ async function platformLogin() {
   const data = dataOf(res);
   if (!res.ok) throw new Error(`Platform login failed: ${JSON.stringify(res.body)}`);
   return data.accessToken;
-}
-
-async function audit501Stubs(ownerToken) {
-  console.log("\n--- 501 stubs (expected unavailable) ---");
-  const stubs = [
-    ["Inbound messaging", "/admin/messaging/inbound"],
-    ["Poll payment status", "/admin/payments/pay_dummy/poll-status", "POST"],
-    ["Manual reconcile", "/admin/payments/pay_dummy/reconcile", "POST"],
-  ];
-  for (const [name, path, method = "GET"] of stubs) {
-    const res = await api(ownerToken, method, path, { idempotency: method === "POST" });
-    if (res.status === 501 && res.body?.error?.code === "FEATURE_NOT_AVAILABLE") {
-      pass(`${name} returns 501 FEATURE_NOT_AVAILABLE`);
-    } else {
-      fail("501 stub", `${name} expected 501, got ${res.status}`, path);
-    }
-  }
 }
 
 async function auditPlatformApi(platformToken) {
@@ -584,7 +567,6 @@ async function main() {
       fail("Platform login", error.message, "Run npm run seed for platform user");
     }
 
-    await audit501Stubs(ownerToken);
     if (platformToken) await auditPlatformApi(platformToken);
     await auditSettlementMath(ownerToken, ownerUser);
     await auditFlexibleSchemes(ownerToken, ownerUser);

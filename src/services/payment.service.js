@@ -180,6 +180,7 @@ async function paymentListSummary(req, filters, query) {
     netCollectedAmount: moneyRef(settledNetPaise),
     grossSuccessfulAmount: moneyRef(collectedGrossPaise),
     refundedAmount: moneyRef(collectedRefundedPaise),
+    totalRefundedAmount: moneyRef(collectedRefundedPaise + fullyReversedGrossPaise),
     fullyReversedAmount: moneyRef(fullyReversedGrossPaise),
     pendingAmount: moneyRef(pending.grossAmountPaise),
     failedAmount: moneyRef(failed.grossAmountPaise),

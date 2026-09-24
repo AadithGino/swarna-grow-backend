@@ -119,6 +119,7 @@ test("payment list summary separates collected net, gross reversed, and pending/
   assert.equal(summary.totalNetAmount.amountPaise, 160_000);
   assert.equal(summary.grossSuccessfulAmount.amountPaise, 180_000);
   assert.equal(summary.refundedAmount.amountPaise, 20_000);
+  assert.equal(summary.totalRefundedAmount.amountPaise, 70_000);
   assert.equal(summary.fullyReversedAmount.amountPaise, 50_000);
   assert.equal(summary.reversedAmount.amountPaise, 50_000);
   assert.equal(summary.pendingAmount.amountPaise, 10_000);

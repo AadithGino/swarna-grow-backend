@@ -9,6 +9,7 @@ import { ENROLMENT_CAPACITY_STATUSES } from "../src/lib/scheme-enrollment-status
 import {
   Alert,
   AuditEvent,
+  Customer,
   LedgerEntry,
   Message,
   OutboxEvent,
@@ -52,6 +53,10 @@ async function seedFlexLockClose({
 } = {}) {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  await Customer.updateOne(
+    { _id: customer._id },
+    { $set: { kyc: { status: "VERIFIED", type: "PAN", numberMasked: "XXXX1234" } } },
+  );
   const planId = createId("schemePlan");
   await SchemePlan.create({
     _id: planId,

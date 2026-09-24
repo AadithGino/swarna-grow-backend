@@ -94,6 +94,7 @@ test("concurrent payment and redemption completion allocate unique ledger sequen
     customerNumber: `C${Date.now()}`,
     name: "Seq Race",
     mobile: `+9188${String(Date.now()).slice(-8)}`,
+    kyc: { status: "VERIFIED", type: "PAN", numberMasked: "XXXX1234" },
   });
   const paid = 200_000;
   const scheme = await Scheme.create({
