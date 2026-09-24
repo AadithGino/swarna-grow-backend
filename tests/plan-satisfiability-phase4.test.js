@@ -75,6 +75,8 @@ function flexPlan(overrides = {}) {
         minimumPaymentPaise: 10_000,
         maximumPaymentPaise: 500_000,
         paymentIncrementPaise: 1_000,
+        minTotalPaise: 0,
+        paymentsRequiredPerCycle: 0,
       },
       capComputation: {
         formula: "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
@@ -163,6 +165,48 @@ test("capped minimum payment above max cycle cap is rejected", () => {
   });
   const parsed = planBody.safeParse(body);
   assert.equal(parsed.success, false);
+});
+
+test("capped min>minCycleCap with finalRemainder false is rejected", () => {
+  const body = flexPlan({
+    code: "SATCAP2",
+    flexibleRules: {
+      ...flexPlan().flexibleRules,
+      capComputation: {
+        ...flexPlan().flexibleRules.capComputation,
+        minCycleCapPaise: 20_000,
+        maxCycleCapPaise: 10_000_000,
+      },
+      cappedPhase: {
+        ...flexPlan().flexibleRules.cappedPhase,
+        minimumPaymentPaise: 50_000,
+        allowFinalRemainderBelowMinimum: false,
+      },
+    },
+  });
+  const parsed = planBody.safeParse(body);
+  assert.equal(parsed.success, false);
+});
+
+test("capped min>minCycleCap with finalRemainder true is accepted", () => {
+  const body = flexPlan({
+    code: "SATCAP3",
+    flexibleRules: {
+      ...flexPlan().flexibleRules,
+      capComputation: {
+        ...flexPlan().flexibleRules.capComputation,
+        minCycleCapPaise: 20_000,
+        maxCycleCapPaise: 10_000_000,
+      },
+      cappedPhase: {
+        ...flexPlan().flexibleRules.cappedPhase,
+        minimumPaymentPaise: 50_000,
+        allowFinalRemainderBelowMinimum: true,
+      },
+    },
+  });
+  const parsed = planBody.safeParse(body);
+  assert.equal(parsed.success, true);
 });
 
 test("benefit minMonthsCompleted above durationMonths is rejected", () => {

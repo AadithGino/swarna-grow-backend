@@ -53,18 +53,41 @@ export function refinePlanSatisfiability(value, context) {
     }
   }
 
-  if (
-    paymentRules.partialPaymentAllowed === false
-    && amountRules.amountMode === E.AmountMode.JEWELLER_FIXED
-    && amountRules.fixedAmountPaise != null
-    && maxTxn != null
-    && amountRules.fixedAmountPaise > maxTxn
-  ) {
-    addSatisfiabilityIssue(
-      context,
-      ["paymentRules", "maxPaymentPerTransactionPaise"],
-      "Fixed installment exceeds max payment per transaction while partial payments are disabled.",
-    );
+  if (maxTxn != null) {
+    const partialOff = paymentRules.partialPaymentAllowed === false;
+    if (partialOff) {
+      if (
+        amountRules.amountMode === E.AmountMode.JEWELLER_FIXED
+        && amountRules.fixedAmountPaise != null
+        && amountRules.fixedAmountPaise > maxTxn
+      ) {
+        addSatisfiabilityIssue(
+          context,
+          ["paymentRules", "maxPaymentPerTransactionPaise"],
+          "Fixed installment exceeds max payment per transaction while partial payments are disabled.",
+        );
+      }
+      if (
+        amountRules.amountMode === E.AmountMode.CUSTOMER_CHOSEN
+        && amountRules.maxInstallmentPaise != null
+        && amountRules.maxInstallmentPaise > maxTxn
+      ) {
+        addSatisfiabilityIssue(
+          context,
+          ["paymentRules", "maxPaymentPerTransactionPaise"],
+          "Maximum installment exceeds max payment per transaction while partial payments are disabled.",
+        );
+      }
+    } else if (
+      paymentRules.minPaymentPaise != null
+      && paymentRules.minPaymentPaise > maxTxn
+    ) {
+      addSatisfiabilityIssue(
+        context,
+        ["paymentRules", "minPaymentPaise"],
+        "Minimum payment exceeds max payment per transaction.",
+      );
+    }
   }
 
   const flex = value.flexibleRules;
@@ -90,6 +113,16 @@ export function refinePlanSatisfiability(value, context) {
         context,
         ["flexibleRules", "cappedPhase", "minimumPaymentPaise"],
         "Capped-phase minimum payment exceeds the maximum possible cycle cap.",
+      );
+    }
+    if (
+      flex.cappedPhase.allowFinalRemainderBelowMinimum === false
+      && flex.cappedPhase.minimumPaymentPaise > flex.capComputation.minCycleCapPaise
+    ) {
+      addSatisfiabilityIssue(
+        context,
+        ["flexibleRules", "cappedPhase", "minimumPaymentPaise"],
+        "Capped-phase minimum payment exceeds minCycleCapPaise while final remainder below minimum is disallowed.",
       );
     }
   }
@@ -124,11 +157,15 @@ export function refinePlanSatisfiability(value, context) {
         break;
       }
       seen.add(slab);
-      if (maxTxn != null && slab > maxTxn) {
+      if (
+        paymentRules.partialPaymentAllowed === false
+        && maxTxn != null
+        && slab > maxTxn
+      ) {
         addSatisfiabilityIssue(
           context,
           ["amountRules", "slabsPaise"],
-          "Each slab amount must not exceed max payment per transaction.",
+          "Each slab amount must not exceed max payment per transaction while partial payments are disabled.",
         );
         break;
       }
