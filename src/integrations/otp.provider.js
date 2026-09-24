@@ -5,6 +5,7 @@ import { getRedis, redisReady } from "../config/redis.js";
 import { AppError } from "../lib/app-error.js";
 import { maskMobile, mobileLookupVariants, canonicalMobile } from "../lib/mobile.js";
 import { Customer } from "../models/index.js";
+import { sendMsg91Otp } from "./msg91.client.js";
 
 const memory = new Map();
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -43,9 +44,15 @@ async function deleteRecord(key) {
 }
 
 export function assertOtpProviderReady(source = env) {
-  if (source.PROVIDER_MODE === "live" && source.OTP_PROVIDER !== "mock") {
-    throw new Error("Live OTP delivery is not configured. Set PROVIDER_MODE=mock or implement a live OTP_PROVIDER before starting.");
+  if (source.PROVIDER_MODE !== "live") return;
+  if (source.OTP_PROVIDER === "mock") return;
+  if (source.OTP_PROVIDER === "msg91") {
+    const missing = ["MSG91_AUTH_KEY", "MSG91_OTP_TEMPLATE_ID", "MSG91_SENDER_ID"]
+      .filter((k) => !source[k] || String(source[k]).trim() === "");
+    if (missing.length) throw new Error(`MSG91 OTP not configured: missing ${missing.join(", ")}.`);
+    return;
   }
+  throw new Error(`Unsupported OTP_PROVIDER: ${source.OTP_PROVIDER}`);
 }
 
 function generateOtp() {
@@ -69,7 +76,8 @@ async function validateOtp({ tenantId, tenantCode, mobile, purpose, otp, otpId }
 }
 
 export const otpProvider = {
-  async send({ tenantId, tenantCode, mobile, purpose }) {
+  async send({ tenantId, tenantCode, mobile, purpose }, deps = {}) {
+    const runtime = deps.env ?? env;
     const key = otpKey({ tenantId, tenantCode, mobile, purpose });
     const existing = await readRecord(key);
     if (existing?.sentAt && Date.now() - existing.sentAt < RESEND_COOLDOWN_SECONDS * 1000) {
@@ -87,7 +95,7 @@ export const otpProvider = {
           }),
         )
       : false;
-    if (env.PROVIDER_MODE === "mock" || env.OTP_PROVIDER === "mock") {
+    if (runtime.PROVIDER_MODE === "mock" || runtime.OTP_PROVIDER === "mock") {
       if (env.NODE_ENV !== "production") logger.info({ tenantId, tenantCode, mobile, purpose, otp }, "Mock OTP queued");
       else logger.info({ tenantId, tenantCode, mobile, purpose }, "Mock OTP queued");
       return {
@@ -100,7 +108,22 @@ export const otpProvider = {
         expiresInSeconds: ttl,
       };
     }
-    throw new Error("MSG91 live adapter requires project-specific template configuration");
+    try {
+      await sendMsg91Otp({ mobile, otp }, { fetch: deps.fetch, env: runtime });
+    } catch (err) {
+      await deleteRecord(key);
+      logger.error({ err: err?.message, tenantId, tenantCode, purpose }, "MSG91 OTP delivery failed");
+      throw new AppError("OTP_DELIVERY_FAILED", "Could not send the verification code. Please try again.", 502);
+    }
+    return {
+      otpId,
+      channel: "SMS",
+      maskedMobile: maskMobile(mobile),
+      resendAvailableInSeconds: RESEND_COOLDOWN_SECONDS,
+      attemptsAllowed: MAX_ATTEMPTS,
+      isRegistered,
+      expiresInSeconds: ttl,
+    };
   },
   validate: validateOtp,
   async consume({ tenantId, tenantCode, mobile, purpose }) {

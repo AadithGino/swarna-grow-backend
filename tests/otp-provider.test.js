@@ -10,9 +10,19 @@ test.after(async () => {
   await stopTestDb();
 });
 
-test("assertOtpProviderReady fails loudly for live mode without a live provider", () => {
-  assert.throws(() => assertOtpProviderReady({ PROVIDER_MODE: "live", OTP_PROVIDER: "msg91" }), /Live OTP delivery is not configured/);
+test("assertOtpProviderReady requires MSG91 credentials in live mode", () => {
+  assert.throws(
+    () => assertOtpProviderReady({ PROVIDER_MODE: "live", OTP_PROVIDER: "msg91" }),
+    /MSG91 OTP not configured/,
+  );
   assert.doesNotThrow(() => assertOtpProviderReady({ PROVIDER_MODE: "mock", OTP_PROVIDER: "mock" }));
+  assert.doesNotThrow(() => assertOtpProviderReady({
+    PROVIDER_MODE: "live",
+    OTP_PROVIDER: "msg91",
+    MSG91_AUTH_KEY: "k",
+    MSG91_OTP_TEMPLATE_ID: "t",
+    MSG91_SENDER_ID: "SWRNGR",
+  }));
 });
 
 test("OTP verify succeeds once and locks out after five failures", async () => {
