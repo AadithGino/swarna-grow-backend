@@ -15,11 +15,11 @@ Product tip before docs: `796e2fc` (`fix: reject unpayable/contradictory plans a
 
 ## Archive SHA-256
 
-Filled at cut time after `git archive` from the docs HEAD:
-
-```
-ARCHIVE_SHA256_PENDING
-```
+| Field | Value |
+|-------|--------|
+| File | `swarnagrow-backend-v1-rc-155b6f1.zip` |
+| Cut from | `155b6f1` (`docs: single accurate release record`) |
+| SHA-256 | `ab2416d5eebb17fb65ca9115d48d5835db60906f960f8bf521ed1b07b75c6291` |
 
 ## Not covered by the suite alone
 
