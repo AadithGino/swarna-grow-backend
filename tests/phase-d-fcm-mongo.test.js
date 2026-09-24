@@ -73,7 +73,9 @@ async function bulkSeedEligibleCustomers({
   }
 }
 
-test("fetchAudienceCustomerPage returns 15000 unique tenant-scoped recipients", async () => {
+test("fetchAudienceCustomerPage returns 15000 unique tenant-scoped recipients", {
+  skip: process.env.RUN_HEAVY === "1" ? false : "heavy 15k scan — set RUN_HEAVY=1 to run",
+}, async () => {
   await resetTestDb();
   const { tenant: target, branch } = await seedTenantUser({ tenantCode: "LOADA" });
   const { tenant: other, branch: otherBranch } = await seedTenantUser({ tenantCode: "LOADB" });

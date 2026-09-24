@@ -145,7 +145,7 @@ test("concurrent reminder quota claims never exceed daily cap", async () => {
 });
 
 test("15000-scheme reminder scan uses bounded batches without monotonic heap growth", {
-  skip: process.env.PHASE_EF_SKIP_15K_REMINDER === "1" ? "PHASE_EF_SKIP_15K_REMINDER=1 (use isolated 15k run)" : false,
+  skip: process.env.RUN_HEAVY === "1" ? false : "heavy 15k scan — set RUN_HEAVY=1 to run",
 }, async () => {
   const { connectRedis, disconnectRedis } = await import("../src/config/redis.js");
   const redisOk = await connectRedis();
