@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createId } from "../src/lib/ids.js";
+import { isKycRequiredForRedemption } from "../src/lib/kyc-policy.js";
 import { Customer, LedgerEntry, Redemption, Scheme, Tenant } from "../src/models/index.js";
 import {
   requestCustomerRedemption,
@@ -19,7 +20,7 @@ test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => { await resetTestDb(); });
 
-async function seedMatured({ kycStatus = "VERIFIED", tenantPatch = {}, policyOn = true } = {}) {
+async function seedMatured({ kycStatus = "VERIFIED", tenantPatch = {}, policyOn = false } = {}) {
   const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
   const policyPatch = policyOn
     ? { "settings.requireKycForRedemption": true, "operations.requireKycForRedemption": true }
@@ -98,22 +99,60 @@ function customerReq({ customer, scheme }) {
   };
 }
 
+test("default tenant — redemption KYC off; non-verified customer can request", async () => {
+  const { tenant, customer, scheme } = await seedMatured({ kycStatus: "NOT_SUBMITTED" });
+  assert.equal(isKycRequiredForRedemption(tenant), false);
+  const result = await requestCustomerRedemption(customerReq({ customer, scheme }));
+  assert.ok(result.id);
+});
+
 test("redemption request blocked when KYC policy requires verified customer", async () => {
-  const { customer, scheme } = await seedMatured({ kycStatus: "NOT_SUBMITTED" });
+  const { customer, scheme } = await seedMatured({ kycStatus: "NOT_SUBMITTED", policyOn: true });
   await assert.rejects(
     () => requestCustomerRedemption(customerReq({ customer, scheme })),
     (error) => error.code === "KYC_REQUIRED",
   );
 });
 
-test("verified customer can request redemption under default KYC policy", async () => {
-  const { customer, scheme } = await seedMatured({ kycStatus: "VERIFIED" });
+test("verified customer can request redemption when KYC policy is on", async () => {
+  const { customer, scheme } = await seedMatured({ kycStatus: "VERIFIED", policyOn: true });
+  const result = await requestCustomerRedemption(customerReq({ customer, scheme }));
+  assert.ok(result.id);
+});
+
+test("legacy settings.requireKycForRedemption true enforces KYC", async () => {
+  const { tenant, customer, scheme } = await seedMatured({
+    kycStatus: "NOT_SUBMITTED",
+    tenantPatch: { "settings.requireKycForRedemption": true },
+  });
+  await Tenant.updateOne(
+    { _id: tenant._id },
+    { $unset: { "operations.requireKycForRedemption": "" } },
+  );
+  const refreshed = await Tenant.findById(tenant._id).lean();
+  assert.equal(isKycRequiredForRedemption(refreshed), true);
+  await assert.rejects(
+    () => requestCustomerRedemption(customerReq({ customer, scheme })),
+    (error) => error.code === "KYC_REQUIRED",
+  );
+});
+
+test("operations.requireKycForRedemption false overrides legacy settings true", async () => {
+  const { tenant, customer, scheme } = await seedMatured({
+    kycStatus: "NOT_SUBMITTED",
+    tenantPatch: {
+      "settings.requireKycForRedemption": true,
+      "operations.requireKycForRedemption": false,
+    },
+  });
+  const refreshed = await Tenant.findById(tenant._id).lean();
+  assert.equal(isKycRequiredForRedemption(refreshed), false);
   const result = await requestCustomerRedemption(customerReq({ customer, scheme }));
   assert.ok(result.id);
 });
 
 test("completion re-checks KYC when policy is on", async () => {
-  const { customer, scheme, user } = await seedMatured({ kycStatus: "VERIFIED" });
+  const { customer, scheme, user } = await seedMatured({ kycStatus: "VERIFIED", policyOn: true });
   const requested = await requestCustomerRedemption(customerReq({ customer, scheme }));
   await Redemption.updateOne(
     { _id: requested.id },
@@ -132,16 +171,4 @@ test("completion re-checks KYC when policy is on", async () => {
     }, "complete"),
     (error) => error.code === "KYC_REQUIRED",
   );
-});
-
-test("redemption allowed when requireKycForRedemption is disabled", async () => {
-  const { tenant, customer, scheme } = await seedMatured({
-    kycStatus: "NOT_SUBMITTED",
-    tenantPatch: { "settings.requireKycForRedemption": false, "operations.requireKycForRedemption": false },
-  });
-  const result = await requestCustomerRedemption({
-    ...customerReq({ customer, scheme }),
-    tenant,
-  });
-  assert.ok(result.id);
 });

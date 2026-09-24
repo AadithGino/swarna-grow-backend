@@ -43,6 +43,7 @@ const tenantOperationsSchema = new mongoose.Schema(
   {
     multiSchemePerCustomer: { type: Boolean, default: true },
     kycMandatory: { type: Boolean },
+    requireKycForRedemption: { type: Boolean },
     kycAllowedTypes: {
       type: [String],
       default: ["AADHAAR", "PAN"],
@@ -84,7 +85,7 @@ const tenantSchema = new mongoose.Schema({
     timezone: { type: String, default: "Asia/Kolkata" },
     currency: { type: String, default: "INR" },
     requireKycForEnrolment: { type: Boolean, default: false },
-    requireKycForRedemption: { type: Boolean, default: true },
+    requireKycForRedemption: { type: Boolean, default: false },
     oneActiveSchemePerCustomer: { type: Boolean, default: false },
     customerAppMaintenance: { type: Boolean, default: false },
     reminderConfig: { type: mongoose.Schema.Types.Mixed, default: undefined },

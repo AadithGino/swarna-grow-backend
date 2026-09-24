@@ -110,8 +110,6 @@ export async function seedTenantUser({
     name: `${code} Jewellers`,
     mobile: `+9197${String(10000000 + tenantCodeSeq).slice(-8)}`,
     status: TenantStatus.ACTIVE,
-    settings: { requireKycForRedemption: false },
-    operations: { requireKycForRedemption: false },
     subscription: {
       status: "ACTIVE",
       tier: "STARTER",

@@ -31,14 +31,12 @@ export function isCustomerSelfKycEnabled(tenant) {
   return isKycMandatoryForEnrolment(tenant);
 }
 
-/** Resolves ops + legacy settings.requireKycForRedemption (schema default true). */
+/** Resolves ops.requireKycForRedemption and legacy settings.requireKycForRedemption (default off). */
 export function isKycRequiredForRedemption(tenant) {
   const ops = tenant?.operations ?? {};
   const settings = tenant?.settings ?? {};
-  if (ops.requireKycForRedemption != null) {
-    return ops.requireKycForRedemption === true;
-  }
-  return settings.requireKycForRedemption !== false;
+  if (ops.requireKycForRedemption != null) return ops.requireKycForRedemption === true;
+  return settings.requireKycForRedemption === true;
 }
 
 export function pickKycSubmitFields(body) {
