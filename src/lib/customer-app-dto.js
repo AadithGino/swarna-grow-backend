@@ -9,6 +9,7 @@ import {
   hasNonEmptyCustomerAddress,
 } from "./customer-profile-completion.js";
 import { isKycMandatoryForEnrolment } from "./kyc-policy.js";
+import { isOneActiveSchemePerCustomerEnforced } from "./tenant-enrolment-policy.js";
 
 export function withId(doc) {
   if (!doc || typeof doc !== "object") return doc;
@@ -32,14 +33,11 @@ export function tenantPortalCapabilitiesDto(tenant) {
     };
   }
   const ops = tenant.operations ?? {};
-  const settings = tenant.settings ?? {};
-  const oneSchemeOnly =
-    settings.oneActiveSchemePerCustomer === true || ops.multiSchemePerCustomer === false;
   return {
     customerSelfEnrol: ops.customerSelfEnrolEnabled !== false,
     customerSelfRegistration: ops.customerSelfRegistrationEnabled !== false,
     kycMandatory: isKycMandatoryForEnrolment(tenant),
-    multiScheme: !oneSchemeOnly,
+    multiScheme: !isOneActiveSchemePerCustomerEnforced(tenant),
     customerLoginMode: ops.customerLoginMode ?? "OTP_ONLY",
     customerAppWriteEnabled: ops.customerAppWriteEnabled !== false,
     customerAppPaymentsEnabled:

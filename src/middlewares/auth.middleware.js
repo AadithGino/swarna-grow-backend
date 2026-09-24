@@ -30,6 +30,12 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
   } else {
     const user = await User.findById(claims.sub).lean();
     if (!user || user.status !== UserStatus.ACTIVE) throw errors.unauthenticated();
+    if (claims.tid != null && String(user.tenantId ?? "") !== String(claims.tid)) {
+      throw errors.unauthenticated();
+    }
+    if (claims.typ != null && user.type != null && claims.typ !== user.type) {
+      throw errors.unauthenticated();
+    }
     if ((claims.sv ?? 0) !== (user.securityVersion ?? 0)) throw errors.unauthenticated("Your session is no longer valid. Sign in again.");
   }
   if (claims.tid) {
