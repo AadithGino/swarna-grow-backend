@@ -12,7 +12,9 @@ import {
   grievanceAssignBody,
   grievancePriorityBody,
   grievanceStatusBody,
-  handoverSettleBody,
+  handoverAcceptBody,
+  handoverRejectBody,
+  handoverResolveDiscrepancyBody,
   paymentReconcileBody,
   pushBroadcastAudiencePreviewBody,
   pushBroadcastBody,
@@ -44,7 +46,7 @@ adminOperationsRouter.post(
   "/cash/handovers/:handoverId/accept",
   ...guarded(
     Permission.CASH_HANDOVER_ACCEPT,
-    validate({ body: handoverSettleBody }),
+    validate({ body: handoverAcceptBody }),
     idempotent,
     asyncHandler(controller.settleHandover("accept")),
   ),
@@ -53,7 +55,7 @@ adminOperationsRouter.post(
   "/cash/handovers/:handoverId/reject",
   ...guarded(
     Permission.CASH_HANDOVER_ACCEPT,
-    validate({ body: handoverSettleBody }),
+    validate({ body: handoverRejectBody }),
     idempotent,
     asyncHandler(controller.settleHandover("reject")),
   ),
@@ -62,7 +64,7 @@ adminOperationsRouter.post(
   "/cash/handovers/:handoverId/resolve-discrepancy",
   ...guarded(
     Permission.CASH_HANDOVER_ACCEPT,
-    validate({ body: handoverSettleBody }),
+    validate({ body: handoverResolveDiscrepancyBody }),
     idempotent,
     asyncHandler(controller.settleHandover("resolve-discrepancy")),
   ),

@@ -229,14 +229,17 @@ test("cash payment reverse with pending handover does not create a cash adjustme
     status: CashHandoverStatus.PENDING,
     submittedAt: new Date(),
   });
-  await reversePayment({
-    auth: { id: user._id, tenantId: tenant._id },
-    scope: { tenantId: tenant._id },
-    params: { paymentId: payment._id },
-    body: { reason: "Wrong amount" },
-    headers: { "user-agent": "test" },
-    ip: "127.0.0.1",
-  });
+  await assert.rejects(
+    () => reversePayment({
+      auth: { id: user._id, tenantId: tenant._id },
+      scope: { tenantId: tenant._id },
+      params: { paymentId: payment._id },
+      body: { reason: "Wrong amount" },
+      headers: { "user-agent": "test" },
+      ip: "127.0.0.1",
+    }),
+    (error) => error.code === "CASH_REVERSAL_BLOCKED_BY_PENDING_HANDOVER",
+  );
   assert.equal(await CashAdjustment.countDocuments({ staffId: user._id }), 0);
 });
 

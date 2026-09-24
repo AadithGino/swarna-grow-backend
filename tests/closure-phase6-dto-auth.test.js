@@ -50,7 +50,7 @@ test("customer app DTO uses shared one-active resolver when ops allows multiple"
 });
 
 test("staff token tenant mismatch is rejected", async () => {
-  const { tenant, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
+  const { user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
   const otherTenantId = createId("tenant");
   const token = await staffToken({ user, tenantId: otherTenantId });
   const res = await request(app)

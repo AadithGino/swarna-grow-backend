@@ -978,7 +978,10 @@ export async function reversePayment(req) {
         staffId: payment.collectedBy,
       }, session);
       const inHandAfter = balanceBefore.cashInHandPaise - payment.amountPaise;
-      if (inHandAfter < balanceBefore.cashPendingAcceptancePaise) {
+      if (
+        balanceBefore.cashPendingAcceptancePaise > 0
+        && inHandAfter < balanceBefore.cashPendingAcceptancePaise
+      ) {
         throw errors.business(
           "CASH_REVERSAL_BLOCKED_BY_PENDING_HANDOVER",
           "Reverse this collection after pending cash handovers are settled or cancelled.",

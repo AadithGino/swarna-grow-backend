@@ -390,10 +390,15 @@ export async function settleHandover(req, action) {
     if (row.status !== CashHandoverStatus.PENDING && action !== "resolve-discrepancy") throw new AppError("CASH_HANDOVER_ALREADY_SETTLED", "This handover is already settled.", 409);
     if (action === "resolve-discrepancy") {
       if (row.status !== CashHandoverStatus.DISCREPANCY) throw new AppError("CASH_HANDOVER_NOT_IN_DISCREPANCY", "Only a discrepancy handover can be resolved.", 409);
+      if (typeof req.body.accepted !== "boolean") {
+        throw errors.validation([{ field: "accepted", message: "accepted must be true or false." }]);
+      }
       row.status = req.body.accepted ? CashHandoverStatus.ACCEPTED : CashHandoverStatus.REJECTED;
-      if (req.body.accepted && req.body.acceptedAmountPaise != null) {
-        row.acceptedAmountPaise = req.body.acceptedAmountPaise;
-        row.discrepancyPaise = row.amountPaise - req.body.acceptedAmountPaise;
+      const acceptedAmountPaise = req.body.acceptedAmountPaise ?? row.acceptedAmountPaise ?? row.amountPaise;
+      row.acceptedAmountPaise = acceptedAmountPaise;
+      row.discrepancyPaise = row.amountPaise - acceptedAmountPaise;
+      if (row.discrepancyPaise !== 0) {
+        row.discrepancyDirection = row.discrepancyPaise > 0 ? "SHORTFALL" : "OVERAGE";
       }
     } else if (action === "accept") {
       const acceptedAmountPaise = req.body.acceptedAmountPaise ?? row.amountPaise;
@@ -415,7 +420,6 @@ export async function settleHandover(req, action) {
     row.settledAt = new Date();
     row.settledBy = req.auth.id;
     row.reason = req.body.reason;
-    if (req.body.discrepancyPaise != null && row.status === CashHandoverStatus.DISCREPANCY) row.discrepancyPaise = req.body.discrepancyPaise;
     if (row.status === CashHandoverStatus.ACCEPTED) {
       const acceptedAmountPaise = row.acceptedAmountPaise ?? row.amountPaise;
       const diffPaise = row.amountPaise - acceptedAmountPaise;

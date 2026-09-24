@@ -14,6 +14,7 @@ import {
   nomineeBody,
   whatsappOptBody,
 } from "../validators/common.validators.js";
+import { kycVerifyBody } from "../validators/admin-mutation.validators.js";
 import { Permission } from "../constants/permissions.js";
 import { sendList } from "../lib/response.js";
 import { Customer } from "../models/index.js";
@@ -138,6 +139,7 @@ adminCustomerRouter.post(
   "/:customerId/kyc/verify",
   ...guarded(
     Permission.CUSTOMER_KYC,
+    validate({ body: kycVerifyBody }),
     idempotent,
     asyncHandler(controller.kyc(true)),
   ),

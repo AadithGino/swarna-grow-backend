@@ -651,7 +651,23 @@ export async function updateKyc(req, verify = false) {
   return withTransaction(async (session) => {
     const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session); if (!customer) throw errors.notFound("Customer");
     const before = customer.toObject();
-    if (verify) { if (customer.kyc?.status !== KycStatus.SUBMITTED) throw new AppError("KYC_NOT_SUBMITTED", "KYC must be submitted before verification.", 422); customer.kyc.status = req.body.status ?? KycStatus.VERIFIED; customer.kyc.verifiedAt = new Date(); customer.kyc.verifiedBy = req.auth.id; customer.kyc.rejectionReason = req.body.rejectionReason; }
+    if (verify) {
+      if (customer.kyc?.status !== KycStatus.SUBMITTED) {
+        throw new AppError("KYC_NOT_SUBMITTED", "KYC must be submitted before verification.", 422);
+      }
+      const status = req.body.status;
+      if (status === KycStatus.REJECTED) {
+        customer.kyc.status = KycStatus.REJECTED;
+        customer.kyc.rejectionReason = req.body.rejectionReason;
+        customer.kyc.verifiedAt = undefined;
+        customer.kyc.verifiedBy = req.auth.id;
+      } else {
+        customer.kyc.status = KycStatus.VERIFIED;
+        customer.kyc.verifiedAt = new Date();
+        customer.kyc.verifiedBy = req.auth.id;
+        customer.kyc.rejectionReason = undefined;
+      }
+    }
     else {
       if (customer.kyc?.status === KycStatus.VERIFIED) {
         throw new AppError("KYC_ALREADY_VERIFIED", "Verified KYC cannot be replaced. Contact your branch for corrections.", 409);

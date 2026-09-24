@@ -7,8 +7,6 @@ import {
   CashHandoverStatus,
   HandoverInitiator,
   PaymentMode,
-  PaymentSource,
-  PaymentStatus,
   TenantRole,
   UserStatus,
   UserType,

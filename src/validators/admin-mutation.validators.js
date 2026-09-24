@@ -102,14 +102,56 @@ export const cashAdjustmentBody = z
   })
   .strict();
 
-export const handoverSettleBody = z
+export const paymentReverseBody = z
   .object({
-    acceptedAmountPaise: positivePaise.optional(),
-    accepted: z.boolean().optional(),
-    reason: z.string().trim().max(500).optional(),
-    discrepancyPaise: z.number().int().safe().optional(),
+    reason: z.string().trim().min(3).max(500),
   })
   .strict();
+
+export const kycVerifyBody = z
+  .object({
+    status: z.enum(["VERIFIED", "REJECTED"]),
+    rejectionReason: z.string().trim().min(3).max(500).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.status === "REJECTED" && !value.rejectionReason?.trim()) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "rejectionReason is required when status is REJECTED.",
+      });
+    }
+  });
+
+export const handoverAcceptBody = z
+  .object({
+    acceptedAmountPaise: positivePaise.optional(),
+  })
+  .strict();
+
+export const handoverRejectBody = z
+  .object({
+    reason: z.string().trim().min(3).max(500),
+  })
+  .strict();
+
+export const handoverResolveDiscrepancyBody = z
+  .object({
+    accepted: z.boolean(),
+    acceptedAmountPaise: positivePaise.optional(),
+    reason: z.string().trim().min(3).max(500).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.accepted === false && !value.reason?.trim()) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "reason is required when rejecting a discrepancy resolution.",
+      });
+    }
+  });
 
 export const grievanceAssignBody = z
   .object({

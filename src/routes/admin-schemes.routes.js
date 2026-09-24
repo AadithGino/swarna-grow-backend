@@ -25,6 +25,7 @@ import {
   settlementMismatchReopenBody,
   settlementMismatchResolveBody,
 } from "../validators/gateway-settlement.validators.js";
+import { paymentReverseBody } from "../validators/admin-mutation.validators.js";
 import {
   enrolBody,
   paymentBody,
@@ -315,6 +316,7 @@ adminSchemeRouter.post(
   "/payments/:paymentId/reverse",
   ...guarded(
     Permission.PAYMENT_REVERSE,
+    validate({ body: paymentReverseBody }),
     idempotent,
     asyncHandler(payment.reverse),
   ),
