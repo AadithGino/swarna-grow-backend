@@ -1,61 +1,46 @@
 # SwarnaGrow backend — V1 release record
 
-**Verdict: READY** for controlled V1 backend cut (unit + integration gate with heavy tests).
+**Verdict: READY** for controlled V1 backend cut (targeted plan-validator gate green; prior full `test:release` on closure tip).
 
-This file is the single accurate release record. It supersedes older READY/NOT READY notes and expected counts.
+This file is the single accurate release record. It supersedes older READY/NOT READY notes and expected counts. Do not embed an archive self-hash here — verify the zip with the companion `.sha256` file.
 
 ## Final commit
 
 | Field | Value |
 |-------|--------|
 | Branch | `chore/production-hardening-phase-0` |
-| Commit (short) | `796e2fc` |
-| Commit (full) | `796e2fc985939fa2f9c231ad868806173d21e0be` |
-| Tip message | `fix: reject unpayable/contradictory plans and invalid dates across all plan paths` |
+| Tip (short) | `7922ccd` |
+| Tip message | `fix: require customer-chosen bounds; advance-enabled/zero guard; reject cap on flexible plans` |
 
-Docs commit that published this record is immediately after `796e2fc` on the same branch (`docs: single accurate release record`). Archive is cut from that docs HEAD.
-
-## Full regression gate (actual)
-
-```bash
-npm run check   # syntax + route coverage + eslint — passed 2026-09-24
-npm run test:release   # RUN_HEAVY=1, concurrency 1
-```
-
-| Metric | Result |
-|--------|--------|
-| Tests | **1154** |
-| Pass | **1154** |
-| Fail | **0** |
-| Skip | **0** |
-| Cancelled | **0** |
-| Duration | ~2359 s (~39 min) |
-| Date | 2026-09-24 |
-
-Default `npm test` still gates two heavy 15k scans behind `RUN_HEAVY`; `test:release` runs them. Both heavy tests passed in this gate.
-
-Test DB: `tests/helpers/db.js` calls `model.syncIndexes()` once after MongoMemory replSet connect.
-
-## Closure phases (product commits)
+## Plan-validation correctness (validator-only)
 
 | Phase | Commit | Summary |
 |-------|--------|---------|
-| 1 | `200ee99` | Enrolment first-payment uses in-tx result end-to-end |
-| 2 | `b2fa68d` | Staff-update whitelist / mass-assignment block |
-| 3 | `3a0fcb2` | Cash custody lock on settle/cancel/resolve/reversal |
-| 6 | `22e9b92` | One-active DTO shared resolver; staff token tenant/type bind |
-| 5 | `3e42a88` | Strict DTOs: reverse reason, KYC verify, handover transitions |
-| 4 | `796e2fc` | Plan satisfiability, calendar dates, branch referential checks |
-| 7 | (this docs commit) | Single accurate release record |
+| A | `679cf79` | Per-transaction cap decision table; min-cycle-cap satisfiability |
+| B | `7922ccd` | Customer-chosen bounds; advance-enabled/zero; reject txn cap on flexible |
+
+Targeted gate (post B): `plan-satisfiability*`, `plan-cross-field*`, `plan-phase1*`, `plan-patch-merge*`, `flexible-plan-duration` + `npm run check` — pass.
+
+## Prior full regression gate (closure tip)
+
+| Metric | Result |
+|--------|--------|
+| Command | `npm run test:release` |
+| Pass / fail / skip | **1154** / **0** / **0** |
+| Date | 2026-09-24 |
+
+Default `npm test` still gates two heavy 15k scans behind `RUN_HEAVY`; `test:release` runs them.
+
+Test DB: `tests/helpers/db.js` calls `model.syncIndexes()` once after MongoMemory replSet connect.
 
 ## Release archive
 
-```bash
-git archive --format=zip --output swarnagrow-backend-v1-rc-$(git rev-parse --short HEAD).zip HEAD
-shasum -a 256 swarnagrow-backend-v1-rc-*.zip
-```
+Named for product tip `7922ccd` (no embedded self-hash):
 
-**Archive SHA-256:** recorded in `docs/PRODUCTION_VERIFICATION_RESPONSE.md` after `git archive` from the docs HEAD.
+```bash
+git archive --format=zip -o swarnagrow-backend-v1-rc-7922ccd.zip HEAD
+sha256sum swarnagrow-backend-v1-rc-7922ccd.zip > swarnagrow-backend-v1-rc-7922ccd.zip.sha256
+```
 
 Tracked Git content only — excludes `.env`, `node_modules`, `.git`, keys, coverage, logs, uncommitted WIP.
 
@@ -66,10 +51,9 @@ npm ci
 npm run check
 node --env-file=.env scripts/sync-indexes.js --dry-run
 node --env-file=.env scripts/sync-indexes.js --apply
-# start API / workers per environment runbook
 ```
 
-## Environment-dependent (not covered by `npm run test:release`)
+## Environment-dependent (not covered by suite alone)
 
 - Production MongoDB Atlas + Redis + BullMQ workers
 - Live PhonePe / MSG91 / FCM credentials and webhook ingress
