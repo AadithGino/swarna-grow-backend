@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { Customer, Session, Tenant } from "../src/models/index.js";
+import { Session, Tenant } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import { createApp } from "../src/app.js";
 import { signAccessToken } from "../src/services/token.service.js";

@@ -31,6 +31,7 @@ async function seedFlexibleSelfEnrolPlan(tenantId) {
     amountRules: {
       amountMode: "CUSTOMER_CHOSEN",
       minInstallmentPaise: 100_000,
+      maxInstallmentPaise: 2_500_000,
       multipleOfPaise: 10_000,
     },
     scheduleRules: {
