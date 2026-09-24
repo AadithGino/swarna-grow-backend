@@ -33,9 +33,22 @@ test("capped flexible amount is an optional non-carrying allowance", async () =>
 test("unsupported flexible extension is recognized for explicit service rejection", () => {
   const result = planBody.safeParse({
     name: "Flexible", code: "FLEX_1", valueBasis: "CASH", paymentPattern: "FLEXIBLE", durationMonths: 11, installmentCount: 11,
-    amountRules: { amountMode: "CUSTOMER_CHOSEN", slabsPaise: [] }, scheduleRules: { dueDateRule: "JOIN_ANNIVERSARY", firstInstallmentModeDefault: "START_NEXT_CYCLE" }, paymentRules: {},
+    amountRules: {
+      amountMode: "CUSTOMER_CHOSEN",
+      slabsPaise: [],
+      minInstallmentPaise: 100_000,
+      maxInstallmentPaise: 2_500_000,
+      multipleOfPaise: 10_000,
+    },
+    scheduleRules: { dueDateRule: "JOIN_ANNIVERSARY", firstInstallmentModeDefault: "START_NEXT_CYCLE" },
+    paymentRules: { partialPaymentAllowed: true, minPaymentPaise: 100_000 },
     flexibleRules: { phaseMode: "FLEXIBLE_THEN_CAPPED", capMode: "FLEXIBLE_PHASE_AVERAGE", carryForwardMode: "NONE", flexiblePhaseCycles: 6, cappedPhaseCycles: 5, averagingDivisor: 6, frequencyMode: "MULTIPLE", extensionMode: "EXTEND_FLEXIBLE_PHASE", flexiblePhase: { minimumPaymentPaise: 100000, maximumPaymentPaise: 2500000, paymentIncrementPaise: 10000, minTotalPaise: 300000, maxPaymentsPerCycle: null, paymentsRequiredPerCycle: 0 }, capComputation: { formula: "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR", roundingMode: "ROUND_UP", roundToNearestPaise: 10000, minCycleCapPaise: 50000, maxCycleCapPaise: 10000000, onZeroFlexiblePhaseTotal: "CLOSE_SCHEME", onBelowMinimumTotal: "USE_MINIMUM" }, cappedPhase: { minimumPaymentPaise: 100000, paymentIncrementPaise: 10000, allowFinalRemainderBelowMinimum: true, allowFutureCyclePayment: false, maxAdvanceCycles: 0 } },
     redemptionRules: { prematureClosureAllowed: true, lockInMonths: 3, prematurePenalty: { mode: "NONE", value: 0, benefitTreatment: "FORFEIT" }, allowedModes: ["CASH"], redeemAtAnyBranch: false }, availability: { allBranches: true, branchIds: [], visibleInCustomerApp: true, customerSelfEnrolAllowed: true },
+    benefit: {
+      type: "TEXT_ONLY",
+      displayLabel: "Gift",
+      eligibility: { requireAllInstallmentsPaid: true, maxAllowedDefaults: 0, minMonthsCompleted: 0 },
+    },
   });
   assert.equal(result.success, true);
   assert.equal(result.data.flexibleRules.extensionMode, "EXTEND_FLEXIBLE_PHASE");
