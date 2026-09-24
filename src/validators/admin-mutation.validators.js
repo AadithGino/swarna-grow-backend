@@ -76,6 +76,22 @@ export const alertDismissBody = z
 
 export const uploadCompleteBody = z.object({}).strict();
 
+export const staffUpdatePatchBody = z
+  .object({
+    expectedVersion: z.number().int().positive().optional(),
+    name: z.string().trim().min(2).max(120).optional(),
+    email: z
+      .union([z.string().email(), z.literal("")])
+      .optional()
+      .transform((value) => (value === "" ? null : value)),
+    mobile: mobile.optional(),
+    branchId: z.union([z.string().min(4).max(80), z.null()]).optional(),
+    status: enumSchema(E.UserStatus).optional(),
+    role: enumSchema(E.TenantRole).optional(),
+    permissions: z.array(z.string().min(1).max(64)).optional(),
+  })
+  .strict();
+
 export const cashAdjustmentBody = z
   .object({
     staffId: z.string().min(4).max(80),

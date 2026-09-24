@@ -1575,10 +1575,26 @@ export async function setBranchActive(req, active) {
   if (!row) throw errors.notFound("Branch");
   return getBranchDetailForAdmin(req);
 }
+const STAFF_UPDATE_FIELDS = new Set([
+  "name",
+  "email",
+  "mobile",
+  "branchId",
+  "status",
+  "role",
+  "permissions",
+]);
+
+function pickStaffUpdateFields(body) {
+  const patch = {};
+  for (const key of STAFF_UPDATE_FIELDS) {
+    if (body[key] !== undefined) patch[key] = body[key];
+  }
+  return patch;
+}
+
 export async function updateStaff(req) {
-  const patch = { ...req.body };
-  delete patch.expectedVersion;
-  delete patch.password;
+  const patch = pickStaffUpdateFields(req.body);
   const filter = {
     _id: req.params.staffId,
     tenantId: req.auth.tenantId,

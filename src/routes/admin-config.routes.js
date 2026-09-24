@@ -19,6 +19,7 @@ import {
   subscriptionUpgradeRequestBody,
   tenantSettingsBrandingPatchBody,
   tenantSettingsProfilePatchBody,
+  staffUpdatePatchBody,
   uploadCompleteBody,
 } from "../validators/admin-mutation.validators.js";
 import { Permission } from "../constants/permissions.js";
@@ -113,7 +114,15 @@ adminConfigRouter.get(
   ...guarded(Permission.STAFF_READ, asyncHandler(controller.staffPerformanceSection)),
 );
 adminConfigRouter.get("/staff/:staffId", ...guarded(Permission.STAFF_READ, asyncHandler(controller.staffDetail)));
-adminConfigRouter.patch("/staff/:staffId", ...guarded(Permission.STAFF_WRITE, idempotent, asyncHandler(controller.updateStaff)));
+adminConfigRouter.patch(
+  "/staff/:staffId",
+  ...guarded(
+    Permission.STAFF_WRITE,
+    validate({ body: staffUpdatePatchBody }),
+    idempotent,
+    asyncHandler(controller.updateStaff),
+  ),
+);
 adminConfigRouter.post("/staff/:staffId/deactivate", ...guarded(Permission.STAFF_WRITE, idempotent, asyncHandler(controller.deactivateStaff)));
 adminConfigRouter.post("/staff/:staffId/activate", ...guarded(Permission.STAFF_WRITE, idempotent, asyncHandler(controller.activateStaff)));
 adminConfigRouter.post("/staff/:staffId/transfer-branch", ...guarded(Permission.STAFF_WRITE, idempotent, asyncHandler(controller.transferStaff)));
