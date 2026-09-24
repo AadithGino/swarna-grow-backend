@@ -41,7 +41,7 @@ const tenantAddressSchema = new mongoose.Schema(
 
 const tenantOperationsSchema = new mongoose.Schema(
   {
-    multiSchemePerCustomer: { type: Boolean, default: true },
+    multiSchemePerCustomer: { type: Boolean },
     kycMandatory: { type: Boolean },
     requireKycForRedemption: { type: Boolean },
     kycAllowedTypes: {
