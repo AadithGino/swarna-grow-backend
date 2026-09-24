@@ -1,28 +1,26 @@
-# Production verification — V1 RC backend (2026-09-24)
+# Production verification — V1 backend
 
-## Verdict: **READY** for controlled V1 backend cut (unit + integration gate)
+**Verdict: READY**
 
-This document supersedes the 2026-09-18 **NOT READY** note for the **backend repository** at the V1 RC commit. Staging-scale gates (15k broadcast, live FCM/PhonePe) remain environment-specific and are tracked separately.
+Canonical details (commit, suite totals, archive commands): **`docs/RELEASE_MANIFEST_v1_RC.md`**.
 
-## Backend gate (required before deploy)
+## Gate (actual, 2026-09-24)
 
-```bash
-npm run check
-npm test   # expect 1089 pass, 0 fail, 0 skip — run twice
+| Command | Result |
+|---------|--------|
+| `npm run check` | Pass |
+| `npm run test:release` | **1154** pass, **0** fail, **0** skip |
+
+Product tip before docs: `796e2fc` (`fix: reject unpayable/contradictory plans and invalid dates across all plan paths`).
+
+## Archive SHA-256
+
+Filled at cut time after `git archive` from the docs HEAD:
+
+```
+ARCHIVE_SHA256_PENDING
 ```
 
-Archive: `git archive --format=zip HEAD` from the RC commit (see `docs/RELEASE_MANIFEST_v1_RC.md`).
+## Not covered by the suite alone
 
-## Corrective pass pinned by regression tests
-
-- KYC mandatory resolution with persisted tenants (legacy `requireKycForEnrolment`).
-- Admin/staff customer mobile PATCH; self-service mobile immutable.
-- Payment list summary gross/net/refunded/reversed semantics.
-- Gold accrual DTO net weight after partial refund.
-- Reversed payments in history without inflating totals.
-
-## Still environment-dependent (not covered by `npm test` alone)
-
-- Production MongoDB Atlas + Redis + BullMQ worker fleet.
-- Live PhonePe / MSG91 / FCM credentials and webhook ingress.
-- Full tenant load and broadcast soak on staging hardware.
+Production Atlas/Redis/workers, live payment/SMS/push credentials, and staging soak remain environment-specific.
