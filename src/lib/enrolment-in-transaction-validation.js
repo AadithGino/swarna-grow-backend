@@ -2,6 +2,7 @@ import { SchemePlanStatus } from "../constants/enums.js";
 import { Scheme } from "../models/index.js";
 import { errors } from "./app-error.js";
 import { today } from "./date.js";
+import { normalizePlanFinancialRules } from "./plan-amount-normalize.js";
 import { validateCompletePlan } from "./plan-merge.js";
 import {
   ENROLMENT_CAPACITY_STATUSES,
@@ -58,6 +59,7 @@ export async function revalidateLockedPlanForEnrolment(
   if (plan.status !== SchemePlanStatus.ACTIVE) {
     throw errors.business("PLAN_ENROLMENT_CLOSED", "This plan is not accepting enrolments.");
   }
+  normalizePlanFinancialRules(plan);
   validateCompletePlan(plan);
   const availability = plan.availability ?? {};
   const calendarToday = today();

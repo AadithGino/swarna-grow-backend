@@ -2,6 +2,11 @@ import { z } from "zod";
 import * as E from "../constants/enums.js";
 import { flexiblePhaseTargetMonths } from "../lib/flexible-plan-duration.js";
 import { canonicalMobile } from "../lib/mobile.js";
+import {
+  isValidCalendarDateString,
+  refineCalendarDateField,
+  refinePlanSatisfiability,
+} from "../lib/plan-satisfiability.js";
 
 export const idParam = (name) => z.object({ [name]: z.string().min(4).max(80) });
 export const cursorQuery = z.object({ cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).default(20), sort: z.string().optional(), q: z.string().trim().max(120).optional() }).passthrough();
@@ -114,17 +119,21 @@ export const settlementPreviewQuery = z.object({
   mode: enumSchema(E.RedemptionMode).optional(),
 });
 
-export const customerRedemptionRequestBody = z.object({
-  preferredMode: enumSchema(E.RedemptionMode),
-  preferredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  remarks: z.string().max(500).optional(),
-  expectedVersion: z.number().int().positive(),
-  modeDetails: z
-    .object({
-      billNumber: z.string().trim().min(1).max(64).optional(),
-    })
-    .optional(),
-});
+export const customerRedemptionRequestBody = z
+  .object({
+    preferredMode: enumSchema(E.RedemptionMode),
+    preferredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    remarks: z.string().max(500).optional(),
+    expectedVersion: z.number().int().positive(),
+    modeDetails: z
+      .object({
+        billNumber: z.string().trim().min(1).max(64).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((value, context) => {
+    refineCalendarDateField(context, ["preferredDate"], value.preferredDate);
+  });
 export const cancelPaymentIntentBody = z.object({
   expectedPositionVersion: z.number().int().nonnegative(),
 });
@@ -421,24 +430,13 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
       message: "Select at least one branch when allBranches is false.",
     });
   }
-  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-  if (availabilityRules.enrolmentOpenFrom && !dateRe.test(String(availabilityRules.enrolmentOpenFrom))) {
-    context.addIssue({
-      code: "custom",
-      path: ["availability", "enrolmentOpenFrom"],
-      message: "enrolmentOpenFrom must be YYYY-MM-DD.",
-    });
-  }
-  if (availabilityRules.enrolmentOpenTo && !dateRe.test(String(availabilityRules.enrolmentOpenTo))) {
-    context.addIssue({
-      code: "custom",
-      path: ["availability", "enrolmentOpenTo"],
-      message: "enrolmentOpenTo must be YYYY-MM-DD.",
-    });
-  }
+  refineCalendarDateField(context, ["availability", "enrolmentOpenFrom"], availabilityRules.enrolmentOpenFrom);
+  refineCalendarDateField(context, ["availability", "enrolmentOpenTo"], availabilityRules.enrolmentOpenTo);
   if (
     availabilityRules.enrolmentOpenFrom
     && availabilityRules.enrolmentOpenTo
+    && isValidCalendarDateString(availabilityRules.enrolmentOpenFrom)
+    && isValidCalendarDateString(availabilityRules.enrolmentOpenTo)
     && availabilityRules.enrolmentOpenFrom > availabilityRules.enrolmentOpenTo
   ) {
     context.addIssue({
@@ -488,6 +486,7 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
       });
     }
   }
+  refinePlanSatisfiability(value, context);
 }
 
 const planFields = {
@@ -710,13 +709,17 @@ export const branchUpdateBody = z
   })
   .strict();
 
-export const goldRateBody = z.object({
-  branchId: z.string().nullable().optional(),
-  ratePerGramPaise: positivePaise,
-  effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  purity: z.literal("22K").default("22K"),
-  source: z.string().max(120).optional(),
-});
+export const goldRateBody = z
+  .object({
+    branchId: z.string().nullable().optional(),
+    ratePerGramPaise: positivePaise,
+    effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    purity: z.literal("22K").default("22K"),
+    source: z.string().max(120).optional(),
+  })
+  .superRefine((value, context) => {
+    refineCalendarDateField(context, ["effectiveDate"], value.effectiveDate);
+  });
 export const grievanceBody = z.object({ category: enumSchema(E.GrievanceCategory), subject: z.string().min(5).max(140), description: z.string().min(10).max(4000), relatedEntity: z.object({ type: z.enum(["PAYMENT", "SCHEME", "REDEMPTION"]), id: z.string() }).optional(), attachmentUploadIds: z.array(z.string()).max(5).default([]) });
 export const messageBody = z.object({ body: z.string().min(1).max(4000), messageType: enumSchema(E.GrievanceMessageType).default(E.GrievanceMessageType.PUBLIC_REPLY), attachmentUploadIds: z.array(z.string()).max(5).default([]), expectedVersion: z.number().int().positive().optional() });
 export const handoverBody = z.object({ amountPaise: positivePaise, remarks: z.string().max(500).optional(), staffId: z.string().optional(), branchId: z.string().optional() });

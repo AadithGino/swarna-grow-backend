@@ -1,5 +1,5 @@
 import { AuditEntityType, PaymentPattern, SchemePlanStatus } from "../constants/enums.js";
-import { LedgerEntry, Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
+import { Branch, LedgerEntry, Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
 import { assertFeatureEntitled, assertWithinLimit } from "../lib/tenant-limits.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
@@ -616,10 +616,36 @@ export async function getPlan(req) {
   return presentPlanDetail(req.auth.tenantId, plan);
 }
 function rejectUnsupportedPlan(body) { if (body.flexibleRules?.extensionMode === "EXTEND_FLEXIBLE_PHASE") throw errors.business("UNSUPPORTED_PLAN_CONFIGURATION", "Flexible-phase extension is not supported and cannot be saved."); }
+
+async function assertPlanBranchIdsBelongToTenant(tenantId, availability) {
+  if (!availability || availability.allBranches !== false) return;
+  const branchIds = [...new Set(availability.branchIds ?? [])];
+  if (!branchIds.length) return;
+  const rows = await Branch.find({ tenantId, _id: { $in: branchIds } })
+    .select("_id active")
+    .lean();
+  const byId = new Map(rows.map((row) => [String(row._id), row]));
+  for (const branchId of branchIds) {
+    const row = byId.get(String(branchId));
+    if (!row) {
+      throw errors.validation([{
+        field: "availability.branchIds",
+        message: "Each selected branch must belong to this tenant.",
+      }]);
+    }
+    if (!row.active) {
+      throw errors.validation([{
+        field: "availability.branchIds",
+        message: "Each selected branch must be active.",
+      }]);
+    }
+  }
+}
 export async function createPlan(req) {
   rejectUnsupportedPlan(req.body);
   normalizePlanFinancialRules(req.body);
   const validatedBody = validateCompletePlan(req.body);
+  await assertPlanBranchIdsBelongToTenant(req.auth.tenantId, validatedBody.availability);
   const tenant = req.tenant ?? await Tenant.findById(req.auth.tenantId).lean();
   if (validatedBody.paymentPattern === "FLEXIBLE") {
     assertFeatureEntitled(tenant, "flexibleScheme", "Flexible schemes are not included in your plan.");
@@ -665,6 +691,7 @@ export async function updatePlan(req) {
       assertFeatureEntitled(tenantRow, "goldWeightScheme", "Gold-weight schemes are not included in your plan.");
     }
     const validated = validateCompletePlan(merged);
+    await assertPlanBranchIdsBelongToTenant(req.auth.tenantId, validated.availability);
     for (const key of Object.keys(validated)) {
       plan.set(key, validated[key]);
     }
