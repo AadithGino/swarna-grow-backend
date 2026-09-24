@@ -340,7 +340,7 @@ async function resolveHandoverContext(req, initiator, session) {
   return { tenantId, staffId, branchId: resolvedBranch };
 }
 
-async function lockCashStaffCustody(session, { tenantId, branchId, staffId }) {
+export async function lockCashStaffCustody(session, { tenantId, branchId, staffId }) {
   await CashStaffCustody.findOneAndUpdate(
     { tenantId, branchId, staffId },
     {
@@ -382,6 +382,11 @@ export async function settleHandover(req, action) {
   return withTransaction(async (session) => {
     const row = await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).session(session);
     if (!row) throw errors.notFound("Cash handover");
+    await lockCashStaffCustody(session, {
+      tenantId: row.tenantId,
+      branchId: row.branchId,
+      staffId: row.staffId,
+    });
     if (row.status !== CashHandoverStatus.PENDING && action !== "resolve-discrepancy") throw new AppError("CASH_HANDOVER_ALREADY_SETTLED", "This handover is already settled.", 409);
     if (action === "resolve-discrepancy") {
       if (row.status !== CashHandoverStatus.DISCREPANCY) throw new AppError("CASH_HANDOVER_NOT_IN_DISCREPANCY", "Only a discrepancy handover can be resolved.", 409);
@@ -439,6 +444,11 @@ export async function cancelHandover(req) {
   return withTransaction(async (session) => {
     const row = await CashHandover.findOne({ _id: req.params.handoverId, tenantId: req.auth.tenantId, staffId: req.auth.id }).session(session);
     if (!row) throw errors.notFound("Cash handover");
+    await lockCashStaffCustody(session, {
+      tenantId: row.tenantId,
+      branchId: row.branchId,
+      staffId: row.staffId,
+    });
     if (row.status !== CashHandoverStatus.PENDING) throw new AppError("CASH_HANDOVER_ALREADY_SETTLED", "This handover cannot be cancelled.", 409);
     row.status = CashHandoverStatus.CANCELLED;
     row.reason = "Cancelled by staff";

@@ -59,7 +59,7 @@ import {
   paymentNetMoneyRefs,
 } from "../lib/payment-net-aggregation.js";
 import { assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
-import { cashBalance } from "./cash.service.js";
+import { cashBalance, lockCashStaffCustody } from "./cash.service.js";
 import {
   branchDto,
   loadBranchMap,
@@ -966,6 +966,26 @@ export async function reversePayment(req) {
       );
     }
     const scheme = await Scheme.findById(payment.schemeId).session(session);
+    if (payment.mode === PaymentMode.CASH && payment.collectedBy) {
+      await lockCashStaffCustody(session, {
+        tenantId: payment.tenantId,
+        branchId: payment.branchId,
+        staffId: payment.collectedBy,
+      });
+      const balanceBefore = await cashBalance({
+        tenantId: payment.tenantId,
+        branchId: payment.branchId,
+        staffId: payment.collectedBy,
+      }, session);
+      const inHandAfter = balanceBefore.cashInHandPaise - payment.amountPaise;
+      if (inHandAfter < balanceBefore.cashPendingAcceptancePaise) {
+        throw errors.business(
+          "CASH_REVERSAL_BLOCKED_BY_PENDING_HANDOVER",
+          "Reverse this collection after pending cash handovers are settled or cancelled.",
+          balanceBefore,
+        );
+      }
+    }
     const sequence = await nextSchemeLedgerSequence(
       payment.tenantId,
       payment.schemeId,
