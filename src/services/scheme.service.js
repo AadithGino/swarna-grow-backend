@@ -578,9 +578,12 @@ export async function createEnrolmentInSession(req, validation, session) {
     });
     const number = await nextSequence(req.auth.tenantId, "scheme", session); const startDate = today(); const maturityDate = addMonthsClamped(startDate, txValidation.plan.durationMonths).format("YYYY-MM-DD");
     const isFlexible = txValidation.plan.paymentPattern === PaymentPattern.FLEXIBLE;
+    const installmentAmountPaise = txValidation.installmentAmountPaise;
+    const firstInstallmentRequired =
+      txValidation.firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW;
     const schedulePreviewArgs = {
       startDate,
-      installmentAmountPaise: txValidation.installmentAmountPaise,
+      installmentAmountPaise,
       durationMonths: txValidation.plan.durationMonths,
       installmentCount: txValidation.plan.installmentCount,
       scheduleRules: txValidation.plan.scheduleRules ?? {},
@@ -610,8 +613,6 @@ export async function createEnrolmentInSession(req, validation, session) {
         firstInstallmentMode: txValidation.firstInstallmentMode,
       })
       : [];
-    const firstInstallmentRequired =
-      txValidation.firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW;
     const initialStatus = firstInstallmentRequired
       ? SchemeStatus.PENDING_PAYMENT
       : SchemeStatus.ACTIVE;
@@ -628,7 +629,7 @@ export async function createEnrolmentInSession(req, validation, session) {
       status: initialStatus,
       startDate,
       maturityDate: persistedMaturityDate,
-      installmentAmountPaise: txValidation.installmentAmountPaise,
+      installmentAmountPaise,
       installments: fixedInstallments,
       cycles: flexibleCycles,
       flexiblePhase: isFlexible ? FlexiblePhase.FLEXIBLE : undefined,
@@ -646,7 +647,7 @@ export async function createEnrolmentInSession(req, validation, session) {
     let activationPayment = null;
     if (
       req.body.firstInstallmentAction === "RECORD_MANUAL_PAYMENT"
-      && validation.firstInstallmentRequired
+      && firstInstallmentRequired
       && req.body.payment
     ) {
       const { recordPayment } = await import("./payment.service.js");
@@ -656,7 +657,7 @@ export async function createEnrolmentInSession(req, validation, session) {
           body: {
             ...req.body.payment,
             schemeId: scheme._id,
-            amountPaise: req.body.payment.amountPaise ?? txValidation.installmentAmountPaise,
+            amountPaise: req.body.payment.amountPaise ?? installmentAmountPaise,
             expectedVersion: scheme.version,
           },
         },
@@ -669,7 +670,7 @@ export async function createEnrolmentInSession(req, validation, session) {
     return {
       ...persistedScheme,
       auditEventId,
-      firstInstallmentRequired: validation.firstInstallmentRequired,
+      firstInstallmentRequired,
       activationPayment,
     };
 }
@@ -735,12 +736,11 @@ export async function customerEnrolWithCheckout(req) {
   if (validation.installmentAmountPaise == null) {
     throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
   }
-  const needsCheckout =
-    req.body.payNow !== false && validation.firstInstallmentRequired;
   let reservedIntent = null;
   let reservedLink = null;
   const enrolled = await withTransientTransactionRetry(async (session) => {
     const scheme = await createEnrolmentInSession(req, validation, session);
+    const needsCheckout = req.body.payNow !== false && scheme.firstInstallmentRequired === true;
     if (!needsCheckout) return scheme;
     const schemeId = scheme._id ?? scheme.id;
     const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle ?? monthKey();
@@ -752,7 +752,7 @@ export async function customerEnrolWithCheckout(req) {
       params: { schemeId },
       query: { ...(req.query ?? {}), targetCycle },
       body: {
-        amountPaise: validation.installmentAmountPaise,
+        amountPaise: scheme.installmentAmountPaise,
         redirectUrl: req.body.redirectUrl,
         schemeId,
         targetCycle,

@@ -8,11 +8,12 @@ import {
   SchemeStatus,
   TenantRole,
 } from "../src/constants/enums.js";
-import { Customer, Scheme, SchemePlan, Tenant } from "../src/models/index.js";
+import { Customer, PaymentIntent, PaymentLink, Scheme, SchemePlan, Tenant } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import { withTransaction } from "../src/lib/transaction.js";
 import {
   createEnrolmentInSession,
+  customerEnrolWithCheckout,
   validateEnrolment,
 } from "../src/services/scheme.service.js";
 import { seedBranch, seedCustomer, seedTenantUser, startTestDb, stopTestDb, resetTestDb } from "./helpers/db.js";
@@ -188,4 +189,76 @@ test("in-tx enrolment derives PENDING_PAYMENT from locked firstInstallmentMode",
     createEnrolmentInSession(req, validation, session),
   );
   assert.equal(scheme.status, SchemeStatus.ACTIVE);
+  assert.equal(scheme.firstInstallmentRequired, false);
+});
+
+test("in-tx plan flip to COLLECT_NOW aligns status and response firstInstallmentRequired", async () => {
+  const { tenant, branch, user } = await growthTenant();
+  const plan = buildPlan(tenant._id, "FLIP1", {
+    scheduleRules: {
+      dueDateRule: "JOIN_ANNIVERSARY",
+      firstInstallmentModeDefault: FirstInstallmentMode.START_NEXT_CYCLE,
+      firstInstallmentModeEditable: false,
+    },
+  });
+  await SchemePlan.create(plan);
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const req = staffReq({
+    tenant,
+    branch,
+    user,
+    customerId: customer._id,
+    planId: plan._id,
+  });
+  const validation = await validateEnrolment(req);
+  assert.equal(validation.firstInstallmentRequired, false);
+  await SchemePlan.updateOne(
+    { _id: plan._id },
+    {
+      $set: {
+        "scheduleRules.firstInstallmentModeDefault": FirstInstallmentMode.COLLECT_NOW,
+      },
+      $inc: { version: 1 },
+    },
+  );
+  const scheme = await withTransaction((session) =>
+    createEnrolmentInSession(req, validation, session),
+  );
+  assert.equal(scheme.status, SchemeStatus.PENDING_PAYMENT);
+  assert.equal(scheme.firstInstallmentRequired, true);
+});
+
+test("in-tx plan flip to START_NEXT_CYCLE avoids checkout when pre-tx required first payment", async () => {
+  const { tenant, branch } = await growthTenant();
+  const plan = buildPlan(tenant._id, "FLIP2", {
+    scheduleRules: {
+      dueDateRule: "JOIN_ANNIVERSARY",
+      firstInstallmentModeDefault: FirstInstallmentMode.COLLECT_NOW,
+      firstInstallmentModeEditable: false,
+    },
+  });
+  await SchemePlan.create(plan);
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const req = customerReq({
+    tenant,
+    customerId: customer._id,
+    planId: plan._id,
+    body: { payNow: true, redirectUrl: "http://localhost:5173/pay/return" },
+  });
+  await validateEnrolment(req);
+  await SchemePlan.updateOne(
+    { _id: plan._id },
+    {
+      $set: {
+        "scheduleRules.firstInstallmentModeDefault": FirstInstallmentMode.START_NEXT_CYCLE,
+      },
+      $inc: { version: 1 },
+    },
+  );
+  const { enrolled, checkout } = await customerEnrolWithCheckout(req);
+  assert.equal(enrolled.status, SchemeStatus.ACTIVE);
+  assert.equal(enrolled.firstInstallmentRequired, false);
+  assert.equal(checkout, null);
+  assert.equal(await PaymentIntent.countDocuments({ tenantId: tenant._id, customerId: customer._id }), 0);
+  assert.equal(await PaymentLink.countDocuments({ tenantId: tenant._id, customerId: customer._id }), 0);
 });
