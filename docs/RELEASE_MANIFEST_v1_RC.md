@@ -19,11 +19,11 @@ npm run check
 npm test
 ```
 
-**Recorded gate (2026-09-24, post phases 3–11):** `1125` tests, `1119` pass, `6` fail, `0` skip — **NOT READY** until blockers below are green. Re-run: `npm run check && npm test`.
+**Recorded gate (2026-09-24, post phases 3–11):** `1125` tests, `1120` pass, `5` fail, `0` skip — **NOT READY** (see blockers). Re-run: `npm run check && npm test`.
 
-**Blockers (last full run):** `customer-enrol-checkout-resume` (PhonePe idempotent enrol expects 5xx, got 400); `customer-kyc-profile-phase6` (admin KYC type rejection status); `ledger-sequence-concurrency` (redemption KYC); three `uploads.test.js` KYC attachment cases (verified customer guard).
+**Blockers:** `customer-enrol-checkout-resume` (idempotent PhonePe enrol expects 5xx, got 400); four `redemption-system-policy-closure-phase5` cases (KYC on partial `req.tenant` — fixed in follow-up commit on `4030047`).
 
-**Cut commit at archive:** `f281d12` (phase 10); phase 11 commit adds summary field + docs + audit script + harness.
+**Cut commit at archive:** `4030047` (phase 11); archive SHA from `git archive` at HEAD after fixes.
 
 Test DB: `tests/helpers/db.js` calls `model.syncIndexes()` once after MongoMemory replSet connect so unique-index tests are deterministic.
 

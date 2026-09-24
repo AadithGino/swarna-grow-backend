@@ -53,15 +53,16 @@ const OPEN_REDEMPTION_STATUSES = [
 ];
 
 async function assertRedemptionKyc(req, customerId, { session } = {}) {
-  const tenant =
-    req.tenant ?? await Tenant.findById(req.auth.tenantId).lean();
-  if (!isKycRequiredForRedemption(tenant)) return;
-  let query = Customer.findOne({
+  let query = Tenant.findById(req.auth.tenantId).select("settings operations");
+  if (session) query = query.session(session);
+  const tenant = await query.lean();
+  if (!tenant || !isKycRequiredForRedemption(tenant)) return;
+  let customerQuery = Customer.findOne({
     _id: customerId,
     tenantId: req.auth.tenantId,
   }).select("kyc.status");
-  if (session) query = query.session(session);
-  const customer = await query.lean();
+  if (session) customerQuery = customerQuery.session(session);
+  const customer = await customerQuery.lean();
   if (customer?.kyc?.status !== "VERIFIED") {
     throw errors.business(
       "KYC_REQUIRED",

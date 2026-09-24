@@ -157,6 +157,7 @@ function presentOperations(tenant) {
     multiSchemePerCustomer,
     kycMandatory,
     requireKycForRedemption,
+    customerAppMaintenance: settings.customerAppMaintenance === true,
     kycAllowedTypes: ops.kycAllowedTypes ?? ["AADHAAR", "PAN"],
     customerSelfEnrolEnabled: ops.customerSelfEnrolEnabled ?? true,
     customerSelfRegistrationEnabled:
@@ -714,6 +715,10 @@ export async function patchSettingsOperations(req) {
     if (patch.requireKycForRedemption != null) {
       tenant.settings.requireKycForRedemption = patch.requireKycForRedemption === true;
     }
+    if (patch.customerAppMaintenance != null) {
+      tenant.settings.customerAppMaintenance = patch.customerAppMaintenance === true;
+    }
+
     tenant.version += 1;
     await tenant.save({ session });
     await writeAudit({

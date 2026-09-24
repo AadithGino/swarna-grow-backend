@@ -30,10 +30,23 @@ import { enrolPaymentResponse, paymentIntentAppDto, paymentLinkDto } from "../li
 import { ClosureType, DevicePrincipalType } from "../constants/enums.js";
 import { registerFcmDevice, revokeFcmDevice } from "../services/device-registration.service.js";
 import { AppError } from "../lib/app-error.js";
-import { assertCustomerAppWritable, assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
+import {
+  assertCustomerAppAvailable,
+  assertCustomerAppWritable,
+  assertCustomerPaymentsEnabled,
+} from "../lib/customer-app-access.js";
 import { sendSuccess } from "../lib/response.js";
 import * as schemes from "../services/scheme.service.js";
 export const appRouter = Router();
+const requireCustomerAppAvailable = (req, _res, next) => {
+  try {
+    assertCustomerAppAvailable(req.tenant);
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+appRouter.use(requireCustomerAppAvailable);
 const requireCustomerAppWrite = (req, _res, next) => {
   try {
     assertCustomerAppWritable(req.tenant);

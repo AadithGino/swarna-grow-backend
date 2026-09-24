@@ -1,5 +1,18 @@
 import { AppError } from "./app-error.js";
 
+export function customerAppMaintenanceEnabled(tenant) {
+  return tenant?.settings?.customerAppMaintenance === true;
+}
+
+export function assertCustomerAppAvailable(tenant) {
+  if (!customerAppMaintenanceEnabled(tenant)) return;
+  throw new AppError(
+    "APP_MAINTENANCE",
+    "The customer app is temporarily unavailable for maintenance. Please try again later.",
+    503,
+  );
+}
+
 export function customerAppWriteEnabled(tenant) {
   return tenant?.operations?.customerAppWriteEnabled !== false;
 }

@@ -649,6 +649,7 @@ export const tenantOperationsPatchBody = z
     multiSchemePerCustomer: z.boolean().optional(),
     kycMandatory: z.boolean().optional(),
     requireKycForRedemption: z.boolean().optional(),
+    customerAppMaintenance: z.boolean().optional(),
     kycAllowedTypes: z
       .array(enumSchema(E.KycType))
       .min(1)
