@@ -64,6 +64,12 @@ export function parseEnv(source = process.env) {
     PHONEPE_UPI_FLOWS: upiFlowsString,
     WHATSAPP_BASE_URL: z.string().default(""), WHATSAPP_ACCESS_TOKEN: z.string().default(""), WHATSAPP_APP_SECRET: z.string().default(""),
     OTP_PROVIDER: z.enum(["mock", "msg91"]).default("mock"), OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+    MSG91_AUTH_KEY: z.string().optional(),
+    MSG91_OTP_TEMPLATE_ID: z.string().optional(),
+    MSG91_SENDER_ID: z.string().optional(),
+    MSG91_OTP_VAR: z.string().default("otp"),
+    MSG91_DEFAULT_COUNTRY_CODE: z.string().default("91"),
+    MSG91_SMS_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
     S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""),     FCM_PROJECT_ID: z.string().default(""),
     FCM_SERVICE_ACCOUNT_JSON: z.string().default(""),
@@ -164,6 +170,12 @@ export function parseEnv(source = process.env) {
     if (providerMode !== "live") offending.push("PROVIDER_MODE");
     const otpProvider = source.OTP_PROVIDER ?? "mock";
     if (otpProvider === "mock") offending.push("OTP_PROVIDER");
+    if (otpProvider === "msg91") {
+      for (const key of ["MSG91_AUTH_KEY", "MSG91_OTP_TEMPLATE_ID", "MSG91_SENDER_ID"]) {
+        const raw = source[key];
+        if (raw == null || String(raw).trim() === "") offending.push(key);
+      }
+    }
     const phonePeEnv = source.PHONEPE_ENV ?? "SANDBOX";
     if (phonePeEnv !== "PRODUCTION") offending.push("PHONEPE_ENV");
     const sharedFcm = source.FCM_SHARED_PROJECT_ENABLED ?? "false";
