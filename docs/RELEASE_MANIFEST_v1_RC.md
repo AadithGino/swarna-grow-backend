@@ -1,60 +1,44 @@
 # SwarnaGrow backend — V1 release record
 
-**Verdict: READY** for controlled V1 backend cut (targeted plan-validator gate green; prior full `test:release` on closure tip).
+**Verdict: READY** for controlled V1 backend cut.
 
-This file is the single accurate release record. It supersedes older READY/NOT READY notes and expected counts. Do not embed an archive self-hash here — verify the zip with the companion `.sha256` file.
+This file is the single accurate release record. Do not embed an archive self-hash here — verify the zip with the companion `.sha256` file.
 
 ## Final commit
 
 | Field | Value |
 |-------|--------|
 | Branch | `chore/production-hardening-phase-0` |
-| Tip (short) | `7922ccd` |
-| Tip message | `fix: require customer-chosen bounds; advance-enabled/zero guard; reject cap on flexible plans` |
+| Tip (short) | `8c66778` |
+| Tip message | `docs: point release record at MSG91 tip` |
 
-## Plan-validation correctness (validator-only)
+## MSG91 live OTP delivery
 
 | Phase | Commit | Summary |
 |-------|--------|---------|
-| A | `679cf79` | Per-transaction cap decision table; min-cycle-cap satisfiability |
-| B | `7922ccd` | Customer-chosen bounds; advance-enabled/zero; reject txn cap on flexible |
+| 1 | `da2fcb4` | MSG91 env config + production validation |
+| 2 | `7020cf1` | MSG91 Flow SMS client |
+| 3 | `e1e068c` | Wire delivery into OTP provider lifecycle |
+| fixture | `cf70448` | Flexible extension planBody fixture bounds |
 
-Targeted gate (post B): `plan-satisfiability*`, `plan-cross-field*`, `plan-phase1*`, `plan-patch-merge*`, `flexible-plan-duration` + `npm run check` — pass.
+App still owns OTP lifecycle (generate/hash/TTL/attempts/otpId); MSG91 only delivers via DLT Flow template.
 
-## Prior full regression gate (closure tip)
+## Full regression gate (actual)
 
 | Metric | Result |
 |--------|--------|
 | Command | `npm run test:release` |
-| Pass / fail / skip | **1154** / **0** / **0** |
-| Date | 2026-09-24 |
-
-Default `npm test` still gates two heavy 15k scans behind `RUN_HEAVY`; `test:release` runs them.
-
-Test DB: `tests/helpers/db.js` calls `model.syncIndexes()` once after MongoMemory replSet connect.
+| Pass / fail / skip | **1175** / **0** / **0** |
+| Date | 2026-09-25 |
+| `npm run check` | Pass |
 
 ## Release archive
 
-Named for product tip `7922ccd` (no embedded self-hash):
+Named for tip `8c66778` (no embedded self-hash):
 
 ```bash
-git archive --format=zip -o swarnagrow-backend-v1-rc-7922ccd.zip HEAD
-sha256sum swarnagrow-backend-v1-rc-7922ccd.zip > swarnagrow-backend-v1-rc-7922ccd.zip.sha256
+git archive --format=zip -o swarnagrow-backend-v1-rc-8c66778.zip HEAD
+sha256sum swarnagrow-backend-v1-rc-8c66778.zip > swarnagrow-backend-v1-rc-8c66778.zip.sha256
 ```
 
 Tracked Git content only — excludes `.env`, `node_modules`, `.git`, keys, coverage, logs, uncommitted WIP.
-
-## Deploy checklist
-
-```bash
-npm ci
-npm run check
-node --env-file=.env scripts/sync-indexes.js --dry-run
-node --env-file=.env scripts/sync-indexes.js --apply
-```
-
-## Environment-dependent (not covered by suite alone)
-
-- Production MongoDB Atlas + Redis + BullMQ workers
-- Live PhonePe / MSG91 / FCM credentials and webhook ingress
-- Staging soak / broadcast load on real hardware
