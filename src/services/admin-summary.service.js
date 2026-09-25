@@ -225,7 +225,12 @@ export function pickWorkboardInstallment(installments, boardKind, dates, query =
 
   const candidates = (installments ?? [])
     .filter((inst) => allowed.has(inst.status))
-    .filter((inst) => installmentInDateRange(inst, dates))
+    .filter((inst) => {
+      if (inst.status === "OVERDUE" && (boardKind === "overdues" || viewKind === "OVERDUE")) {
+        return true;
+      }
+      return installmentInDateRange(inst, dates);
+    })
     .filter((inst) => installmentRemainingPaise(inst) > 0)
     .sort((a, b) =>
       String(a.dueDate ?? "").localeCompare(String(b.dueDate ?? "")),

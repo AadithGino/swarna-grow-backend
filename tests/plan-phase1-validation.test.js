@@ -55,7 +55,7 @@ const planBase = {
   },
 };
 
-test("flexible plan rejects when phase cycles do not sum to durationMonths", () => {
+test("flexible plan rejects when phase cycles do not sum to installmentCount", () => {
   const parsed = planBody.safeParse({
     ...planBase,
     code: "FLEXBAD",

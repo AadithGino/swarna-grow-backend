@@ -198,6 +198,11 @@ export const dueList = (kind) => async (req, res) => {
           dates,
           req.query,
         );
+        const targetCycle =
+          scheme.paymentPattern === "FLEXIBLE" &&
+          scheme.flexiblePhase === "CAPPED"
+            ? monthKey()
+            : undefined;
         return {
           ...base,
           duePreview: next
@@ -212,6 +217,9 @@ export const dueList = (kind) => async (req, res) => {
                 ),
                 status: next.status,
                 graceEndsAt: next.graceEndsAt,
+                paymentPattern: scheme.paymentPattern,
+                flexiblePhase: scheme.flexiblePhase,
+                targetCycle,
               }
             : null,
         };

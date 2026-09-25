@@ -94,3 +94,24 @@ test("invoice create, mark paid, and owner credential reset are audited without 
   assert.equal(ownerAudit.after.temporaryPassword, undefined);
   assert.equal(ownerAudit.after.passwordHash, undefined);
 });
+
+test("owner credential reset works with Express-style non-enumerable headers", async () => {
+  const { tenant } = await seedTenantUser();
+  const expressLikeReq = {
+    auth: { id: "pusr_test", type: UserType.PLATFORM_USER, tenantId: "platform" },
+    ip: "127.0.0.1",
+    traceId: "trace-express-headers",
+  };
+  Object.defineProperty(expressLikeReq, "headers", {
+    value: { "user-agent": "platform-express-test" },
+    enumerable: false,
+  });
+  const result = await setOwnerCredentials(tenant._id, { temporaryPassword: "5678" }, expressLikeReq);
+  assert.equal(result.temporaryPassword, "5678");
+  const ownerAudit = await AuditEvent.findOne({
+    action: "PLATFORM_OWNER_CREDENTIALS_RESET",
+    entityId: result.ownerId,
+  }).lean();
+  assert.ok(ownerAudit);
+  assert.equal(ownerAudit.userAgent, "platform-express-test");
+});
