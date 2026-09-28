@@ -8,6 +8,14 @@ import {
 } from "../middlewares/webhook.middleware.js";
 
 export const webhookRouter = Router();
-webhookRouter.use(webhookPerIpRateLimit, webhookPerTenantRateLimit, assertWebhookBodyWithinLimit);
-webhookRouter.post("/phonepe/:tenantId", asyncHandler(controller.phonepe));
-webhookRouter.post("/whatsapp/:tenantId", asyncHandler(controller.whatsapp));
+webhookRouter.use(webhookPerIpRateLimit, assertWebhookBodyWithinLimit);
+webhookRouter.post(
+  "/phonepe/:tenantId",
+  webhookPerTenantRateLimit,
+  asyncHandler(controller.phonepe),
+);
+webhookRouter.post(
+  "/whatsapp/:tenantId",
+  webhookPerTenantRateLimit,
+  asyncHandler(controller.whatsapp),
+);

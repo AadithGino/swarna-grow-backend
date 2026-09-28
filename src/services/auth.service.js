@@ -17,6 +17,7 @@ import { ROLE_PERMISSIONS, agentCapabilities, collectionAgentPermissions } from 
 import { CustomerLoginMode, PlatformRole, UserType } from "../constants/enums.js";
 import { env } from "../config/env.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
+import { withTransaction } from "../lib/transaction.js";
 import { ttlToSeconds } from "../lib/jwt-ttl.js";
 import { assertWithinLimit } from "../lib/tenant-limits.js";
 
@@ -393,30 +394,44 @@ export async function loginCustomerPassword(body, request) {
 export async function setPassword({ auth, resetToken, token, password, confirmPassword, request }) {
   if (confirmPassword != null && password !== confirmPassword) throw new AppError("VALIDATION_FAILED", "Password and confirm password must match.", 422);
   const hash = await argon2.hash(password, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
-  let userId;
-  if (auth?.id) userId = auth.id;
-  else {
-    const plain = token ?? resetToken;
-    if (!plain) throw errors.unauthenticated();
-    const record = await PasswordResetToken.findOne({ tokenHash: sha256(plain) });
-    if (!record || record.consumedAt || record.expiresAt.getTime() < Date.now()) throw errors.unauthenticated("The setup token is invalid or expired.");
-    record.consumedAt = new Date();
-    await record.save();
-    userId = record.userId;
-  }
-  const user = await User.findOneAndUpdate({ _id: userId }, { $set: { passwordHash: hash, mustSetPassword: false }, $inc: { securityVersion: 1 } }, { new: true });
-  if (!user) throw errors.notFound("User");
-  if (user.type === UserType.TENANT_USER && request && (token ?? resetToken)) {
-    const subject = toSubject(user.toObject(), UserType.TENANT_USER, false);
-    const tokens = await issueSession(subject, { deviceId: "owner-setup", platform: "web" }, request);
-    return {
-      passwordSet: true,
-      mustChangePassword: false,
-      user: { id: user._id, name: user.name, role: user.role, tenantId: user.tenantId, branchId: user.branchId },
-      ...sessionPayload(tokens),
-    };
-  }
-  return { id: user._id, passwordSet: true };
+  const plainToken = token ?? resetToken;
+
+  return withTransaction(async (session) => {
+    let userId;
+    if (auth?.id) {
+      userId = auth.id;
+    } else {
+      if (!plainToken) throw errors.unauthenticated();
+      const record = await PasswordResetToken.findOneAndUpdate(
+        {
+          tokenHash: sha256(plainToken),
+          consumedAt: null,
+          expiresAt: { $gt: new Date() },
+        },
+        { $set: { consumedAt: new Date() } },
+        { new: true, session },
+      );
+      if (!record) throw errors.unauthenticated("The setup token is invalid or expired.");
+      userId = record.userId;
+    }
+    const user = await User.findOneAndUpdate(
+      { _id: userId },
+      { $set: { passwordHash: hash, mustSetPassword: false }, $inc: { securityVersion: 1 } },
+      { new: true, session },
+    );
+    if (!user) throw errors.notFound("User");
+    if (user.type === UserType.TENANT_USER && request && plainToken) {
+      const subject = toSubject(user.toObject(), UserType.TENANT_USER, false);
+      const tokens = await issueSession(subject, { deviceId: "owner-setup", platform: "web" }, request);
+      return {
+        passwordSet: true,
+        mustChangePassword: false,
+        user: { id: user._id, name: user.name, role: user.role, tenantId: user.tenantId, branchId: user.branchId },
+        ...sessionPayload(tokens),
+      };
+    }
+    return { id: user._id, passwordSet: true };
+  });
 }
 export async function changePassword(auth, body) {
   const user = await User.findById(auth.id).select("+passwordHash");

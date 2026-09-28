@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { AppError } from "../src/lib/app-error.js";
 import { createId } from "../src/lib/ids.js";
 import { Customer, LedgerEntry, Payment, Scheme, Tenant } from "../src/models/index.js";
+import { PaymentMode, PaymentStatus } from "../src/constants/enums.js";
 import { recordPayment, reversePayment } from "../src/services/payment.service.js";
 import { TenantRole } from "../src/constants/enums.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
@@ -107,6 +108,34 @@ test("reversal appends a ledger entry rather than mutating the original payment 
   assert.equal(after[1].type, "REVERSAL");
   assert.equal(after[1].amountPaise, 100000);
   assert.equal(after[1].reversalOf, payment._id);
+});
+
+test("gateway payment cannot be manually reversed", async () => {
+  const { scheme, user, tenant, branch, customer } = await seedFixedScheme();
+  const payment = await Payment.create({
+    _id: createId("payment"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerId: customer._id,
+    schemeId: scheme._id,
+    receiptNumber: `GW-${Date.now()}`,
+    mode: PaymentMode.ONLINE_GATEWAY,
+    status: PaymentStatus.SUCCESS,
+    amountPaise: 100_000,
+    paidAt: new Date(),
+    source: "CUSTOMER_APP",
+  });
+  await assert.rejects(
+    () => reversePayment({
+      auth: { id: user._id, tenantId: scheme.tenantId },
+      scope: { tenantId: scheme.tenantId, branchId: scheme.branchId },
+      params: { paymentId: payment._id },
+      body: { reason: "Should fail" },
+      headers: { "user-agent": "payments-test" },
+      ip: "127.0.0.1",
+    }),
+    (error) => error instanceof AppError && error.code === "GATEWAY_PAYMENT_USE_REFUND",
+  );
 });
 
 test("reversal is blocked after tenant paymentReversalWindowHours", async () => {

@@ -15,6 +15,7 @@ import {
   rollupDailyRegistrationCounts,
 } from "../lib/analytics-period.js";
 import { dateMatch, effectiveScope, fuzzyMongoFilter, searchRegex } from "../lib/query-filters.js";
+import { today } from "../lib/date.js";
 import { generatedAtIst } from "./report-builders/report-envelope.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import {
@@ -410,7 +411,7 @@ export async function listCustomers(req) {
     schemesByCustomer.set(scheme.customerId, list);
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const calendarToday = today();
   const allActiveSchemeRows = [];
   for (const customer of result.data) {
     const customerSchemes = schemesByCustomer.get(customer._id) ?? [];
@@ -437,7 +438,7 @@ export async function listCustomers(req) {
         if (["PAID", "WAIVED"].includes(inst.status)) continue;
         const remaining = Math.max(0, Number(inst.amountPaise ?? 0) - Number(inst.paidPaise ?? 0));
         if (!remaining) continue;
-        if (inst.status === "OVERDUE" || (inst.dueDate && inst.dueDate < today && ["DUE", "PARTIALLY_PAID", "PENDING"].includes(inst.status))) {
+        if (inst.status === "OVERDUE" || (inst.dueDate && inst.dueDate < calendarToday && ["DUE", "PARTIALLY_PAID", "PENDING"].includes(inst.status))) {
           overduePaise += remaining;
         }
         if (
@@ -601,7 +602,7 @@ export async function customer360(req) {
   const activeSchemesRaw = schemes.filter((row) => ["ACTIVE", "LOCKED", "DEFAULTED"].includes(row.status));
   const activeSchemesWithTotals = await attachLedgerTotals(customer.tenantId, activeSchemesRaw);
   const activeSchemes = activeSchemesWithTotals.map(schemeAgentCollectPreview);
-  const today = new Date().toISOString().slice(0, 10);
+  const calendarToday = today();
   let nextDue = null;
   let overduePaise = 0;
   for (const scheme of activeSchemesRaw) {
@@ -611,7 +612,7 @@ export async function customer360(req) {
       if (!remaining) continue;
       if (
         inst.status === "OVERDUE" ||
-        (inst.dueDate && inst.dueDate < today && ["DUE", "PARTIALLY_PAID", "PENDING"].includes(inst.status))
+        (inst.dueDate && inst.dueDate < calendarToday && ["DUE", "PARTIALLY_PAID", "PENDING"].includes(inst.status))
       ) {
         overduePaise += remaining;
       }

@@ -14,7 +14,7 @@ function webhookProvider(req) {
   return "unknown";
 }
 
-function tenantWebhookKey(req) {
+export function tenantWebhookKey(req) {
   const ip = ipKeyGenerator(req.ip ?? "127.0.0.1");
   const tenantId = req.params.tenantId ?? "unknown";
   return `${webhookProvider(req)}:${tenantId}:${ip}`;

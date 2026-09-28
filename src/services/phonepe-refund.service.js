@@ -237,48 +237,52 @@ async function applyGatewayRefundCompletion({
     }).session(session);
     if (!scheme) throw errors.notFound("Scheme");
 
-    const sequence = await nextSchemeLedgerSequence(
-      payment.tenantId,
-      payment.schemeId,
-      session,
-    );
-    await LedgerEntry.create(
-      [
-        {
-          _id: createId("ledger"),
-          tenantId: payment.tenantId,
-          branchId: payment.branchId,
-          schemeId: payment.schemeId,
-          customerId: payment.customerId,
-          paymentId: payment._id,
-          type: LedgerEntryType.REVERSAL,
-          sequence,
-          amountPaise: refundAmountPaise,
-          weightMg: weightDeltaMg,
-          ratePerGramPaise: payment.ratePerGramPaise,
-          cycle: payment.targetCycle,
-          actorType: "WEBHOOK",
-          actorId: "phonepe-refund",
-          reversalOf: payment._id,
-          description: `Gateway refund ${providerRefundId ?? ""}`.trim(),
-          metadata: { paymentRefundId: claimedRefund._id, providerRefundId },
-        },
-      ],
-      { session },
-    );
-    gatewayTxFaultCheckpoint("refund:ledger-created");
+    const schemeIsTerminal = TERMINAL_SCHEME_STATUSES.has(scheme.status);
 
-    const entries = await LedgerEntry.find({
-      tenantId: payment.tenantId,
-      schemeId: payment.schemeId,
-    })
-      .sort({ sequence: 1 })
-      .session(session)
-      .lean();
-    rebuildSchemeProjection(scheme, entries);
-    scheme.version += 1;
-    await scheme.save({ session });
-    gatewayTxFaultCheckpoint("refund:scheme-saved");
+    if (!schemeIsTerminal) {
+      const sequence = await nextSchemeLedgerSequence(
+        payment.tenantId,
+        payment.schemeId,
+        session,
+      );
+      await LedgerEntry.create(
+        [
+          {
+            _id: createId("ledger"),
+            tenantId: payment.tenantId,
+            branchId: payment.branchId,
+            schemeId: payment.schemeId,
+            customerId: payment.customerId,
+            paymentId: payment._id,
+            type: LedgerEntryType.REVERSAL,
+            sequence,
+            amountPaise: refundAmountPaise,
+            weightMg: weightDeltaMg,
+            ratePerGramPaise: payment.ratePerGramPaise,
+            cycle: payment.targetCycle,
+            actorType: "WEBHOOK",
+            actorId: "phonepe-refund",
+            reversalOf: payment._id,
+            description: `Gateway refund ${providerRefundId ?? ""}`.trim(),
+            metadata: { paymentRefundId: claimedRefund._id, providerRefundId },
+          },
+        ],
+        { session },
+      );
+      gatewayTxFaultCheckpoint("refund:ledger-created");
+
+      const entries = await LedgerEntry.find({
+        tenantId: payment.tenantId,
+        schemeId: payment.schemeId,
+      })
+        .sort({ sequence: 1 })
+        .session(session)
+        .lean();
+      rebuildSchemeProjection(scheme, entries);
+      scheme.version += 1;
+      await scheme.save({ session });
+      gatewayTxFaultCheckpoint("refund:scheme-saved");
+    }
 
     const newRefundedAmount = priorRefundedAmount + refundAmountPaise;
     const newRefundedWeight = priorRefundedWeight + weightDeltaMg;
@@ -312,14 +316,20 @@ async function applyGatewayRefundCompletion({
     await claimedRefund.save({ session });
     gatewayTxFaultCheckpoint("refund:refund-completed");
 
-    if (TERMINAL_SCHEME_STATUSES.has(scheme.status)) {
+    if (schemeIsTerminal) {
       await upsertOperationalAlert({
         tenantId,
         type: AlertType.GATEWAY_REFUND_PARTIAL,
         entityId: payment._id,
         title: "Gateway refund on terminal scheme",
-        message: "A gateway refund was applied while the scheme is matured, redeemed, or closed — review may be required.",
-        metadata: { providerRefundId, schemeStatus: scheme.status, refundAmountPaise },
+        message:
+          "A gateway refund completed after settlement. The scheme ledger was not rebuilt; post-settlement accounting and operator resolution are required.",
+        metadata: {
+          providerRefundId,
+          schemeStatus: scheme.status,
+          refundAmountPaise,
+          paymentRefundId: claimedRefund._id,
+        },
         session,
       });
     }

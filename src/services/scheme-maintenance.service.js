@@ -329,10 +329,17 @@ export async function runDefaultingMaintenance(options = {}) {
   };
 }
 
+const FLEXIBLE_CAPACITY_EXPIRY_STATUSES = [
+  SchemeStatus.ACTIVE,
+  SchemeStatus.LOCKED,
+  SchemeStatus.DEFAULTED,
+];
+
 export async function runExpireFlexibleCapacityBatch({ today, cursor = null }) {
   const limit = batchSize();
   const query = {
     paymentPattern: "FLEXIBLE",
+    status: { $in: FLEXIBLE_CAPACITY_EXPIRY_STATUSES },
     cycles: {
       $elemMatch: {
         expiresAt: { $lt: today },
@@ -345,7 +352,10 @@ export async function runExpireFlexibleCapacityBatch({ today, cursor = null }) {
   let processed = 0;
   for (const row of rows) {
     const r = await Scheme.updateOne(
-      { _id: row._id },
+      {
+        _id: row._id,
+        status: { $in: FLEXIBLE_CAPACITY_EXPIRY_STATUSES },
+      },
       {
         $set: {
           "cycles.$[c].status": "EXPIRED",

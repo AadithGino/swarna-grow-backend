@@ -7,6 +7,7 @@ import {
   iteratePeriodBuckets,
   weekStartYmd,
 } from "../../lib/analytics-period.js";
+import { isoNow } from "../../lib/date.js";
 import { Branch, Scheme } from "../../models/index.js";
 
 export { dateMatch };
@@ -102,7 +103,7 @@ export function periodBlock(from, to) {
 }
 
 export function generatedAtIst() {
-  return new Date().toISOString().replace("Z", "+05:30").replace(/\.\d{3}/, "");
+  return isoNow();
 }
 
 export async function branchNameMap(tenantId, branchIds = null) {

@@ -952,6 +952,17 @@ export async function reversePayment(req) {
         "REVERSAL_NOT_ALLOWED",
         "Only successful payments can be reversed.",
       );
+    if (
+      payment.mode === PaymentMode.ONLINE_GATEWAY
+      || payment.mode === PaymentMode.LEGACY_ONLINE
+    ) {
+      throw errors.business(
+        "GATEWAY_PAYMENT_USE_REFUND",
+        payment.mode === PaymentMode.LEGACY_ONLINE
+          ? "Legacy online payments cannot be reversed here. Use the supported reconciliation or provider refund path."
+          : "Gateway payments must be refunded through the provider refund flow, not manual reversal.",
+      );
+    }
     const tenant = await Tenant.findById(payment.tenantId)
       .select("operations")
       .session(session)
@@ -966,6 +977,18 @@ export async function reversePayment(req) {
       );
     }
     const scheme = await Scheme.findById(payment.schemeId).session(session);
+    if (!scheme) throw errors.notFound("Scheme");
+    if (
+      scheme.status === SchemeStatus.REDEEMED
+      || scheme.status === SchemeStatus.CLOSED_PREMATURE
+      || scheme.status === SchemeStatus.MATURED
+    ) {
+      throw errors.business(
+        "REVERSAL_SCHEME_TERMINAL",
+        "Payments on matured, redeemed, or closed schemes cannot be reversed here.",
+        { schemeStatus: scheme.status },
+      );
+    }
     if (payment.mode === PaymentMode.CASH && payment.collectedBy) {
       await lockCashStaffCustody(session, {
         tenantId: payment.tenantId,
