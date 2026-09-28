@@ -13,7 +13,7 @@ import { CustomerStatus } from "../constants/enums.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { issueSession, rotateSession } from "./token.service.js";
 import { otpProvider } from "../integrations/otp.provider.js";
-import { ROLE_PERMISSIONS } from "../constants/permissions.js";
+import { ROLE_PERMISSIONS, agentCapabilities, collectionAgentPermissions } from "../constants/permissions.js";
 import { CustomerLoginMode, PlatformRole, UserType } from "../constants/enums.js";
 import { env } from "../config/env.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
@@ -35,9 +35,10 @@ export async function tenantUserAuthDto(user) {
   if (!user) return user;
   const id = user._id ?? user.id;
   const [tenant, branch] = await Promise.all([
-    user.tenantId ? Tenant.findById(user.tenantId).select("code name branding").lean() : null,
+    user.tenantId ? Tenant.findById(user.tenantId).select("code name branding operations").lean() : null,
     user.branchId ? Branch.findById(user.branchId).select("name code").lean() : null,
   ]);
+  const isAgent = user.role === "COLLECTION_AGENT";
   return {
     id,
     name: user.name,
@@ -49,7 +50,8 @@ export async function tenantUserAuthDto(user) {
     tenantName: tenant?.branding?.displayName ?? tenant?.name ?? undefined,
     branchName: branch?.name ?? undefined,
     branchCode: branch?.code ?? undefined,
-    permissions: user.permissions,
+    permissions: isAgent ? collectionAgentPermissions(tenant) : user.permissions,
+    ...(isAgent ? { agentCapabilities: agentCapabilities(tenant) } : {}),
     mustSetPassword: user.mustSetPassword ?? false,
   };
 }

@@ -30,3 +30,28 @@ export const ROLE_PERMISSIONS = Object.freeze({
   /** Field collector: search customers, view schemes, record cash, hand over cash — no enrol/KYC/grievances/plan admin. */
   COLLECTION_AGENT: [Permission.CUSTOMER_READ, Permission.SCHEME_READ, Permission.PAYMENT_READ, Permission.PAYMENT_RECORD, Permission.CASH_READ, Permission.CASH_HANDOVER, Permission.GOLD_RATE_READ],
 });
+
+/** Extra permissions a jeweller can switch on for collection agents (tenant.operations flags). Only honoured on /staff routes. */
+export const AGENT_CAPABILITY_GRANTS = Object.freeze({
+  agentCanRegisterCustomers: [Permission.CUSTOMER_WRITE],
+  agentCanEnrolSchemes: [Permission.PLAN_READ, Permission.SCHEME_WRITE],
+});
+
+export function agentCapabilities(tenant) {
+  const operations = tenant?.operations ?? {};
+  return {
+    registerCustomers: operations.agentCanRegisterCustomers === true,
+    enrolSchemes: operations.agentCanEnrolSchemes === true,
+  };
+}
+
+export function collectionAgentPermissions(tenant, { includeCapabilities = true } = {}) {
+  const permissions = new Set(ROLE_PERMISSIONS.COLLECTION_AGENT);
+  if (includeCapabilities) {
+    const operations = tenant?.operations ?? {};
+    for (const [flag, grants] of Object.entries(AGENT_CAPABILITY_GRANTS)) {
+      if (operations[flag] === true) grants.forEach((permission) => permissions.add(permission));
+    }
+  }
+  return [...permissions];
+}

@@ -696,6 +696,8 @@ export const tenantOperationsPatchBody = z
     customerLoginMode: enumSchema(E.CustomerLoginMode).optional(),
     customerAppWriteEnabled: z.boolean().optional(),
     customerAppPaymentsEnabled: z.boolean().optional(),
+    agentCanRegisterCustomers: z.boolean().optional(),
+    agentCanEnrolSchemes: z.boolean().optional(),
     receiptPrefix: z.string().optional(),
     receiptNumberFormat: z.string().optional(),
     passbookNumberFormat: z.string().optional(),

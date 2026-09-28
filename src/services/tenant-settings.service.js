@@ -167,6 +167,8 @@ function presentOperations(tenant) {
     customerAppPaymentsEnabled:
       (ops.customerAppWriteEnabled ?? true) &&
       (ops.customerAppPaymentsEnabled ?? true),
+    agentCanRegisterCustomers: ops.agentCanRegisterCustomers === true,
+    agentCanEnrolSchemes: ops.agentCanEnrolSchemes === true,
     receiptPrefix: ops.receiptPrefix ?? "",
     receiptNumberFormat:
       ops.receiptNumberFormat ?? "{prefix}/{branchCode}/{year}/{seq:6}",

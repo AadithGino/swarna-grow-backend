@@ -62,6 +62,8 @@ const tenantOperationsSchema = new mongoose.Schema(
     customerLoginMode: enumField(CustomerLoginMode, { default: CustomerLoginMode.OTP_ONLY }),
     customerAppWriteEnabled: { type: Boolean, default: true },
     customerAppPaymentsEnabled: { type: Boolean, default: true },
+    agentCanRegisterCustomers: { type: Boolean, default: false },
+    agentCanEnrolSchemes: { type: Boolean, default: false },
     receiptPrefix: { type: String, default: "" },
     receiptNumberFormat: { type: String, default: "{prefix}/{branchCode}/{year}/{seq:6}" },
     passbookNumberFormat: { type: String, default: "{branchCode}/{year}/{seq:5}" },
