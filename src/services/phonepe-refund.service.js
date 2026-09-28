@@ -288,10 +288,10 @@ async function applyGatewayRefundCompletion({
         session,
         payment: lockedPayment,
         scheme,
+        paymentRefund: claimedRefund,
         refundAmountPaise,
         weightDeltaMg,
         providerRefundId,
-        paymentRefundId: claimedRefund._id,
       });
       gatewayTxFaultCheckpoint("refund:post-settlement-recorded");
     }
@@ -323,8 +323,10 @@ async function applyGatewayRefundCompletion({
     claimedRefund.completedAt = new Date();
     claimedRefund.amountPaise = refundAmountPaise;
     claimedRefund.providerPayload = payload;
-    claimedRefund.requiresReview = false;
-    claimedRefund.reviewReason = undefined;
+    claimedRefund.requiresReview = schemeIsTerminal;
+    claimedRefund.reviewReason = schemeIsTerminal
+      ? "POST_SETTLEMENT_GATEWAY_REFUND_PENDING_RESOLUTION"
+      : undefined;
     await claimedRefund.save({ session });
     gatewayTxFaultCheckpoint("refund:refund-completed");
 

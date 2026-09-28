@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { AlertSeverity, AlertStatus, AlertType, CashAdjustmentDirection, CashHandoverStatus, ClosureType, ExportStatus, ExportType, HandoverInitiator, JobStatus, MessageChannel, MessageStatus, MessageType, RedemptionMode, RedemptionStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
+import { AlertSeverity, AlertStatus, AlertType, CashAdjustmentDirection, CashHandoverStatus, ClosureType, ExportStatus, ExportType, HandoverInitiator, JobStatus, MessageChannel, MessageStatus, MessageType, PostSettlementRefundCaseStatus, PostSettlementRefundDisposition, RedemptionMode, RedemptionStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
 import { baseOptions, branchField, enumField, immutablePlugin, integerField, stringId, tenantField, versionField } from "./schema-helpers.js";
 
 const goldRateSchema = new mongoose.Schema({ _id: stringId("grt"), tenantId: tenantField, branchId: branchField, ratePerGramPaise: integerField({ required: true, min: 1 }), effectiveDate: { type: String, required: true }, purity: { type: String, enum: ["22K"], default: "22K" }, source: String, enteredBy: String, version: versionField }, baseOptions);
@@ -136,6 +136,30 @@ const cashStaffCustodySchema = new mongoose.Schema({
 }, baseOptions);
 cashStaffCustodySchema.index({ tenantId: 1, branchId: 1, staffId: 1 }, { unique: true });
 
+const postSettlementRefundCaseSchema = new mongoose.Schema({
+  _id: stringId("psrc"),
+  tenantId: tenantField,
+  branchId: branchField,
+  paymentRefundId: { type: String, required: true },
+  providerRefundId: String,
+  schemeId: { type: String, required: true, index: true },
+  paymentId: { type: String, required: true },
+  customerId: { type: String, required: true },
+  redemptionId: String,
+  refundAmountPaise: integerField({ required: true, min: 1 }),
+  refundWeightMg: integerField(),
+  refundCompletedAt: { type: Date, required: true },
+  settlementSnapshot: mongoose.Schema.Types.Mixed,
+  status: enumField(PostSettlementRefundCaseStatus, { default: PostSettlementRefundCaseStatus.PENDING_RESOLUTION }),
+  disposition: enumField(PostSettlementRefundDisposition),
+  resolutionReason: String,
+  resolvedBy: String,
+  resolvedAt: Date,
+  version: versionField,
+}, baseOptions);
+postSettlementRefundCaseSchema.index({ tenantId: 1, paymentRefundId: 1 }, { unique: true });
+postSettlementRefundCaseSchema.index({ tenantId: 1, status: 1, refundCompletedAt: -1 });
+
 export const GoldRate = mongoose.model("GoldRate", goldRateSchema);
 export const CashHandover = mongoose.model("CashHandover", handoverSchema);
 export const Redemption = mongoose.model("Redemption", redemptionSchema);
@@ -146,3 +170,4 @@ export const ExportJob = mongoose.model("ExportJob", exportSchema);
 export const Alert = mongoose.model("Alert", alertSchema);
 export const CashAdjustment = mongoose.model("CashAdjustment", cashAdjustmentSchema);
 export const CashStaffCustody = mongoose.model("CashStaffCustody", cashStaffCustodySchema);
+export const PostSettlementRefundCase = mongoose.model("PostSettlementRefundCase", postSettlementRefundCaseSchema);

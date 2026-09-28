@@ -175,6 +175,14 @@ export const grievanceStatusBody = z
   })
   .strict();
 
+export const postSettlementRefundResolveBody = z
+  .object({
+    disposition: enumSchema(E.PostSettlementRefundDisposition),
+    reason: z.string().trim().min(1).max(2000),
+    expectedVersion: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
 const reminderOffsetPatch = z
   .object({
     key: z.string().trim().min(1).max(40),

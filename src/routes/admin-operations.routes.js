@@ -16,6 +16,7 @@ import {
   handoverRejectBody,
   handoverResolveDiscrepancyBody,
   paymentReconcileBody,
+  postSettlementRefundResolveBody,
   pushBroadcastAudiencePreviewBody,
   pushBroadcastBody,
   reminderConfigPatchBody,
@@ -228,6 +229,23 @@ adminOperationsRouter.post("/payments/:paymentId/poll-status", ...guarded(Permis
   const { pollPaymentGatewayStatus } = await import("../services/payment-poll-status.service.js");
   return sendSuccess(res, await pollPaymentGatewayStatus(req));
 })));
+adminOperationsRouter.get(
+  "/post-settlement-refund-cases",
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(controller.postSettlementRefundCases)),
+);
+adminOperationsRouter.get(
+  "/post-settlement-refund-cases/:caseId",
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(controller.postSettlementRefundCaseDetail)),
+);
+adminOperationsRouter.post(
+  "/post-settlement-refund-cases/:caseId/resolve",
+  ...guarded(
+    Permission.PAYMENT_REVERSE,
+    validate({ body: postSettlementRefundResolveBody }),
+    idempotent,
+    asyncHandler(controller.resolvePostSettlementRefundCase),
+  ),
+);
 adminOperationsRouter.post(
   "/payments/:paymentId/reconcile",
   ...guarded(

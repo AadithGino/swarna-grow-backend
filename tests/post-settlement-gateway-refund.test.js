@@ -42,16 +42,23 @@ test("post-settlement gateway refund writes ledger reversal and scheme totals", 
     weightMg: 0,
     targetCycle: "2026-01",
   };
+  const paymentRefund = {
+    _id: createId("paymentRefund"),
+    tenantId: tenant._id,
+    paymentId,
+    amountPaise: 25_000,
+    completedAt: new Date(),
+  };
   await withTransaction(async (session) => {
     const scheme = await Scheme.findById(schemeId).session(session);
     await recordPostSettlementGatewayRefund({
       session,
       payment,
       scheme,
+      paymentRefund,
       refundAmountPaise: 25_000,
       weightDeltaMg: 0,
       providerRefundId: "ref-1",
-      paymentRefundId: createId("paymentRefund"),
     });
   });
   const updated = await Scheme.findById(schemeId).lean();

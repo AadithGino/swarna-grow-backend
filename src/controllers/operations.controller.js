@@ -13,6 +13,7 @@ import * as redemption from "../services/redemption.service.js";
 import * as grievance from "../services/grievance.service.js";
 import * as messaging from "../services/messaging.service.js";
 import * as audit from "../services/audit.service.js";
+import * as postSettlementRefundCase from "../services/post-settlement-refund-case.service.js";
 import { effectiveScope } from "../lib/query-filters.js";
 
 export const settingsProfile = async (req, res) =>
@@ -320,3 +321,9 @@ export const updateReminderConfig = async (req, res) => {
   });
   return sendSuccess(res, reminderConfigForAdmin(updated));
 };
+export const postSettlementRefundCases = async (req, res) =>
+  sendList(res, await postSettlementRefundCase.listPostSettlementRefundCases(req));
+export const postSettlementRefundCaseDetail = async (req, res) =>
+  sendSuccess(res, await postSettlementRefundCase.getPostSettlementRefundCase(req));
+export const resolvePostSettlementRefundCase = async (req, res) =>
+  sendSuccess(res, await postSettlementRefundCase.resolvePostSettlementRefundCase(req));

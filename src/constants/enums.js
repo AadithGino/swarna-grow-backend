@@ -134,6 +134,8 @@ export const AlertType = makeEnum(
   "FCM_DELIVERY_EXHAUSTED",
   "SYSTEM_ERROR",
 );
+export const PostSettlementRefundCaseStatus = makeEnum("PENDING_RESOLUTION", "RESOLVED");
+export const PostSettlementRefundDisposition = makeEnum("RECOVERABLE", "WRITE_OFF", "OTHER");
 export const CashAdjustmentDirection = makeEnum("CREDIT", "DEBIT");
 
 export const enumValues = (enumeration) => Object.values(enumeration);
