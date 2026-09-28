@@ -38,6 +38,7 @@
     "test:tenant-coverage": "npm run seed:pending-handover && FRONTEND_BASE=http://localhost:5173 API_BASE=http://localhost:4000/api/v1 npx playwright test scripts/visual-tenant-coverage.spec.js --reporter=line --workers=1",
     "test:tenant-ui-parity": "npm run seed:pending-handover && npm run seed:tenant-coverage-gaps && FRONTEND_BASE=http://localhost:5173 API_BASE=http://localhost:4000/api/v1 npx playwright test scripts/audit-tenant-ui-parity.spec.js --reporter=line --workers=1",
     "cleanup:customer-dob": "node --env-file=.env scripts/unset-customer-dob.js",
+    "seed:active-customer-counters": "node --env-file=.env scripts/seed-active-customer-counters.js",
     "db:sync-indexes": "node --env-file=.env scripts/sync-indexes.js --apply",
     "db:sync-indexes:dry-run": "node --env-file=.env scripts/sync-indexes.js --dry-run",
     "ops:inspect": "node --env-file=.env scripts/ops-inspect.js"

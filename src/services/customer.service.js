@@ -49,7 +49,7 @@ import { canonicalMobile, mobileLookupVariants } from "../lib/mobile.js";
 import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
 import { enrichCustomerKycRecord } from "../lib/customer-kyc-enrichment.js";
 import { attachLedgerTotals, schemeAgentCollectPreview } from "./scheme.service.js";
-import { assertWithinLimit } from "../lib/tenant-limits.js";
+import { reserveActiveCustomerSeat, releaseActiveCustomerSeat } from "../lib/tenant-customer-capacity.js";
 
 const STATUS_LABELS = { ACTIVE: "Active", BLOCKED: "Blocked", INACTIVE: "Inactive" };
 const KYC_LABELS = {
@@ -538,8 +538,7 @@ export async function createCustomer(req) {
 
   return withTransaction(async (session) => {
     const tenant = await Tenant.findById(req.auth.tenantId).session(session);
-    const used = await Customer.countDocuments({ tenantId: tenant._id, status: "ACTIVE" }).session(session);
-    await assertWithinLimit({ tenant, limitKey: "activeCustomers", used, errorCode: "LIMIT_CUSTOMERS", label: "active customers" });
+    await reserveActiveCustomerSeat(tenant, session);
     await assertCustomerMobileAvailable(req.auth.tenantId, writePayload.mobile, {
       session,
     });
@@ -706,7 +705,34 @@ export async function setNominee(req, remove = false) {
     const auditEventId = await writeAudit({ req, action: remove ? "CUSTOMER_NOMINEE_REMOVED" : "CUSTOMER_NOMINEE_UPDATED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, before, after: customer.toObject(), session }); return { nominee: customer.nominee, version: customer.version, auditEventId };
   });
 }
-export async function blockCustomer(req, blocked = true) { return withTransaction(async (session) => { const customer = await Customer.findOneAndUpdate({ _id: req.params.customerId, ...req.scope }, { $set: { status: blocked ? CustomerStatus.BLOCKED : CustomerStatus.ACTIVE }, $inc: { version: 1 } }, { new: true, session }); if (!customer) throw errors.notFound("Customer"); const auditEventId = await writeAudit({ req, action: blocked ? "CUSTOMER_BLOCKED" : "CUSTOMER_UNBLOCKED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, after: customer.toObject(), session }); return { id: customer._id, status: customer.status, auditEventId }; }); }
+export async function blockCustomer(req, blocked = true) {
+  return withTransaction(async (session) => {
+    const before = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session);
+    if (!before) throw errors.notFound("Customer");
+    const wasActive = before.status === CustomerStatus.ACTIVE;
+    const customer = await Customer.findOneAndUpdate(
+      { _id: req.params.customerId, ...req.scope },
+      { $set: { status: blocked ? CustomerStatus.BLOCKED : CustomerStatus.ACTIVE }, $inc: { version: 1 } },
+      { new: true, session },
+    );
+    if (!customer) throw errors.notFound("Customer");
+    if (blocked && wasActive) {
+      await releaseActiveCustomerSeat(customer.tenantId, session);
+    } else if (!blocked && customer.status === CustomerStatus.ACTIVE && !wasActive) {
+      const tenant = await Tenant.findById(customer.tenantId).session(session);
+      await reserveActiveCustomerSeat(tenant, session);
+    }
+    const auditEventId = await writeAudit({
+      req,
+      action: blocked ? "CUSTOMER_BLOCKED" : "CUSTOMER_UNBLOCKED",
+      entityType: AuditEntityType.CUSTOMER,
+      entityId: customer._id,
+      after: customer.toObject(),
+      session,
+    });
+    return { id: customer._id, status: customer.status, auditEventId };
+  });
+}
 export async function updateCustomer(req) {
   return withTransaction(async (session) => {
     const customer = await Customer.findOne({ _id: req.params.customerId, ...req.scope }).session(session);

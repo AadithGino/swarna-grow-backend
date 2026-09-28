@@ -10,6 +10,7 @@ const subscriptionSchema = new mongoose.Schema({
   limitOverrides: mongoose.Schema.Types.Mixed,
   featureOverrides: mongoose.Schema.Types.Mixed,
   features: { type: [String], default: [] },
+  planFeaturesSnapshot: mongoose.Schema.Types.Mixed,
   extensionReason: String, cancelReason: String,
 }, { _id: false });
 const integrationSecretsSchema = new mongoose.Schema({
@@ -93,7 +94,12 @@ const tenantSchema = new mongoose.Schema({
     reminderConfig: { type: mongoose.Schema.Types.Mixed, default: undefined },
   },
   operations: { type: tenantOperationsSchema, default: () => ({}) },
-  subscription: { type: subscriptionSchema, default: () => ({}) }, featureFlags: { type: Map, of: Boolean, default: {} },
+  subscription: { type: subscriptionSchema, default: () => ({}) },
+  usageCounters: {
+    activeCustomers: { type: Number, default: null },
+    activeCustomersSeededAt: Date,
+  },
+  featureFlags: { type: Map, of: Boolean, default: {} },
   integrationSecrets: { type: integrationSecretsSchema, select: false },
   goLiveAt: Date,
   suspendReason: String,
