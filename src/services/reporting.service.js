@@ -11,7 +11,6 @@ import {
 import { ExportStatus, ExportType, RedemptionStatus, isEnumValue } from "../constants/enums.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { errors } from "../lib/app-error.js";
-import { PAYMENT_MODE_ORDER, PAYMENT_MODE_LABELS } from "../constants/enums.js";
 import { createId } from "../lib/ids.js";
 import { getQueue } from "../queues/index.js";
 import { AppError } from "../lib/app-error.js";
@@ -29,6 +28,7 @@ import {
 } from "../lib/query-filters.js";
 import { Branch } from "../models/index.js";
 import { redemptionPeriodSummary } from "./redemption-period-summary.js";
+import { today } from "../lib/date.js";
 import { moneyRef, weightRef } from "../lib/money.js";
 import {
   buildCurrencyTrendPoints,
@@ -46,9 +46,12 @@ import {
   sanitizedExportFilters,
 } from "../lib/export-authority.js";
 import {
-  netCollectionStatusFilter,
-  sumNetAmountPaise,
-} from "../lib/payment-net-aggregation.js";
+  aggregateCollectionByBranch,
+  aggregateCollectionPeriod,
+  aggregateCollectionTrendBuckets,
+  collectionPeriodBaseMatch,
+} from "../lib/collection-period-aggregation.js";
+import { paymentFinancialHistoryStatusFilter } from "../lib/payment-net-aggregation.js";
 
 export { collectionSummary };
 
@@ -87,11 +90,6 @@ export async function navBadges(req) {
   return { dues, cashHandovers, openRedemptions, failedMessages };
 }
 
-const fillModes = (rows) =>
-  PAYMENT_MODE_ORDER.filter((mode) => mode !== "LEGACY_ONLINE" || rows.some((row) => row._id === mode)).map((mode) => {
-    const row = rows.find((item) => item._id === mode);
-    return { mode, label: PAYMENT_MODE_LABELS[mode], amountPaise: row?.amountPaise ?? 0, count: row?.count ?? 0 };
-  });
 async function scopeDisplayLabel(scope) {
   if (!scope.branchId) return "All showrooms";
   const branch = await Branch.findOne({
@@ -104,13 +102,17 @@ async function scopeDisplayLabel(scope) {
 }
 
 export async function dashboard(req) {
-  const start = new Date(); start.setHours(0, 0, 0, 0);
   const scope = effectiveScope(req);
   const period = String(req.query.period ?? "THIS_MONTH");
   const periodLabels = { TODAY: "Today", THIS_WEEK: "This week", THIS_MONTH: "This month", LAST_MONTH: "Last month" };
   const periodRange = resolveQueryDateRange(req.query);
+  const todayYmd = today();
+  const todayRange = { from: todayYmd, to: todayYmd };
+  const todayCollection = await aggregateCollectionPeriod(
+    collectionPeriodBaseMatch(scope),
+    todayRange,
+  );
   const [
-    todayPayments,
     activeCustomers,
     openSchemes,
     activeAndLockedSchemes,
@@ -121,10 +123,6 @@ export async function dashboard(req) {
     openRedemptions,
     redemptions,
   ] = await Promise.all([
-    Payment.aggregate([
-      { $match: { ...scope, ...netCollectionStatusFilter(), paidAt: { $gte: start } } },
-      { $group: { _id: "$mode", amountPaise: sumNetAmountPaise(), count: { $sum: 1 } } },
-    ]),
     Customer.countDocuments({ ...scope, status: "ACTIVE" }),
     Scheme.countDocuments({ ...scope, status: { $in: OPEN_ENROLLMENT_STATUSES } }),
     Scheme.countDocuments({ ...scope, status: { $in: ACTIVE_AND_LOCKED_STATUSES } }),
@@ -133,10 +131,14 @@ export async function dashboard(req) {
     Redemption.countDocuments({ ...scope, status: { $in: OPEN_REDEMPTION_STATUSES } }),
     redemptionPeriodSummary(scope, periodRange),
   ]);
-  const todayCount = todayPayments.reduce((sum, row) => sum + row.count, 0);
-  const todayAmount = todayPayments.reduce((sum, row) => sum + row.amountPaise, 0);
   return {
-    today: { amountPaise: todayAmount, count: todayCount, byMode: fillModes(todayPayments) },
+    today: {
+      amountPaise: todayCollection.amountPaise,
+      grossAmountPaise: todayCollection.grossAmountPaise,
+      refundOutflowPaise: todayCollection.refundOutflowPaise,
+      count: todayCollection.count,
+      byMode: todayCollection.byMode,
+    },
     customers: { active: activeCustomers },
     schemes: {
       open: openSchemes,
@@ -168,40 +170,10 @@ function chartDateRange(req) {
 
 async function collectionTrendChart(req, scope) {
   const range = chartDateRange(req);
-  const buckets = await Payment.aggregate([
-    {
-      $match: {
-        ...scope,
-        ...netCollectionStatusFilter(),
-        ...dateMatch("paidAt", range),
-      },
-    },
-    {
-      $group: {
-        _id: {
-          day: {
-            $dateToString: {
-              format: "%Y-%m-%d",
-              date: "$paidAt",
-              timezone: "Asia/Kolkata",
-            },
-          },
-          bucket: {
-            $cond: [{ $eq: ["$mode", "CASH"] }, "CASH", "DIGITAL"],
-          },
-        },
-        value: sumNetAmountPaise(),
-      },
-    },
-    { $sort: { "_id.day": 1 } },
-  ]);
-  const byDay = new Map();
-  for (const row of buckets) {
-    const day = row._id.day;
-    const entry = byDay.get(day) ?? { CASH: 0, DIGITAL: 0 };
-    entry[row._id.bucket] = row.value;
-    byDay.set(day, entry);
-  }
+  const byDay = await aggregateCollectionTrendBuckets(
+    collectionPeriodBaseMatch(scope),
+    range,
+  );
   const { from, to } = range;
   const groupBy = reportTrendGroupBy(from, to, req.query);
   const cashRows = [...byDay.entries()].map(([day, entry]) => ({
@@ -338,11 +310,37 @@ export async function chart(req, key) {
     };
   }
   const group = key === "collection-by-branch" ? "$branchId" : key === "collection-by-mode" ? "$mode" : { $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" } };
+  if (key === "collection-by-mode") {
+    const period = await aggregateCollectionPeriod(
+      collectionPeriodBaseMatch(scope),
+      range,
+    );
+    return period.byMode.map((row) => ({
+      key: row.mode,
+      label: row.label,
+      value: row.amountPaise,
+      count: row.count,
+    }));
+  }
+  if (key === "collection-by-branch") {
+    return aggregateCollectionByBranch(collectionPeriodBaseMatch(scope), range);
+  }
+  const grossMatch = {
+    ...scope,
+    ...paymentFinancialHistoryStatusFilter(),
+    ...dateMatch("paidAt", range),
+  };
   return Payment.aggregate([
-    { $match: { ...scope, ...netCollectionStatusFilter(), ...dateMatch("paidAt", range) } },
-    { $group: { _id: group, value: sumNetAmountPaise(), count: { $sum: 1 } } },
+    { $match: grossMatch },
+    {
+      $group: {
+        _id: group,
+        grossValue: { $sum: "$amountPaise" },
+        count: { $sum: 1 },
+      },
+    },
     { $sort: { _id: 1 } },
-    { $project: { _id: 0, key: "$_id", label: "$_id", value: 1, count: 1 } },
+    { $project: { _id: 0, key: "$_id", label: "$_id", value: "$grossValue", count: 1 } },
   ]);
 }
 export async function report(req, reportKey) {

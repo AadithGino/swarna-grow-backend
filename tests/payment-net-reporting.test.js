@@ -85,7 +85,7 @@ test("dashboard and collection summary agree on net totals with partial refund",
   assert.equal(summary.amountPaise, expectedNet);
   assert.equal(summary.count, expectedCount);
   assert.equal(dash.today.amountPaise, expectedNet);
-  assert.equal(dash.today.count, 2);
+  assert.equal(dash.today.count, expectedCount);
   const cashMode = summary.byMode.find((row) => row.mode === "CASH");
   const upiMode = summary.byMode.find((row) => row.mode === "UPI");
   assert.equal(cashMode.amountPaise, 7_500_000);
