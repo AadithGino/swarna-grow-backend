@@ -14,6 +14,7 @@ import { nextSchemeLedgerSequence } from "./sequence.service.js";
 import { recordPhonePeRefundOutcome } from "../lib/ops-metrics.js";
 import { netAmountPaiseFromDoc } from "../lib/payment-net-aggregation.js";
 import { rebuildSchemeProjection } from "./scheme.service.js";
+import { recordPostSettlementGatewayRefund } from "../lib/post-settlement-gateway-refund.js";
 
 const REFUNDABLE_PAYMENT_STATUSES = new Set([
   PaymentStatus.SUCCESS,
@@ -282,6 +283,17 @@ async function applyGatewayRefundCompletion({
       scheme.version += 1;
       await scheme.save({ session });
       gatewayTxFaultCheckpoint("refund:scheme-saved");
+    } else {
+      await recordPostSettlementGatewayRefund({
+        session,
+        payment: lockedPayment,
+        scheme,
+        refundAmountPaise,
+        weightDeltaMg,
+        providerRefundId,
+        paymentRefundId: claimedRefund._id,
+      });
+      gatewayTxFaultCheckpoint("refund:post-settlement-recorded");
     }
 
     const newRefundedAmount = priorRefundedAmount + refundAmountPaise;
@@ -323,7 +335,7 @@ async function applyGatewayRefundCompletion({
         entityId: payment._id,
         title: "Gateway refund on terminal scheme",
         message:
-          "A gateway refund completed after settlement. The scheme ledger was not rebuilt; post-settlement accounting and operator resolution are required.",
+          "A gateway refund completed after settlement. A post-settlement ledger reversal was recorded; scheme status was not reopened. Review post-settlement refund totals on the enrollment.",
         metadata: {
           providerRefundId,
           schemeStatus: scheme.status,

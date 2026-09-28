@@ -26,6 +26,8 @@ const schemeSchema = new mongoose.Schema({
   flexiblePhase: enumField(FlexiblePhase), lockedAveragePaise: integerField(), lockedAt: Date,
   closureReason: String, closedAt: Date, settlementRequired: { type: Boolean, default: false },
   settlementPrincipalPaise: integerField(), settlementCompletedAt: Date,
+  postSettlementRefundedPaise: integerField(),
+  postSettlementRefundedWeightMg: integerField(),
   positionVersion: integerField({ default: 0, min: 0 }), ledgerNextSequence: integerField({ default: 0, min: 0 }), version: versionField, createdBy: String,
 }, baseOptions);
 schemeSchema.index({ tenantId: 1, enrollmentNumber: 1 }, { unique: true }); schemeSchema.index({ tenantId: 1, branchId: 1, status: 1, maturityDate: 1 }); schemeSchema.index({ tenantId: 1, branchId: 1, createdAt: -1 });
