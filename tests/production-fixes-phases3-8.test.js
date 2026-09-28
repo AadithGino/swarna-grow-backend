@@ -208,7 +208,7 @@ test("flexible capped cycle with partial pay counts as contributed in projection
   rebuildSchemeProjection(scheme, [
     { type: "INSTALLMENT_PAYMENT", cycle: "2026-01", amountPaise: 2_000, sequence: 1 },
   ]);
-  assert.equal(scheme.cycles[0].status, "PAID");
+  assert.equal(scheme.cycles[0].status, "PARTIALLY_PAID");
   const eligibility = assessMaturityContributionEligibility({
     paymentPattern: "FLEXIBLE",
     flexiblePhase: "CAPPED",
