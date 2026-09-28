@@ -11,11 +11,11 @@ import {
   reportTrendGroupBy,
   schemeIdsForPlan,
 } from "./report-envelope.js";
+import { paymentFinancialHistoryStatusFilter } from "../../lib/payment-net-aggregation.js";
 import {
-  netCollectionStatusFilter,
-  sumNetAmountPaise,
-  sumNetWeightMg,
-} from "../../lib/payment-net-aggregation.js";
+  aggregateCollectionPeriod,
+  collectionPeriodBaseMatch,
+} from "../../lib/collection-period-aggregation.js";
 
 const MODE_ROW_KEY = {
   CASH: "cash",
@@ -58,10 +58,14 @@ export async function buildCollectionReport(req) {
   const schemeIds = await schemeIdsForPlan(scope, req.query.planId);
   const match = {
     ...scope,
-    ...netCollectionStatusFilter(),
+    ...paymentFinancialHistoryStatusFilter(),
     ...dateMatch("paidAt", { from, to }),
     ...(schemeIds ? { schemeId: { $in: schemeIds } } : {}),
   };
+  const periodTotals = await aggregateCollectionPeriod(
+    collectionPeriodBaseMatch(scope, schemeIds ? { schemeId: { $in: schemeIds } } : {}),
+    { from, to },
+  );
 
   const [byBranchMode, byDay] = await Promise.all([
     Payment.aggregate([
@@ -69,9 +73,9 @@ export async function buildCollectionReport(req) {
       {
         $group: {
           _id: { branchId: "$branchId", mode: "$mode" },
-          amountPaise: sumNetAmountPaise(),
+          amountPaise: { $sum: "$amountPaise" },
           count: { $sum: 1 },
-          weightMg: sumNetWeightMg(),
+          weightMg: { $sum: { $ifNull: ["$weightMg", 0] } },
         },
       },
     ]),
@@ -82,7 +86,7 @@ export async function buildCollectionReport(req) {
           _id: {
             $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" },
           },
-          amountPaise: sumNetAmountPaise(),
+          amountPaise: { $sum: "$amountPaise" },
         },
       },
       { $sort: { _id: 1 } },
@@ -125,8 +129,8 @@ export async function buildCollectionReport(req) {
     { label: "Total", ...emptyModeRow() },
   );
 
-  const totalPaise = totalsRow.total.amountPaise;
-  const count = totalsRow.paymentCount;
+  const totalPaise = periodTotals.amountPaise;
+  const count = periodTotals.count;
   const goldMg = totalsRow.goldCredited.weightMg;
   const cashPaise = totalsRow.cash.amountPaise;
 
@@ -159,7 +163,9 @@ export async function buildCollectionReport(req) {
   const envelope = {
     ...envelopeBase,
     summary: [
-      { key: "TOTAL_COLLECTED", label: "Total collected", value: moneyRef(totalPaise), valueType: "currency" },
+      { key: "GROSS_COLLECTED", label: "Gross receipts", value: moneyRef(periodTotals.grossAmountPaise), valueType: "currency" },
+      { key: "REFUND_OUTFLOW", label: "Refund outflow", value: moneyRef(periodTotals.refundOutflowPaise), valueType: "currency" },
+      { key: "TOTAL_COLLECTED", label: "Net collected", value: moneyRef(totalPaise), valueType: "currency" },
       { key: "PAYMENT_COUNT", label: "Payments", value: count, valueType: "count" },
       {
         key: "AVERAGE_PAYMENT",

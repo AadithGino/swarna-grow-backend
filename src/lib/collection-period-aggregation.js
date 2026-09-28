@@ -1,25 +1,14 @@
-import { Payment } from "../models/index.js";
-import { PAYMENT_MODE_LABELS, PAYMENT_MODE_ORDER } from "../constants/enums.js";
+import { Payment, PaymentRefund } from "../models/index.js";
+import { GatewayRefundStatus, PAYMENT_MODE_LABELS, PAYMENT_MODE_ORDER } from "../constants/enums.js";
 import { dateMatch } from "./query-filters.js";
 import { paymentFinancialHistoryStatusFilter } from "./payment-net-aggregation.js";
-
-export function refundEventAtBounds(range) {
-  const from = range.from ? new Date(`${range.from}T00:00:00+05:30`) : null;
-  const to = range.to ? new Date(`${range.to}T23:59:59.999+05:30`) : null;
-  if (!from && !to) return null;
-  const bounds = {};
-  if (from) bounds.$gte = from;
-  if (to) bounds.$lte = to;
-  return bounds;
-}
-
-export function refundEventAtAddFields() {
-  return {
-    refundEventAt: {
-      $ifNull: ["$lastRefundedAt", { $ifNull: ["$reversedAt", "$paidAt"] }],
-    },
-  };
-}
+import {
+  aggregateGatewayRefundOutflowByMode,
+  aggregateGatewayRefundTrendByDay,
+  aggregateManualReversalOutflowByMode,
+  aggregateTotalRefundOutflow,
+  eventDateBounds,
+} from "./collection-cash-outflow.js";
 
 const fillModes = (rows) =>
   PAYMENT_MODE_ORDER.filter(
@@ -34,31 +23,21 @@ const fillModes = (rows) =>
     };
   });
 
-function buildRefundPipeline(baseMatch, refundEventBounds) {
-  return [
-    {
-      $match: {
-        ...baseMatch,
-        refundedAmountPaise: { $gt: 0 },
-      },
-    },
-    { $addFields: refundEventAtAddFields() },
-    ...(refundEventBounds ? [{ $match: { refundEventAt: refundEventBounds } }] : []),
-  ];
-}
-
 /**
- * Gross collections by paidAt, refund outflow by refund event date, net = gross − refunds.
+ * Gross collections by paidAt; refund outflow from completed gateway refunds and manual reversals by event date.
  */
 export async function aggregateCollectionPeriod(baseMatch, range) {
+  const scope = {
+    tenantId: baseMatch.tenantId,
+    ...(baseMatch.branchId ? { branchId: baseMatch.branchId } : {}),
+    ...(baseMatch.collectedBy ? { collectedBy: baseMatch.collectedBy } : {}),
+  };
   const grossMatch = {
     ...baseMatch,
     ...dateMatch("paidAt", range),
   };
-  const refundEventBounds = refundEventAtBounds(range);
-  const refundPipeline = buildRefundPipeline(baseMatch, refundEventBounds);
 
-  const [grossTotals, grossModes, refundTotals, refundModes] = await Promise.all([
+  const [grossTotals, grossModes, refundTotals, gatewayByMode, manualByMode] = await Promise.all([
     Payment.aggregate([
       { $match: grossMatch },
       { $group: { _id: null, amountPaise: { $sum: "$amountPaise" }, count: { $sum: 1 } } },
@@ -67,33 +46,29 @@ export async function aggregateCollectionPeriod(baseMatch, range) {
       { $match: grossMatch },
       { $group: { _id: "$mode", amountPaise: { $sum: "$amountPaise" }, count: { $sum: 1 } } },
     ]),
-    Payment.aggregate([
-      ...refundPipeline,
-      { $group: { _id: null, amountPaise: { $sum: "$refundedAmountPaise" }, count: { $sum: 1 } } },
-    ]),
-    Payment.aggregate([
-      ...refundPipeline,
-      {
-        $group: {
-          _id: "$mode",
-          amountPaise: { $sum: "$refundedAmountPaise" },
-          count: { $sum: 1 },
-        },
-      },
-    ]),
+    aggregateTotalRefundOutflow(scope, range),
+    aggregateGatewayRefundOutflowByMode(scope, range),
+    aggregateManualReversalOutflowByMode(scope, range),
   ]);
 
   const grossAmountPaise = grossTotals[0]?.amountPaise ?? 0;
-  const refundOutflowPaise = refundTotals[0]?.amountPaise ?? 0;
+  const refundOutflowPaise = refundTotals.amountPaise;
   const netAmountPaise = grossAmountPaise - refundOutflowPaise;
 
   const netByModeMap = new Map();
   for (const row of grossModes) {
     netByModeMap.set(row._id, { amountPaise: row.amountPaise ?? 0, count: row.count ?? 0 });
   }
-  for (const row of refundModes) {
-    const current = netByModeMap.get(row._id) ?? { amountPaise: 0, count: 0 };
-    netByModeMap.set(row._id, {
+  for (const [mode, row] of gatewayByMode.entries()) {
+    const current = netByModeMap.get(mode) ?? { amountPaise: 0, count: 0 };
+    netByModeMap.set(mode, {
+      amountPaise: current.amountPaise - (row.amountPaise ?? 0),
+      count: current.count,
+    });
+  }
+  for (const [mode, row] of manualByMode.entries()) {
+    const current = netByModeMap.get(mode) ?? { amountPaise: 0, count: 0 };
+    netByModeMap.set(mode, {
       amountPaise: current.amountPaise - (row.amountPaise ?? 0),
       count: current.count,
     });
@@ -111,6 +86,8 @@ export async function aggregateCollectionPeriod(baseMatch, range) {
     amountPaise: netAmountPaise,
     grossAmountPaise,
     refundOutflowPaise,
+    gatewayRefundOutflowPaise: refundTotals.gatewayOutflowPaise,
+    manualCorrectionOutflowPaise: refundTotals.manualCorrectionPaise,
     count: grossTotals[0]?.count ?? 0,
     byMode,
   };
@@ -124,17 +101,15 @@ export function collectionPeriodBaseMatch(scope, extra = {}) {
   };
 }
 
-/** Daily gross (paidAt) and refund (refundEventAt) buckets for cash vs digital trend charts. */
 export async function aggregateCollectionTrendBuckets(baseMatch, range) {
+  const scope = {
+    tenantId: baseMatch.tenantId,
+    ...(baseMatch.branchId ? { branchId: baseMatch.branchId } : {}),
+    ...(baseMatch.collectedBy ? { collectedBy: baseMatch.collectedBy } : {}),
+  };
   const grossMatch = { ...baseMatch, ...dateMatch("paidAt", range) };
-  const refundEventBounds = refundEventAtBounds(range);
-  const refundPipeline = buildRefundPipeline(baseMatch, refundEventBounds);
-
   const dayBucket = {
     $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" },
-  };
-  const refundDayBucket = {
-    $dateToString: { format: "%Y-%m-%d", date: "$refundEventAt", timezone: "Asia/Kolkata" },
   };
   const cashDigitalBucket = {
     $cond: [{ $eq: ["$mode", "CASH"] }, "CASH", "DIGITAL"],
@@ -150,15 +125,7 @@ export async function aggregateCollectionTrendBuckets(baseMatch, range) {
         },
       },
     ]),
-    Payment.aggregate([
-      ...refundPipeline,
-      {
-        $group: {
-          _id: { day: refundDayBucket, bucket: cashDigitalBucket },
-          value: { $sum: "$refundedAmountPaise" },
-        },
-      },
-    ]),
+    aggregateGatewayRefundTrendByDay(scope, range),
   ]);
 
   const byDay = new Map();
@@ -178,9 +145,12 @@ export async function aggregateCollectionTrendBuckets(baseMatch, range) {
 }
 
 export async function aggregateCollectionByBranch(baseMatch, range) {
+  const scope = {
+    tenantId: baseMatch.tenantId,
+    ...(baseMatch.branchId ? { branchId: baseMatch.branchId } : {}),
+  };
   const grossMatch = { ...baseMatch, ...dateMatch("paidAt", range) };
-  const refundEventBounds = refundEventAtBounds(range);
-  const refundPipeline = buildRefundPipeline(baseMatch, refundEventBounds);
+  const completedAt = eventDateBounds(range);
   const [grossRows, refundRows] = await Promise.all([
     Payment.aggregate([
       { $match: grossMatch },
@@ -192,16 +162,33 @@ export async function aggregateCollectionByBranch(baseMatch, range) {
         },
       },
     ]),
-    Payment.aggregate([
-      ...refundPipeline,
+    PaymentRefund.aggregate([
+      {
+        $match: {
+          tenantId: scope.tenantId,
+          status: GatewayRefundStatus.COMPLETED,
+          ...(completedAt ? { completedAt } : {}),
+        },
+      },
+      {
+        $lookup: {
+          from: "payments",
+          localField: "paymentId",
+          foreignField: "_id",
+          as: "payment",
+        },
+      },
+      { $unwind: "$payment" },
+      ...(scope.branchId ? [{ $match: { "payment.branchId": scope.branchId } }] : []),
       {
         $group: {
-          _id: "$branchId",
-          amountPaise: { $sum: "$refundedAmountPaise" },
+          _id: "$payment.branchId",
+          amountPaise: { $sum: "$amountPaise" },
         },
       },
     ]),
   ]);
+
   const byBranch = new Map();
   for (const row of grossRows) {
     byBranch.set(row._id, { value: row.amountPaise ?? 0, count: row.count ?? 0 });
