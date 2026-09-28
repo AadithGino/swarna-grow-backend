@@ -23,6 +23,8 @@ const redemptionSchema = new mongoose.Schema({
   handoverRateEffectiveDate: String,
   /** Gold handover: weight × handover rate at completion (not cash out). */
   handoverValuePaise: integerField(),
+  /** Cash-value gold handover: settlementPaise − handoverValuePaise (rounding at weight precision). Disclosure only. */
+  roundingDeltaPaise: integerField(),
   modeDetails: mongoose.Schema.Types.Mixed,
   requestedBy: String, approvedBy: String, completedBy: String, requestedAt: Date, approvedAt: Date, completedAt: Date, rejectionReason: String, version: versionField,
 }, baseOptions);

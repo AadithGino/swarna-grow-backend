@@ -229,6 +229,8 @@ export async function computeClosureSettlementCore({
   let weightMg = netTotals.goldWeightMg;
   let settlementRatePerGramPaise = 0;
   let settlementRateEffectiveDate = null;
+  let handoverValuePaise = 0;
+  let roundingDeltaPaise = 0;
 
   const needsExactRate =
     mode === RedemptionMode.GOLD_HANDOVER
@@ -344,6 +346,12 @@ export async function computeClosureSettlementCore({
           code: "GOLD_WEIGHT_ROUNDS_TO_ZERO",
           message: "Settlement rounds to zero gold weight at the applicable rate.",
         });
+      } else {
+        handoverValuePaise = moneyPaiseFromWeightMg(
+          handoverWeightMg,
+          exactRate.ratePerGramPaise,
+        );
+        roundingDeltaPaise = settlementPaise - handoverValuePaise;
       }
     }
   } else if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && !needsExactRate) {
@@ -380,6 +388,8 @@ export async function computeClosureSettlementCore({
     penaltyPaise,
     penaltyWeightMg,
     settlementPaise,
+    handoverValuePaise,
+    roundingDeltaPaise,
     principalPaise: netTotals.amountPaidPaise,
     goldWeightMg: netTotals.goldWeightMg,
     weightMg,

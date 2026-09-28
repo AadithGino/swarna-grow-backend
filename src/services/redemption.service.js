@@ -426,6 +426,8 @@ export async function settlementPreview(req, closureType) {
     penaltyPaise,
     penaltyWeightMg,
     settlementPaise,
+    handoverValuePaise,
+    roundingDeltaPaise,
     principalPaise,
     goldWeightMg,
     weightMg,
@@ -655,6 +657,8 @@ export async function settlementPreview(req, closureType) {
     penaltyPaise,
     penaltyWeightMg,
     settlementPaise,
+    handoverValuePaise: handoverValuePaise > 0 ? handoverValuePaise : undefined,
+    roundingDeltaPaise: roundingDeltaPaise !== 0 ? roundingDeltaPaise : undefined,
     valuationRatePerGramPaise,
     valuationRateEffectiveDate,
     mode: settlementMode ?? null,
@@ -1137,6 +1141,8 @@ export async function transitionRedemption(req, action) {
           );
           ledgerDebitAmountPaise = row.settlementPaise ?? 0;
           ledgerDebitWeightMg = handoverWeightMg;
+          row.roundingDeltaPaise =
+            (row.settlementPaise ?? 0) - (row.handoverValuePaise ?? 0);
         }
         ledgerDebitRatePaise = rate.ratePerGramPaise;
       } else if (row.mode === RedemptionMode.PURCHASE_ADJUSTMENT) {

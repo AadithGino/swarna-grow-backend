@@ -201,6 +201,7 @@ export const redemptionReceipt = async (req, res) => {
     handoverRatePerGramPaise: row.handoverRatePerGramPaise,
     handoverRateEffectiveDate: row.handoverRateEffectiveDate,
     handoverValuePaise: row.handoverValuePaise,
+    roundingDeltaPaise: row.roundingDeltaPaise,
     mode: row.mode,
   });
 };
