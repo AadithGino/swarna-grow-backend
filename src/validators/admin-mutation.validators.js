@@ -155,19 +155,23 @@ export const handoverResolveDiscrepancyBody = z
 
 export const grievanceAssignBody = z
   .object({
-    assigneeId: z.string().min(4).max(80),
+    assigneeId: z.string().min(4).max(80).nullable(),
+    expectedVersion: z.number().int().positive(),
   })
   .strict();
 
 export const grievancePriorityBody = z
   .object({
     priority: enumSchema(E.GrievancePriority),
+    reason: z.string().trim().min(1).max(500).optional(),
+    expectedVersion: z.number().int().positive(),
   })
   .strict();
 
 export const grievanceStatusBody = z
   .object({
     status: enumSchema(E.GrievanceStatus),
+    expectedVersion: z.number().int().positive(),
   })
   .strict();
 

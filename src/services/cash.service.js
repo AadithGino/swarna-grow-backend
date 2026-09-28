@@ -467,27 +467,63 @@ export async function listHandovers(req, staffOnly = false) {
   const filters = {};
   if (req.query.status) filters.status = req.query.status;
   if (req.query.staffId && !staffOnly) filters.staffId = req.query.staffId;
+  if (req.query.branchId) filters.branchId = req.query.branchId;
+  if (req.query.initiatedBy) filters.initiator = req.query.initiatedBy;
   Object.assign(filters, dateMatch("createdAt", req.query));
-  return paginate(CashHandover, { scope, filters, cursor: req.query.cursor, limit: req.query.limit, sort: "createdAt:desc" });
+  const page = await paginate(CashHandover, {
+    scope,
+    filters,
+    cursor: req.query.cursor,
+    limit: req.query.limit,
+    sort: "createdAt:desc",
+  });
+
+  const tenantId = req.auth.tenantId ?? req.scope?.tenantId;
+  const staffIds = page.data.map((row) => row.staffId);
+  const branchIds = page.data.map((row) => row.branchId);
+  const settledByIds = page.data.map((row) => row.settledBy).filter(Boolean);
+  const [branchMap, userMap] = await Promise.all([
+    loadBranchMap(tenantId, branchIds),
+    loadUserMap([...staffIds, ...settledByIds]),
+  ]);
+
+  return {
+    data: page.data.map((row) => presentHandoverListItem(row, branchMap, userMap)),
+    meta: page.meta,
+  };
 }
 
-export async function getHandoverForStaff(req) {
-  const row = await CashHandover.findOne({
-    _id: req.params.handoverId,
-    tenantId: req.auth.tenantId,
-    staffId: req.auth.id,
-  }).lean();
-  if (!row) throw errors.notFound("Cash handover");
+function presentHandoverListItem(row, branchMap, userMap) {
+  const staff = userMap.get(row.staffId);
+  const branch = branchMap.get(row.branchId);
+  const settledBy = row.settledBy ? userMap.get(row.settledBy) : null;
+  return {
+    ...row,
+    id: row._id,
+    handoverNumber: row.handoverNumber ?? row._id,
+    staff: userDto(staff),
+    branch: branchDto(branch),
+    initiatedBy: row.initiator,
+    amount: moneyRef(row.amountPaise),
+    acceptedAmount:
+      row.acceptedAmountPaise != null ? moneyRef(row.acceptedAmountPaise) : null,
+    receiptCount: row.receiptCount ?? 0,
+    acceptedBy: userDto(settledBy),
+    acceptedAt: row.settledAt ?? null,
+    hasDiscrepancy: row.status === CashHandoverStatus.DISCREPANCY,
+  };
+}
 
+async function presentHandoverDetail(row, { staffLabelFallback = "Staff" } = {}) {
   const relatedUserIds = [row.settledBy, row.staffId].filter(Boolean);
   const [branchMap, userMap] = await Promise.all([
-    loadBranchMap(req.auth.tenantId, [row.branchId]),
+    loadBranchMap(row.tenantId, [row.branchId]),
     loadUserMap(relatedUserIds),
   ]);
   const branch = branchMap.get(row.branchId);
   const settledByUser = userMap.get(row.settledBy);
   const staffUser = userMap.get(row.staffId);
-  const staffName = staffUser?.name ?? "You";
+  const staffName = staffUser?.name ?? staffLabelFallback;
 
   const timeline = [];
   const submittedAt = row.submittedAt ?? row.createdAt;
@@ -534,10 +570,40 @@ export async function getHandoverForStaff(req) {
   return {
     ...row,
     id: row._id,
+    handoverNumber: row.handoverNumber ?? row._id,
+    initiatedBy: row.initiator,
+    amount: moneyRef(row.amountPaise),
+    acceptedAmount:
+      row.acceptedAmountPaise != null ? moneyRef(row.acceptedAmountPaise) : null,
+    systemAmount: moneyRef(row.amountPaise),
+    receiptCount: row.receiptCount ?? 0,
     branch: branchDto(branch),
+    staff: userDto(staffUser),
     settledBy: userDto(settledByUser),
+    acceptedBy: userDto(settledByUser),
     timeline,
+    paymentLines: Array.isArray(row.paymentLines) ? row.paymentLines : [],
+    denominations: Array.isArray(row.denominations) ? row.denominations : [],
   };
+}
+
+export async function getHandover(req) {
+  const row = await CashHandover.findOne({
+    _id: req.params.handoverId,
+    ...req.scope,
+  }).lean();
+  if (!row) throw errors.notFound("Cash handover");
+  return presentHandoverDetail(row);
+}
+
+export async function getHandoverForStaff(req) {
+  const row = await CashHandover.findOne({
+    _id: req.params.handoverId,
+    tenantId: req.auth.tenantId,
+    staffId: req.auth.id,
+  }).lean();
+  if (!row) throw errors.notFound("Cash handover");
+  return presentHandoverDetail(row, { staffLabelFallback: "You" });
 }
 export async function createCashAdjustment(req) {
   return withTransaction(async (session) => {

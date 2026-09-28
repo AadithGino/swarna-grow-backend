@@ -37,11 +37,7 @@ adminOperationsRouter.get("/cash/staff-balances", ...guarded(Permission.CASH_REA
 adminOperationsRouter.get("/cash/staff-balances/:staffId", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashStaffBalanceDetail)));
 adminOperationsRouter.post("/cash/handovers", ...guarded(Permission.CASH_HANDOVER_ACCEPT, validate({ body: handoverBody }), idempotent, asyncHandler(controller.createHandover(HandoverInitiator.ADMIN))));
 adminOperationsRouter.get("/cash/handovers", ...guarded(Permission.CASH_READ, asyncHandler(controller.handovers(false))));
-adminOperationsRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.CASH_READ, asyncHandler(async (req, res) => {
-  const row = await CashHandover.findOne({ _id: req.params.handoverId, ...req.scope }).lean();
-  if (!row) throw errors.notFound("Cash handover");
-  return sendSuccess(res, row);
-})));
+adminOperationsRouter.get("/cash/handovers/:handoverId", ...guarded(Permission.CASH_READ, asyncHandler(controller.getHandover)));
 adminOperationsRouter.post(
   "/cash/handovers/:handoverId/accept",
   ...guarded(
