@@ -5,7 +5,8 @@ import { AppError, errors } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { deriveTenantCodeFromName, mapPublicPlans, signupStageFromStatus } from "../lib/platform-dto.js";
-import { limitsFromApi, normalizePlanFeatures } from "../constants/plan-features.js";
+import { limitsFromApi } from "../constants/plan-features.js";
+import { planFeaturesSnapshotFromPlan } from "../lib/feature-entitlements.js";
 import { env } from "../config/env.js";
 import { BillingCycle, PasswordTokenPurpose, PlanTier, SignupAvailabilityReason, SignupStatus, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
@@ -129,7 +130,7 @@ async function provisionFromSignup(signup) {
   const trialDays = plan?.trialDays ?? 14;
   const trialEndsAt = dayjs().add(trialDays, "day").toDate();
   const limits = limitsFromApi(plan?.limits ?? {});
-  const features = normalizePlanFeatures(plan?.features, plan?.tier ?? PlanTier.STARTER);
+  const planSnapshot = planFeaturesSnapshotFromPlan(plan ?? { tier: PlanTier.STARTER });
   return withTransaction(async (session) => {
     const tenant = (await Tenant.create([{
       _id: createId("tenant"),
@@ -145,7 +146,8 @@ async function provisionFromSignup(signup) {
         status: SubscriptionStatus.TRIAL,
         trialEndsAt,
         limits,
-        features: Object.entries(features).filter(([, enabled]) => enabled).map(([key]) => key),
+        planFeaturesSnapshot: planSnapshot,
+        features: Object.entries(planSnapshot).filter(([, enabled]) => enabled).map(([key]) => key),
       },
     }], { session }))[0];
     const branch = (await Branch.create([{

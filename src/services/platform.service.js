@@ -26,11 +26,16 @@ import {
   passwordPolicySchema,
 } from "../validators/common.validators.js";
 import {
-  chartSeries, defaultPlanFeaturesForTier, deriveTenantCodeFromName, mapPublicPlans,
+  chartSeries, deriveTenantCodeFromName, mapPublicPlans,
   mapPublicSubscriptionPlan, maskSecret, subscriptionSummaryForTenant, tenantListRow, usagePercent,
 } from "../lib/platform-dto.js";
 import { limitsFromApi, limitsToApi, normalizePlanFeatures } from "../constants/plan-features.js";
-import { normalizeFeatureFlags, PLATFORM_FEATURE_FLAG_KEYS } from "../constants/platform-feature-flags.js";
+import { normalizeFeatureFlags } from "../constants/platform-feature-flags.js";
+import {
+  effectivePlatformFlags,
+  planFeaturesSnapshotFromPlan,
+  resolvePlanFeatureBooleans,
+} from "../lib/feature-entitlements.js";
 import { PLATFORM_TEMPLATE_DEFINITIONS, REQUIRED_TEMPLATE_TYPES, getTemplateDefinition } from "../constants/template-registry.js";
 import { auditPlatformMutation } from "../lib/platform-audit.js";
 
@@ -73,6 +78,10 @@ export async function createSubscriptionPlan(body, req) {
   delete patch.billingCycle;
   delete patch.code;
   if (patch.supportedBillingCycles) patch.billingCycle = patch.supportedBillingCycles[0];
+  if (patch.yearlyPricePaise == null && patch.annualPricePaise != null) {
+    patch.yearlyPricePaise = patch.annualPricePaise;
+  }
+  delete patch.annualPricePaise;
   if (patch.monthlyPricePaise != null) patch.pricePaise = patch.monthlyPricePaise;
   if (patch.limits) patch.limits = limitsFromApi(patch.limits);
   if (patch.features) patch.features = normalizePlanFeatures(patch.features, patch.tier);
@@ -105,7 +114,13 @@ export async function updateSubscriptionPlan(id, body, req) {
   delete patch.expectedVersion;
   if (patch.monthlyPricePaise != null) patch.pricePaise = patch.monthlyPricePaise;
   if (patch.limits) patch.limits = limitsFromApi(patch.limits);
-  if (patch.features && patch.tier) patch.features = normalizePlanFeatures(patch.features, patch.tier);
+  if (patch.features != null) {
+    const tier = patch.tier ?? before?.tier ?? PlanTier.STARTER;
+    patch.features = normalizePlanFeatures(patch.features, tier);
+  }
+  if (patch.supportedBillingCycles?.length) {
+    patch.billingCycle = patch.supportedBillingCycles[0];
+  }
   const row = await SubscriptionPlan.findOneAndUpdate(
     { _id: id, ...(body.expectedVersion != null ? { version: Number(body.expectedVersion) } : {}) },
     { $set: patch, $inc: { version: 1 } },
@@ -386,7 +401,7 @@ export async function tenantDetail(id) {
   ]);
   const configuredTypes = new Set(templates.map((row) => row.messageType));
   const missing = REQUIRED_TEMPLATE_TYPES.filter((type) => !configuredTypes.has(type));
-  const featureMap = defaultPlanFeaturesForTier(tenant.subscription?.tier);
+  const featureMap = resolvePlanFeatureBooleans(tenant);
   const provisioning = await provisioningSummary(id);
   const { flags, effectiveFlags } = await tenantFlags(id);
   const metric = (used, limitKey) => ({
@@ -995,7 +1010,9 @@ export async function changeSubscription(id, action, body, req) {
     }
     tenant.subscription.tier = plan.tier;
     tenant.subscription.limits = limitsFromApi(plan.limits);
-    tenant.subscription.features = Object.entries(normalizePlanFeatures(plan.features, plan.tier)).filter(([, on]) => on).map(([k]) => k);
+    const snapshot = planFeaturesSnapshotFromPlan(plan);
+    tenant.subscription.planFeaturesSnapshot = snapshot;
+    tenant.subscription.features = Object.entries(snapshot).filter(([, on]) => on).map(([k]) => k);
     tenant.subscription.planId = plan._id;
     tenant.subscription.billingCycle = body.billingCycle ?? tenant.subscription.billingCycle;
     tenant.subscription.status = SubscriptionStatus.ACTIVE;
@@ -1068,11 +1085,7 @@ export async function tenantFlags(id, flags, req) {
     const tenant = await Tenant.findById(id).select("featureFlags subscription").lean();
     if (!tenant) throw errors.notFound("Tenant");
     const stored = normalizeFeatureFlags(tenant.featureFlags);
-    const tierFeatures = defaultPlanFeaturesForTier(tenant.subscription?.tier);
-    const effective = {};
-    for (const key of PLATFORM_FEATURE_FLAG_KEYS) {
-      effective[key] = Boolean(tierFeatures[key.replace("passbookImageOnPayment", "advancedReports")] ?? true) && stored[key];
-    }
+    const effective = effectivePlatformFlags(tenant);
     return { flags: stored, effectiveFlags: effective };
   }
   const before = await Tenant.findById(id).select("featureFlags").lean();
@@ -1091,11 +1104,7 @@ export async function tenantFlags(id, flags, req) {
     });
   }
   const stored = normalizeFeatureFlags(row.featureFlags);
-  const tierFeatures = defaultPlanFeaturesForTier(row.subscription?.tier);
-  const effective = {};
-  for (const key of PLATFORM_FEATURE_FLAG_KEYS) {
-    effective[key] = Boolean(tierFeatures[key.replace("passbookImageOnPayment", "advancedReports")] ?? true) && stored[key];
-  }
+  const effective = effectivePlatformFlags(row);
   return { flags: stored, effectiveFlags: effective, version: row.version };
 }
 

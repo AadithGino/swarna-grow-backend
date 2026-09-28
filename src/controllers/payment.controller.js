@@ -2,6 +2,7 @@ import PDFDocument from "pdfkit";
 import sharp from "sharp";
 import { Payment, PaymentIntent, PaymentLink } from "../models/index.js";
 import { errors } from "../lib/app-error.js";
+import { isOverlappingFeatureEnabled } from "../lib/feature-entitlements.js";
 import { paymentReceiptExtraLines } from "../lib/payment-gold-dto.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import * as payments from "../services/payment.service.js";
@@ -103,6 +104,12 @@ export const receipt = async (req, res) => {
 };
 
 export const passbookImage = async (req, res) => {
+  if (!isOverlappingFeatureEnabled(req.tenant, "passbookImageOnPayment")) {
+    throw errors.business(
+      "FEATURE_NOT_ENTITLED",
+      "Passbook images on payment are not enabled for this jewellery.",
+    );
+  }
   const payment = await Payment.findOne({
     _id: req.params.paymentId,
     ...req.scope,

@@ -16,6 +16,7 @@ import dayjs from "dayjs";
 import { env } from "../config/env.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import { moneyRef } from "../lib/money.js";
+import { isOverlappingFeatureEnabled } from "../lib/feature-entitlements.js";
 import {
   buildCountTrendPoints,
   reportTrendGroupBy,
@@ -313,18 +314,27 @@ export async function getMessageForAdmin(req) {
   return row;
 }
 export async function updateDelivery(providerMessageId, status, details = {}) { return Message.findOneAndUpdate({ providerMessageId }, { $set: { status, ...(status === "DELIVERED" ? { deliveredAt: new Date() } : {}), ...(status === "READ" ? { readAt: new Date() } : {}), ...(status === "FAILED" ? { failedAt: new Date(), failureCode: details.code, failureMessage: details.message } : {}) } }, { new: true }); }
+export async function paymentSuccessTemplateKeyForTenant(tenantId) {
+  const tenant = await Tenant.findById(tenantId).select("featureFlags subscription").lean();
+  if (!tenant) return "PAYMENT_SUCCESS_TEXT_FALLBACK";
+  return isOverlappingFeatureEnabled(tenant, "passbookImageOnPayment")
+    ? "PAYMENT_SUCCESS_MEDIA"
+    : "PAYMENT_SUCCESS_TEXT_FALLBACK";
+}
+
 export async function sharePayment(req) {
   const payment = await Payment.findOne({ _id: req.params.paymentId, ...req.scope }).lean();
   if (!payment) throw errors.notFound("Payment");
   const customer = await Customer.findOne({ _id: payment.customerId, tenantId: payment.tenantId }).select("mobile whatsappOptedOutAt").lean();
   if (!customer || customer.whatsappOptedOutAt) throw errors.business("WHATSAPP_OPTED_OUT", "The customer has opted out of WhatsApp messages.");
+  const templateKey = await paymentSuccessTemplateKeyForTenant(payment.tenantId);
   return queueMessage(req, {
     branchId: payment.branchId,
     customerId: payment.customerId,
     schemeId: payment.schemeId,
     type: "PAYMENT_SUCCESS",
     channel: "WHATSAPP",
-    templateKey: "PAYMENT_SUCCESS_MEDIA",
+    templateKey,
     templateParams: { mobile: customer.mobile, paymentId: payment._id, passbookImageUrl: null, textComponents: [] },
   });
 }

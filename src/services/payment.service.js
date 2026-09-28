@@ -35,6 +35,7 @@ import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { withTransaction } from "../lib/transaction.js";
 import { applyWeightPrecisionMg, decimalRoundingMode, moneyToWeightMg } from "../lib/money.js";
 import { today } from "../lib/date.js";
+import { assertPlatformCapability } from "../lib/feature-entitlements.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { writeAudit } from "./audit.service.js";
@@ -1126,6 +1127,8 @@ export async function reservePaymentLinkInSession(
       },
     ]);
   }
+  const tenant = await Tenant.findById(req.auth.tenantId).select("featureFlags subscription").session(session).lean();
+  assertPlatformCapability(tenant, "onlinePayments");
   const scheme = await Scheme.findOne({
     _id: req.body.schemeId,
     ...req.scope,
@@ -1231,6 +1234,8 @@ export async function createPaymentLink(req) {
 }
 
 export async function reservePaymentIntentInSession(session, req) {
+  const tenant = await Tenant.findById(req.auth.tenantId).select("featureFlags subscription").session(session).lean();
+  assertPlatformCapability(tenant, "onlinePayments");
   const scheme = await Scheme.findOne({
     _id: req.params?.schemeId ?? req.body.schemeId,
     tenantId: req.auth.tenantId,

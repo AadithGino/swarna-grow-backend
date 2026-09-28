@@ -11,10 +11,26 @@ import { staffRouter } from "./staff.routes.js";
 import { appRouter } from "./app.routes.js";
 import { appAuthRouter } from "./app-auth.routes.js";
 import { applyAgentCapabilities, authenticate, requireSubject, tenantScope } from "../middlewares/auth.middleware.js";
+import { requirePlatformCapability } from "../middlewares/platform-capability.middleware.js";
 
 export const apiRouter = Router();
 apiRouter.use("/public", publicRouter); apiRouter.use("/auth", authRouter); apiRouter.use("/platform", platformRouter); apiRouter.use("/app/auth", appAuthRouter);
 apiRouter.use("/admin/customers", authenticate, requireSubject("TENANT_USER"), tenantScope, adminCustomerRouter);
 apiRouter.use("/admin", authenticate, requireSubject("TENANT_USER"), tenantScope, adminConfigRouter, adminSchemeRouter, adminOperationsRouter, adminAnalyticsRouter);
-apiRouter.use("/staff", authenticate, requireSubject("TENANT_USER"), tenantScope, applyAgentCapabilities, staffRouter);
-apiRouter.use("/app", authenticate, requireSubject("CUSTOMER"), tenantScope, appRouter);
+apiRouter.use(
+  "/staff",
+  authenticate,
+  requireSubject("TENANT_USER"),
+  tenantScope,
+  requirePlatformCapability("staffAppEnabled"),
+  applyAgentCapabilities,
+  staffRouter,
+);
+apiRouter.use(
+  "/app",
+  authenticate,
+  requireSubject("CUSTOMER"),
+  tenantScope,
+  requirePlatformCapability("customerAppEnabled"),
+  appRouter,
+);

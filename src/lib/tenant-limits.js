@@ -1,6 +1,6 @@
 import { AppError } from "./app-error.js";
 import { SubscriptionStatus } from "../constants/enums.js";
-import { normalizePlanFeatures } from "../constants/plan-features.js";
+import { assertFeatureEntitled as assertPlanFeatureEntitled } from "./feature-entitlements.js";
 
 /** Block authenticated access when subscription is cancelled or grace has expired. */
 export function assertSubscriptionActive(tenant) {
@@ -52,27 +52,8 @@ export function assertSubscriptionActive(tenant) {
   }
 }
 
-function featureMap(tenant) {
-  const tier = tenant?.subscription?.tier;
-  const base = normalizePlanFeatures(null, tier);
-  const enabled = new Set(tenant?.subscription?.features ?? []);
-  const overrides = tenant?.subscription?.featureOverrides ?? {};
-  const map = { ...base };
-  for (const key of enabled) map[key] = true;
-  if (overrides && typeof overrides === "object") {
-    for (const [key, value] of Object.entries(overrides)) map[key] = Boolean(value);
-  }
-  return map;
-}
-
 export function assertFeatureEntitled(tenant, featureKey, message) {
-  if (featureMap(tenant)[featureKey] === true) return;
-  throw new AppError(
-    "FEATURE_NOT_ENTITLED",
-    message ?? `Your plan does not include ${featureKey}.`,
-    403,
-    { feature: featureKey },
-  );
+  return assertPlanFeatureEntitled(tenant, featureKey, message);
 }
 
 export function subscriptionLimit(tenant, key) {

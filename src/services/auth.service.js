@@ -15,11 +15,12 @@ import { issueSession, rotateSession } from "./token.service.js";
 import { otpProvider } from "../integrations/otp.provider.js";
 import { ROLE_PERMISSIONS, agentCapabilities, collectionAgentPermissions } from "../constants/permissions.js";
 import { CustomerLoginMode, PlatformRole, UserType } from "../constants/enums.js";
+import { assertPlatformCapability } from "../lib/feature-entitlements.js";
 import { env } from "../config/env.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { withTransaction } from "../lib/transaction.js";
 import { ttlToSeconds } from "../lib/jwt-ttl.js";
-import { assertWithinLimit } from "../lib/tenant-limits.js";
+import { reserveActiveCustomerSeat } from "../lib/tenant-customer-capacity.js";
 
 const toSubject = (record, type, mobileClient = false) => ({ id: record._id, type, tenantId: record.tenantId, branchId: record.branchId, role: record.role, permissions: [...new Set([...(ROLE_PERMISSIONS[record.role] ?? []), ...(record.permissions ?? []), ...(record.permissionOverrides ?? [])])], mobileClient, securityVersion: record.securityVersion ?? 0 });
 function sessionPayload(tokens, mobileClient = false) {
@@ -101,7 +102,12 @@ export async function login({ body, request, platform = false }) {
   }
   const user = await User.findOne(query).select("+passwordHash");
   if (!user?.passwordHash || !(await argon2.verify(user.passwordHash, body.password))) throw errors.unauthenticated("Mobile number or password is incorrect.");
-  const subject = toSubject(user.toObject(), UserType.TENANT_USER, body.platform !== "web");
+  const mobileClient = body.platform !== "web";
+  if (mobileClient) {
+    const tenant = await Tenant.findById(user.tenantId).select("featureFlags subscription").lean();
+    if (tenant) assertPlatformCapability(tenant, "staffAppEnabled");
+  }
+  const subject = toSubject(user.toObject(), UserType.TENANT_USER, mobileClient);
   const tokens = await issueSession(subject, body, request); await User.updateOne({ _id: user._id }, { $set: { lastSeenAt: new Date() } });
   return {
     user: await tenantUserAuthDto({
@@ -188,43 +194,50 @@ async function ensureCustomerAfterOtp(tenant, mobile, purpose) {
     if (tenant.operations?.customerSelfRegistrationEnabled === false) {
       throw errors.business("SELF_REGISTRATION_DISABLED", "Customer self-registration is disabled for this jewellery.");
     }
-    const used = await Customer.countDocuments({ tenantId: tenant._id, status: CustomerStatus.ACTIVE });
-    await assertWithinLimit({ tenant, limitKey: "activeCustomers", used, errorCode: "LIMIT_CUSTOMERS", label: "active customers" });
-    const branch =
-      (await Branch.findOne({ tenantId: tenant._id, isHeadOffice: true, active: true }).lean()) ??
-      (await Branch.findOne({ tenantId: tenant._id, active: true }).lean());
-    if (!branch) throw errors.business("BRANCH_NOT_CONFIGURED", "No branch is available for registration.");
-    const number = await nextSequence(tenant._id, "customer");
-    const canonical = canonicalMobile(mobile);
-    try {
-      customer = (
-        await Customer.create({
-          _id: createId("customer"),
-          tenantId: tenant._id,
-          branchId: branch._id,
-          customerNumber: `C${String(number).padStart(4, "0")}`,
-          name: "Customer",
-          mobile: canonical,
-          status: CustomerStatus.ACTIVE,
-        })
-      ).toObject();
-      isNewCustomer = true;
-    } catch (error) {
-      if (error?.code === 11000) {
-        customer = await findCustomerByTenantMobile(tenant._id, mobile);
-        if (customer) return { customer, isNewCustomer: false };
-        const indexName = String(error.message ?? "");
-        if (indexName.includes("passbookNumber")) {
-          throw new AppError(
-            "CUSTOMER_PASSBOOK_INDEX",
-            "New customer registration is temporarily blocked by passbook settings. Please contact your jeweller.",
-            409,
-          );
+    return withTransaction(async (session) => {
+      customer = await findCustomerByTenantMobile(tenant._id, mobile);
+      if (customer) return { customer, isNewCustomer: false };
+      const tenantRow = await Tenant.findById(tenant._id).session(session);
+      await reserveActiveCustomerSeat(tenantRow, session);
+      const branch =
+        (await Branch.findOne({ tenantId: tenant._id, isHeadOffice: true, active: true }).session(session).lean()) ??
+        (await Branch.findOne({ tenantId: tenant._id, active: true }).session(session).lean());
+      if (!branch) throw errors.business("BRANCH_NOT_CONFIGURED", "No branch is available for registration.");
+      const number = await nextSequence(tenant._id, "customer", session);
+      const canonical = canonicalMobile(mobile);
+      try {
+        customer = (
+          await Customer.create(
+            [{
+              _id: createId("customer"),
+              tenantId: tenant._id,
+              branchId: branch._id,
+              customerNumber: `C${String(number).padStart(4, "0")}`,
+              name: "Customer",
+              mobile: canonical,
+              status: CustomerStatus.ACTIVE,
+            }],
+            { session },
+          )
+        )[0].toObject();
+        return { customer, isNewCustomer: true };
+      } catch (error) {
+        if (error?.code === 11000) {
+          customer = await findCustomerByTenantMobile(tenant._id, mobile);
+          if (customer) return { customer, isNewCustomer: false };
+          const indexName = String(error.message ?? "");
+          if (indexName.includes("passbookNumber")) {
+            throw new AppError(
+              "CUSTOMER_PASSBOOK_INDEX",
+              "New customer registration is temporarily blocked by passbook settings. Please contact your jeweller.",
+              409,
+            );
+          }
+          throw appErrorFromDuplicateKey(error);
         }
-        throw appErrorFromDuplicateKey(error);
+        throw error;
       }
-      throw error;
-    }
+    });
   }
   return { customer, isNewCustomer };
 }
@@ -233,6 +246,7 @@ export async function verifyCustomerOtp(body, request) {
   if (body.purpose === "PASSWORD_RESET") return verifyPasswordResetOtp(body);
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
   if (!tenant) throw errors.notFound("Jewellery");
+  assertPlatformCapability(tenant, "customerAppEnabled");
   if (
     customerLoginMode(tenant) === CustomerLoginMode.PASSWORD_ONLY &&
     ["LOGIN", "SIGNUP"].includes(body.purpose)
@@ -331,6 +345,7 @@ export async function verifyPasswordResetOtp(body) {
 export async function loginCustomerPassword(body, request) {
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
   if (!tenant) throw errors.notFound("Jewellery");
+  assertPlatformCapability(tenant, "customerAppEnabled");
   if (customerLoginMode(tenant) !== CustomerLoginMode.PASSWORD_ONLY) {
     throw new AppError(
       "CUSTOMER_AUTH_MODE_OTP_ONLY",

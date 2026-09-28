@@ -553,6 +553,8 @@ export async function processOutbox(job) {
     const exists = await Message.exists({ tenantId: event.tenantId, type: "PAYMENT_SUCCESS", "templateParams.paymentId": event.payload.paymentId });
     if (customer && !exists) {
       const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
+      const { paymentSuccessTemplateKeyForTenant } = await import("../services/messaging.service.js");
+      const paymentSuccessTemplateKey = await paymentSuccessTemplateKeyForTenant(event.tenantId);
       if (!customer.whatsappOptedOutAt) {
         await queueCustomerNotification({
           tenantId: event.tenantId,
@@ -560,7 +562,7 @@ export async function processOutbox(job) {
           customerId: event.payload.customerId,
           schemeId: event.payload.schemeId,
           type: "PAYMENT_SUCCESS",
-          templateKey: "PAYMENT_SUCCESS_MEDIA",
+          templateKey: paymentSuccessTemplateKey,
           templateParams: {
             paymentId: event.payload.paymentId,
             mobile: customer.mobile,

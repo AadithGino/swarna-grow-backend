@@ -19,19 +19,36 @@ export const platformTenantListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 }).strict();
 
+const planLimitValue = z.number().int().positive().nullable();
+
 export const platformCreatePlanBody = z.object({
-  code: z.string().trim().min(2).max(32),
+  code: z.string().trim().min(2).max(32).optional(),
   name: z.string().trim().min(2).max(120),
+  displayName: z.string().trim().min(2).max(120).optional(),
   tier: enumSchema(E.PlanTier),
   monthlyPricePaise: positivePaise,
+  yearlyPricePaise: positivePaise.optional(),
   annualPricePaise: positivePaise.optional(),
-  limits: z.object({
-    activeCustomers: z.number().int().positive(),
-    branches: z.number().int().positive(),
-    staff: z.number().int().positive(),
-    schemePlans: z.number().int().positive(),
-    whatsappMessages: z.number().int().positive(),
-  }).strict(),
+  trialDays: z.number().int().min(0).max(365).optional(),
+  highlighted: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).max(999).optional(),
+  supportedBillingCycles: z.array(enumSchema(E.BillingCycle)).min(1).optional(),
+  limits: z
+    .object({
+      activeCustomers: planLimitValue.optional(),
+      branches: planLimitValue.optional(),
+      staffSeats: planLimitValue.optional(),
+      staff: planLimitValue.optional(),
+      schemePlans: planLimitValue.optional(),
+      whatsappMessagesPerMonth: planLimitValue.optional(),
+      whatsappMessages: planLimitValue.optional(),
+    })
+    .strict()
+    .optional(),
+  features: z.record(z.string(), z.boolean()).optional(),
+  displayFeatures: z
+    .array(z.object({ label: z.string().trim().min(1), value: z.string().trim().min(1) }))
+    .optional(),
 }).strict();
 
 export const platformUpdatePlanBody = platformCreatePlanBody.partial().extend({
