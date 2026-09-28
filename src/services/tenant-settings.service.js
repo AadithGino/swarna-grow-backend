@@ -22,6 +22,8 @@ import {
   User,
 } from "../models/index.js";
 import { buildBrandingPreviewUrls } from "../lib/branding-preview.js";
+import { planPriceForBillingCycle } from "../lib/subscription-provision.js";
+import { resolvePlanFeatureBooleans } from "../lib/feature-entitlements.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { now } from "../lib/date.js";
@@ -255,23 +257,6 @@ async function countTenantUsage(tenantId) {
   };
 }
 
-function planFeatures(tier, planDoc) {
-  const fromPlan = planDoc?.features;
-  if (Array.isArray(fromPlan) && fromPlan.length) {
-    const set = new Set(fromPlan);
-    return {
-      multiBranch: set.has("multiBranch"),
-      customApp: set.has("customApp"),
-      flexibleScheme: set.has("flexibleScheme"),
-      goldWeightScheme: set.has("goldWeightScheme"),
-      prematureRedemption: set.has("prematureRedemption"),
-      customerSelfEnrol: set.has("customerSelfEnrol"),
-      advancedReports: set.has("advancedReports"),
-    };
-  }
-  return DEFAULT_FEATURES_BY_TIER[tier] ?? DEFAULT_FEATURES_BY_TIER[PlanTier.GROWTH];
-}
-
 async function pendingUpgradeRequest(tenantId) {
   const row = await SubscriptionUpgradeRequest.findOne({
     tenantId,
@@ -295,11 +280,14 @@ export async function getSubscriptionForAdmin(req) {
   const tenant = await loadTenant(tenantId);
   const sub = tenant.subscription ?? {};
   const tier = sub.tier ?? PlanTier.STARTER;
-  const planDoc = await SubscriptionPlan.findOne({
-    tier,
-    billingCycle: BillingCycle.MONTHLY,
-    active: true,
-  }).lean();
+  const billingCycle = sub.billingCycle ?? BillingCycle.MONTHLY;
+  const planDoc = sub.planId
+    ? await SubscriptionPlan.findById(sub.planId).lean()
+    : await SubscriptionPlan.findOne({
+      tier,
+      billingCycle,
+      active: true,
+    }).lean();
   const limits = sub.limits ?? planDoc?.limits ?? {};
   const usageCounts = await countTenantUsage(tenantId);
   const renewsAt = sub.renewsAt ?? sub.trialEndsAt ?? null;
@@ -308,12 +296,16 @@ export async function getSubscriptionForAdmin(req) {
     ? isoDate(now().subtract(1, "month").toDate())
     : isoDate(sub.startsAt);
 
+  const cyclePricePaise = planPriceForBillingCycle(planDoc, billingCycle);
   return {
     currentPlan: {
       tier,
       name: planDoc?.name ?? tier,
-      monthlyPrice: moneyRef(planDoc?.pricePaise ?? 0),
-      billingCycle: planDoc?.billingCycle ?? BillingCycle.MONTHLY,
+      planId: planDoc?._id ?? sub.planId ?? null,
+      monthlyPrice: moneyRef(planDoc?.monthlyPricePaise ?? planDoc?.pricePaise ?? 0),
+      yearlyPrice: moneyRef(planDoc?.yearlyPricePaise ?? 0),
+      billingCycle,
+      cyclePrice: moneyRef(cyclePricePaise),
     },
     status: sub.status ?? "ACTIVE",
     currentPeriodStart: periodStart,
@@ -333,7 +325,7 @@ export async function getSubscriptionForAdmin(req) {
         resetsOn: now().add(1, "month").startOf("month").format("YYYY-MM-DD"),
       },
     },
-    features: planFeatures(tier, planDoc),
+    features: resolvePlanFeatureBooleans(tenant),
     pendingUpgradeRequest: await pendingUpgradeRequest(tenantId),
   };
 }

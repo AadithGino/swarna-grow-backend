@@ -5,8 +5,7 @@ import { AppError, errors } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { deriveTenantCodeFromName, mapPublicPlans, signupStageFromStatus } from "../lib/platform-dto.js";
-import { limitsFromApi } from "../constants/plan-features.js";
-import { planFeaturesSnapshotFromPlan } from "../lib/feature-entitlements.js";
+import { subscriptionPatchFromPlan } from "../lib/subscription-provision.js";
 import { env } from "../config/env.js";
 import { BillingCycle, PasswordTokenPurpose, PlanTier, SignupAvailabilityReason, SignupStatus, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType } from "../constants/enums.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
@@ -129,8 +128,11 @@ async function provisionFromSignup(signup) {
     : await SubscriptionPlan.findOne({ tier: signup.selectedPlanTier ?? PlanTier.STARTER, active: true }).lean();
   const trialDays = plan?.trialDays ?? 14;
   const trialEndsAt = dayjs().add(trialDays, "day").toDate();
-  const limits = limitsFromApi(plan?.limits ?? {});
-  const planSnapshot = planFeaturesSnapshotFromPlan(plan ?? { tier: PlanTier.STARTER });
+  const subscription = subscriptionPatchFromPlan(plan ?? { tier: PlanTier.STARTER }, {
+    billingCycle: signup.billingCycle ?? BillingCycle.MONTHLY,
+    trialEndsAt,
+    status: SubscriptionStatus.TRIAL,
+  });
   return withTransaction(async (session) => {
     const tenant = (await Tenant.create([{
       _id: createId("tenant"),
@@ -141,14 +143,7 @@ async function provisionFromSignup(signup) {
       email: signup.email,
       status: TenantStatus.PENDING_SETUP,
       address: signup.city ? { city: signup.city } : undefined,
-      subscription: {
-        tier: plan?.tier ?? PlanTier.STARTER,
-        status: SubscriptionStatus.TRIAL,
-        trialEndsAt,
-        limits,
-        planFeaturesSnapshot: planSnapshot,
-        features: Object.entries(planSnapshot).filter(([, enabled]) => enabled).map(([key]) => key),
-      },
+      subscription,
     }], { session }))[0];
     const branch = (await Branch.create([{
       _id: createId("branch"),

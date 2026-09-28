@@ -33,9 +33,13 @@ import { limitsFromApi, limitsToApi, normalizePlanFeatures } from "../constants/
 import { normalizeFeatureFlags } from "../constants/platform-feature-flags.js";
 import {
   effectivePlatformFlags,
-  planFeaturesSnapshotFromPlan,
   resolvePlanFeatureBooleans,
 } from "../lib/feature-entitlements.js";
+import {
+  assertPlanAllowsBillingCycle,
+  normalizeSupportedBillingCycles,
+  subscriptionPatchFromPlan,
+} from "../lib/subscription-provision.js";
 import { PLATFORM_TEMPLATE_DEFINITIONS, REQUIRED_TEMPLATE_TYPES, getTemplateDefinition } from "../constants/template-registry.js";
 import { auditPlatformMutation } from "../lib/platform-audit.js";
 
@@ -75,9 +79,11 @@ export async function listSubscriptionPlans() {
 export async function createSubscriptionPlan(body, req) {
   const patch = { ...body };
   delete patch.expectedVersion;
-  delete patch.billingCycle;
   delete patch.code;
-  if (patch.supportedBillingCycles) patch.billingCycle = patch.supportedBillingCycles[0];
+  const billingCycle = body.billingCycle ?? patch.billingCycle;
+  delete patch.billingCycle;
+  patch.supportedBillingCycles = normalizeSupportedBillingCycles(patch, billingCycle);
+  patch.billingCycle = patch.supportedBillingCycles[0];
   if (patch.yearlyPricePaise == null && patch.annualPricePaise != null) {
     patch.yearlyPricePaise = patch.annualPricePaise;
   }
@@ -119,6 +125,7 @@ export async function updateSubscriptionPlan(id, body, req) {
     patch.features = normalizePlanFeatures(patch.features, tier);
   }
   if (patch.supportedBillingCycles?.length) {
+    patch.supportedBillingCycles = normalizeSupportedBillingCycles(patch, patch.billingCycle ?? before?.billingCycle);
     patch.billingCycle = patch.supportedBillingCycles[0];
   }
   const row = await SubscriptionPlan.findOneAndUpdate(
@@ -285,8 +292,12 @@ export async function createTenant(req) {
     while (await Tenant.exists({ code })) { n += 1; code = `${base.slice(0, 10)}${n}`; }
     return code;
   })();
-  const limits = limitsFromApi(plan?.limits ?? body.subscription?.limits ?? {});
-  const features = normalizePlanFeatures(plan?.features, plan?.tier ?? PlanTier.STARTER);
+  if (plan) assertPlanAllowsBillingCycle(plan, billingCycle);
+  const subscription = subscriptionPatchFromPlan(plan, {
+    billingCycle,
+    trialEndsAt: dayjs().add(trialDays, "day").toDate(),
+    status: SubscriptionStatus.TRIAL,
+  });
   const ownerPasswordHash = await argon2.hash(temporaryPassword, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 });
   const result = await withTransaction(async (session) => {
     const tenant = (await Tenant.create([{
@@ -299,15 +310,7 @@ export async function createTenant(req) {
       supportNumber: body.supportNumber,
       address: body.city || body.address ? { line1: body.address, city: body.city } : undefined,
       status: TenantStatus.PENDING_SETUP,
-      subscription: {
-        tier: plan?.tier ?? body.subscription?.tier ?? PlanTier.STARTER,
-        status: body.skipPayment ? SubscriptionStatus.TRIAL : SubscriptionStatus.TRIAL,
-        trialEndsAt: dayjs().add(trialDays, "day").toDate(),
-        billingCycle,
-        planId: plan?._id,
-        limits,
-        features: Object.entries(features).filter(([, on]) => on).map(([key]) => key),
-      },
+      subscription,
     }], { session }))[0];
     let branch = null;
     if (body.createDefaultBranch !== false) {
@@ -1010,11 +1013,14 @@ export async function changeSubscription(id, action, body, req) {
     }
     tenant.subscription.tier = plan.tier;
     tenant.subscription.limits = limitsFromApi(plan.limits);
-    const snapshot = planFeaturesSnapshotFromPlan(plan);
-    tenant.subscription.planFeaturesSnapshot = snapshot;
-    tenant.subscription.features = Object.entries(snapshot).filter(([, on]) => on).map(([k]) => k);
-    tenant.subscription.planId = plan._id;
-    tenant.subscription.billingCycle = body.billingCycle ?? tenant.subscription.billingCycle;
+    const billingCycle = body.billingCycle ?? tenant.subscription.billingCycle ?? BillingCycle.MONTHLY;
+    assertPlanAllowsBillingCycle(plan, billingCycle);
+    const patch = subscriptionPatchFromPlan(plan, {
+      billingCycle,
+      status: SubscriptionStatus.ACTIVE,
+      existingSubscription: tenant.subscription?.toObject?.() ?? tenant.subscription,
+    });
+    Object.assign(tenant.subscription, patch);
     tenant.subscription.status = SubscriptionStatus.ACTIVE;
   } else if (action === "limits") {
     if (body.expectedVersion == null) throw new AppError("VALIDATION_FAILED", "expectedVersion is required.", 422);

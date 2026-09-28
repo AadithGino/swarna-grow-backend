@@ -228,7 +228,7 @@ test("POST /tenants/:tenantId/subscription/change-plan valid acceptance", async 
   const { tenant } = await seedTenantContext();
   const growthPlanId = await seedGrowthPlan();
   const change = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/subscription/change-plan`, {
-    body: { subscriptionPlanId: growthPlanId },
+    body: { subscriptionPlanId: growthPlanId, billingCycle: "MONTHLY" },
     idempotencyKey: "valid-change-plan",
   });
   assert.equal(change.status, 200);

@@ -1,6 +1,7 @@
 import dayjs from "dayjs";
 import { PlanTier, TenantStatus } from "../constants/enums.js";
 import { DEFAULT_PLAN_FEATURES, limitsToApi, normalizePlanFeatures } from "../constants/plan-features.js";
+import { normalizeSupportedBillingCycles } from "./subscription-provision.js";
 import { moneyRef } from "./money.js";
 
 export function mapPlanId(plan) {
@@ -26,13 +27,7 @@ export function mapPublicSubscriptionPlan(plan, { tenantCount } = {}) {
     status: plan.active === false ? "DEPRECATED" : "ACTIVE",
     version: plan.version ?? 1,
     tenantCount: tenantCount ?? 0,
-    supportedBillingCycles: plan.supportedBillingCycles?.length
-      ? plan.supportedBillingCycles
-      : billingCycle === "ANNUAL"
-        ? ["ANNUAL"]
-        : billingCycle === "MONTHLY"
-          ? ["MONTHLY"]
-          : ["MONTHLY", "ANNUAL"],
+    supportedBillingCycles: normalizeSupportedBillingCycles(plan, billingCycle),
     displayFeatures: plan.displayFeatures ?? [],
   };
   if (tier === PlanTier.CUSTOM && !monthlyPaise) {

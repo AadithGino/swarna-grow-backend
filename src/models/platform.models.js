@@ -6,7 +6,9 @@ const subscriptionPlanSchema = new mongoose.Schema({
   _id: stringId("subscriptionPlan"), tier: enumField(PlanTier, { required: true }), name: String, displayName: String,
   pricePaise: integerField(), monthlyPricePaise: integerField(), yearlyPricePaise: integerField(),
   trialDays: { type: Number, default: 0 }, highlighted: { type: Boolean, default: false }, sortOrder: { type: Number, default: 0 },
-  priceLabel: String, billingCycle: enumField(BillingCycle), limits: mongoose.Schema.Types.Mixed,
+  priceLabel: String, billingCycle: enumField(BillingCycle),
+  supportedBillingCycles: [{ type: String, enum: Object.values(BillingCycle) }],
+  limits: mongoose.Schema.Types.Mixed,
   features: mongoose.Schema.Types.Mixed, displayFeatures: [mongoose.Schema.Types.Mixed],
   active: { type: Boolean, default: true }, version: versionField,
 }, baseOptions);
