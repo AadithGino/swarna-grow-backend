@@ -13,10 +13,8 @@ async function seedActiveCustomerCounter(tenantId, session) {
     { _id: tenantId },
     {
       $set: {
-        usageCounters: {
-          activeCustomers: used,
-          activeCustomersSeededAt: new Date(),
-        },
+        "usageCounters.activeCustomers": used,
+        "usageCounters.activeCustomersSeededAt": new Date(),
       },
     },
     { session },

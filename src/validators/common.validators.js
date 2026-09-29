@@ -8,9 +8,19 @@ import {
   refinePlanSatisfiability,
 } from "../lib/plan-satisfiability.js";
 
-export const idParam = (name) => z.object({ [name]: z.string().min(4).max(80) });
-export const cursorQuery = z.object({ cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).default(20), sort: z.string().optional(), q: z.string().trim().max(120).optional() }).passthrough();
-export const idempotencyHeader = z.object({ "x-idempotency-key": z.string().uuid() }).passthrough();
+export const idParam = (name) =>
+  z.object({ [name]: z.string().min(4).max(80) });
+export const cursorQuery = z
+  .object({
+    cursor: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    sort: z.string().optional(),
+    q: z.string().trim().max(120).optional(),
+  })
+  .passthrough();
+export const idempotencyHeader = z
+  .object({ "x-idempotency-key": z.string().uuid() })
+  .passthrough();
 const enumSchema = (enumeration) => z.enum(Object.values(enumeration));
 export const mobile = z.string().regex(/^\+?[1-9]\d{9,14}$/);
 export const paise = z.number().int().safe().nonnegative();
@@ -35,8 +45,20 @@ export const passwordPolicySchema = z
   .max(128)
   .regex(/^\d+$/, PASSWORD_PIN_MESSAGE);
 
-export const loginBody = z.object({ tenantCode: z.string().trim().toUpperCase().optional(), mobile, password: passwordPolicySchema, deviceId: z.string().min(4), platform: z.enum(["web", "android", "ios"]).default("web"), appVersion: z.string().optional() });
-export const platformLoginBody = z.object({ email: z.string().email(), password: passwordPolicySchema, deviceId: z.string().min(4).optional(), platform: z.enum(["web", "android", "ios"]).default("web").optional() });
+export const loginBody = z.object({
+  tenantCode: z.string().trim().toUpperCase().optional(),
+  mobile,
+  password: passwordPolicySchema,
+  deviceId: z.string().min(4),
+  platform: z.enum(["web", "android", "ios"]).default("web"),
+  appVersion: z.string().optional(),
+});
+export const platformLoginBody = z.object({
+  email: z.string().email(),
+  password: passwordPolicySchema,
+  deviceId: z.string().min(4).optional(),
+  platform: z.enum(["web", "android", "ios"]).default("web").optional(),
+});
 export const changePasswordBody = z.object({
   currentPassword: passwordPolicySchema,
   newPassword: passwordPolicySchema,
@@ -47,15 +69,19 @@ const platformAppPlatformPatch = z.object({
   forceUpdate: z.boolean().optional(),
   storeUrl: z.string().url().nullable().optional(),
 });
-export const platformAppConfigBody = z.object({
-  android: platformAppPlatformPatch.optional(),
-  ios: platformAppPlatformPatch.optional(),
-  maintenance: z.object({
-    enabled: z.boolean().optional(),
-    title: z.string().trim().max(120).nullable().optional(),
-    message: z.string().trim().max(500).nullable().optional(),
-  }).optional(),
-}).strict();
+export const platformAppConfigBody = z
+  .object({
+    android: platformAppPlatformPatch.optional(),
+    ios: platformAppPlatformPatch.optional(),
+    maintenance: z
+      .object({
+        enabled: z.boolean().optional(),
+        title: z.string().trim().max(120).nullable().optional(),
+        message: z.string().trim().max(500).nullable().optional(),
+      })
+      .optional(),
+  })
+  .strict();
 export const signupStartBody = z.object({
   businessName: z.string().trim().min(2).max(160),
   ownerName: z.string().trim().min(2).max(120),
@@ -63,20 +89,33 @@ export const signupStartBody = z.object({
   email: z.string().email(),
   city: z.string().trim().min(2).max(80),
 });
-export const signupVerifyBody = z.object({ signupId: z.string().min(4), otp: z.string().regex(/^\d{4,8}$/) });
-export const signupSelectPlanBody = z.object({ subscriptionPlanId: z.string().min(4), billingCycle: enumSchema(E.BillingCycle).default(E.BillingCycle.MONTHLY) });
+export const signupVerifyBody = z.object({
+  signupId: z.string().min(4),
+  otp: z.string().regex(/^\d{4,8}$/),
+});
+export const signupSelectPlanBody = z.object({
+  subscriptionPlanId: z.string().min(4),
+  billingCycle: enumSchema(E.BillingCycle).default(E.BillingCycle.MONTHLY),
+});
 export const signupPaymentBody = z.object({ redirectUrl: z.string().url() });
-export const otpRequestBody = z.object({ tenantCode: z.string().trim().toUpperCase(), mobile, purpose: z.enum(["LOGIN", "SIGNUP", "PASSWORD_RESET"]).default("LOGIN"), deviceId: z.string().min(4) });
+export const otpRequestBody = z.object({
+  tenantCode: z.string().trim().toUpperCase(),
+  mobile,
+  purpose: z.enum(["LOGIN", "SIGNUP", "PASSWORD_RESET"]).default("LOGIN"),
+  deviceId: z.string().min(4),
+});
 export const otpVerifyBody = otpRequestBody.extend({
   otp: z.string().regex(/^\d{4,8}$/),
   otpId: z.string().uuid(),
-  deviceInfo: z.object({
-    deviceId: z.string().min(4),
-    platform: z.enum(["android", "ios", "web"]).optional(),
-    appVersion: z.string().max(32).optional(),
-    osVersion: z.string().max(32).optional(),
-    deviceModel: z.string().max(64).optional(),
-  }).optional(),
+  deviceInfo: z
+    .object({
+      deviceId: z.string().min(4),
+      platform: z.enum(["android", "ios", "web"]).optional(),
+      appVersion: z.string().max(32).optional(),
+      osVersion: z.string().max(32).optional(),
+      deviceModel: z.string().max(64).optional(),
+    })
+    .optional(),
 });
 export const appEnrolBody = z.object({
   planId: z.string(),
@@ -115,14 +154,19 @@ export const grievanceReopenBody = z.object({
   expectedVersion: z.number().int().positive(),
 });
 export const settlementPreviewQuery = z.object({
-  type: z.enum([E.ClosureType.MATURITY_REDEMPTION, E.ClosureType.PREMATURE_CLOSURE]).optional(),
+  type: z
+    .enum([E.ClosureType.MATURITY_REDEMPTION, E.ClosureType.PREMATURE_CLOSURE])
+    .optional(),
   mode: enumSchema(E.RedemptionMode).optional(),
 });
 
 export const customerRedemptionRequestBody = z
   .object({
     preferredMode: enumSchema(E.RedemptionMode),
-    preferredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    preferredDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
     remarks: z.string().max(500).optional(),
     expectedVersion: z.number().int().positive(),
     modeDetails: z
@@ -147,8 +191,15 @@ export const fcmTokenBody = z.object({
 });
 export const fcmRegisterBody = fcmTokenBody;
 export const fcmDeleteBody = z.object({ deviceId: z.string().min(4) });
-export const forgotPasswordBody = z.object({ tenantCode: z.string().trim().toUpperCase(), mobile, deviceId: z.string().min(4).optional() });
-export const setPasswordBody = z.object({ resetToken: z.string().min(32).optional(), password: passwordPolicySchema });
+export const forgotPasswordBody = z.object({
+  tenantCode: z.string().trim().toUpperCase(),
+  mobile,
+  deviceId: z.string().min(4).optional(),
+});
+export const setPasswordBody = z.object({
+  resetToken: z.string().min(32).optional(),
+  password: passwordPolicySchema,
+});
 export const customerPasswordLoginBody = z.object({
   tenantCode: z.string().trim().toUpperCase(),
   mobile,
@@ -159,21 +210,37 @@ export const customerSetPasswordBody = z.object({
   password: passwordPolicySchema,
   mustChangeOnNextLogin: z.boolean().optional(),
 });
-export const publicSetPasswordBody = z.object({
-  token: z.string().min(8).optional(),
-  resetToken: z.string().min(32).optional(),
-  password: passwordPolicySchema,
-  confirmPassword: passwordPolicySchema.optional(),
-}).superRefine((value, context) => {
-  if (!value.token && !value.resetToken) {
-    context.addIssue({ code: "custom", path: ["token"], message: "token or resetToken is required." });
-    return;
-  }
-  if (value.token) {
-    if (!value.confirmPassword) context.addIssue({ code: "custom", path: ["confirmPassword"], message: "confirmPassword is required." });
-    else if (value.password !== value.confirmPassword) context.addIssue({ code: "custom", path: ["confirmPassword"], message: "Password and confirm password must match." });
-  }
-});
+export const publicSetPasswordBody = z
+  .object({
+    token: z.string().min(8).optional(),
+    resetToken: z.string().min(32).optional(),
+    password: passwordPolicySchema,
+    confirmPassword: passwordPolicySchema.optional(),
+  })
+  .superRefine((value, context) => {
+    if (!value.token && !value.resetToken) {
+      context.addIssue({
+        code: "custom",
+        path: ["token"],
+        message: "token or resetToken is required.",
+      });
+      return;
+    }
+    if (value.token) {
+      if (!value.confirmPassword)
+        context.addIssue({
+          code: "custom",
+          path: ["confirmPassword"],
+          message: "confirmPassword is required.",
+        });
+      else if (value.password !== value.confirmPassword)
+        context.addIssue({
+          code: "custom",
+          path: ["confirmPassword"],
+          message: "Password and confirm password must match.",
+        });
+    }
+  });
 const mobileField = z.preprocess(
   (value) => (value == null || value === "" ? value : canonicalMobile(value)),
   mobile,
@@ -198,13 +265,79 @@ export const customerPatchBody = customerBody
   .partial()
   .extend({ expectedVersion: z.number().int().positive().optional() })
   .strict();
-export const nomineeBody = z.object({ name: z.string().min(2).max(120), relationship: enumSchema(E.NomineeRelationship), mobile: mobile.optional(), address: z.string().max(1000).optional(), expectedVersion: z.number().int().positive() });
-export const nomineeVersionBody = z.object({ expectedVersion: z.number().int().positive() });
-const nullablePaise = z.number().int().safe().nonnegative().nullable().optional();
-const amountRules = z.object({ amountMode: enumSchema(E.AmountMode), fixedAmountPaise: nullablePaise, slabsPaise: z.array(positivePaise).default([]), minInstallmentPaise: nullablePaise, maxInstallmentPaise: nullablePaise, multipleOfPaise: nullablePaise });
-const scheduleRules = z.object({ dueDateRule: enumSchema(E.DueDateRule), dueDayOfMonth: z.number().int().min(1).max(31).nullable().optional(), graceDays: z.number().int().min(0).max(90).default(0), firstInstallmentModeDefault: enumSchema(E.FirstInstallmentMode), firstInstallmentModeEditable: z.boolean().default(false) });
-const paymentRules = z.object({ partialPaymentAllowed: z.boolean().default(false), advancePaymentAllowed: z.boolean().default(false), maxAdvanceInstallments: z.number().int().min(0).max(120).default(0), minPaymentPaise: nullablePaise, maxPaymentPerTransactionPaise: nullablePaise });
-const flexibleRules = z.object({ phaseMode: enumSchema(E.PhaseMode), capMode: enumSchema(E.CapMode), carryForwardMode: enumSchema(E.CarryForwardMode), flexiblePhaseCycles: z.number().int().positive(), cappedPhaseCycles: z.number().int().positive(), averagingDivisor: z.number().int().positive(), frequencyMode: enumSchema(E.FlexibleFrequencyMode), flexiblePhase: z.object({ minimumPaymentPaise: positivePaise, maximumPaymentPaise: positivePaise, paymentIncrementPaise: positivePaise, minTotalPaise: paise, maxPaymentsPerCycle: z.number().int().positive().nullable().optional(), paymentsRequiredPerCycle: z.literal(0) }), capComputation: z.object({ formula: enumSchema(E.CapFormula), roundingMode: enumSchema(E.CapRoundingMode), roundToNearestPaise: positivePaise, minCycleCapPaise: positivePaise, maxCycleCapPaise: positivePaise, onZeroFlexiblePhaseTotal: enumSchema(E.ZeroFlexibleTotalAction), onBelowMinimumTotal: enumSchema(E.BelowMinimumTotalAction) }), cappedPhase: z.object({ minimumPaymentPaise: positivePaise, paymentIncrementPaise: positivePaise, allowFinalRemainderBelowMinimum: z.boolean(), allowFutureCyclePayment: z.boolean(), maxAdvanceCycles: z.number().int().min(0) }), extensionMode: z.literal("EXTEND_FLEXIBLE_PHASE").optional() });
+export const nomineeBody = z.object({
+  name: z.string().min(2).max(120),
+  relationship: enumSchema(E.NomineeRelationship),
+  mobile: mobile.optional(),
+  address: z.string().max(1000).optional(),
+  expectedVersion: z.number().int().positive(),
+});
+export const nomineeVersionBody = z.object({
+  expectedVersion: z.number().int().positive(),
+});
+const nullablePaise = z
+  .number()
+  .int()
+  .safe()
+  .nonnegative()
+  .nullable()
+  .optional();
+const amountRules = z.object({
+  amountMode: enumSchema(E.AmountMode),
+  fixedAmountPaise: nullablePaise,
+  slabsPaise: z.array(positivePaise).default([]),
+  minInstallmentPaise: nullablePaise,
+  maxInstallmentPaise: nullablePaise,
+  multipleOfPaise: nullablePaise,
+});
+const scheduleRules = z.object({
+  dueDateRule: enumSchema(E.DueDateRule),
+  dueDayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
+  graceDays: z.number().int().min(0).max(90).default(0),
+  firstInstallmentModeDefault: enumSchema(E.FirstInstallmentMode),
+  firstInstallmentModeEditable: z.boolean().default(false),
+});
+const paymentRules = z.object({
+  partialPaymentAllowed: z.boolean().default(false),
+  advancePaymentAllowed: z.boolean().default(false),
+  maxAdvanceInstallments: z.number().int().min(0).max(120).default(0),
+  minPaymentPaise: nullablePaise,
+  maxPaymentPerTransactionPaise: nullablePaise,
+});
+const flexibleRules = z.object({
+  phaseMode: enumSchema(E.PhaseMode),
+  capMode: enumSchema(E.CapMode),
+  carryForwardMode: enumSchema(E.CarryForwardMode),
+  flexiblePhaseCycles: z.number().int().positive(),
+  cappedPhaseCycles: z.number().int().positive(),
+  averagingDivisor: z.number().int().positive(),
+  frequencyMode: enumSchema(E.FlexibleFrequencyMode),
+  flexiblePhase: z.object({
+    minimumPaymentPaise: positivePaise,
+    maximumPaymentPaise: positivePaise,
+    paymentIncrementPaise: positivePaise,
+    minTotalPaise: paise,
+    maxPaymentsPerCycle: z.number().int().positive().nullable().optional(),
+    paymentsRequiredPerCycle: z.literal(0),
+  }),
+  capComputation: z.object({
+    formula: enumSchema(E.CapFormula),
+    roundingMode: enumSchema(E.CapRoundingMode),
+    roundToNearestPaise: positivePaise,
+    minCycleCapPaise: positivePaise,
+    maxCycleCapPaise: positivePaise,
+    onZeroFlexiblePhaseTotal: enumSchema(E.ZeroFlexibleTotalAction),
+    onBelowMinimumTotal: enumSchema(E.BelowMinimumTotalAction),
+  }),
+  cappedPhase: z.object({
+    minimumPaymentPaise: positivePaise,
+    paymentIncrementPaise: positivePaise,
+    allowFinalRemainderBelowMinimum: z.boolean(),
+    allowFutureCyclePayment: z.boolean(),
+    maxAdvanceCycles: z.number().int().min(0),
+  }),
+  extensionMode: z.literal("EXTEND_FLEXIBLE_PHASE").optional(),
+});
 const benefitEligibility = z.object({
   requireAllInstallmentsPaid: z.boolean(),
   maxAllowedDefaults: z.number().int().min(0),
@@ -227,7 +360,8 @@ const benefit = z
         context.addIssue({
           code: "custom",
           path: ["bonusValue"],
-          message: "Flat bonus requires bonusValue in paise (positive integer).",
+          message:
+            "Flat bonus requires bonusValue in paise (positive integer).",
         });
       }
       return;
@@ -278,10 +412,27 @@ const redemptionRules = z.object({
   allowedModes: z.array(enumSchema(E.RedemptionMode)).min(1),
   redeemAtAnyBranch: z.boolean(),
 });
-const availability = z.object({ allBranches: z.boolean(), branchIds: z.array(z.string()).default([]), enrolmentOpenFrom: z.string().nullable().optional(), enrolmentOpenTo: z.string().nullable().optional(), maxEnrolments: z.number().int().positive().nullable().optional(), visibleInCustomerApp: z.boolean(), customerSelfEnrolAllowed: z.boolean() });
-const goldRules = z.object({ rateSource: enumSchema(E.GoldRateSource), weightRoundingMode: enumSchema(E.WeightRoundingMode), weightPrecisionMg: z.number().int().positive(), blockPaymentIfRateNotSet: z.boolean() });
+const availability = z.object({
+  allBranches: z.boolean(),
+  branchIds: z.array(z.string()).default([]),
+  enrolmentOpenFrom: z.string().nullable().optional(),
+  enrolmentOpenTo: z.string().nullable().optional(),
+  maxEnrolments: z.number().int().positive().nullable().optional(),
+  visibleInCustomerApp: z.boolean(),
+  customerSelfEnrolAllowed: z.boolean(),
+});
+const goldRules = z.object({
+  rateSource: enumSchema(E.GoldRateSource),
+  weightRoundingMode: enumSchema(E.WeightRoundingMode),
+  weightPrecisionMg: z.number().int().positive(),
+  blockPaymentIfRateNotSet: z.boolean(),
+});
 
-function refinePlanCrossFields(value, context, { requireComplete = true } = {}) {
+function refinePlanCrossFields(
+  value,
+  context,
+  { requireComplete = true } = {},
+) {
   const pattern = value.paymentPattern;
   if (pattern === E.PaymentPattern.FLEXIBLE) {
     if (value.flexibleRules === null) {
@@ -315,9 +466,9 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
     }
   }
   if (
-    pattern === E.PaymentPattern.FLEXIBLE
-    && value.flexibleRules
-    && value.durationMonths != null
+    pattern === E.PaymentPattern.FLEXIBLE &&
+    value.flexibleRules &&
+    value.durationMonths != null
   ) {
     const flexMonths = value.flexibleRules.flexiblePhaseCycles ?? 0;
     const cappedMonths = value.flexibleRules.cappedPhaseCycles ?? 0;
@@ -348,20 +499,21 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
     }
   }
   if (
-    pattern === E.PaymentPattern.FLEXIBLE
-    && value.benefit?.type === E.BenefitType.ONE_FREE_INSTALLMENT
+    pattern === E.PaymentPattern.FLEXIBLE &&
+    value.benefit?.type === E.BenefitType.ONE_FREE_INSTALLMENT
   ) {
     context.addIssue({
       code: "custom",
       path: ["benefit", "type"],
-      message: "Flexible plans cannot use one free installment. Use fixed bonus or text-only benefit.",
+      message:
+        "Flexible plans cannot use one free installment. Use fixed bonus or text-only benefit.",
     });
   }
   if (
-    value.scheduleRules?.dueDateRule === E.DueDateRule.FIXED_DAY_OF_MONTH
-    && (value.scheduleRules.dueDayOfMonth == null
-      || value.scheduleRules.dueDayOfMonth < 1
-      || value.scheduleRules.dueDayOfMonth > 31)
+    value.scheduleRules?.dueDateRule === E.DueDateRule.FIXED_DAY_OF_MONTH &&
+    (value.scheduleRules.dueDayOfMonth == null ||
+      value.scheduleRules.dueDayOfMonth < 1 ||
+      value.scheduleRules.dueDayOfMonth > 31)
   ) {
     context.addIssue({
       code: "custom",
@@ -371,7 +523,10 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
   }
   const amountRules = value.amountRules ?? {};
   if (amountRules.amountMode === E.AmountMode.JEWELLER_FIXED) {
-    if (amountRules.fixedAmountPaise == null || amountRules.fixedAmountPaise < 1) {
+    if (
+      amountRules.fixedAmountPaise == null ||
+      amountRules.fixedAmountPaise < 1
+    ) {
       context.addIssue({
         code: "custom",
         path: ["amountRules", "fixedAmountPaise"],
@@ -389,14 +544,20 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
     }
   }
   if (amountRules.amountMode === E.AmountMode.CUSTOMER_CHOSEN) {
-    if (amountRules.minInstallmentPaise == null || amountRules.minInstallmentPaise < 1) {
+    if (
+      amountRules.minInstallmentPaise == null ||
+      amountRules.minInstallmentPaise < 1
+    ) {
       context.addIssue({
         code: "custom",
         path: ["amountRules", "minInstallmentPaise"],
         message: "Customer-chosen amount mode requires minInstallmentPaise.",
       });
     }
-    if (amountRules.maxInstallmentPaise == null || amountRules.maxInstallmentPaise < 1) {
+    if (
+      amountRules.maxInstallmentPaise == null ||
+      amountRules.maxInstallmentPaise < 1
+    ) {
       context.addIssue({
         code: "custom",
         path: ["amountRules", "maxInstallmentPaise"],
@@ -405,9 +566,9 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
     }
   }
   if (
-    amountRules.minInstallmentPaise != null
-    && amountRules.maxInstallmentPaise != null
-    && amountRules.minInstallmentPaise > amountRules.maxInstallmentPaise
+    amountRules.minInstallmentPaise != null &&
+    amountRules.maxInstallmentPaise != null &&
+    amountRules.minInstallmentPaise > amountRules.maxInstallmentPaise
   ) {
     context.addIssue({
       code: "custom",
@@ -439,21 +600,32 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
     }
   }
   const availabilityRules = value.availability ?? {};
-  if (availabilityRules.allBranches === false && !(availabilityRules.branchIds?.length)) {
+  if (
+    availabilityRules.allBranches === false &&
+    !availabilityRules.branchIds?.length
+  ) {
     context.addIssue({
       code: "custom",
       path: ["availability", "branchIds"],
       message: "Select at least one branch when allBranches is false.",
     });
   }
-  refineCalendarDateField(context, ["availability", "enrolmentOpenFrom"], availabilityRules.enrolmentOpenFrom);
-  refineCalendarDateField(context, ["availability", "enrolmentOpenTo"], availabilityRules.enrolmentOpenTo);
+  refineCalendarDateField(
+    context,
+    ["availability", "enrolmentOpenFrom"],
+    availabilityRules.enrolmentOpenFrom,
+  );
+  refineCalendarDateField(
+    context,
+    ["availability", "enrolmentOpenTo"],
+    availabilityRules.enrolmentOpenTo,
+  );
   if (
-    availabilityRules.enrolmentOpenFrom
-    && availabilityRules.enrolmentOpenTo
-    && isValidCalendarDateString(availabilityRules.enrolmentOpenFrom)
-    && isValidCalendarDateString(availabilityRules.enrolmentOpenTo)
-    && availabilityRules.enrolmentOpenFrom > availabilityRules.enrolmentOpenTo
+    availabilityRules.enrolmentOpenFrom &&
+    availabilityRules.enrolmentOpenTo &&
+    isValidCalendarDateString(availabilityRules.enrolmentOpenFrom) &&
+    isValidCalendarDateString(availabilityRules.enrolmentOpenTo) &&
+    availabilityRules.enrolmentOpenFrom > availabilityRules.enrolmentOpenTo
   ) {
     context.addIssue({
       code: "custom",
@@ -463,9 +635,9 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
   }
   const redemption = value.redemptionRules ?? {};
   if (
-    redemption.lockInMonths != null
-    && value.durationMonths != null
-    && redemption.lockInMonths > value.durationMonths
+    redemption.lockInMonths != null &&
+    value.durationMonths != null &&
+    redemption.lockInMonths > value.durationMonths
   ) {
     context.addIssue({
       code: "custom",
@@ -475,28 +647,30 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
   }
   const paymentRules = value.paymentRules ?? {};
   if (
-    paymentRules.advancePaymentAllowed === false
-    && (paymentRules.maxAdvanceInstallments ?? 0) > 0
+    paymentRules.advancePaymentAllowed === false &&
+    (paymentRules.maxAdvanceInstallments ?? 0) > 0
   ) {
     context.addIssue({
       code: "custom",
       path: ["paymentRules", "maxAdvanceInstallments"],
-      message: "maxAdvanceInstallments must be 0 when advance payments are disabled.",
+      message:
+        "maxAdvanceInstallments must be 0 when advance payments are disabled.",
     });
   }
   if (
-    paymentRules.advancePaymentAllowed === true
-    && (paymentRules.maxAdvanceInstallments ?? 0) < 1
+    paymentRules.advancePaymentAllowed === true &&
+    (paymentRules.maxAdvanceInstallments ?? 0) < 1
   ) {
     context.addIssue({
       code: "custom",
       path: ["paymentRules", "maxAdvanceInstallments"],
-      message: "maxAdvanceInstallments must be at least 1 when advance payments are enabled.",
+      message:
+        "maxAdvanceInstallments must be at least 1 when advance payments are enabled.",
     });
   }
   if (
-    pattern === E.PaymentPattern.FLEXIBLE
-    && paymentRules.maxPaymentPerTransactionPaise != null
+    pattern === E.PaymentPattern.FLEXIBLE &&
+    paymentRules.maxPaymentPerTransactionPaise != null
   ) {
     context.addIssue({
       code: "custom",
@@ -505,7 +679,10 @@ function refinePlanCrossFields(value, context, { requireComplete = true } = {}) 
     });
   }
   const benefit = value.benefit;
-  if (benefit?.type === E.BenefitType.FIXED_BONUS_AMOUNT && benefit.bonusBasis == null) {
+  if (
+    benefit?.type === E.BenefitType.FIXED_BONUS_AMOUNT &&
+    benefit.bonusBasis == null
+  ) {
     context.addIssue({
       code: "custom",
       path: ["benefit", "bonusBasis"],
@@ -548,7 +725,9 @@ const planFields = {
 
 export const planBody = z
   .object(planFields)
-  .superRefine((value, context) => refinePlanCrossFields(value, context, { requireComplete: true }));
+  .superRefine((value, context) =>
+    refinePlanCrossFields(value, context, { requireComplete: true }),
+  );
 
 const benefitPatch = z
   .object({
@@ -567,7 +746,8 @@ const benefitPatch = z
         context.addIssue({
           code: "custom",
           path: ["bonusValue"],
-          message: "Flat bonus requires bonusValue in paise (positive integer).",
+          message:
+            "Flat bonus requires bonusValue in paise (positive integer).",
         });
       }
       return;
@@ -583,28 +763,27 @@ const benefitPatch = z
     }
   });
 
-export const planPatchBody = z
-  .object({
-    expectedVersion: z.number().int().positive(),
-    name: planFields.name.optional(),
-    displayName: planFields.displayName,
-    description: planFields.description,
-    termsText: planFields.termsText,
-    valueBasis: planFields.valueBasis.optional(),
-    paymentPattern: planFields.paymentPattern.optional(),
-    durationMonths: planFields.durationMonths.optional(),
-    installmentCount: planFields.installmentCount.optional(),
-    amountRules: amountRules.optional(),
-    scheduleRules: scheduleRules.optional(),
-    paymentRules: paymentRules.optional(),
-    flexibleRules: flexibleRules.nullable().optional(),
-    goldRules: goldRules.nullable().optional(),
-    benefit: benefitPatch.optional(),
-    redemptionRules: redemptionRules.optional(),
-    availability: availability.partial().optional(),
-    /** No `.default(DRAFT)` — optional()+default on PATCH was resetting Active plans on every save. */
-    status: enumSchema(E.SchemePlanStatus).optional(),
-  });
+export const planPatchBody = z.object({
+  expectedVersion: z.number().int().positive(),
+  name: planFields.name.optional(),
+  displayName: planFields.displayName,
+  description: planFields.description,
+  termsText: planFields.termsText,
+  valueBasis: planFields.valueBasis.optional(),
+  paymentPattern: planFields.paymentPattern.optional(),
+  durationMonths: planFields.durationMonths.optional(),
+  installmentCount: planFields.installmentCount.optional(),
+  amountRules: amountRules.optional(),
+  scheduleRules: scheduleRules.optional(),
+  paymentRules: paymentRules.optional(),
+  flexibleRules: flexibleRules.nullable().optional(),
+  goldRules: goldRules.nullable().optional(),
+  benefit: benefitPatch.optional(),
+  redemptionRules: redemptionRules.optional(),
+  availability: availability.partial().optional(),
+  /** No `.default(DRAFT)` — optional()+default on PATCH was resetting Active plans on every save. */
+  status: enumSchema(E.SchemePlanStatus).optional(),
+});
 
 const previewScheduleExtras = {
   planId: z.string().min(4).max(80).optional(),
@@ -636,13 +815,24 @@ export const previewScheduleBody = z
       context.addIssue(issue);
     }
   });
-export const enrolBody = z.object({ customerId: z.string(), planId: z.string(), branchId: z.string().optional(), installmentAmountPaise: positivePaise.optional(), firstInstallmentMode: enumSchema(E.FirstInstallmentMode), firstInstallmentAction: enumSchema(E.FirstInstallmentAction).optional(), payment: z.record(z.string(), z.unknown()).optional() });
+export const enrolBody = z.object({
+  customerId: z.string(),
+  planId: z.string(),
+  branchId: z.string().optional(),
+  installmentAmountPaise: positivePaise.optional(),
+  firstInstallmentMode: enumSchema(E.FirstInstallmentMode),
+  firstInstallmentAction: enumSchema(E.FirstInstallmentAction).optional(),
+  payment: z.record(z.string(), z.unknown()).optional(),
+});
 export const paymentBody = z
   .object({
     schemeId: z.string(),
     amountPaise: positivePaise,
     mode: enumSchema(E.ManualPaymentMode),
-    targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
+    targetCycle: z
+      .string()
+      .regex(/^\d{4}-\d{2}$/)
+      .nullish(),
     expectedVersion: z.number().int().positive().nullish(),
     expectedPositionVersion: z.number().int().nonnegative().nullish(),
     positionVersion: z.number().int().nonnegative().nullish(),
@@ -652,7 +842,10 @@ export const paymentBody = z
   .strict();
 export const paymentIntentBody = z.object({
   amountPaise: positivePaise,
-  targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
+  targetCycle: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/)
+    .nullish(),
   expectedPositionVersion: z.number().int().nonnegative().nullish(),
   positionVersion: z.number().int().nonnegative().nullish(),
   redirectUrl: z.string().url().nullish(),
@@ -661,12 +854,17 @@ export const paymentIntentBody = z.object({
 export const paymentLinkBody = z.object({
   schemeId: z.string(),
   amountPaise: positivePaise,
-  targetCycle: z.string().regex(/^\d{4}-\d{2}$/).nullish(),
+  targetCycle: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/)
+    .nullish(),
   expectedPositionVersion: z.number().int().nonnegative().nullish(),
   positionVersion: z.number().int().nonnegative().nullish(),
   expiresInMinutes: z.number().int().positive().max(30).nullish(),
 });
-export const customerNoteBody = z.object({ note: z.string().trim().min(1).max(4000) });
+export const customerNoteBody = z.object({
+  note: z.string().trim().min(1).max(4000),
+});
 export const whatsappOptBody = z.object({ optedIn: z.boolean() });
 export const kycSubmitBody = z
   .object({
@@ -677,7 +875,9 @@ export const kycSubmitBody = z
     backUploadId: z.string().optional(),
   })
   .strict();
-export const customerBlockBody = z.object({ reason: z.string().trim().min(3).max(500).optional() });
+export const customerBlockBody = z.object({
+  reason: z.string().trim().min(3).max(500).optional(),
+});
 export const tenantOperationsPatchBody = z
   .object({
     expectedVersion: z.number().int().positive(),
@@ -727,7 +927,9 @@ export const branchCreateBody = z
       .max(32)
       .transform((value) => value.toUpperCase()),
     name: z.string().trim().min(1).max(160),
-    address: z.union([z.string().trim().min(1).max(500), branchAddressBody]).optional(),
+    address: z
+      .union([z.string().trim().min(1).max(500), branchAddressBody])
+      .optional(),
     email: z.string().email().optional(),
     contactNumber: mobile.optional(),
     mobile: mobile.optional(),
@@ -738,7 +940,9 @@ export const branchCreateBody = z
 export const branchUpdateBody = z
   .object({
     name: z.string().trim().min(1).max(160).optional(),
-    address: z.union([z.string().trim().min(1).max(500), branchAddressBody]).optional(),
+    address: z
+      .union([z.string().trim().min(1).max(500), branchAddressBody])
+      .optional(),
     email: z.string().email().optional(),
     contactNumber: mobile.optional(),
     mobile: mobile.optional(),
@@ -758,10 +962,37 @@ export const goldRateBody = z
   .superRefine((value, context) => {
     refineCalendarDateField(context, ["effectiveDate"], value.effectiveDate);
   });
-export const grievanceBody = z.object({ category: enumSchema(E.GrievanceCategory), subject: z.string().min(5).max(140), description: z.string().min(10).max(4000), relatedEntity: z.object({ type: z.enum(["PAYMENT", "SCHEME", "REDEMPTION"]), id: z.string() }).optional(), attachmentUploadIds: z.array(z.string()).max(5).default([]) });
-export const messageBody = z.object({ body: z.string().min(1).max(4000), messageType: enumSchema(E.GrievanceMessageType).default(E.GrievanceMessageType.PUBLIC_REPLY), attachmentUploadIds: z.array(z.string()).max(5).default([]), expectedVersion: z.number().int().positive().optional() });
-export const handoverBody = z.object({ amountPaise: positivePaise, remarks: z.string().max(500).optional(), staffId: z.string().optional(), branchId: z.string().optional() });
-export const redemptionBody = z.object({ mode: enumSchema(E.RedemptionMode), modeDetails: z.record(z.string(), z.unknown()).optional(), expectedVersion: z.number().int().positive() });
+export const grievanceBody = z.object({
+  category: enumSchema(E.GrievanceCategory),
+  subject: z.string().min(5).max(140),
+  description: z.string().min(10).max(4000),
+  relatedEntity: z
+    .object({
+      type: z.enum(["PAYMENT", "SCHEME", "REDEMPTION"]),
+      id: z.string(),
+    })
+    .optional(),
+  attachmentUploadIds: z.array(z.string()).max(5).default([]),
+});
+export const messageBody = z.object({
+  body: z.string().min(1).max(4000),
+  messageType: enumSchema(E.GrievanceMessageType).default(
+    E.GrievanceMessageType.PUBLIC_REPLY,
+  ),
+  attachmentUploadIds: z.array(z.string()).max(5).default([]),
+  expectedVersion: z.number().int().positive().optional(),
+});
+export const handoverBody = z.object({
+  amountPaise: positivePaise,
+  remarks: z.string().max(500).optional(),
+  staffId: z.string().optional(),
+  branchId: z.string().optional(),
+});
+export const redemptionBody = z.object({
+  mode: enumSchema(E.RedemptionMode),
+  modeDetails: z.record(z.string(), z.unknown()).optional(),
+  expectedVersion: z.number().int().positive(),
+});
 export const fixedSchemePayBody = z.object({
   amountPaise: positivePaise,
   redirectUrl: z.string().url().optional(),

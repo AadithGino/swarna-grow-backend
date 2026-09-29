@@ -16,6 +16,8 @@ import {
   resolvePostSettlementRefundCase,
 } from "../src/services/post-settlement-refund-case.service.js";
 import { withTransaction } from "../src/lib/transaction.js";
+import { Permission } from "../src/constants/permissions.js";
+import { TenantRole } from "../src/constants/enums.js";
 import { bearerFor, resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
 const app = createApp();
@@ -169,6 +171,69 @@ test("post-settlement refund cases HTTP list and resolve", async () => {
     .send({ disposition: "RECOVERABLE", reason: "Collect from customer", expectedVersion: caseVersion });
   assert.equal(resolve.status, 200);
   assert.equal(resolve.body.data.disposition, "RECOVERABLE");
+});
+
+test("HTTP detail returns fresh case including version", async () => {
+  const ctx = await seedTenantUser();
+  const token = bearerFor(ctx.user);
+  const { schemeId, payment, paymentRefund } = await seedRedeemedScheme(ctx);
+  await withTransaction(async (session) => {
+    const scheme = await Scheme.findById(schemeId).session(session);
+    await recordPostSettlementGatewayRefund({
+      session,
+      payment,
+      scheme,
+      paymentRefund,
+      refundAmountPaise: 12_000,
+      weightDeltaMg: 0,
+      providerRefundId: "ref-detail",
+    });
+  });
+  const caseRow = await PostSettlementRefundCase.findOne({ tenantId: ctx.tenant._id }).lean();
+  const detail = await request(app)
+    .get(`/api/v1/admin/post-settlement-refund-cases/${caseRow._id}`)
+    .set("authorization", `Bearer ${token}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.data._id, caseRow._id);
+  assert.equal(detail.body.data.refundAmountPaise, 12_000);
+  assert.ok(Number(detail.body.data.version) >= 1);
+});
+
+test("read-only staff can list and read but not resolve", async () => {
+  const ctx = await seedTenantUser({ role: TenantRole.BRANCH_STAFF });
+  const token = bearerFor(ctx.user, [Permission.PAYMENT_READ]);
+  const { schemeId, payment, paymentRefund } = await seedRedeemedScheme(ctx);
+  await withTransaction(async (session) => {
+    const scheme = await Scheme.findById(schemeId).session(session);
+    await recordPostSettlementGatewayRefund({
+      session,
+      payment,
+      scheme,
+      paymentRefund,
+      refundAmountPaise: 8_000,
+      weightDeltaMg: 0,
+      providerRefundId: "ref-ro",
+    });
+  });
+  const caseRow = await PostSettlementRefundCase.findOne({ tenantId: ctx.tenant._id }).lean();
+  const list = await request(app)
+    .get("/api/v1/admin/post-settlement-refund-cases")
+    .set("authorization", `Bearer ${token}`);
+  assert.equal(list.status, 200);
+  const detail = await request(app)
+    .get(`/api/v1/admin/post-settlement-refund-cases/${caseRow._id}`)
+    .set("authorization", `Bearer ${token}`);
+  assert.equal(detail.status, 200);
+  const resolve = await request(app)
+    .post(`/api/v1/admin/post-settlement-refund-cases/${caseRow._id}/resolve`)
+    .set("authorization", `Bearer ${token}`)
+    .set("x-idempotency-key", createId("idem"))
+    .send({
+      disposition: "WRITE_OFF",
+      reason: "Should be denied",
+      expectedVersion: caseRow.version ?? 1,
+    });
+  assert.equal(resolve.status, 403);
 });
 
 test("concurrent resolve with same version: one succeeds, one conflicts", async () => {
