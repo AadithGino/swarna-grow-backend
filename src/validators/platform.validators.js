@@ -32,7 +32,13 @@ export const platformCreatePlanBody = z.object({
   trialDays: z.number().int().min(0).max(365).optional(),
   highlighted: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(999).optional(),
-  supportedBillingCycles: z.array(enumSchema(E.BillingCycle)).min(1).optional(),
+  supportedBillingCycles: z
+    .array(enumSchema(E.BillingCycle))
+    .min(1)
+    .optional()
+    .refine((arr) => !arr || new Set(arr).size === arr.length, {
+      message: "supportedBillingCycles must not contain duplicates",
+    }),
   limits: z
     .object({
       activeCustomers: planLimitValue.optional(),

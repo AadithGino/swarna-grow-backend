@@ -73,5 +73,18 @@ test("legacy plan without supportedBillingCycles reads both cycles from monthly 
     features: {},
   });
   const fetched = await platform.getSubscriptionPlan(plan._id);
-  assert.deepEqual(fetched.supportedBillingCycles, [BillingCycle.MONTHLY, BillingCycle.ANNUAL]);
+  assert.deepEqual(fetched.supportedBillingCycles, [BillingCycle.MONTHLY]);
+});
+
+test("duplicate supportedBillingCycles rejected at platform create", async () => {
+  await assert.rejects(
+    () =>
+      platform.createSubscriptionPlan({
+        tier: PlanTier.STARTER,
+        name: "Dup cycles",
+        monthlyPricePaise: 1_000_00,
+        supportedBillingCycles: [BillingCycle.MONTHLY, BillingCycle.MONTHLY],
+      }),
+    (err) => err?.code === "VALIDATION_FAILED",
+  );
 });

@@ -140,3 +140,35 @@ test("unblock after freeing a seat succeeds and keeps counter aligned", async ()
   });
   assert.equal(active, 1);
 });
+
+test("parallel reactivation and admin create race for the last seat", async () => {
+  const ctx = await seedTenantUser();
+  await Tenant.updateOne(
+    { _id: ctx.tenant._id },
+    { $set: { "subscription.limits.activeCustomers": 1 } },
+  );
+  const blocked = await createCustomer(adminReq(ctx, {
+    name: "Blocked",
+    mobile: "+919900000041",
+    branchId: ctx.branch._id,
+  }));
+  const blockedId = blocked._id ?? blocked.id;
+  await blockCustomer(adminReq(ctx, {}, { customerId: blockedId }), true);
+  const results = await Promise.allSettled([
+    blockCustomer(adminReq(ctx, {}, { customerId: blockedId }), false),
+    createCustomer(adminReq(ctx, {
+      name: "New seat",
+      mobile: "+919900000042",
+      branchId: ctx.branch._id,
+    })),
+  ]);
+  const successes = results.filter((r) => r.status === "fulfilled").length;
+  assert.equal(successes, 1);
+  const active = await Customer.countDocuments({
+    tenantId: ctx.tenant._id,
+    status: CustomerStatus.ACTIVE,
+  });
+  const row = await Tenant.findById(ctx.tenant._id).select("usageCounters").lean();
+  assert.equal(active, 1);
+  assert.equal(row.usageCounters?.activeCustomers, 1);
+});

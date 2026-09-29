@@ -39,6 +39,7 @@ import {
   assertPlanAllowsBillingCycle,
   normalizeSupportedBillingCycles,
   subscriptionPatchFromPlan,
+  validateSupportedBillingCyclesInput,
 } from "../lib/subscription-provision.js";
 import { PLATFORM_TEMPLATE_DEFINITIONS, REQUIRED_TEMPLATE_TYPES, getTemplateDefinition } from "../constants/template-registry.js";
 import { auditPlatformMutation } from "../lib/platform-audit.js";
@@ -82,7 +83,11 @@ export async function createSubscriptionPlan(body, req) {
   delete patch.code;
   const billingCycle = body.billingCycle ?? patch.billingCycle;
   delete patch.billingCycle;
-  patch.supportedBillingCycles = normalizeSupportedBillingCycles(patch, billingCycle);
+  if (body.supportedBillingCycles) {
+    patch.supportedBillingCycles = validateSupportedBillingCyclesInput(body.supportedBillingCycles);
+  } else {
+    patch.supportedBillingCycles = normalizeSupportedBillingCycles(patch, billingCycle);
+  }
   patch.billingCycle = patch.supportedBillingCycles[0];
   if (patch.yearlyPricePaise == null && patch.annualPricePaise != null) {
     patch.yearlyPricePaise = patch.annualPricePaise;
@@ -125,7 +130,7 @@ export async function updateSubscriptionPlan(id, body, req) {
     patch.features = normalizePlanFeatures(patch.features, tier);
   }
   if (patch.supportedBillingCycles?.length) {
-    patch.supportedBillingCycles = normalizeSupportedBillingCycles(patch, patch.billingCycle ?? before?.billingCycle);
+    patch.supportedBillingCycles = validateSupportedBillingCyclesInput(patch.supportedBillingCycles);
     patch.billingCycle = patch.supportedBillingCycles[0];
   }
   const row = await SubscriptionPlan.findOneAndUpdate(

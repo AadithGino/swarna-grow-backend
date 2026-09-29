@@ -123,7 +123,7 @@ test("authorized admin can resolve case; other tenant cannot read", async () => 
     auth: { id: ctx.user._id, tenantId: ctx.tenant._id, type: "TENANT_USER" },
     scope: { tenantId: ctx.tenant._id },
     params: { caseId: caseRow._id },
-    body: { disposition: "WRITE_OFF", reason: "Provider refund after closure" },
+    body: { disposition: "WRITE_OFF", reason: "Provider refund after closure", expectedVersion: caseRow.version ?? 1 },
   };
   const resolved = await resolvePostSettlementRefundCase(resolveReq);
   assert.equal(resolved.status, PostSettlementRefundCaseStatus.RESOLVED);
@@ -156,6 +156,7 @@ test("post-settlement refund cases HTTP list and resolve", async () => {
     });
   });
   const caseRow = await PostSettlementRefundCase.findOne({ tenantId: ctx.tenant._id }).lean();
+  const caseVersion = caseRow.version ?? 0;
   const list = await request(app)
     .get("/api/v1/admin/post-settlement-refund-cases")
     .set("authorization", `Bearer ${token}`);
@@ -165,7 +166,40 @@ test("post-settlement refund cases HTTP list and resolve", async () => {
     .post(`/api/v1/admin/post-settlement-refund-cases/${caseRow._id}/resolve`)
     .set("authorization", `Bearer ${token}`)
     .set("x-idempotency-key", createId("idem"))
-    .send({ disposition: "RECOVERABLE", reason: "Collect from customer" });
+    .send({ disposition: "RECOVERABLE", reason: "Collect from customer", expectedVersion: caseVersion });
   assert.equal(resolve.status, 200);
   assert.equal(resolve.body.data.disposition, "RECOVERABLE");
+});
+
+test("concurrent resolve with same version: one succeeds, one conflicts", async () => {
+  const ctx = await seedTenantUser();
+  const { schemeId, payment, paymentRefund } = await seedRedeemedScheme(ctx);
+  await withTransaction(async (session) => {
+    const scheme = await Scheme.findById(schemeId).session(session);
+    await recordPostSettlementGatewayRefund({
+      session,
+      payment,
+      scheme,
+      paymentRefund,
+      refundAmountPaise: 5_000,
+      weightDeltaMg: 0,
+      providerRefundId: "ref-race",
+    });
+  });
+  const caseRow = await PostSettlementRefundCase.findOne({ tenantId: ctx.tenant._id }).lean();
+  const mkResolve = () =>
+    resolvePostSettlementRefundCase({
+      auth: { id: ctx.user._id, tenantId: ctx.tenant._id, type: "TENANT_USER" },
+      scope: { tenantId: ctx.tenant._id },
+      params: { caseId: caseRow._id },
+      body: { disposition: "WRITE_OFF", reason: "Ops decision", expectedVersion: caseRow.version ?? 1 },
+    });
+  const results = await Promise.allSettled([mkResolve(), mkResolve()]);
+  const ok = results.filter((r) => r.status === "fulfilled");
+  const fail = results.filter((r) => r.status === "rejected");
+  assert.equal(ok.length, 1);
+  assert.equal(fail.length, 1);
+  assert.equal(fail[0].reason?.code, "VERSION_CONFLICT");
+  const after = await PostSettlementRefundCase.findById(caseRow._id).lean();
+  assert.equal(after.status, PostSettlementRefundCaseStatus.RESOLVED);
 });

@@ -179,7 +179,7 @@ export const postSettlementRefundResolveBody = z
   .object({
     disposition: enumSchema(E.PostSettlementRefundDisposition),
     reason: z.string().trim().min(1).max(2000),
-    expectedVersion: z.number().int().nonnegative().optional(),
+    expectedVersion: z.number().int().nonnegative(),
   })
   .strict();
 

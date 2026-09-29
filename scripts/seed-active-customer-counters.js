@@ -23,6 +23,15 @@ import { CustomerStatus } from "../src/constants/enums.js";
 import { env } from "../src/config/env.js";
 
 async function main() {
+  if (process.env.REQUIRE_MAINTENANCE_ACK !== "1") {
+    console.error(
+      "Refusing to run: set REQUIRE_MAINTENANCE_ACK=1 during a maintenance window.",
+    );
+    console.error(
+      "Live customer creates use transactional counters; this script overwrites usageCounters.",
+    );
+    process.exit(1);
+  }
   await mongoose.connect(env.MONGODB_URI);
   const tenants = await Tenant.find({}).select("_id code usageCounters").lean();
   let updated = 0;

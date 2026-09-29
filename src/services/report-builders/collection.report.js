@@ -1,21 +1,20 @@
-import { Payment } from "../../models/index.js";
 import { PAYMENT_MODE_LABELS, PAYMENT_MODE_ORDER } from "../../constants/enums.js";
 import { moneyRef, weightRef } from "../../lib/money.js";
 import {
   baseEnvelope,
   branchNameMap,
   buildCurrencyTrendPoints,
-  dateMatch,
   paginateRows,
   reportDataScope,
   reportTrendGroupBy,
   schemeIdsForPlan,
 } from "./report-envelope.js";
-import { paymentFinancialHistoryStatusFilter } from "../../lib/payment-net-aggregation.js";
 import {
+  aggregateCollectionBranchModeNet,
   aggregateCollectionPeriod,
   collectionPeriodBaseMatch,
 } from "../../lib/collection-period-aggregation.js";
+import { aggregateCollectionDailyNet } from "../../lib/collection-cash-outflow.js";
 
 const MODE_ROW_KEY = {
   CASH: "cash",
@@ -34,7 +33,7 @@ const COLLECTION_COLUMNS = [
   { key: "card", label: "Card / POS", type: "currency", align: "right" },
   { key: "bankTransfer", label: "Bank transfer", type: "currency", align: "right" },
   { key: "onlineGateway", label: "Online payment", type: "currency", align: "right" },
-  { key: "total", label: "Total", type: "currency", sortable: true, align: "right", emphasis: true },
+  { key: "total", label: "Net total", type: "currency", sortable: true, align: "right", emphasis: true },
   { key: "goldCredited", label: "Gold credited", type: "weight", align: "right" },
 ];
 
@@ -56,58 +55,33 @@ export async function buildCollectionReport(req) {
   const { from, to } = envelopeBase.period;
   const scope = reportDataScope(req);
   const schemeIds = await schemeIdsForPlan(scope, req.query.planId);
-  const match = {
-    ...scope,
-    ...paymentFinancialHistoryStatusFilter(),
-    ...dateMatch("paidAt", { from, to }),
-    ...(schemeIds ? { schemeId: { $in: schemeIds } } : {}),
-  };
-  const periodTotals = await aggregateCollectionPeriod(
-    collectionPeriodBaseMatch(scope, schemeIds ? { schemeId: { $in: schemeIds } } : {}),
-    { from, to },
+  const baseMatch = collectionPeriodBaseMatch(
+    scope,
+    schemeIds ? { schemeId: { $in: schemeIds } } : {},
   );
 
-  const [byBranchMode, byDay] = await Promise.all([
-    Payment.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: { branchId: "$branchId", mode: "$mode" },
-          amountPaise: { $sum: "$amountPaise" },
-          count: { $sum: 1 },
-          weightMg: { $sum: { $ifNull: ["$weightMg", 0] } },
-        },
-      },
-    ]),
-    Payment.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" },
-          },
-          amountPaise: { $sum: "$amountPaise" },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]),
+  const [periodTotals, branchModeNet, byDay] = await Promise.all([
+    aggregateCollectionPeriod(baseMatch, { from, to }),
+    aggregateCollectionBranchModeNet(baseMatch, { from, to }),
+    aggregateCollectionDailyNet(baseMatch, { from, to }),
   ]);
 
-  const branchIds = byBranchMode.map((row) => row._id.branchId).filter(Boolean);
+  const branchIds = branchModeNet.map((row) => row.branchId).filter(Boolean);
   const names = await branchNameMap(req.auth.tenantId, branchIds);
 
   const branchRows = new Map();
-  for (const row of byBranchMode) {
-    const branchId = row._id.branchId ?? "unknown";
+  for (const row of branchModeNet) {
+    const branchId = row.branchId ?? "unknown";
     if (!branchRows.has(branchId)) {
       branchRows.set(branchId, { ...emptyModeRow(), key: branchId, label: names.get(branchId) ?? branchId });
     }
     const entry = branchRows.get(branchId);
-    const modeKey = MODE_ROW_KEY[row._id.mode] ?? "onlineGateway";
-    entry[modeKey] = moneyRef((entry[modeKey]?.amountPaise ?? 0) + row.amountPaise);
-    entry.paymentCount += row.count;
-    entry.total = moneyRef(entry.total.amountPaise + row.amountPaise);
-    entry.goldCredited = weightRef(entry.goldCredited.weightMg + row.weightMg);
+    const modeKey = MODE_ROW_KEY[row.mode] ?? "onlineGateway";
+    const net = row.netPaise ?? 0;
+    entry[modeKey] = moneyRef((entry[modeKey]?.amountPaise ?? 0) + net);
+    entry.paymentCount += row.count ?? 0;
+    entry.total = moneyRef(entry.total.amountPaise + net);
+    entry.goldCredited = weightRef(entry.goldCredited.weightMg + (row.weightMg ?? 0));
   }
 
   const tableRows = [...branchRows.values()]
@@ -135,12 +109,12 @@ export async function buildCollectionReport(req) {
   const cashPaise = totalsRow.cash.amountPaise;
 
   const modeTotals = new Map();
-  for (const row of byBranchMode) {
-    const mode = row._id.mode ?? "UNKNOWN";
+  for (const row of branchModeNet) {
+    const mode = row.mode ?? "UNKNOWN";
     const prev = modeTotals.get(mode) ?? { amountPaise: 0, count: 0 };
     modeTotals.set(mode, {
-      amountPaise: prev.amountPaise + row.amountPaise,
-      count: prev.count + row.count,
+      amountPaise: prev.amountPaise + (row.netPaise ?? 0),
+      count: prev.count + (row.count ?? 0),
     });
   }
   const byModeChart = PAYMENT_MODE_ORDER.filter(
@@ -155,28 +129,46 @@ export async function buildCollectionReport(req) {
     };
   });
 
-  const stackedModes = PAYMENT_MODE_ORDER.filter((mode) => mode !== "LEGACY_ONLINE" || byBranchMode.some((r) => r._id.mode === mode));
+  const stackedModes = PAYMENT_MODE_ORDER.filter(
+    (mode) => mode !== "LEGACY_ONLINE" || branchModeNet.some((r) => r.mode === mode),
+  );
 
   const trendGroupBy = reportTrendGroupBy(from, to, req.query);
-  const collectionTrend = buildCurrencyTrendPoints(byDay, from, to, trendGroupBy);
+  const collectionTrend = buildCurrencyTrendPoints(
+    byDay.map((row) => ({ _id: row._id, amountPaise: row.amountPaise })),
+    from,
+    to,
+    trendGroupBy,
+  );
 
   const envelope = {
     ...envelopeBase,
     summary: [
       { key: "GROSS_COLLECTED", label: "Gross receipts", value: moneyRef(periodTotals.grossAmountPaise), valueType: "currency" },
-      { key: "REFUND_OUTFLOW", label: "Refund outflow", value: moneyRef(periodTotals.refundOutflowPaise), valueType: "currency" },
+      {
+        key: "GATEWAY_REFUND_OUTFLOW",
+        label: "Gateway refund outflow",
+        value: moneyRef(periodTotals.gatewayRefundOutflowPaise),
+        valueType: "currency",
+      },
+      {
+        key: "MANUAL_CORRECTION_OUTFLOW",
+        label: "Manual correction outflow",
+        value: moneyRef(periodTotals.manualCorrectionOutflowPaise),
+        valueType: "currency",
+      },
       { key: "TOTAL_COLLECTED", label: "Net collected", value: moneyRef(totalPaise), valueType: "currency" },
       { key: "PAYMENT_COUNT", label: "Payments", value: count, valueType: "count" },
       {
         key: "AVERAGE_PAYMENT",
         label: "Average payment",
-        value: moneyRef(count ? Math.round(totalPaise / count) : 0),
+        value: moneyRef(count ? Math.round(periodTotals.grossAmountPaise / count) : 0),
         valueType: "currency",
       },
       { key: "GOLD_CREDITED", label: "Gold credited", value: weightRef(goldMg), valueType: "weight" },
       {
         key: "CASH_SHARE",
-        label: "Cash share",
+        label: "Cash share (net)",
         value: totalPaise ? Math.round((cashPaise / totalPaise) * 1000) / 10 : 0,
         valueType: "percent",
       },
@@ -184,20 +176,20 @@ export async function buildCollectionReport(req) {
     charts: {
       trend: {
         chartType: "line",
-        title: "Daily collection",
+        title: "Daily net collection",
         subtitle: `Grouped by ${trendGroupBy.toLowerCase()}`,
         yAxis: { type: "currency", label: "Amount" },
         series: [
           {
             key: "COLLECTED",
-            name: "Collected",
+            name: "Net collected",
             data: collectionTrend,
           },
         ],
       },
       byMode: {
         chartType: "donut",
-        title: "By payment mode",
+        title: "By payment mode (net)",
         yAxis: { type: "currency", label: "Amount" },
         series: [
           {
@@ -216,7 +208,7 @@ export async function buildCollectionReport(req) {
       byBranch: {
         chartType: "groupedBar",
         title: "By showroom and mode",
-        subtitle: "Mode mix within each showroom (% of branch total)",
+        subtitle: "Mode mix within each showroom (% of branch net total)",
         yAxis: { type: "currency", label: "Amount" },
         series: stackedModes.map((mode) => ({
           key: mode,

@@ -5,6 +5,38 @@ import { planFeaturesSnapshotFromPlan } from "./feature-entitlements.js";
 
 const BILLING_CYCLES = Object.values(BillingCycle);
 
+/** API input: reject duplicates, empty, or invalid cycle values. */
+export function validateSupportedBillingCyclesInput(cycles) {
+  if (!Array.isArray(cycles) || cycles.length === 0) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "supportedBillingCycles must be a non-empty array.",
+      422,
+    );
+  }
+  const invalid = cycles.filter((c) => !BILLING_CYCLES.includes(c));
+  if (invalid.length) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      `Invalid billing cycle(s): ${invalid.join(", ")}`,
+      422,
+      { invalid },
+    );
+  }
+  if (new Set(cycles).size !== cycles.length) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "supportedBillingCycles must not contain duplicates.",
+      422,
+    );
+  }
+  return cycles;
+}
+
+/**
+ * Legacy read policy: stored array wins; else annual-only rows support annual;
+ * monthly catalog rows support monthly only unless an explicit yearly price exists.
+ */
 export function normalizeSupportedBillingCycles(planOrBody, fallbackCycle = BillingCycle.MONTHLY) {
   const raw = planOrBody?.supportedBillingCycles;
   if (Array.isArray(raw) && raw.length > 0) {
@@ -12,7 +44,10 @@ export function normalizeSupportedBillingCycles(planOrBody, fallbackCycle = Bill
     if (unique.length > 0) return unique;
   }
   const legacy = planOrBody?.billingCycle ?? fallbackCycle;
-  return legacy === BillingCycle.ANNUAL ? [BillingCycle.ANNUAL] : [BillingCycle.MONTHLY, BillingCycle.ANNUAL];
+  if (legacy === BillingCycle.ANNUAL) return [BillingCycle.ANNUAL];
+  const yearly = Number(planOrBody?.yearlyPricePaise ?? 0);
+  if (yearly > 0) return [BillingCycle.MONTHLY, BillingCycle.ANNUAL];
+  return [BillingCycle.MONTHLY];
 }
 
 export function assertPlanAllowsBillingCycle(plan, billingCycle) {

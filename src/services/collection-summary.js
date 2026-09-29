@@ -5,6 +5,7 @@ import {
   aggregateCollectionPeriod,
   collectionPeriodBaseMatch,
 } from "../lib/collection-period-aggregation.js";
+import { schemeIdsForPlan } from "./report-builders/report-envelope.js";
 
 export async function collectionSummary(req) {
   const range = resolveQueryDateRange(req.query);
@@ -13,6 +14,13 @@ export async function collectionSummary(req) {
     req.auth?.role === TenantRole.COLLECTION_AGENT
       ? { collectedBy: req.auth.id }
       : {};
-  const baseMatch = collectionPeriodBaseMatch(scope, extra);
+  const schemeIds = await schemeIdsForPlan(scope, req.query.planId);
+  const baseMatch = collectionPeriodBaseMatch(
+    scope,
+    {
+      ...extra,
+      ...(schemeIds ? { schemeId: { $in: schemeIds } } : {}),
+    },
+  );
   return aggregateCollectionPeriod(baseMatch, range);
 }
