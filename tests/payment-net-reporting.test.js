@@ -217,9 +217,13 @@ test("split gateway refunds stay in completion month; jan gross unchanged after 
     query: { from: "2026-01-01", to: "2026-03-31" },
   });
   const grossLine = report.summary.find((row) => row.key === "GROSS_COLLECTED");
-  const refundLine = report.summary.find((row) => row.key === "REFUND_OUTFLOW");
+  const gatewayLine = report.summary.find((row) => row.key === "GATEWAY_REFUND_OUTFLOW");
+  const manualLine = report.summary.find((row) => row.key === "MANUAL_CORRECTION_OUTFLOW");
   assert.equal(grossLine.value.amountPaise, 1_000_000);
-  assert.equal(refundLine.value.amountPaise, 150_000);
+  assert.equal(
+    (gatewayLine?.value?.amountPaise ?? 0) + (manualLine?.value?.amountPaise ?? 0),
+    150_000,
+  );
   const febAgain = await collectionSummary(mkReq("2026-02-01", "2026-02-28"));
   assert.equal(febAgain.refundOutflowPaise, feb.refundOutflowPaise);
 });
