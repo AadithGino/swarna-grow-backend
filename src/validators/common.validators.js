@@ -2,6 +2,7 @@ import { z } from "zod";
 import * as E from "../constants/enums.js";
 import { flexiblePhaseTargetMonths } from "../lib/flexible-plan-duration.js";
 import { canonicalMobile } from "../lib/mobile.js";
+import { refinePlanCashSettlementRules } from "../lib/cash-settlement-basis.js";
 import {
   isValidCalendarDateString,
   refineCalendarDateField,
@@ -411,6 +412,8 @@ const redemptionRules = z.object({
   prematurePenalty,
   allowedModes: z.array(enumSchema(E.RedemptionMode)).min(1),
   redeemAtAnyBranch: z.boolean(),
+  cashSettlementBasis: enumSchema(E.CashSettlementBasis).optional(),
+  paidAmountBenefitTreatment: enumSchema(E.PaidAmountBenefitTreatment).optional(),
 });
 const availability = z.object({
   allBranches: z.boolean(),
@@ -700,6 +703,7 @@ function refinePlanCrossFields(
     }
   }
   refinePlanSatisfiability(value, context);
+  refinePlanCashSettlementRules(value, context);
 }
 
 const planFields = {

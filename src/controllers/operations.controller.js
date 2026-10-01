@@ -15,6 +15,7 @@ import * as messaging from "../services/messaging.service.js";
 import * as audit from "../services/audit.service.js";
 import * as postSettlementRefundCase from "../services/post-settlement-refund-case.service.js";
 import { effectiveScope } from "../lib/query-filters.js";
+import { enrichRedemptionBenefitForRead } from "../lib/redemption-benefit-accounting.js";
 
 export const settingsProfile = async (req, res) =>
   sendSuccess(res, await tenantSettings.getSettingsProfileForAdmin(req));
@@ -190,11 +191,16 @@ export const redemptionReceipt = async (req, res) => {
     status: "COMPLETED",
   }).lean();
   if (!row) return sendSuccess(res, null);
+  const benefitRead = enrichRedemptionBenefitForRead(row);
   return sendSuccess(res, {
     receiptNumber: `RED-${row._id}`,
     completedAt: row.completedAt,
     principalPaise: row.principalPaise,
-    benefitPaise: row.benefitPaise,
+    benefitPaise: benefitRead.includedBenefitPaise,
+    calculatedBenefitPaise: benefitRead.calculatedBenefitPaise,
+    includedBenefitPaise: benefitRead.includedBenefitPaise,
+    benefitExcludedFromPayout: benefitRead.benefitExcludedFromPayout,
+    legacyBenefitPaiseStored: row.benefitPaise,
     penaltyPaise: row.penaltyPaise,
     settlementPaise: row.settlementPaise,
     cashOutPaise: row.cashOutPaise,

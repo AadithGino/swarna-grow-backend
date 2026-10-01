@@ -10,6 +10,7 @@ import {
 } from "./customer-profile-completion.js";
 import { isKycMandatoryForEnrolment } from "./kyc-policy.js";
 import { isOneActiveSchemePerCustomerEnforced } from "./tenant-enrolment-policy.js";
+import { resolveIncludedBenefitPaise } from "./redemption-benefit-accounting.js";
 
 export function withId(doc) {
   if (!doc || typeof doc !== "object") return doc;
@@ -584,7 +585,7 @@ export function mapPastSchemeRow(scheme, redemption) {
     closureType: redemption?.closureType ?? (scheme.status === "CLOSED_PREMATURE" ? "PREMATURE" : "MATURITY"),
     closedAt: redemption?.completedAt ?? scheme.updatedAt,
     finalValue: moneyRef(redemption?.settlementPaise ?? scheme.totals?.amountPaidPaise ?? 0),
-    benefitReceived: moneyRef(redemption?.benefitPaise ?? 0),
+    benefitReceived: moneyRef(resolveIncludedBenefitPaise(redemption)),
     redemptionMode: redemption?.mode ?? null,
     billNumber: redemption?.billNumber ?? null,
     closureReceiptUrl: redemption?.receiptUrl ?? null,

@@ -1,4 +1,17 @@
-import { ClosureType, RedemptionMode, ValueBasis } from "../constants/enums.js";
+import {
+  ClosureType,
+  PaidAmountBenefitTreatment,
+  RedemptionMode,
+  ValueBasis,
+} from "../constants/enums.js";
+import {
+  paidAmountMonetaryBenefitBlocker,
+  resolveCashSettlementBasisFromRedemptionRules,
+  resolvePaidAmountBenefitTreatmentFromRedemptionRules,
+  usesPaidAmountCashSettlement,
+} from "./cash-settlement-basis.js";
+import { computeIncludedBenefitPaiseFromClosure } from "./redemption-benefit-accounting.js";
+import { normalizeSettlementSnapshotForValidation } from "./redemption-benefit-accounting.js";
 import { goldRateForExactDate } from "./gold-rate-lookup.js";
 import { computeClosureBenefitPaise } from "./scheme-benefit.js";
 import { computeClosurePenaltyPaise } from "./scheme-closure-penalty.js";
@@ -116,7 +129,8 @@ export function closureSettlementFiguresDiffer(stored, fresh) {
     "settlementPaise",
     "principalPaise",
     "principalWeightMg",
-    "benefitPaise",
+    "calculatedBenefitPaise",
+    "includedBenefitPaise",
     "benefitWeightMg",
     "penaltyPaise",
     "penaltyWeightMg",
@@ -138,6 +152,14 @@ export function closureSettlementFiguresDiffer(stored, fresh) {
   if (stored?.mode != null && fresh?.mode != null && stored.mode !== fresh.mode) {
     return true;
   }
+  const storedBasis = stored?.cashSettlementBasis ?? "GOLD_VALUE";
+  const freshBasis = fresh?.cashSettlementBasis ?? "GOLD_VALUE";
+  if (storedBasis !== freshBasis) return true;
+  const storedTreatment =
+    stored?.paidAmountBenefitTreatment ?? PaidAmountBenefitTreatment.EXCLUDE;
+  const freshTreatment =
+    fresh?.paidAmountBenefitTreatment ?? PaidAmountBenefitTreatment.EXCLUDE;
+  if (storedTreatment !== freshTreatment) return true;
   if (Boolean(stored?.systemPolicyClosure) !== Boolean(fresh?.systemPolicyClosure)) {
     return true;
   }
@@ -222,6 +244,15 @@ export async function computeClosureSettlementCore({
     systemPolicyClosure,
   });
 
+  const cashSettlementBasis = resolveCashSettlementBasisFromRedemptionRules(rules);
+  const paidAmountBenefitTreatment =
+    resolvePaidAmountBenefitTreatmentFromRedemptionRules(rules);
+  const paidAmountCashSettlement = usesPaidAmountCashSettlement({
+    valueBasis: scheme.valueBasis,
+    mode,
+    cashSettlementBasis,
+  });
+
   let benefitWeightMg = 0;
   let benefitRatePerGramPaise = 0;
   let penaltyWeightMg = 0;
@@ -231,11 +262,27 @@ export async function computeClosureSettlementCore({
   let settlementRateEffectiveDate = null;
   let handoverValuePaise = 0;
   let roundingDeltaPaise = 0;
+  let includedMonetaryBenefitPaise = 0;
+  let ledgerReleaseWeightMg = 0;
+
+  if (paidAmountCashSettlement) {
+    const benefitBlocker = paidAmountMonetaryBenefitBlocker(
+      benefitDef,
+      paidAmountBenefitTreatment,
+    );
+    if (benefitBlocker) blockers.push(benefitBlocker);
+    if (
+      paidAmountBenefitTreatment === PaidAmountBenefitTreatment.INCLUDE_MONETARY
+    ) {
+      includedMonetaryBenefitPaise = benefitPaise;
+    }
+  }
 
   const needsExactRate =
     mode === RedemptionMode.GOLD_HANDOVER
     || (
       scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+      && !paidAmountCashSettlement
       && (
         benefitPaise > 0
         || mode === RedemptionMode.CASH
@@ -285,7 +332,32 @@ export async function computeClosureSettlementCore({
     });
   }
 
-  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && exactRate && blockers.length === 0 && mode) {
+  if (
+    paidAmountCashSettlement
+    && blockers.length === 0
+    && mode === RedemptionMode.CASH
+  ) {
+    settlementPaise = Math.max(
+      0,
+      netTotals.amountPaidPaise + includedMonetaryBenefitPaise - penaltyPaise,
+    );
+    ledgerReleaseWeightMg = netTotals.goldWeightMg;
+    weightMg = netTotals.goldWeightMg;
+    penaltyWeightMg = 0;
+    benefitWeightMg = 0;
+    benefitRatePerGramPaise = 0;
+    if (!(settlementPaise > 0)) {
+      blockers.push({
+        code: "SETTLEMENT_NON_POSITIVE",
+        message: "Settlement value is zero or negative after penalty.",
+      });
+    }
+  } else if (
+    scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+    && exactRate
+    && blockers.length === 0
+    && mode
+  ) {
     const { rounding, precisionMg } = resolvePlanGoldRounding(scheme, tenantOps);
     const modeSettlement = computeGoldWeightModeSettlement({
       mode,
@@ -300,6 +372,10 @@ export async function computeClosureSettlementCore({
     settlementPaise = modeSettlement.settlementPaise;
     // Cash and purchase value principal + benefit. Handover uses that weight after penalty.
     weightMg = modeSettlement.finalHandoverWeightMg;
+    ledgerReleaseWeightMg =
+      mode === RedemptionMode.CASH || mode === RedemptionMode.PURCHASE_ADJUSTMENT
+        ? modeSettlement.ledgerDebitWeightMg
+        : modeSettlement.finalHandoverWeightMg;
     if (mode === RedemptionMode.GOLD_HANDOVER) {
       if (!(weightMg > 0)) {
         blockers.push({
@@ -379,10 +455,20 @@ export async function computeClosureSettlementCore({
     });
   }
 
+  const includedBenefitPaise = computeIncludedBenefitPaiseFromClosure({
+    benefitPaise,
+    paidAmountCashSettlement,
+    mode,
+    includedMonetaryBenefitPaise,
+  });
+  const calculatedBenefitPaise = benefitPaise;
+
   return {
     blockers,
     netTotals,
     benefitPaise,
+    calculatedBenefitPaise,
+    includedBenefitPaise,
     benefitWeightMg,
     benefitRatePerGramPaise,
     penaltyPaise,
@@ -393,6 +479,10 @@ export async function computeClosureSettlementCore({
     principalPaise: netTotals.amountPaidPaise,
     goldWeightMg: netTotals.goldWeightMg,
     weightMg,
+    ledgerReleaseWeightMg,
+    cashSettlementBasis,
+    paidAmountBenefitTreatment,
+    includedMonetaryBenefitPaise,
     prematureBenefitTreatment,
     penaltyRule,
     settlementRatePerGramPaise,
@@ -424,6 +514,8 @@ export const SETTLEMENT_SNAPSHOT_NUMERIC_KEYS = Object.freeze([
   "principalPaise",
   "principalWeightMg",
   "benefitPaise",
+  "calculatedBenefitPaise",
+  "includedBenefitPaise",
   "benefitWeightMg",
   "benefitRatePerGramPaise",
   "penaltyPaise",
@@ -439,6 +531,8 @@ export const SETTLEMENT_SNAPSHOT_STRING_KEYS = Object.freeze([
   "valuationRateEffectiveDate",
   "mode",
   "closureReason",
+  "cashSettlementBasis",
+  "paidAmountBenefitTreatment",
 ]);
 
 export const SETTLEMENT_SNAPSHOT_BOOLEAN_KEYS = Object.freeze([
@@ -459,7 +553,11 @@ export function buildSettlementSnapshotFromPreview(preview, schemeVersion, mode)
     closureReason: preview.closureReason ?? "",
     principalPaise: preview.principalPaise,
     principalWeightMg: preview.goldWeightMg ?? preview.principalWeightMg ?? 0,
-    benefitPaise: preview.benefitPaise,
+    benefitPaise: preview.includedBenefitPaise ?? preview.benefitPaise ?? 0,
+    calculatedBenefitPaise:
+      preview.calculatedBenefitPaise ?? preview.benefitPaise ?? 0,
+    includedBenefitPaise:
+      preview.includedBenefitPaise ?? preview.includedMonetaryBenefitPaise ?? 0,
     benefitWeightMg: preview.benefitWeightMg,
     benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
     penaltyPaise: preview.penaltyPaise,
@@ -469,28 +567,32 @@ export function buildSettlementSnapshotFromPreview(preview, schemeVersion, mode)
     weightMg: preview.weightMg,
     valuationRatePerGramPaise: preview.valuationRatePerGramPaise ?? 0,
     valuationRateEffectiveDate: preview.valuationRateEffectiveDate ?? "",
+    cashSettlementBasis: preview.cashSettlementBasis ?? "GOLD_VALUE",
+    paidAmountBenefitTreatment:
+      preview.paidAmountBenefitTreatment ?? PaidAmountBenefitTreatment.EXCLUDE,
     computedAt: new Date().toISOString(),
   };
 }
 
 export function assertSettlementSnapshotComplete(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") {
+  const normalized = normalizeSettlementSnapshotForValidation(snapshot);
+  if (!normalized || typeof normalized !== "object") {
     return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
   }
   for (const key of SETTLEMENT_SNAPSHOT_NUMERIC_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
-    const value = snapshot[key];
+    const value = normalized[key];
     if (typeof value !== "number" || !Number.isFinite(value)) {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
   }
   for (const key of SETTLEMENT_SNAPSHOT_STRING_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
-    const value = snapshot[key];
+    const value = normalized[key];
     if (typeof value !== "string") {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
@@ -502,10 +604,10 @@ export function assertSettlementSnapshotComplete(snapshot) {
     }
   }
   for (const key of SETTLEMENT_SNAPSHOT_BOOLEAN_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
-    if (typeof snapshot[key] !== "boolean") {
+    if (typeof normalized[key] !== "boolean") {
       return { ok: false, code: "SETTLEMENT_SNAPSHOT_REQUIRED" };
     }
   }

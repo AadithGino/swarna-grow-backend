@@ -45,6 +45,11 @@ import { assertFeatureEntitled } from "../lib/tenant-limits.js";
 import { isKycRequiredForRedemption } from "../lib/kyc-policy.js";
 import { isSystemPolicyClosureSettlement } from "../lib/system-policy-closure.js";
 import { assessMaturityContributionEligibility } from "../lib/maturity-eligibility.js";
+import {
+  benefitFieldsFromSettlementPreview,
+  enrichRedemptionBenefitForRead,
+  normalizeSettlementSnapshotForValidation,
+} from "../lib/redemption-benefit-accounting.js";
 
 const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.REQUESTED,
@@ -230,11 +235,14 @@ async function buildSettlementModePreviews({
     if (mode === RedemptionMode.GOLD_HANDOVER && ratePaise > 0) {
       entry.note = `At today's rate of ${rateRef(ratePaise).ratePerGramDisplay} per gram`;
     } else if (mode === RedemptionMode.CASH) {
-      entry.note = ratePaise > 0
-        ? `Cash equivalent at ${rateRef(ratePaise).ratePerGramDisplay} per gram${
-          core.settlementRateEffectiveDate ? ` (${core.settlementRateEffectiveDate})` : ""
-        }.`
-        : "Settlement is paid in cash; accrued gold weight is closed out against this payout.";
+      const basis = core.cashSettlementBasis ?? "GOLD_VALUE";
+      entry.note = basis === "PAID_AMOUNT"
+        ? "Cash payout from net paid contributions. Accrued gold weight is closed on completion."
+        : ratePaise > 0
+          ? `Cash equivalent at ${rateRef(ratePaise).ratePerGramDisplay} per gram${
+            core.settlementRateEffectiveDate ? ` (${core.settlementRateEffectiveDate})` : ""
+          }.`
+          : "Settlement is paid in cash; accrued gold weight is closed out against this payout.";
     } else if (mode === RedemptionMode.PURCHASE_ADJUSTMENT) {
       entry.note = "Value is adjusted against an in-store purchase when staff complete handover.";
     }
@@ -421,6 +429,8 @@ export async function settlementPreview(req, closureType) {
   }
   const {
     benefitPaise,
+    calculatedBenefitPaise,
+    includedBenefitPaise,
     benefitWeightMg,
     benefitRatePerGramPaise,
     penaltyPaise,
@@ -431,11 +441,19 @@ export async function settlementPreview(req, closureType) {
     principalPaise,
     goldWeightMg,
     weightMg,
+    ledgerReleaseWeightMg,
+    cashSettlementBasis,
+    paidAmountBenefitTreatment,
+    includedMonetaryBenefitPaise,
     prematureBenefitTreatment,
     penaltyRule,
     settlementRatePerGramPaise,
     settlementRateEffectiveDate,
   } = core;
+  const paidAmountCashPayout =
+    scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+    && settlementMode === RedemptionMode.CASH
+    && cashSettlementBasis === "PAID_AMOUNT";
   const totals = { amountPaidPaise: principalPaise, goldWeightMg };
   const eligible = blockers.length === 0;
   const valuationRatePerGramPaise = settlementRatePerGramPaise ?? 0;
@@ -467,11 +485,23 @@ export async function settlementPreview(req, closureType) {
     });
   } else if (benefitDef?.type === "TEXT_ONLY") {
     // settlement lines exclude text-only benefit value
-  } else if (benefitPaise > 0) {
+  } else if (paidAmountCashPayout && benefitPaise > 0 && includedMonetaryBenefitPaise <= 0) {
+    lines.push({
+      key: "BENEFIT",
+      label: `${benefitLabel} — excluded from cash payout`,
+      amount: moneyField(0),
+      sign: "+",
+      forfeited: true,
+      forfeitReason:
+        "Paid-amount cash settlement pays net contributions only; bonus gold or monetary benefit is not converted to cash.",
+    });
+  } else if (benefitPaise > 0 && (!paidAmountCashPayout || includedMonetaryBenefitPaise > 0)) {
     lines.push({
       key: "BENEFIT",
       label: benefitLabel,
-      amount: moneyField(benefitPaise),
+      amount: moneyField(
+        paidAmountCashPayout ? includedMonetaryBenefitPaise : benefitPaise,
+      ),
       sign: "+",
       isComputed: true,
     });
@@ -497,7 +527,11 @@ export async function settlementPreview(req, closureType) {
     sign: "-",
   });
 
-  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT && valuationRatePerGramPaise > 0) {
+  if (
+    scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+    && valuationRatePerGramPaise > 0
+    && !paidAmountCashPayout
+  ) {
     alignGoldValuationLines({
       lines,
       goldWeightMg,
@@ -533,7 +567,9 @@ export async function settlementPreview(req, closureType) {
         : mode === RedemptionMode.GOLD_HANDOVER
           ? "Gold weight is handed over at completion; rupee value uses the gold rate on the handover date."
           : mode === RedemptionMode.CASH && scheme.valueBasis === ValueBasis.GOLD_WEIGHT
-            ? "Settlement is paid in cash; accrued gold weight is closed out against this payout."
+            ? cashSettlementBasis === "PAID_AMOUNT"
+              ? "Cash payout is based on net paid contributions (not today's gold rate). Accrued gold weight is closed on completion."
+              : "Settlement is paid in cash; accrued gold weight is closed out against this payout."
             : undefined,
   })).map((row) => ({
     ...row,
@@ -574,9 +610,11 @@ export async function settlementPreview(req, closureType) {
   });
 
   const valuationNote =
-    scheme.valueBasis === ValueBasis.GOLD_WEIGHT && valuationRatePerGramPaise > 0
-      ? "Cash equivalent uses today's published gold rate. It changes when the rate changes."
-      : undefined;
+    scheme.valueBasis === ValueBasis.GOLD_WEIGHT && paidAmountCashPayout
+      ? "Cash payout uses net paid contributions from the ledger, not today's gold rate. Accrued gold weight is released on completion."
+      : scheme.valueBasis === ValueBasis.GOLD_WEIGHT && valuationRatePerGramPaise > 0
+        ? "Cash equivalent uses today's published gold rate. It changes when the rate changes."
+        : undefined;
 
   return {
     type: closureType,
@@ -652,6 +690,8 @@ export async function settlementPreview(req, closureType) {
     weightMg,
     benefitEligible,
     benefitPaise,
+    calculatedBenefitPaise,
+    includedBenefitPaise,
     benefitWeightMg,
     benefitRatePerGramPaise,
     penaltyPaise,
@@ -661,6 +701,10 @@ export async function settlementPreview(req, closureType) {
     roundingDeltaPaise: roundingDeltaPaise !== 0 ? roundingDeltaPaise : undefined,
     valuationRatePerGramPaise,
     valuationRateEffectiveDate,
+    cashSettlementBasis,
+    paidAmountBenefitTreatment,
+    includedMonetaryBenefitPaise,
+    ledgerReleaseWeightMg,
     mode: settlementMode ?? null,
     systemPolicyClosure,
     closureReason: systemPolicyClosure ? (scheme.closureReason ?? "") : "",
@@ -750,7 +794,7 @@ export async function requestCustomerRedemption(req) {
         },
         status: RedemptionStatus.REQUESTED,
         principalPaise: preview.principalPaise,
-        benefitPaise: preview.benefitPaise,
+        ...benefitFieldsFromSettlementPreview(preview),
         benefitWeightMg: preview.benefitWeightMg,
         benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
         penaltyPaise: preview.penaltyPaise,
@@ -922,7 +966,7 @@ export async function initiateRedemption(
             modeDetails,
             status,
             principalPaise: preview.principalPaise,
-            benefitPaise: preview.benefitPaise,
+            ...benefitFieldsFromSettlementPreview(preview),
             benefitWeightMg: preview.benefitWeightMg,
             benefitRatePerGramPaise: preview.benefitRatePerGramPaise,
             penaltyPaise: preview.penaltyPaise,
@@ -1038,7 +1082,9 @@ export async function transitionRedemption(req, action) {
           freshPreview.blockers[0]?.message ?? "This scheme is no longer eligible for redemption.",
         );
       }
-      const snapshot = row.modeDetails.settlementSnapshot;
+      const snapshot = normalizeSettlementSnapshotForValidation(
+        row.modeDetails.settlementSnapshot,
+      );
       if (snapshot.mode !== row.mode) {
         throw errors.business(
           "SETTLEMENT_VALUE_CHANGED",
@@ -1049,7 +1095,8 @@ export async function transitionRedemption(req, action) {
         settlementPaise: snapshot.settlementPaise,
         principalPaise: snapshot.principalPaise,
         principalWeightMg: snapshot.principalWeightMg,
-        benefitPaise: snapshot.benefitPaise,
+        calculatedBenefitPaise: snapshot.calculatedBenefitPaise ?? 0,
+        includedBenefitPaise: snapshot.includedBenefitPaise ?? 0,
         benefitWeightMg: snapshot.benefitWeightMg,
         benefitRatePerGramPaise: snapshot.benefitRatePerGramPaise,
         penaltyPaise: snapshot.penaltyPaise,
@@ -1058,6 +1105,8 @@ export async function transitionRedemption(req, action) {
         weightMg: snapshot.weightMg,
         valuationRatePerGramPaise: snapshot.valuationRatePerGramPaise,
         valuationRateEffectiveDate: snapshot.valuationRateEffectiveDate,
+        cashSettlementBasis: snapshot.cashSettlementBasis,
+        paidAmountBenefitTreatment: snapshot.paidAmountBenefitTreatment,
         mode: snapshot.mode,
         systemPolicyClosure: snapshot.systemPolicyClosure,
         closureReason: snapshot.closureReason,
@@ -1075,7 +1124,7 @@ export async function transitionRedemption(req, action) {
         );
       }
       row.principalPaise = freshPreview.principalPaise;
-      row.benefitPaise = freshPreview.benefitPaise;
+      Object.assign(row, benefitFieldsFromSettlementPreview(freshPreview));
       row.benefitWeightMg = freshPreview.benefitWeightMg;
       row.benefitRatePerGramPaise = freshPreview.benefitRatePerGramPaise;
       row.penaltyPaise = freshPreview.penaltyPaise;
@@ -1151,7 +1200,8 @@ export async function transitionRedemption(req, action) {
         ledgerDebitAmountPaise = row.settlementPaise ?? 0;
         ledgerDebitWeightMg =
           scheme.valueBasis === ValueBasis.GOLD_WEIGHT
-            ? (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0)
+            ? (freshPreview.ledgerReleaseWeightMg
+              ?? (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0))
             : 0;
       } else {
         row.cashOutPaise = row.settlementPaise ?? 0;
@@ -1161,14 +1211,28 @@ export async function transitionRedemption(req, action) {
         ledgerDebitAmountPaise = row.settlementPaise ?? 0;
         ledgerDebitWeightMg =
           scheme.valueBasis === ValueBasis.GOLD_WEIGHT
-            ? (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0)
+            ? (freshPreview.ledgerReleaseWeightMg
+              ?? (freshPreview.goldWeightMg ?? 0) + (freshPreview.benefitWeightMg ?? 0))
             : 0;
       }
 
       const nextLedgerSequence = () =>
         nextSchemeLedgerSequence(row.tenantId, row.schemeId, session);
       let sequence = await nextLedgerSequence();
-      if (row.benefitPaise > 0 || row.benefitWeightMg > 0) {
+      const paidAmountCashComplete =
+        scheme.valueBasis === ValueBasis.GOLD_WEIGHT
+        && row.mode === RedemptionMode.CASH
+        && (freshPreview.cashSettlementBasis ?? "GOLD_VALUE") === "PAID_AMOUNT";
+      const benefitCreditPaise = paidAmountCashComplete
+        ? (freshPreview.includedMonetaryBenefitPaise ?? 0)
+        : (row.benefitPaise ?? 0);
+      const benefitCreditWeightMg = paidAmountCashComplete
+        ? 0
+        : (row.benefitWeightMg ?? 0);
+      const benefitCreditRate = paidAmountCashComplete
+        ? 0
+        : (row.benefitRatePerGramPaise ?? 0);
+      if (benefitCreditPaise > 0 || benefitCreditWeightMg > 0) {
         await LedgerEntry.create(
           [
             {
@@ -1180,9 +1244,9 @@ export async function transitionRedemption(req, action) {
               redemptionId: row._id,
               type: LedgerEntryType.BENEFIT_CREDIT,
               sequence,
-              amountPaise: row.benefitPaise,
-              weightMg: row.benefitWeightMg,
-              ratePerGramPaise: row.benefitRatePerGramPaise,
+              amountPaise: benefitCreditPaise,
+              weightMg: benefitCreditWeightMg > 0 ? benefitCreditWeightMg : undefined,
+              ratePerGramPaise: benefitCreditRate > 0 ? benefitCreditRate : undefined,
               actorType: "USER",
               actorId: req.auth.id,
               description: "Maturity benefit",
@@ -1317,6 +1381,7 @@ export async function getRedemptionForAdmin(req) {
 
   return {
     ...row,
+    ...enrichRedemptionBenefitForRead(row),
     id: row._id,
     customer: customer
       ? {

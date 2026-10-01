@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { AlertSeverity, AlertStatus, AlertType, CashAdjustmentDirection, CashHandoverStatus, ClosureType, ExportStatus, ExportType, HandoverInitiator, JobStatus, MessageChannel, MessageStatus, MessageType, PostSettlementRefundCaseStatus, PostSettlementRefundDisposition, RedemptionMode, RedemptionStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
-import { baseOptions, branchField, enumField, immutablePlugin, integerField, stringId, tenantField, versionField } from "./schema-helpers.js";
+import { baseOptions, branchField, enumField, immutablePlugin, integerField, optionalIntegerField, stringId, tenantField, versionField } from "./schema-helpers.js";
 
 const goldRateSchema = new mongoose.Schema({ _id: stringId("grt"), tenantId: tenantField, branchId: branchField, ratePerGramPaise: integerField({ required: true, min: 1 }), effectiveDate: { type: String, required: true }, purity: { type: String, enum: ["22K"], default: "22K" }, source: String, enteredBy: String, version: versionField }, baseOptions);
 // Multiple publishes per day are kept as immutable history; lookups take the latest by createdAt.
@@ -15,7 +15,7 @@ handoverSchema.index({ tenantId: 1, branchId: 1, status: 1, createdAt: -1 });
 
 const redemptionSchema = new mongoose.Schema({
   _id: stringId("red"), tenantId: tenantField, branchId: branchField, schemeId: { type: String, required: true, index: true }, customerId: { type: String, required: true }, closureType: enumField(ClosureType, { required: true }), mode: enumField(RedemptionMode, { required: true }), status: enumField(RedemptionStatus, { default: RedemptionStatus.REQUESTED }),
-  principalPaise: integerField(), benefitPaise: integerField(), benefitWeightMg: integerField(), benefitRatePerGramPaise: integerField(), penaltyPaise: integerField(), penaltyWeightMg: integerField(), settlementPaise: integerField(), weightMg: integerField(),
+  principalPaise: integerField(), benefitPaise: integerField(), calculatedBenefitPaise: optionalIntegerField(), includedBenefitPaise: optionalIntegerField(), benefitWeightMg: integerField(), benefitRatePerGramPaise: integerField(), penaltyPaise: integerField(), penaltyWeightMg: integerField(), settlementPaise: integerField(), weightMg: integerField(),
   /** Cash physically paid out (CASH / purchase adjust / transfer). Zero for gold handover. */
   cashOutPaise: integerField(),
   /** Gold handover: rate locked at completion for reference valuation. */

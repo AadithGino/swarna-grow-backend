@@ -1,5 +1,6 @@
 import { Redemption } from "../models/index.js";
 import { dateMatch } from "../lib/query-filters.js";
+import { includedBenefitPaiseAggregationExpr } from "../lib/redemption-benefit-accounting.js";
 
 /** Cash paid out at completion (excludes gold handover). */
 function cashOutExpr() {
@@ -61,7 +62,7 @@ export async function redemptionPeriodSummary(scope, query = {}) {
           count: { $sum: 1 },
           settlementPaise: { $sum: { $ifNull: ["$settlementPaise", 0] } },
           principalPaise: { $sum: { $ifNull: ["$principalPaise", 0] } },
-          benefitPaise: { $sum: { $ifNull: ["$benefitPaise", 0] } },
+          benefitPaise: { $sum: includedBenefitPaiseAggregationExpr() },
           penaltyPaise: { $sum: { $ifNull: ["$penaltyPaise", 0] } },
           weightMg: { $sum: { $ifNull: ["$weightMg", 0] } },
           cashOutPaise: { $sum: cashOutExpr() },
@@ -78,7 +79,7 @@ export async function redemptionPeriodSummary(scope, query = {}) {
           count: { $sum: 1 },
           settlementPaise: { $sum: { $ifNull: ["$settlementPaise", 0] } },
           penaltyPaise: { $sum: { $ifNull: ["$penaltyPaise", 0] } },
-          benefitPaise: { $sum: { $ifNull: ["$benefitPaise", 0] } },
+          benefitPaise: { $sum: includedBenefitPaiseAggregationExpr() },
           cashOutPaise: { $sum: cashOutExpr() },
           handoverValuePaise: { $sum: handoverValueExpr() },
         },

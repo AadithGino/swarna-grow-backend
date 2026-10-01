@@ -158,6 +158,10 @@ export const RedemptionMode = makeEnum(
   "GOLD_HANDOVER",
   "PURCHASE_ADJUSTMENT",
 );
+/** Gold-weight plan cash payout valuation (frozen in enrollment planSnapshot). */
+export const CashSettlementBasis = makeEnum("GOLD_VALUE", "PAID_AMOUNT");
+/** Monetary benefit inclusion when cashSettlementBasis is PAID_AMOUNT. */
+export const PaidAmountBenefitTreatment = makeEnum("EXCLUDE", "INCLUDE_MONETARY");
 export const RedemptionStatus = makeEnum(
   "REQUESTED",
   "PENDING_APPROVAL",

@@ -10,6 +10,10 @@ import {
   reportTrendGroupBy,
 } from "./report-envelope.js";
 import { redemptionPeriodSummary } from "../redemption-period-summary.js";
+import {
+  resolveCalculatedBenefitPaise,
+  resolveIncludedBenefitPaise,
+} from "../../lib/redemption-benefit-accounting.js";
 
 const MODE_LABEL = {
   CASH: "Cash",
@@ -166,7 +170,11 @@ export async function buildMaturityRedemptionReport(req) {
         red.mode === "GOLD_HANDOVER"
           ? moneyRef(red.handoverValuePaise ?? red.settlementPaise ?? 0)
           : null,
-      benefitPaid: moneyRef(red.benefitPaise ?? 0),
+      benefitPaid: moneyRef(resolveIncludedBenefitPaise(red)),
+      calculatedBenefitPaise: resolveCalculatedBenefitPaise(red),
+      benefitExcludedFromPayout:
+        resolveCalculatedBenefitPaise(red) > 0
+        && resolveIncludedBenefitPaise(red) === 0,
       penalty: moneyRef(red.penaltyPaise ?? 0),
       mode: MODE_LABEL[red.mode] ?? red.mode,
       settledAt: red.completedAt ? new Date(red.completedAt).toISOString().slice(0, 10) : null,
