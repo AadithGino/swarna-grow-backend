@@ -63,6 +63,18 @@ const requireCustomerPayments = (req, _res, next) => {
     next(error);
   }
 };
+/** Self-enrol without collecting now only needs write access; PhonePe checkout needs payments enabled. */
+const requireCustomerEnrolAccess = (req, _res, next) => {
+  try {
+    assertCustomerAppWritable(req.tenant);
+    if (req.body?.payNow !== false) {
+      assertCustomerPaymentsEnabled(req.tenant);
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
 
 appRouter.get("/auth/devices", asyncHandler(auth.devices));
 appRouter.delete("/auth/devices/:deviceId", asyncHandler(auth.revokeDevice));
@@ -133,7 +145,7 @@ appRouter.get("/schemes/:schemeId", asyncHandler(appCustomer.getScheme));
 
 appRouter.post(
   "/schemes/enrol",
-  requireCustomerPayments,
+  requireCustomerEnrolAccess,
   validate({ body: appEnrolBody }),
   idempotent,
   asyncHandler(async (req, res) => {

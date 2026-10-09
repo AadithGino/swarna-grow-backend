@@ -772,15 +772,23 @@ export async function customerEnrolWithCheckout(req) {
   });
   if (reservedIntent) {
     const { initiateProviderForReservedIntent } = await import("./payment.service.js");
-    const checkout = await initiateProviderForReservedIntent(
-      {
-        auth: req.auth,
-        tenant: req.tenant,
-        body: { redirectUrl: req.body.redirectUrl },
-      },
-      reservedIntent,
-    );
-    return { enrolled, checkout, checkoutKind: "FLEXIBLE_PAYMENT_INTENT" };
+    try {
+      const checkout = await initiateProviderForReservedIntent(
+        {
+          auth: req.auth,
+          tenant: req.tenant,
+          body: { redirectUrl: req.body.redirectUrl },
+        },
+        reservedIntent,
+      );
+      return { enrolled, checkout, checkoutKind: "FLEXIBLE_PAYMENT_INTENT" };
+    } catch (error) {
+      throw errors.business(
+        "PAYMENT_INIT_FAILED",
+        "Your scheme was created but online payment could not be started. Open the plan again or retry enrolment to continue checkout.",
+        { schemeId: enrolled._id ?? enrolled.id, cause: error?.message },
+      );
+    }
   }
   if (reservedLink) {
     return { enrolled, checkout: reservedLink, checkoutKind: "FIXED_PAYMENT_LINK" };
