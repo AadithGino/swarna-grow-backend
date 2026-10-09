@@ -77,6 +77,8 @@ import {
   assertOneActiveSchemePolicy,
   revalidateLockedPlanForEnrolment,
 } from "../lib/enrolment-in-transaction-validation.js";
+import { assertCustomerPaymentsEnabled } from "../lib/customer-app-access.js";
+import { logger } from "../config/logger.js";
 
 function validateAmount(plan, amount) {
   normalizePlanFinancialRules(plan);
@@ -324,10 +326,41 @@ function resolveEnrolBranchId(req, customer) {
   return req.body.branchId ?? customer?.branchId ?? null;
 }
 
+function lockedFirstInstallmentMode(plan) {
+  const schedule = plan.scheduleRules ?? {};
+  return schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
+}
+
+function assertCustomerPayNowAllowed(req, plan) {
+  if (req.auth?.type !== "CUSTOMER" || req.body.payNow === undefined) return;
+  const schedule = plan.scheduleRules ?? {};
+  if (schedule.firstInstallmentModeEditable !== false) return;
+  const lockedMode = lockedFirstInstallmentMode(plan);
+  const payNow = req.body.payNow;
+  if (payNow === true && lockedMode === FirstInstallmentMode.START_NEXT_CYCLE) {
+    throw errors.business(
+      "FIRST_INSTALLMENT_MODE_LOCKED",
+      "This plan starts your first installment in the next cycle. Online payment at enrolment is not available.",
+    );
+  }
+  if (payNow === false && lockedMode === FirstInstallmentMode.COLLECT_NOW) {
+    throw errors.business(
+      "FIRST_INSTALLMENT_MODE_LOCKED",
+      "This plan requires the first installment at enrolment. Choose pay now to continue.",
+    );
+  }
+}
+
+function assertCustomerCollectNowPaymentsEnabled(req, firstInstallmentMode) {
+  if (req.auth?.type !== "CUSTOMER") return;
+  if (firstInstallmentMode !== FirstInstallmentMode.COLLECT_NOW) return;
+  assertCustomerPaymentsEnabled(req.tenant);
+}
+
 function resolveFirstInstallmentMode(req, plan) {
   const schedule = plan.scheduleRules ?? {};
   if (schedule.firstInstallmentModeEditable === false) {
-    return schedule.firstInstallmentModeDefault ?? FirstInstallmentMode.COLLECT_NOW;
+    return lockedFirstInstallmentMode(plan);
   }
   if (req.auth?.type === "CUSTOMER") {
     if (req.body.payNow === false) return FirstInstallmentMode.START_NEXT_CYCLE;
@@ -414,7 +447,9 @@ export async function validateEnrolment(req) {
   assertPlanAvailableAtBranch(plan, branchId);
   const amount = defaultInstallmentAmountPaise(plan, req.body.installmentAmountPaise);
   if (amount != null) validateAmount(plan, amount);
+  assertCustomerPayNowAllowed(req, plan);
   const firstInstallmentMode = resolveFirstInstallmentMode(req, plan);
+  assertCustomerCollectNowPaymentsEnabled(req, firstInstallmentMode);
   return { customer, plan, branchId, installmentAmountPaise: amount, firstInstallmentMode, firstInstallmentRequired: firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW };
 }
 
@@ -576,6 +611,7 @@ export async function createEnrolmentInSession(req, validation, session) {
       assertPlanAvailableAtBranch,
       assertActiveEnrolBranch,
     });
+    assertCustomerCollectNowPaymentsEnabled(req, txValidation.firstInstallmentMode);
     const number = await nextSequence(req.auth.tenantId, "scheme", session); const startDate = today(); const maturityDate = addMonthsClamped(startDate, txValidation.plan.durationMonths).format("YYYY-MM-DD");
     const isFlexible = txValidation.plan.paymentPattern === PaymentPattern.FLEXIBLE;
     const installmentAmountPaise = txValidation.installmentAmountPaise;
@@ -677,7 +713,14 @@ export async function createEnrolmentInSession(req, validation, session) {
 
 /** Re-use pending self-enrol checkout when PhonePe initiation failed after the local transaction committed. */
 async function tryResumeCustomerPendingEnrolCheckout(req) {
-  if (req.auth?.type !== "CUSTOMER" || req.body.payNow === false || !req.body.planId) return null;
+  if (req.auth?.type !== "CUSTOMER" || !req.body.planId) return null;
+  const planForMode = await SchemePlan.findOne({
+    _id: req.body.planId,
+    tenantId: req.auth.tenantId,
+  }).lean();
+  if (!planForMode) return null;
+  const resolvedMode = resolveFirstInstallmentMode(req, planForMode);
+  if (resolvedMode !== FirstInstallmentMode.COLLECT_NOW) return null;
   const scheme = await Scheme.findOne({
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
@@ -740,7 +783,7 @@ export async function customerEnrolWithCheckout(req) {
   let reservedLink = null;
   const enrolled = await withTransientTransactionRetry(async (session) => {
     const scheme = await createEnrolmentInSession(req, validation, session);
-    const needsCheckout = req.body.payNow !== false && scheme.firstInstallmentRequired === true;
+    const needsCheckout = scheme.firstInstallmentRequired === true;
     if (!needsCheckout) return scheme;
     const schemeId = scheme._id ?? scheme.id;
     const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle ?? monthKey();
@@ -783,10 +826,19 @@ export async function customerEnrolWithCheckout(req) {
       );
       return { enrolled, checkout, checkoutKind: "FLEXIBLE_PAYMENT_INTENT" };
     } catch (error) {
-      throw errors.business(
-        "PAYMENT_INIT_FAILED",
-        "Your scheme was created but online payment could not be started. Open the plan again or retry enrolment to continue checkout.",
-        { schemeId: enrolled._id ?? enrolled.id, cause: error?.message },
+      logger.error(
+        {
+          err: error,
+          tenantId: req.auth.tenantId,
+          customerId: req.auth.id,
+          schemeId: enrolled._id ?? enrolled.id,
+          paymentId: reservedIntent.paymentId,
+          intentId: reservedIntent.intent?._id ?? reservedIntent.intent?.id,
+        },
+        "Customer enrolment PhonePe initiation failed after local commit",
+      );
+      throw errors.dependency(
+        "Your scheme was saved but online payment could not be started. Retry enrolment to continue checkout.",
       );
     }
   }
@@ -1574,7 +1626,7 @@ export async function payableRange(req, schemeInput, options = {}) {
   const cycle = scheme.cycles.find((row) => row.cycle === effectiveTargetCycle);
   if (!cycle) throw errors.notFound("Payment cycle");
   const rules = plan.flexibleRules.cappedPhase;
-  const currentCycle = monthKey();
+  const currentCycle = options.referenceDate ? monthKey(options.referenceDate) : monthKey();
   const monthDistanceBetween = (from, to) => (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7));
   const monthDistance = monthDistanceBetween(currentCycle, effectiveTargetCycle);
   if (monthDistance < 0) throw errors.business("CYCLE_CLOSED", "Unused capacity from a closed cycle cannot be paid later.");

@@ -6,6 +6,13 @@ import { createId } from "../lib/ids.js";
 const LEASE_MS = 5 * 60_000;
 const stable = (value) => { if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`; if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`; return JSON.stringify(value); };
 
+/** Legacy enrol responses stored 422 PAYMENT_INIT_FAILED; allow retry after provider-init fix. */
+function isRepairablePaymentInitFailedRecord(record) {
+  return record?.state === "COMPLETED"
+    && record.responseStatus === 422
+    && record.responseBody?.error?.code === "PAYMENT_INIT_FAILED";
+}
+
 export async function beginIdempotency({ tenantId, actorId, endpoint, key, body }) {
   const bodyHash = sha256(stable(body ?? {}));
   const leaseOwner = createId("lease");
@@ -27,6 +34,21 @@ export async function beginIdempotency({ tenantId, actorId, endpoint, key, body 
         if (claimed) return { record: claimed, replay: false };
       }
       throw new AppError("REQUEST_IN_PROGRESS", "An identical request is already being processed.", 409);
+    }
+    if (isRepairablePaymentInitFailedRecord(record)) {
+      await IdempotencyRecord.deleteOne({ _id: record._id, state: "COMPLETED", responseStatus: 422 });
+      const repaired = await IdempotencyRecord.create({
+        tenantId,
+        actorId,
+        endpoint,
+        key,
+        bodyHash,
+        leaseOwner,
+        leaseExpiresAt,
+        heartbeatAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      return { record: repaired, replay: false };
     }
     return { record, replay: true };
   }

@@ -63,13 +63,10 @@ const requireCustomerPayments = (req, _res, next) => {
     next(error);
   }
 };
-/** Self-enrol without collecting now only needs write access; PhonePe checkout needs payments enabled. */
+/** Self-enrol payment capability is enforced from resolved first-installment mode in enrolment validation. */
 const requireCustomerEnrolAccess = (req, _res, next) => {
   try {
     assertCustomerAppWritable(req.tenant);
-    if (req.body?.payNow !== false) {
-      assertCustomerPaymentsEnabled(req.tenant);
-    }
     next();
   } catch (error) {
     next(error);

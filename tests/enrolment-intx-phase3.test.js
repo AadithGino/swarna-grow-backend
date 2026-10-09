@@ -239,13 +239,16 @@ test("in-tx plan flip to START_NEXT_CYCLE avoids checkout when pre-tx required f
   });
   await SchemePlan.create(plan);
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
-  const req = customerReq({
-    tenant,
-    customerId: customer._id,
-    planId: plan._id,
-    body: { payNow: true, redirectUrl: "http://localhost:5173/pay/return" },
-  });
-  await validateEnrolment(req);
+  const req = {
+    ...customerReq({ tenant, customerId: customer._id, planId: plan._id }),
+    body: {
+      planId: plan._id,
+      installmentAmountPaise: 100_000,
+      redirectUrl: "http://localhost:5173/pay/return",
+    },
+  };
+  const preTx = await validateEnrolment(req);
+  assert.equal(preTx.firstInstallmentRequired, true);
   await SchemePlan.updateOne(
     { _id: plan._id },
     {

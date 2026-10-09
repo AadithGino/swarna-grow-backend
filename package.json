@@ -32,6 +32,7 @@
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage",
     "seed": "node --env-file=.env scripts/seed.js",
     "seed:demo": "node --env-file=.env scripts/seed-demo.js",
+    "seed:ritu-gold": "node --env-file=.env scripts/seed-ritu-gold-demo.js",
     "seed:coverage": "node --env-file=.env scripts/seed-platform-coverage.js",
     "seed:collection-agent": "node --env-file=.env scripts/seed-collection-agent.js",
     "seed:pending-handover": "node --env-file=.env scripts/seed-pending-handover-kairali.js",
