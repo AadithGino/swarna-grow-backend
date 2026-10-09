@@ -74,6 +74,7 @@ const tenantOperationsSchema = new mongoose.Schema(
     paymentReversalWindowHours: { type: Number, default: 48 },
     redemptionApprovalRequired: { type: Boolean, default: true },
     termsAndConditions: { type: String, default: "" },
+    ecommerceEnabled: { type: Boolean, default: false },
   },
   { _id: false },
 );

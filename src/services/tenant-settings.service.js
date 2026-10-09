@@ -24,6 +24,10 @@ import {
 import { buildBrandingPreviewUrls } from "../lib/branding-preview.js";
 import { planPriceForBillingCycle } from "../lib/subscription-provision.js";
 import { resolvePlanFeatureBooleans } from "../lib/feature-entitlements.js";
+import {
+  assertCanEnableEcommerceStore,
+  presentEcommerceAccessState,
+} from "../lib/ecommerce-access.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { now } from "../lib/date.js";
@@ -47,6 +51,7 @@ const DEFAULT_FEATURES_BY_TIER = {
     prematureRedemption: false,
     customerSelfEnrol: true,
     advancedReports: false,
+    ecommerce: false,
   },
   [PlanTier.GROWTH]: {
     multiBranch: true,
@@ -56,6 +61,7 @@ const DEFAULT_FEATURES_BY_TIER = {
     prematureRedemption: true,
     customerSelfEnrol: true,
     advancedReports: false,
+    ecommerce: false,
   },
   [PlanTier.PRO]: {
     multiBranch: true,
@@ -65,6 +71,7 @@ const DEFAULT_FEATURES_BY_TIER = {
     prematureRedemption: true,
     customerSelfEnrol: true,
     advancedReports: true,
+    ecommerce: false,
   },
   [PlanTier.CUSTOM]: {
     multiBranch: true,
@@ -74,6 +81,7 @@ const DEFAULT_FEATURES_BY_TIER = {
     prematureRedemption: true,
     customerSelfEnrol: true,
     advancedReports: true,
+    ecommerce: false,
   },
 };
 
@@ -183,6 +191,8 @@ function presentOperations(tenant) {
     paymentReversalWindowHours: ops.paymentReversalWindowHours ?? 48,
     redemptionApprovalRequired: ops.redemptionApprovalRequired ?? true,
     termsAndConditions: ops.termsAndConditions ?? "",
+    ecommerceEnabled: ops.ecommerceEnabled === true,
+    ecommerce: presentEcommerceAccessState(tenant),
     audit: { version: tenant.version ?? 1 },
   };
 }
@@ -326,6 +336,7 @@ export async function getSubscriptionForAdmin(req) {
       },
     },
     features: resolvePlanFeatureBooleans(tenant),
+    ecommerce: presentEcommerceAccessState(tenant),
     pendingUpgradeRequest: await pendingUpgradeRequest(tenantId),
   };
 }
@@ -444,6 +455,7 @@ function buildPlanIncludes(tier, limits = {}) {
   if (features.goldWeightScheme) lines.push("Gold weight schemes");
   if (features.prematureRedemption) lines.push("Premature redemption");
   if (features.customerSelfEnrol) lines.push("Customer self-enrol");
+  if (features.ecommerce) lines.push("Online store (ecommerce)");
   if (features.customApp) lines.push("Custom branded app");
   if (features.advancedReports) lines.push("Advanced reports");
   return lines;
@@ -692,6 +704,9 @@ export async function patchSettingsOperations(req) {
         },
       ]);
     }
+    if (patch.ecommerceEnabled === true) {
+      assertCanEnableEcommerceStore(tenant.toObject());
+    }
 
     tenant.operations = {
       ...(tenant.operations?.toObject?.() ?? tenant.operations ?? {}),
@@ -723,6 +738,6 @@ export async function patchSettingsOperations(req) {
       after: tenant.toObject(),
       session,
     });
-    return getSettingsOperationsForAdmin(req);
+    return presentOperations(tenant.toObject());
   });
 }

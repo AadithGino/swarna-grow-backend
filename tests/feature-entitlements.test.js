@@ -61,3 +61,14 @@ test("planFeaturesSnapshot overrides tier defaults", () => {
   };
   assert.equal(resolvePlanFeatureBooleans(tenant).flexibleScheme, true);
 });
+
+test("ecommerce is false when absent from legacy snapshot", () => {
+  const tenant = {
+    ...baseTenant,
+    subscription: {
+      tier: PlanTier.PRO,
+      planFeaturesSnapshot: { advancedReports: true },
+    },
+  };
+  assert.equal(resolvePlanFeatureBooleans(tenant).ecommerce, false);
+});

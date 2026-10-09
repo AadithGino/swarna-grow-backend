@@ -896,6 +896,7 @@ export const tenantOperationsPatchBody = z
       .transform((values) => [...new Set(values)])
       .optional(),
     customerSelfEnrolEnabled: z.boolean().optional(),
+    ecommerceEnabled: z.boolean().optional(),
     customerSelfRegistrationEnabled: z.boolean().optional(),
     customerLoginMode: enumSchema(E.CustomerLoginMode).optional(),
     customerAppWriteEnabled: z.boolean().optional(),

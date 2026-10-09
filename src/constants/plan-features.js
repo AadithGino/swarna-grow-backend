@@ -10,6 +10,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     prematureRedemption: true,
     customerSelfEnrol: false,
     advancedReports: false,
+    ecommerce: false,
   },
   [PlanTier.GROWTH]: {
     multiBranch: true,
@@ -19,6 +20,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     prematureRedemption: true,
     customerSelfEnrol: true,
     advancedReports: false,
+    ecommerce: false,
   },
   [PlanTier.PRO]: {
     multiBranch: true,
@@ -28,6 +30,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     prematureRedemption: true,
     customerSelfEnrol: true,
     advancedReports: true,
+    ecommerce: false,
   },
   [PlanTier.CUSTOM]: {
     multiBranch: true,
@@ -37,6 +40,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     prematureRedemption: true,
     customerSelfEnrol: true,
     advancedReports: true,
+    ecommerce: false,
   },
 });
 

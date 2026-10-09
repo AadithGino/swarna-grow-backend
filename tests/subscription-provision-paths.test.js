@@ -44,7 +44,9 @@ test("platform createTenant persists explicit false in planFeaturesSnapshot", as
   assert.equal(tenant.subscription.planId, plan._id);
   assert.equal(tenant.subscription.billingCycle, BillingCycle.ANNUAL);
   assert.equal(tenant.subscription.planFeaturesSnapshot.flexibleScheme, false);
+  assert.equal(tenant.subscription.planFeaturesSnapshot.ecommerce, false);
   assert.equal(isPlanFeatureEnabled(tenant, "flexibleScheme"), false);
+  assert.equal(isPlanFeatureEnabled(tenant, "ecommerce"), false);
 });
 
 test("changeSubscription refreshes snapshot from plan template", async () => {
