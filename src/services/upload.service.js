@@ -1,15 +1,22 @@
 import path from "node:path";
-import { Upload } from "../models/index.js";
-import { UploadPurpose, UploadStatus } from "../constants/enums.js";
+import { EcommerceCategory, EcommerceProduct, Upload } from "../models/index.js";
+import { EcommerceProductStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
 import { createId } from "../lib/ids.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { env } from "../config/env.js";
 import { malwareScanProvider } from "../integrations/malware-scan.provider.js";
 
+const ECOMMERCE_IMAGE_RULE = Object.freeze({
+  max: 2_000_000,
+  types: ["image/png", "image/jpeg", "image/webp"],
+});
+
 const RULES = Object.freeze({
-  TENANT_LOGO: { max: 2_000_000, types: ["image/png", "image/jpeg", "image/webp"] },
-  PUSH_BROADCAST_IMAGE: { max: 2_000_000, types: ["image/png", "image/jpeg", "image/webp"] },
+  TENANT_LOGO: ECOMMERCE_IMAGE_RULE,
+  PUSH_BROADCAST_IMAGE: ECOMMERCE_IMAGE_RULE,
+  ECOMMERCE_CATEGORY_IMAGE: ECOMMERCE_IMAGE_RULE,
+  ECOMMERCE_PRODUCT_IMAGE: ECOMMERCE_IMAGE_RULE,
   KYC_DOCUMENT: { max: 5_000_000, types: ["image/jpeg", "image/png", "application/pdf"] },
   GRIEVANCE_ATTACHMENT: { max: 5_000_000, types: ["image/jpeg", "image/png", "application/pdf"] },
 });
@@ -113,10 +120,50 @@ export async function completeUpload(req) {
   return { uploadId: upload._id, status: upload.status, viewUrl: uploadViewPath(upload._id) };
 }
 
-function canReadUpload(req, upload, { subjectId } = {}) {
+async function isStorefrontVisibleCatalogUpload(upload) {
+  if (
+    upload.purpose !== UploadPurpose.ECOMMERCE_CATEGORY_IMAGE
+    && upload.purpose !== UploadPurpose.ECOMMERCE_PRODUCT_IMAGE
+  ) {
+    return false;
+  }
+  if (upload.status === UploadStatus.PENDING || upload.status === UploadStatus.EXPIRED) {
+    return false;
+  }
+  if (upload.purpose === UploadPurpose.ECOMMERCE_CATEGORY_IMAGE) {
+    const category = await EcommerceCategory.findOne({
+      tenantId: upload.tenantId,
+      imageUploadId: upload._id,
+      active: true,
+    }).lean();
+    return Boolean(category);
+  }
+  const product = await EcommerceProduct.findOne({
+    tenantId: upload.tenantId,
+    status: EcommerceProductStatus.PUBLISHED,
+    imageUploadIds: upload._id,
+  }).lean();
+  if (!product) return false;
+  if (!product.categoryId) return true;
+  const category = await EcommerceCategory.findOne({
+    _id: product.categoryId,
+    tenantId: upload.tenantId,
+    active: true,
+  }).lean();
+  return Boolean(category);
+}
+
+async function canReadUpload(req, upload, { subjectId } = {}) {
   if (upload.ownerId === req.auth.id) return true;
   if (subjectId && upload.ownerId === subjectId) return true;
   if (req.auth.type === "TENANT_USER" && upload.tenantId === req.auth.tenantId) return true;
+  if (
+    req.auth.type === "CUSTOMER"
+    && upload.tenantId === req.auth.tenantId
+    && (await isStorefrontVisibleCatalogUpload(upload))
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -124,7 +171,7 @@ export async function getUploadDownload(req) {
   const upload = await Upload.findOne({ _id: req.params.uploadId, tenantId: req.auth.tenantId }).lean();
   if (!upload) throw errors.notFound("Upload");
   const subjectId = req.query.subjectId ?? req.params.customerId;
-  if (!canReadUpload(req, upload, { subjectId })) throw errors.forbidden();
+  if (!(await canReadUpload(req, upload, { subjectId }))) throw errors.forbidden();
   if (upload.status === UploadStatus.PENDING) {
     throw errors.business("UPLOAD_NOT_READY", "This upload has not been completed yet.", { uploadId: upload._id });
   }

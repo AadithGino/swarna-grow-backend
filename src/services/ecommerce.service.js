@@ -106,10 +106,12 @@ function mapProduct(row, { includePricing = false, tenant, rateRow, taxSettings 
 }
 
 function presentPricingEstimate(estimate) {
+  const moneyOrNull = (paise) =>
+    paise == null ? null : moneyRef(paise);
   return {
     ...estimate,
-    preTaxSubtotal: moneyRef(estimate.preTaxSubtotalPaise),
-    displayTotal: moneyRef(estimate.displayTotalPaise),
+    preTaxSubtotal: moneyOrNull(estimate.preTaxSubtotalPaise),
+    displayTotal: moneyOrNull(estimate.displayTotalPaise),
     gold: {
       ...estimate.gold,
       goldValue: moneyRef(estimate.gold.goldValuePaise),
@@ -125,14 +127,128 @@ function presentPricingEstimate(estimate) {
     otherCharges: moneyRef(estimate.otherChargesPaise),
     tax: {
       ...estimate.tax,
-      total: moneyRef(estimate.tax.totalPaise),
-      lines: estimate.tax.lines.map((line) => ({
+      total: moneyOrNull(estimate.tax.totalPaise),
+      lines: (estimate.tax.lines ?? []).map((line) => ({
         ...line,
         taxableBase: moneyRef(line.taxableBasePaise),
         tax: moneyRef(line.taxPaise),
       })),
     },
   };
+}
+
+async function loadTaxSettingsScoped(tenantId, session) {
+  const q = EcommerceTaxSettings.findOne({ tenantId });
+  return session ? q.session(session).lean() : q.lean();
+}
+
+async function latestRateForPurityScoped(tenantId, purity, at = new Date(), session) {
+  if (!purity) return null;
+  const q = EcommerceGoldRate.findOne({
+    tenantId,
+    purity,
+    effectiveAt: { $lte: at },
+  })
+    .sort({ effectiveAt: -1, createdAt: -1 });
+  return session ? q.session(session).lean() : q.lean();
+}
+
+async function mapProductWithPricing(row, { tenant, tenantId, session } = {}) {
+  const taxSettings = await loadTaxSettingsScoped(tenantId, session);
+  const rateRow =
+    row.priceMode === EcommercePriceMode.GOLD_RATE_BASED
+      ? await latestRateForPurityScoped(tenantId, row.purity, new Date(), session)
+      : null;
+  return mapProduct(row, {
+    includePricing: true,
+    tenant,
+    rateRow,
+    taxSettings,
+  });
+}
+
+async function assertActiveCategoryForTenant(tenantId, categoryId, session) {
+  if (!categoryId) return;
+  const cat = await EcommerceCategory.findOne({ _id: categoryId, tenantId }).session(session);
+  if (!cat) throw errors.notFound("Category");
+  if (cat.active === false) {
+    throw errors.validation([
+      { field: "categoryId", message: "Choose an active category or leave uncategorised." },
+    ]);
+  }
+}
+
+async function activeCategoryIdsForTenant(tenantId) {
+  return EcommerceCategory.find({ tenantId, active: true }).distinct("_id");
+}
+
+async function isProductVisibleOnStorefront(product, tenantId) {
+  if (product.status !== EcommerceProductStatus.PUBLISHED) return false;
+  if (!product.categoryId) return true;
+  const cat = await EcommerceCategory.findOne({
+    _id: product.categoryId,
+    tenantId,
+    active: true,
+  }).lean();
+  return Boolean(cat);
+}
+
+function validateTaxRatesPayload(rates, defaultClassification) {
+  const codes = rates.map((r) => r.code);
+  const seen = new Set();
+  for (const code of codes) {
+    if (seen.has(code)) {
+      throw errors.validation([{ field: "rates", message: `Duplicate tax rate code "${code}".` }]);
+    }
+    seen.add(code);
+  }
+  if (defaultClassification != null && defaultClassification !== "") {
+    const match = rates.find(
+      (r) => r.code === defaultClassification && r.active !== false,
+    );
+    if (!match) {
+      throw errors.validation([
+        {
+          field: "defaultClassification",
+          message: "Default classification must match an active configured rate code.",
+        },
+      ]);
+    }
+  }
+}
+
+function mapTaxSettingsRow(row) {
+  if (!row) {
+    return {
+      defaultClassification: null,
+      rates: [],
+      version: 1,
+    };
+  }
+  return {
+    defaultClassification: row.defaultClassification ?? null,
+    rates: row.rates ?? [],
+    version: row.version ?? 1,
+    updatedAt: row.updatedAt ?? null,
+  };
+}
+
+async function assertPublishPricingReady(product, tenantId, session) {
+  const taxSettings = await loadTaxSettingsScoped(tenantId, session);
+  const rateRow =
+    product.priceMode === EcommercePriceMode.GOLD_RATE_BASED
+      ? await latestRateForPurityScoped(tenantId, product.purity, new Date(), session)
+      : null;
+  const estimate = computeProductPriceEstimate({ product, rateRow, taxSettings });
+  if (!estimate.computable) {
+    throw errors.validation(
+      estimate.blockers.map((b) => ({
+        field: "pricing",
+        message: b.message ?? b.code,
+        code: b.code,
+      })),
+    );
+  }
 }
 
 export async function getStoreStatus(req) {
@@ -321,6 +437,9 @@ export async function createProduct(req) {
   validateProductPricingFields(req.body);
   return withTransaction(async (session) => {
     const slug = normalizeEcommerceSlug(req.body.slug ?? req.body.name);
+    if (req.body.categoryId) {
+      await assertActiveCategoryForTenant(req.auth.tenantId, req.body.categoryId, session);
+    }
     const row = (
       await EcommerceProduct.create(
         [
@@ -411,8 +530,15 @@ export async function patchProduct(req) {
     const patch = { ...req.body };
     delete patch.expectedVersion;
     if (patch.slug != null) patch.slug = normalizeEcommerceSlug(patch.slug);
-    if (patch.status === EcommerceProductStatus.PUBLISHED) {
-      assertEcommerceCatalogWrite(req.tenant);
+    const merged = { ...row.toObject(), ...patch, priceMode: patch.priceMode ?? row.priceMode };
+    const nextCategoryId =
+      patch.categoryId !== undefined ? patch.categoryId : row.categoryId;
+    const nextStatus = patch.status ?? row.status;
+    if (patch.categoryId != null || nextStatus === EcommerceProductStatus.PUBLISHED) {
+      await assertActiveCategoryForTenant(req.auth.tenantId, nextCategoryId, session);
+    }
+    if (nextStatus === EcommerceProductStatus.PUBLISHED) {
+      await assertPublishPricingReady(merged, req.auth.tenantId, session);
     }
     if (patch.imageUploadIds?.length) {
       await validateUploadReferences({
@@ -435,7 +561,11 @@ export async function patchProduct(req) {
       after: row.toObject(),
       session,
     });
-    return getProduct(req);
+    return mapProductWithPricing(row.toObject(), {
+      tenant: req.tenant,
+      tenantId: req.auth.tenantId,
+      session,
+    });
   });
 }
 
@@ -578,24 +708,47 @@ export async function getTaxSettings(req) {
 
 export async function putTaxSettings(req) {
   assertEcommerceCatalogWrite(req.tenant);
+  const rates = req.body.rates ?? [];
+  const defaultClassification =
+    "defaultClassification" in req.body ? req.body.defaultClassification : undefined;
   return withTransaction(async (session) => {
     let row = await EcommerceTaxSettings.findOne({ tenantId: req.auth.tenantId }).session(session);
+    const nextDefault =
+      defaultClassification !== undefined
+        ? defaultClassification
+        : (row?.defaultClassification ?? null);
+    validateTaxRatesPayload(rates, nextDefault);
     if (row) {
+      if (req.body.expectedVersion == null) {
+        throw errors.validation([
+          { field: "expectedVersion", message: "expectedVersion is required when updating tax settings." },
+        ]);
+      }
       enforceVersion(row, req.body.expectedVersion);
-      row.defaultClassification = req.body.defaultClassification ?? row.defaultClassification;
-      row.rates = req.body.rates ?? row.rates;
+      row.rates = rates;
+      if (defaultClassification !== undefined) {
+        row.defaultClassification = defaultClassification;
+      }
       row.updatedBy = req.auth.id;
       row.version += 1;
       await row.save({ session });
     } else {
+      if (req.body.expectedVersion != null && req.body.expectedVersion !== 1) {
+        throw errors.validation([
+          {
+            field: "expectedVersion",
+            message: "First tax settings save must omit expectedVersion or send 1.",
+          },
+        ]);
+      }
       row = (
         await EcommerceTaxSettings.create(
           [
             {
               _id: createId("etax"),
               tenantId: req.auth.tenantId,
-              defaultClassification: req.body.defaultClassification ?? null,
-              rates: req.body.rates ?? [],
+              defaultClassification: defaultClassification ?? null,
+              rates,
               updatedBy: req.auth.id,
             },
           ],
@@ -611,7 +764,7 @@ export async function putTaxSettings(req) {
       after: row.toObject(),
       session,
     });
-    return getTaxSettings(req);
+    return mapTaxSettingsRow(row.toObject());
   });
 }
 
@@ -635,10 +788,23 @@ export async function shopListCategories(req) {
 
 export async function shopListProducts(req) {
   assertEcommerceOperational(req.tenant);
+  const activeCategories = await activeCategoryIdsForTenant(req.auth.tenantId);
   const filter = {
     status: EcommerceProductStatus.PUBLISHED,
+    $or: [
+      { categoryId: null },
+      { categoryId: { $exists: false } },
+      { categoryId: "" },
+      { categoryId: { $in: activeCategories } },
+    ],
   };
-  if (req.query.categoryId) filter.categoryId = req.query.categoryId;
+  if (req.query.categoryId) {
+    if (!activeCategories.includes(req.query.categoryId)) {
+      return { items: [], meta: { hasMore: false, nextCursor: null } };
+    }
+    filter.categoryId = req.query.categoryId;
+    delete filter.$or;
+  }
   if (req.query.featured === "true") filter.featured = true;
   const result = await paginate(EcommerceProduct, {
     scope: { tenantId: req.auth.tenantId },
@@ -675,6 +841,9 @@ export async function shopGetProduct(req) {
     $or: [{ _id: key }, { slug: key }],
   }).lean();
   if (!row) throw errors.notFound("Product");
+  if (!(await isProductVisibleOnStorefront(row, req.auth.tenantId))) {
+    throw errors.notFound("Product");
+  }
   const taxSettings = await loadTaxSettings(req.auth.tenantId);
   const rateRow =
     row.priceMode === EcommercePriceMode.GOLD_RATE_BASED

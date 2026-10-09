@@ -101,9 +101,73 @@ test("downgrade blocks catalog write but keeps admin read", async () => {
   assert.equal(read.slug, "chain");
 });
 
+test("shop availability false when entitled but store switch off", async () => {
+  const { tenant, user } = await seedTenantUser({ tenantCode: "SWOFF" });
+  const base = reqFor(tenant, user);
+  const status = await ecommerce.shopAvailability({
+    ...base,
+    tenant: {
+      ...base.tenant,
+      operations: { ecommerceEnabled: false },
+    },
+  });
+  assert.equal(status.available, false);
+  assert.equal(status.ecommerce.planEntitled, true);
+  assert.equal(status.ecommerce.enabled, false);
+});
+
+test("archived category hides published products from storefront", async () => {
+  const { tenant, user } = await seedTenantUser({ tenantCode: "CARCH" });
+  const base = reqFor(tenant, user);
+  await ecommerce.putTaxSettings({
+    ...base,
+    body: {
+      rates: [{ code: "GST_3", rateBps: 300, active: true }],
+      defaultClassification: "GST_3",
+    },
+  });
+  const cat = await ecommerce.createCategory({
+    ...base,
+    body: { name: "Rings", slug: "rings" },
+  });
+  const product = await ecommerce.createProduct({
+    ...base,
+    body: {
+      name: "Ring",
+      categoryId: cat.id,
+      priceMode: EcommercePriceMode.FIXED,
+      fixedPricing: { basePricePaise: 5000 },
+      taxClassification: "GST_3",
+    },
+  });
+  await ecommerce.publishProduct({
+    ...base,
+    params: { productId: product.id },
+    body: { expectedVersion: 1 },
+  });
+  await ecommerce.archiveCategory({
+    ...base,
+    params: { categoryId: cat.id },
+    body: { expectedVersion: 1 },
+  });
+  const onStore = {
+    ...base,
+    tenant: { ...base.tenant, operations: { ecommerceEnabled: true } },
+  };
+  const list = await ecommerce.shopListProducts(onStore);
+  assert.equal(list.items.length, 0);
+});
+
 test("storefront requires operational store and published products", async () => {
   const { tenant, user } = await seedTenantUser({ tenantCode: "STORE1" });
   const base = reqFor(tenant, user);
+  await ecommerce.putTaxSettings({
+    ...base,
+    body: {
+      rates: [{ code: "GST_3", rateBps: 300, active: true }],
+      defaultClassification: "GST_3",
+    },
+  });
   const product = await ecommerce.createProduct({
     ...base,
     body: {
@@ -111,6 +175,7 @@ test("storefront requires operational store and published products", async () =>
       slug: "bangle",
       priceMode: EcommercePriceMode.FIXED,
       fixedPricing: { basePricePaise: 25_000 },
+      taxClassification: "GST_3",
     },
   });
   await ecommerce.publishProduct({

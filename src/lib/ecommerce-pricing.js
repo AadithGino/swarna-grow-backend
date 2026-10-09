@@ -11,6 +11,7 @@ import {
   ECOMMERCE_TAX_ESTIMATE_DISCLAIMER,
   goldRateFreshness,
 } from "./ecommerce-pricing-policy.js";
+import { addPaise, mulDivHalfUpPaise } from "./ecommerce-exact-money.js";
 
 /**
  * Pricing formula (integer paise, weight in mg):
@@ -30,7 +31,7 @@ export function roundHalfUpPaise(value) {
 
 export function computeGoldValuePaise(weightMg, ratePerGramPaise) {
   if (weightMg <= 0 || ratePerGramPaise <= 0) return 0;
-  return roundHalfUpPaise((weightMg * ratePerGramPaise) / 1000);
+  return mulDivHalfUpPaise(weightMg, ratePerGramPaise, 1000);
 }
 
 export function computeMakingChargePaise({
@@ -39,16 +40,16 @@ export function computeMakingChargePaise({
   weightMg,
   makingCharge = {},
 }) {
-  const weightGrams = weightMg / 1000;
   if (mode === EcommerceMakingChargeMode.FIXED_PAISE) {
     return Math.max(0, makingCharge.fixedPaise ?? 0);
   }
   if (mode === EcommerceMakingChargeMode.PER_GRAM_PAISE) {
-    return roundHalfUpPaise(Math.max(0, makingCharge.perGramPaise ?? 0) * weightGrams);
+    const perGram = Math.max(0, makingCharge.perGramPaise ?? 0);
+    return mulDivHalfUpPaise(perGram, weightMg, 1000);
   }
   if (mode === EcommerceMakingChargeMode.PERCENT_OF_GOLD) {
     const bps = Math.max(0, makingCharge.percentBps ?? 0);
-    return roundHalfUpPaise((goldValuePaise * bps) / 10_000);
+    return mulDivHalfUpPaise(goldValuePaise, bps, 10_000);
   }
   return 0;
 }
@@ -77,7 +78,7 @@ export function applyMakingChargeOffer(makingPaise, offer, atMs = Date.now()) {
   }
   if (offer.type === EcommerceOfferType.PERCENT_OFF) {
     const bps = Math.min(10_000, Math.max(0, offer.percentBps ?? 0));
-    const discount = roundHalfUpPaise((makingPaise * bps) / 10_000);
+    const discount = mulDivHalfUpPaise(makingPaise, bps, 10_000);
     return { discountPaise: discount, makingAfterPaise: makingPaise - discount };
   }
   return { discountPaise: 0, makingAfterPaise: makingPaise };
@@ -189,8 +190,10 @@ export function computeProductPriceEstimate({
   const taxLines = [];
   let taxTotalPaise = 0;
   if (preTaxSubtotalPaise > 0 && taxRate) {
-    const taxPaise = roundHalfUpPaise(
-      (preTaxSubtotalPaise * Math.max(0, taxRate.rateBps ?? 0)) / 10_000,
+    const taxPaise = mulDivHalfUpPaise(
+      preTaxSubtotalPaise,
+      Math.max(0, taxRate.rateBps ?? 0),
+      10_000,
     );
     taxTotalPaise = taxPaise;
     taxLines.push({
@@ -208,12 +211,13 @@ export function computeProductPriceEstimate({
     });
   }
 
-  const displayTotalPaise = preTaxSubtotalPaise + taxTotalPaise;
+  const computable = blockers.length === 0;
+  const displayTotalPaise = computable ? addPaise(preTaxSubtotalPaise, taxTotalPaise) : null;
 
   return {
     priceMode,
     productVersion: version,
-    computable: blockers.length === 0,
+    computable,
     blockers,
     contract: {
       taxEstimateScope: "DISPLAY_SINGLE_RATE",
@@ -244,12 +248,12 @@ export function computeProductPriceEstimate({
     },
     stonesPaise,
     otherChargesPaise: otherPaise,
-    preTaxSubtotalPaise,
+    preTaxSubtotalPaise: computable ? preTaxSubtotalPaise : null,
     tax: {
       settingsVersion: taxSettings?.version ?? null,
       classification: product.taxClassification ?? null,
-      lines: taxLines,
-      totalPaise: taxTotalPaise,
+      lines: computable ? taxLines : [],
+      totalPaise: computable ? taxTotalPaise : null,
     },
     displayTotalPaise,
   };

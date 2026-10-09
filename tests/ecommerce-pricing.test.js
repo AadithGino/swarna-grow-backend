@@ -22,6 +22,13 @@ test("gold value uses mg and paise per gram", () => {
   assert.equal(computeGoldValuePaise(5000, 600_000), 3_000_000);
 });
 
+test("gold value large integers without float drift", () => {
+  assert.equal(
+    computeGoldValuePaise(100_056_463, 90_030_973),
+    9_008_180_718_828,
+  );
+});
+
 test("making charge modes", () => {
   assert.equal(
     computeMakingChargePaise({
@@ -136,6 +143,7 @@ test("stale gold rate blocks dynamic estimate", () => {
   });
   assert.equal(estimate.computable, false);
   assert.ok(estimate.blockers.some((b) => b.code === "GOLD_RATE_STALE"));
+  assert.equal(estimate.displayTotalPaise, null);
 });
 
 test("fixed price does not add making or stones", () => {
@@ -146,6 +154,7 @@ test("fixed price does not add making or stones", () => {
       makingChargeMode: EcommerceMakingChargeMode.FIXED_PAISE,
       makingCharge: { fixedPaise: 50_000 },
       stones: [{ chargePaise: 10_000 }],
+      taxClassification: "GST_3",
     },
     taxSettings: {
       version: 1,
