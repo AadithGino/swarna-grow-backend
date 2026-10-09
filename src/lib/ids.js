@@ -8,6 +8,10 @@ const PREFIXES = Object.freeze({
   passwordReset: "prt", goldRate: "grt", grt: "grt", platformUser: "pusr",
   signupToken: "sgt", setupPassword: "spt", paymentSession: "psn", subscriptionPlan: "splan",
   csc: "csc",
+  ecat: "ecat",
+  eprd: "eprd",
+  egrt: "egrt",
+  etax: "etax",
 });
 
 export function createId(kind) { return `${PREFIXES[kind] ?? kind}_${ulid()}`; }

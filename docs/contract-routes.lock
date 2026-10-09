@@ -30,6 +30,15 @@ GET /admin/dashboard/charts/:chartKey
 GET /admin/dashboard/summary
 GET /admin/dues
 GET /admin/dues/count
+GET /admin/ecommerce/categories
+GET /admin/ecommerce/categories/:categoryId
+GET /admin/ecommerce/gold-rates/current
+GET /admin/ecommerce/gold-rates/history
+GET /admin/ecommerce/products
+GET /admin/ecommerce/products/:productId
+GET /admin/ecommerce/products/:productId/price-preview
+GET /admin/ecommerce/store-status
+GET /admin/ecommerce/tax-settings
 GET /admin/exports
 GET /admin/exports/:exportId
 GET /admin/gold-rate/current
@@ -93,6 +102,10 @@ GET /app/payments
 GET /app/payments/:linkId/status
 GET /app/payments/:paymentId/receipt
 GET /app/profile
+GET /app/shop/availability
+GET /app/shop/categories
+GET /app/shop/products
+GET /app/shop/products/:productIdOrSlug
 GET /app/scheme-plans
 GET /app/scheme-plans/:planId
 GET /app/schemes
@@ -152,6 +165,8 @@ GET /staff/schemes/:schemeId/payable-range
 PATCH /admin/branches/:branchId
 PATCH /admin/customers/:customerId
 PATCH /admin/customers/:customerId/whatsapp-opt
+PATCH /admin/ecommerce/categories/:categoryId
+PATCH /admin/ecommerce/products/:productId
 PATCH /admin/scheme-plans/:planId
 PATCH /admin/settings/branding
 PATCH /admin/settings/operations
@@ -177,6 +192,12 @@ POST /admin/customers/:customerId/notes
 POST /admin/customers/:customerId/unblock
 POST /admin/dues/bulk-send-links
 POST /admin/exports
+POST /admin/ecommerce/categories
+POST /admin/ecommerce/categories/:categoryId/archive
+POST /admin/ecommerce/gold-rates
+POST /admin/ecommerce/products
+POST /admin/ecommerce/products/:productId/archive
+POST /admin/ecommerce/products/:productId/publish
 POST /admin/gold-rate
 POST /admin/grievances/:grievanceId/assign
 POST /admin/grievances/:grievanceId/messages
@@ -267,6 +288,7 @@ POST /staff/payments/:paymentId/share-whatsapp
 POST /staff/schemes/enrol
 POST /staff/schemes/enrol/validate
 POST /webhooks/phonepe/:tenantId
+PUT /admin/ecommerce/tax-settings
 PUT /admin/customers/:customerId/kyc
 PUT /admin/customers/:customerId/nominee
 PUT /admin/reminders/config

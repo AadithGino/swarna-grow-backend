@@ -261,7 +261,20 @@ export const AuditEntityType = makeEnum(
   "SUBSCRIPTION",
   "INVOICE",
   "TEMPLATE",
+  "ECOMMERCE_CATEGORY",
+  "ECOMMERCE_PRODUCT",
+  "ECOMMERCE_GOLD_RATE",
+  "ECOMMERCE_TAX_SETTINGS",
 );
+export const EcommerceProductStatus = makeEnum("DRAFT", "PUBLISHED", "ARCHIVED");
+export const EcommercePriceMode = makeEnum("FIXED", "GOLD_RATE_BASED");
+export const EcommerceGoldPurity = makeEnum("18K", "22K", "24K");
+export const EcommerceMakingChargeMode = makeEnum(
+  "FIXED_PAISE",
+  "PER_GRAM_PAISE",
+  "PERCENT_OF_GOLD",
+);
+export const EcommerceOfferType = makeEnum("FIXED_PAISE_OFF", "PERCENT_OFF");
 export const PhaseMode = makeEnum("SINGLE", "FLEXIBLE_THEN_CAPPED");
 export const CapMode = makeEnum("NONE", "FLEXIBLE_PHASE_AVERAGE");
 export const CarryForwardMode = makeEnum("NONE");
@@ -283,6 +296,8 @@ export const UploadPurpose = makeEnum(
   "KYC_DOCUMENT",
   "GRIEVANCE_ATTACHMENT",
   "PUSH_BROADCAST_IMAGE",
+  "ECOMMERCE_CATEGORY_IMAGE",
+  "ECOMMERCE_PRODUCT_IMAGE",
 );
 export const WebhookProvider = makeEnum("PHONEPE", "WHATSAPP");
 export const JobStatus = makeEnum(

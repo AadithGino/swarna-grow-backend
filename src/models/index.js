@@ -11,3 +11,4 @@ export * from "./push-device-delivery.model.js";
 export * from "./reminder-daily-quota.model.js";
 export * from "./inbound-message.model.js";
 export * from "./gateway-settlement.models.js";
+export * from "./ecommerce.models.js";

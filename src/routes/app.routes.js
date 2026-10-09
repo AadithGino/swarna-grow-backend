@@ -4,6 +4,7 @@ import * as appCustomer from "../controllers/customer-app.controller.js";
 import * as upload from "../controllers/upload.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import * as operations from "../controllers/operations.controller.js";
+import * as ecommerce from "../controllers/ecommerce.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
@@ -283,6 +284,11 @@ appRouter.get("/gold-rate/history", asyncHandler(async (req, res) => {
   const { GoldRate } = await import("../models/index.js");
   sendSuccess(res, await GoldRate.find({ tenantId: req.auth.tenantId }).sort({ effectiveDate: -1 }).limit(100).lean());
 }));
+
+appRouter.get("/shop/availability", asyncHandler(ecommerce.shopAvailability));
+appRouter.get("/shop/categories", asyncHandler(ecommerce.shopCategories));
+appRouter.get("/shop/products", asyncHandler(ecommerce.shopProducts));
+appRouter.get("/shop/products/:productIdOrSlug", asyncHandler(ecommerce.shopProduct));
 
 appRouter.post("/grievances", requireCustomerAppWrite, validate({ body: grievanceBody }), idempotent, asyncHandler(operations.createGrievance));
 appRouter.get("/grievances", asyncHandler(operations.grievances));

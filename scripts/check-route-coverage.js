@@ -2,7 +2,7 @@ import fs from "node:fs";
 
 const expected = new Set(fs.readFileSync(new URL("../docs/contract-routes.lock", import.meta.url), "utf8").trim().split("\n").map((line) => line.replace(/\/$/, "")));
 const routeFiles = {
-  "admin-config.routes.js": "/admin", "admin-analytics.routes.js": "/admin", "admin-operations.routes.js": "/admin", "admin-schemes.routes.js": "/admin", "admin-customers.routes.js": "/admin/customers",
+  "admin-config.routes.js": "/admin", "admin-analytics.routes.js": "/admin", "admin-operations.routes.js": "/admin", "admin-schemes.routes.js": "/admin", "admin-ecommerce.routes.js": "/admin", "admin-customers.routes.js": "/admin/customers",
   "staff.routes.js": "/staff", "app.routes.js": "/app", "app-auth.routes.js": "/app/auth", "auth.routes.js": "/auth", "public.routes.js": "/public", "platform.routes.js": "/platform", "webhook.routes.js": "/webhooks",
 };
 const actual = new Set();
@@ -11,6 +11,7 @@ const permissionGatedFiles = new Set([
   "admin-analytics.routes.js",
   "admin-operations.routes.js",
   "admin-schemes.routes.js",
+  "admin-ecommerce.routes.js",
   "admin-customers.routes.js",
   "staff.routes.js",
 ]);

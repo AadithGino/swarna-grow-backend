@@ -38,3 +38,18 @@ export function assertEcommerceOperational(tenant, message) {
     { ecommerce: state },
   );
 }
+
+/** Catalog/pricing writes require plan ecommerce entitlement (store switch may be off). */
+export function assertEcommerceCatalogWrite(tenant) {
+  if (isPlanFeatureEnabled(tenant, ECOMMERCE_PLAN_FEATURE)) return;
+  throw new AppError(
+    "FEATURE_NOT_ENTITLED",
+    "Your subscription plan does not include ecommerce catalog management.",
+    403,
+    { feature: ECOMMERCE_PLAN_FEATURE },
+  );
+}
+
+export function isEcommerceCatalogWriteAllowed(tenant) {
+  return isPlanFeatureEnabled(tenant, ECOMMERCE_PLAN_FEATURE);
+}
