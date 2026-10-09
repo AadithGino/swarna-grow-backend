@@ -12,3 +12,4 @@ export * from "./reminder-daily-quota.model.js";
 export * from "./inbound-message.model.js";
 export * from "./gateway-settlement.models.js";
 export * from "./ecommerce.models.js";
+export * from "./ecommerce-commerce.models.js";

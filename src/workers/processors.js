@@ -353,18 +353,40 @@ export async function processWebhook(job) {
       let phonePeHandled = false;
       if (normalized.refund || isPhonePeRefundCallback(event.payload?.type)) {
         phonePeHandled = true;
-        const { processPhonePeRefundWebhook } = await import("../services/phonepe-refund.service.js");
-        await processPhonePeRefundWebhook({
-          tenantId: event.tenantId,
-          type: event.payload?.type,
-          payload,
-          providerEventId: event.providerEventId,
-        });
+        const { isEcommercePhonePeRefundPayload } = await import("../lib/ecommerce-payment-reference.js");
+        if (isEcommercePhonePeRefundPayload(payload)) {
+          const { processEcommercePhonePeRefundWebhook } = await import(
+            "../services/ecommerce-payment-exception-refund.service.js"
+          );
+          await processEcommercePhonePeRefundWebhook({
+            tenantId: event.tenantId,
+            type: event.payload?.type,
+            payload,
+            providerEventId: event.providerEventId,
+          });
+        } else {
+          const { processPhonePeRefundWebhook } = await import("../services/phonepe-refund.service.js");
+          await processPhonePeRefundWebhook({
+            tenantId: event.tenantId,
+            type: event.payload?.type,
+            payload,
+            providerEventId: event.providerEventId,
+          });
+        }
       } else if (
         normalized.completed
         || normalized.classification === PhonePeCallbackClass.ORDER_COMPLETED
       ) {
         phonePeHandled = true;
+        const { processEcommercePhonePeWebhook } = await import("../services/ecommerce-payment-finalize.service.js");
+        const { isEcommercePaymentMerchantOrderId } = await import("../lib/ecommerce-payment-reference.js");
+        if (reference && isEcommercePaymentMerchantOrderId(reference)) {
+          await processEcommercePhonePeWebhook({
+            tenantId: event.tenantId,
+            normalized,
+            webhookEventId: event._id,
+          });
+        } else {
         const intent = reference
           ? await PaymentIntent.findOne({
             tenantId: event.tenantId,
@@ -419,6 +441,7 @@ export async function processWebhook(job) {
             });
           }
         }
+        }
       } else if (normalized.attemptFailed) {
         phonePeHandled = true;
         logger.info(
@@ -435,6 +458,15 @@ export async function processWebhook(job) {
         || normalized.classification === PhonePeCallbackClass.ORDER_TERMINAL_FAILED
       ) {
         phonePeHandled = true;
+        const { processEcommercePhonePeWebhook } = await import("../services/ecommerce-payment-finalize.service.js");
+        const { isEcommercePaymentMerchantOrderId } = await import("../lib/ecommerce-payment-reference.js");
+        if (reference && isEcommercePaymentMerchantOrderId(reference)) {
+          await processEcommercePhonePeWebhook({
+            tenantId: event.tenantId,
+            normalized,
+            webhookEventId: event._id,
+          });
+        } else {
         const result = await applyTerminalGatewayFailure({
           tenantId: event.tenantId,
           transactionId,
@@ -447,6 +479,7 @@ export async function processWebhook(job) {
             { reference, transactionId, type: normalized.type },
             "Ignoring terminal PhonePe failure after payment already succeeded",
           );
+        }
         }
       }
       if (!phonePeHandled) {
@@ -892,5 +925,17 @@ export async function processMaintenance(job) {
   if (job.name === "export-artifact-cleanup") {
     const { purgeExpiredExportArtifacts } = await import("../services/export-expiry.service.js");
     await purgeExpiredExportArtifacts(now);
+  }
+  if (job.name === "ecommerce-quote-expiry") {
+    const { runEcommerceQuoteExpiry } = await import("../services/ecommerce-quote-expiry.service.js");
+    await runEcommerceQuoteExpiry(now);
+  }
+  if (job.name === "ecommerce-order-payment-expiry") {
+    const { runEcommerceOrderPaymentExpiry } = await import("../services/ecommerce-order-payment-expiry.service.js");
+    await runEcommerceOrderPaymentExpiry(now);
+  }
+  if (job.name === "ecommerce-payment-reconcile") {
+    const { runEcommercePaymentReconcile } = await import("../services/ecommerce-payment-reconcile.service.js");
+    await runEcommercePaymentReconcile(now);
   }
 }

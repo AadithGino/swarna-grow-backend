@@ -8,6 +8,7 @@ import {
   collectionAgentPermissions,
 } from "../constants/permissions.js";
 import { assertSubscriptionActive } from "../lib/tenant-limits.js";
+import { attachSubscriptionCatalogPlan } from "../lib/subscription-plan-for-tenant.js";
 
 export const authenticate = asyncHandler(async (req, _res, next) => {
   const [scheme, token] = (req.headers.authorization ?? "").split(" ");
@@ -80,7 +81,7 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
       throw errors.forbidden("This jewellery account is not active.");
     }
     assertSubscriptionActive(tenant);
-    req.tenant = tenant;
+    req.tenant = await attachSubscriptionCatalogPlan(tenant);
   }
   if (req.auth.role === "COLLECTION_AGENT") {
     req.auth.permissions = collectionAgentPermissions(req.tenant, {

@@ -17,6 +17,7 @@ import argon2 from "argon2";
 import dayjs from "dayjs";
 import { connectDatabase, disconnectDatabase } from "../src/config/database.js";
 import { env } from "../src/config/env.js";
+import { DEFAULT_PLAN_FEATURES } from "../src/constants/plan-features.js";
 import {
   BillingCycle,
   ClosureType,
@@ -193,16 +194,32 @@ async function wipeDemoTenant(code) {
   await Tenant.deleteOne({ _id: tenantId });
 }
 
+function demoSubscriptionPlanFeatures(tier) {
+  const features = { ...DEFAULT_PLAN_FEATURES[tier] };
+  if (tier === PlanTier.GROWTH || tier === PlanTier.PRO) {
+    features.ecommerce = true;
+    features.ecommercePayments = true;
+  }
+  return features;
+}
+
 async function ensurePlatformBasics() {
   const plans = [
-    { tier: PlanTier.STARTER, name: "Starter", pricePaise: 199_900, limits: { activeCustomers: 250, branches: 1, staff: 3, schemePlans: 3, whatsappMessages: 1000 } },
-    { tier: PlanTier.GROWTH, name: "Growth", pricePaise: 499_900, limits: { activeCustomers: 1000, branches: 5, staff: 10, schemePlans: 10, whatsappMessages: 5000 } },
-    { tier: PlanTier.PRO, name: "Pro", pricePaise: 999_900, limits: { activeCustomers: 5000, branches: 25, staff: 50, schemePlans: 50, whatsappMessages: 25000 } },
+    { _id: "splan_starter", tier: PlanTier.STARTER, name: "Starter", pricePaise: 199_900, limits: { activeCustomers: 250, branches: 1, staff: 3, schemePlans: 3, whatsappMessages: 1000 } },
+    { _id: "splan_growth", tier: PlanTier.GROWTH, name: "Growth", pricePaise: 499_900, limits: { activeCustomers: 1000, branches: 5, staff: 10, schemePlans: 10, whatsappMessages: 5000 } },
+    { _id: "splan_pro", tier: PlanTier.PRO, name: "Pro", pricePaise: 999_900, limits: { activeCustomers: 5000, branches: 25, staff: 50, schemePlans: 50, whatsappMessages: 25000 } },
   ];
   for (const plan of plans) {
     await SubscriptionPlan.updateOne(
-      { tier: plan.tier, billingCycle: BillingCycle.MONTHLY },
-      { $set: { ...plan, billingCycle: BillingCycle.MONTHLY, active: true }, $setOnInsert: { _id: createId("subscription") } },
+      { _id: plan._id },
+      {
+        $set: {
+          ...plan,
+          billingCycle: BillingCycle.MONTHLY,
+          active: true,
+          features: demoSubscriptionPlanFeatures(plan.tier),
+        },
+      },
       { upsert: true },
     );
   }
@@ -245,11 +262,13 @@ async function createDemoTenant() {
     operations: {
       multiSchemePerCustomer: true,
       receiptPrefix: "KL",
+      ecommerceEnabled: true,
       termsAndConditions:
         "1. Scheme is valid for the stated tenure.\n2. Benefit applies only if all installments are paid.",
     },
     subscription: {
       tier: PlanTier.GROWTH,
+      planId: "splan_growth",
       status: "ACTIVE",
       startsAt: new Date(),
       renewsAt,

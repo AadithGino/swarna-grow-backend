@@ -11,6 +11,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     customerSelfEnrol: false,
     advancedReports: false,
     ecommerce: false,
+    ecommercePayments: false,
   },
   [PlanTier.GROWTH]: {
     multiBranch: true,
@@ -21,6 +22,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     customerSelfEnrol: true,
     advancedReports: false,
     ecommerce: false,
+    ecommercePayments: false,
   },
   [PlanTier.PRO]: {
     multiBranch: true,
@@ -31,6 +33,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     customerSelfEnrol: true,
     advancedReports: true,
     ecommerce: false,
+    ecommercePayments: false,
   },
   [PlanTier.CUSTOM]: {
     multiBranch: true,
@@ -41,6 +44,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     customerSelfEnrol: true,
     advancedReports: true,
     ecommerce: false,
+    ecommercePayments: false,
   },
 });
 
@@ -66,6 +70,5 @@ export function limitsToApi(stored = {}) {
     staffSeats: src.staffSeats ?? src.staff ?? null,
     schemePlans: src.schemePlans ?? null,
     whatsappMessagesPerMonth: src.whatsappMessagesPerMonth ?? src.whatsappMessages ?? null,
-    storageMb: src.storageMb ?? null,
   };
 }

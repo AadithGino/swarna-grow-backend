@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PlanTier } from "../src/constants/enums.js";
-import { Tenant } from "../src/models/index.js";
+import { BillingCycle, PlanTier } from "../src/constants/enums.js";
+import { DEFAULT_PLAN_FEATURES } from "../src/constants/plan-features.js";
+import { SubscriptionPlan, Tenant } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
+import { attachSubscriptionCatalogPlan } from "../src/lib/subscription-plan-for-tenant.js";
 import { isPlanFeatureEnabled, resolvePlanFeatureBooleans } from "../src/lib/feature-entitlements.js";
 import {
   assertCanEnableEcommerceStore,
@@ -161,5 +163,40 @@ test("patchSettingsOperations allows disable and enable when entitled", async ()
     body: { expectedVersion: 2, ecommerceEnabled: true },
   });
   assert.equal(enabled.ecommerceEnabled, true);
+  assert.equal(enabled.ecommerce.active, true);
+});
+
+test("patchSettingsOperations enables store when entitlement is from subscription catalog plan only", async () => {
+  const planId = createId("subscription");
+  await SubscriptionPlan.create({
+    _id: planId,
+    tier: PlanTier.GROWTH,
+    name: "Growth",
+    billingCycle: BillingCycle.MONTHLY,
+    active: true,
+    features: { ...DEFAULT_PLAN_FEATURES[PlanTier.GROWTH], ecommerce: true },
+  });
+  const tenant = await Tenant.create({
+    _id: createId("tenant"),
+    code: "ECO3",
+    name: "Catalog Eco",
+    mobile: "+919833333333",
+    subscription: {
+      tier: PlanTier.GROWTH,
+      planId,
+      features: [],
+      planFeaturesSnapshot: null,
+    },
+    operations: { ecommerceEnabled: false },
+    version: 1,
+  });
+  const tenantWithCatalog = await attachSubscriptionCatalogPlan(tenant.toObject());
+  const enabled = await tenantSettings.patchSettingsOperations({
+    auth: { tenantId: tenant._id, id: "usr_owner" },
+    tenant: tenantWithCatalog,
+    body: { expectedVersion: 1, ecommerceEnabled: true },
+  });
+  assert.equal(enabled.ecommerceEnabled, true);
+  assert.equal(enabled.ecommerce.planEntitled, true);
   assert.equal(enabled.ecommerce.active, true);
 });

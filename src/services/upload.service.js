@@ -1,6 +1,7 @@
 import path from "node:path";
 import { EcommerceCategory, EcommerceProduct, Upload } from "../models/index.js";
 import { EcommerceProductStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
+import { isEcommerceOperational } from "../lib/ecommerce-access.js";
 import { createId } from "../lib/ids.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { storageProvider } from "../integrations/storage.provider.js";
@@ -171,6 +172,14 @@ export async function getUploadDownload(req) {
   const upload = await Upload.findOne({ _id: req.params.uploadId, tenantId: req.auth.tenantId }).lean();
   if (!upload) throw errors.notFound("Upload");
   const subjectId = req.query.subjectId ?? req.params.customerId;
+  if (
+    req.auth.type === "CUSTOMER"
+    && (upload.purpose === UploadPurpose.ECOMMERCE_CATEGORY_IMAGE
+      || upload.purpose === UploadPurpose.ECOMMERCE_PRODUCT_IMAGE)
+    && !isEcommerceOperational(req.tenant)
+  ) {
+    throw errors.forbidden("Online store is not active.");
+  }
   if (!(await canReadUpload(req, upload, { subjectId }))) throw errors.forbidden();
   if (upload.status === UploadStatus.PENDING) {
     throw errors.business("UPLOAD_NOT_READY", "This upload has not been completed yet.", { uploadId: upload._id });

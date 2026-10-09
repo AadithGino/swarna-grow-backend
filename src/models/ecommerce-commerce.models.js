@@ -1,0 +1,438 @@
+import mongoose from "mongoose";
+import {
+  EcommerceCheckoutTaxPresentation,
+  EcommerceFulfilmentMode,
+  EcommerceOrderEventType,
+  EcommerceOrderPaymentExceptionStatus,
+  EcommerceOrderStatus,
+  EcommerceStockReleaseReason,
+  EcommerceTaxSupplyCase,
+  EcommercePaymentAttemptStatus,
+  EcommercePaymentAttemptOperationalStatus,
+  EcommercePaymentExceptionRefundStatus,
+  EcommerceQuoteStatus,
+  EcommerceStockPolicy,
+} from "../constants/enums.js";
+import {
+  baseOptions,
+  enumField,
+  integerField,
+  optionalIntegerField,
+  stringId,
+  tenantField,
+  versionField,
+} from "./schema-helpers.js";
+
+const addressSchema = new mongoose.Schema(
+  {
+    _id: stringId("eaddr"),
+    tenantId: tenantField,
+    customerId: { type: String, required: true, index: true },
+    label: { type: String, trim: true, maxlength: 80, default: "Home" },
+    recipientName: { type: String, trim: true, maxlength: 120 },
+    mobile: { type: String, trim: true, maxlength: 16 },
+    line1: { type: String, required: true, trim: true, maxlength: 200 },
+    line2: { type: String, trim: true, maxlength: 200, default: "" },
+    city: { type: String, required: true, trim: true, maxlength: 80 },
+    state: { type: String, required: true, trim: true, maxlength: 80 },
+    pincode: { type: String, required: true, trim: true, maxlength: 12 },
+    isDefault: { type: Boolean, default: false },
+    version: versionField,
+  },
+  baseOptions,
+);
+addressSchema.index({ tenantId: 1, customerId: 1, updatedAt: -1 });
+
+const cartLineSchema = new mongoose.Schema(
+  {
+    productId: { type: String, required: true },
+    quantity: integerField({ min: 1, default: 1 }),
+    addedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
+const cartSchema = new mongoose.Schema(
+  {
+    _id: stringId("ecart"),
+    tenantId: tenantField,
+    customerId: { type: String, required: true },
+    lines: { type: [cartLineSchema], default: [] },
+    version: versionField,
+  },
+  baseOptions,
+);
+cartSchema.index({ tenantId: 1, customerId: 1 }, { unique: true });
+
+const inventorySchema = new mongoose.Schema(
+  {
+    _id: stringId("einv"),
+    tenantId: tenantField,
+    productId: { type: String, required: true },
+    stockPolicy: enumField(EcommerceStockPolicy, {
+      default: EcommerceStockPolicy.MADE_TO_ORDER,
+    }),
+    quantityOnHand: optionalIntegerField({ min: 0 }),
+    reservedQuantity: optionalIntegerField({ min: 0, default: 0 }),
+    version: versionField,
+  },
+  baseOptions,
+);
+inventorySchema.index({ tenantId: 1, productId: 1 }, { unique: true });
+
+const quoteLineSnapshotSchema = new mongoose.Schema(
+  {
+    productId: String,
+    productVersion: Number,
+    name: String,
+    sku: String,
+    quantity: integerField({ min: 1 }),
+    unitPricePaise: integerField({ min: 0 }),
+    lineTotalPaise: integerField({ min: 0 }),
+    pricingSnapshot: mongoose.Schema.Types.Mixed,
+  },
+  { _id: false },
+);
+
+const quoteSchema = new mongoose.Schema(
+  {
+    _id: stringId("equote"),
+    tenantId: tenantField,
+    customerId: { type: String, required: true, index: true },
+    status: enumField(EcommerceQuoteStatus, { default: EcommerceQuoteStatus.ACTIVE }),
+    lines: { type: [quoteLineSnapshotSchema], default: [] },
+    fulfilmentMode: enumField(EcommerceFulfilmentMode),
+    pickupBranchId: String,
+    addressSnapshot: mongoose.Schema.Types.Mixed,
+    fulfilmentChargePaise: integerField({ min: 0, default: 0 }),
+    financialSnapshot: mongoose.Schema.Types.Mixed,
+    subtotalPaise: integerField({ min: 0, default: 0 }),
+    taxPaise: integerField({ min: 0, default: 0 }),
+    totalPaise: integerField({ min: 0, default: 0 }),
+    taxConfigVersion: Number,
+    expiresAt: { type: Date, required: true },
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+    creationBodyHash: { type: String, trim: true, maxlength: 64 },
+    orderId: String,
+    version: versionField,
+  },
+  baseOptions,
+);
+quoteSchema.index({ tenantId: 1, customerId: 1, status: 1, expiresAt: 1 });
+quoteSchema.index(
+  { tenantId: 1, customerId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  },
+);
+
+const orderLineSnapshotSchema = new mongoose.Schema(
+  {
+    productId: String,
+    productVersion: Number,
+    name: String,
+    sku: String,
+    quantity: integerField({ min: 1 }),
+    unitPricePaise: integerField({ min: 0 }),
+    lineTotalPaise: integerField({ min: 0 }),
+    pricingSnapshot: mongoose.Schema.Types.Mixed,
+  },
+  { _id: false },
+);
+
+const orderSchema = new mongoose.Schema(
+  {
+    _id: stringId("eord"),
+    tenantId: tenantField,
+    customerId: { type: String, required: true, index: true },
+    orderNumber: { type: String, required: true, trim: true },
+    status: enumField(EcommerceOrderStatus, {
+      default: EcommerceOrderStatus.PENDING_PAYMENT,
+    }),
+    quoteId: String,
+    lines: { type: [orderLineSnapshotSchema], default: [] },
+    fulfilmentMode: enumField(EcommerceFulfilmentMode),
+    addressSnapshot: mongoose.Schema.Types.Mixed,
+    pickupBranchId: String,
+    subtotalPaise: integerField({ min: 0, default: 0 }),
+    taxPaise: integerField({ min: 0, default: 0 }),
+    fulfilmentChargePaise: integerField({ min: 0, default: 0 }),
+    totalPaise: integerField({ min: 0, default: 0 }),
+    taxConfigVersion: Number,
+    financialSnapshot: mongoose.Schema.Types.Mixed,
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+    creationBodyHash: { type: String, trim: true, maxlength: 64 },
+    expiresAt: Date,
+    stockReleaseReason: enumField(EcommerceStockReleaseReason),
+    stockReleasedAt: Date,
+    paidAt: Date,
+    successfulPaymentAttemptId: String,
+    paymentExceptionStatus: enumField(EcommerceOrderPaymentExceptionStatus),
+    paymentExceptionPayload: mongoose.Schema.Types.Mixed,
+    version: versionField,
+  },
+  baseOptions,
+);
+orderSchema.index({ tenantId: 1, orderNumber: 1 }, { unique: true });
+orderSchema.index({ tenantId: 1, customerId: 1, createdAt: -1 });
+orderSchema.index({ status: 1, expiresAt: 1 });
+orderSchema.index(
+  { tenantId: 1, customerId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  },
+);
+
+const orderEventSchema = new mongoose.Schema(
+  {
+    _id: stringId("eoev"),
+    tenantId: tenantField,
+    orderId: { type: String, required: true, index: true },
+    type: enumField(EcommerceOrderEventType, { required: true }),
+    actorType: { type: String, trim: true, maxlength: 32 },
+    actorId: String,
+    payload: mongoose.Schema.Types.Mixed,
+    at: { type: Date, default: Date.now },
+  },
+  baseOptions,
+);
+orderEventSchema.index({ tenantId: 1, orderId: 1, at: 1 });
+
+const paymentAttemptSchema = new mongoose.Schema(
+  {
+    _id: stringId("epay"),
+    tenantId: tenantField,
+    orderId: { type: String, required: true, index: true },
+    customerId: { type: String, required: true },
+    status: enumField(EcommercePaymentAttemptStatus, {
+      default: EcommercePaymentAttemptStatus.PENDING,
+    }),
+    amountPaise: integerField({ min: 1 }),
+    currency: { type: String, default: "INR", maxlength: 3 },
+    provider: { type: String, trim: true, maxlength: 32 },
+    providerOrderId: String,
+    providerPaymentId: String,
+    merchantOrderId: { type: String, trim: true, maxlength: 80 },
+    sdkToken: { type: String, trim: true, maxlength: 512 },
+    redirectUrl: { type: String, trim: true, maxlength: 2048 },
+    creationBodyHash: { type: String, trim: true, maxlength: 64 },
+    failureReason: { type: String, trim: true, maxlength: 120 },
+    providerPayload: mongoose.Schema.Types.Mixed,
+    initiationClaimToken: { type: String, trim: true, maxlength: 64 },
+    initiationClaimExpiresAt: Date,
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+    expiresAt: Date,
+    operationalStatus: enumField(EcommercePaymentAttemptOperationalStatus, {
+      default: EcommercePaymentAttemptOperationalStatus.NORMAL,
+    }),
+    gatewayReconcileLeaseOwner: String,
+    gatewayReconcileLeaseExpiresAt: Date,
+    gatewayReconcileAttempts: { type: Number, default: 0 },
+    gatewayReconcileNextAt: Date,
+    gatewayLastReconcileAt: Date,
+    gatewayLastReconcileOutcome: { type: String, trim: true, maxlength: 64 },
+    providerInitConfirmedAt: Date,
+    version: versionField,
+  },
+  baseOptions,
+);
+paymentAttemptSchema.index({ tenantId: 1, orderId: 1, createdAt: -1 });
+paymentAttemptSchema.index({
+  status: 1,
+  operationalStatus: 1,
+  gatewayReconcileNextAt: 1,
+  updatedAt: 1,
+});
+paymentAttemptSchema.index(
+  { tenantId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  },
+);
+paymentAttemptSchema.index(
+  { tenantId: 1, orderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: { $in: ["PENDING", "INITIATED"] },
+    },
+  },
+);
+paymentAttemptSchema.index(
+  { tenantId: 1, providerOrderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { providerOrderId: { $type: "string", $gt: "" } },
+  },
+);
+
+const paymentAttemptEventSchema = new mongoose.Schema(
+  {
+    _id: stringId("epayev"),
+    tenantId: tenantField,
+    orderId: { type: String, required: true, index: true },
+    paymentAttemptId: { type: String, required: true, index: true },
+    webhookEventId: String,
+    direction: { type: String, trim: true, maxlength: 16 },
+    outcome: { type: String, trim: true, maxlength: 64 },
+    reason: { type: String, trim: true, maxlength: 500 },
+    payload: mongoose.Schema.Types.Mixed,
+    at: { type: Date, default: Date.now },
+  },
+  baseOptions,
+);
+paymentAttemptEventSchema.index({ tenantId: 1, paymentAttemptId: 1, at: 1 });
+
+const paymentExceptionRefundSchema = new mongoose.Schema(
+  {
+    _id: stringId("epayref"),
+    tenantId: tenantField,
+    orderId: { type: String, required: true, index: true },
+    paymentAttemptId: { type: String, required: true },
+    amountPaise: integerField({ min: 1 }),
+    currency: { type: String, default: "INR", maxlength: 3 },
+    providerPaymentId: String,
+    merchantOrderId: String,
+    status: enumField(EcommercePaymentExceptionRefundStatus, {
+      default: EcommercePaymentExceptionRefundStatus.ASSIGNED,
+    }),
+    providerRefundId: String,
+    assignedUserId: String,
+    failureReason: { type: String, trim: true, maxlength: 500 },
+    providerPayload: mongoose.Schema.Types.Mixed,
+    version: versionField,
+  },
+  baseOptions,
+);
+paymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1 }, { unique: true });
+paymentExceptionRefundSchema.index(
+  { tenantId: 1, providerRefundId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { providerRefundId: { $type: "string", $gt: "" } },
+  },
+);
+
+const stockReservationSchema = new mongoose.Schema(
+  {
+    _id: stringId("ersv"),
+    tenantId: tenantField,
+    productId: { type: String, required: true },
+    orderId: String,
+    quoteId: String,
+    quantity: integerField({ min: 1 }),
+    expiresAt: { type: Date, required: true },
+    releasedAt: Date,
+    version: versionField,
+  },
+  baseOptions,
+);
+stockReservationSchema.index({ tenantId: 1, productId: 1, releasedAt: 1, expiresAt: 1 });
+
+const checkoutTaxComponentLineSchema = new mongoose.Schema(
+  {
+    componentKey: { type: String, required: true, trim: true, maxlength: 32 },
+    label: { type: String, required: true, trim: true, maxlength: 120 },
+    rateBps: integerField({ min: 0, max: 10_000 }),
+  },
+  { _id: false },
+);
+
+const checkoutTaxComponentRuleSchema = new mongoose.Schema(
+  {
+    supplyCase: enumField(EcommerceTaxSupplyCase, { required: true }),
+    componentLines: { type: [checkoutTaxComponentLineSchema], default: [] },
+  },
+  { _id: false },
+);
+
+const checkoutTaxConfigSchema = new mongoose.Schema(
+  {
+    presentation: enumField(EcommerceCheckoutTaxPresentation, {
+      default: EcommerceCheckoutTaxPresentation.UNCONFIGURED,
+    }),
+    sellerLegalName: { type: String, trim: true, maxlength: 200, default: "" },
+    sellerGstin: { type: String, trim: true, maxlength: 15, default: "" },
+    registeredState: { type: String, trim: true, maxlength: 80, default: "" },
+    defaultPlaceOfSupplyState: { type: String, trim: true, maxlength: 80, default: "" },
+    defaultItemTaxClassification: { type: String, trim: true, maxlength: 64, default: "" },
+    accountantSignOffReference: { type: String, trim: true, maxlength: 120, default: "" },
+    accountantApprovedAt: Date,
+    componentLines: { type: [checkoutTaxComponentLineSchema], default: [] },
+    componentRules: { type: [checkoutTaxComponentRuleSchema], default: [] },
+    supportedDestinationStates: { type: [String], default: [] },
+  },
+  { _id: false },
+);
+
+const fulfilmentSettingsSchema = new mongoose.Schema(
+  {
+    _id: stringId("eful"),
+    tenantId: { type: String, required: true },
+    pickupEnabled: { type: Boolean, default: false },
+    pickupBranchIds: { type: [String], default: [] },
+    deliveryEnabled: { type: Boolean, default: false },
+    deliveryChargePaise: optionalIntegerField({ min: 0 }),
+    serviceablePincodes: { type: [String], default: [] },
+    maxCartLines: integerField({ min: 1, default: 50 }),
+    maxQuantityPerLine: integerField({ min: 1, default: 99 }),
+    pendingPaymentWindowMinutes: integerField({ min: 5, max: 120, default: 30 }),
+    checkoutTaxConfig: { type: checkoutTaxConfigSchema, default: () => ({}) },
+    version: versionField,
+  },
+  baseOptions,
+);
+fulfilmentSettingsSchema.index({ tenantId: 1 }, { unique: true });
+
+const inventoryAdjustmentSchema = new mongoose.Schema(
+  {
+    _id: stringId("einvadj"),
+    tenantId: tenantField,
+    productId: { type: String, required: true, index: true },
+    inventoryId: { type: String, required: true },
+    deltaQuantity: integerField({ required: true }),
+    quantityOnHandBefore: integerField({ min: 0 }),
+    quantityOnHandAfter: integerField({ min: 0 }),
+    reason: { type: String, trim: true, maxlength: 500, default: "" },
+    actorUserId: String,
+  },
+  baseOptions,
+);
+inventoryAdjustmentSchema.index({ tenantId: 1, productId: 1, createdAt: -1 });
+
+export const EcommerceCustomerAddress = mongoose.model(
+  "EcommerceCustomerAddress",
+  addressSchema,
+);
+export const EcommerceCart = mongoose.model("EcommerceCart", cartSchema);
+export const EcommerceInventory = mongoose.model("EcommerceInventory", inventorySchema);
+export const EcommercePriceQuote = mongoose.model("EcommercePriceQuote", quoteSchema);
+export const EcommerceOrder = mongoose.model("EcommerceOrder", orderSchema);
+export const EcommerceOrderEvent = mongoose.model("EcommerceOrderEvent", orderEventSchema);
+export const EcommercePaymentAttempt = mongoose.model(
+  "EcommercePaymentAttempt",
+  paymentAttemptSchema,
+);
+export const EcommercePaymentAttemptEvent = mongoose.model(
+  "EcommercePaymentAttemptEvent",
+  paymentAttemptEventSchema,
+);
+export const EcommercePaymentExceptionRefund = mongoose.model(
+  "EcommercePaymentExceptionRefund",
+  paymentExceptionRefundSchema,
+);
+export const EcommerceStockReservation = mongoose.model(
+  "EcommerceStockReservation",
+  stockReservationSchema,
+);
+export const EcommerceFulfilmentSettings = mongoose.model(
+  "EcommerceFulfilmentSettings",
+  fulfilmentSettingsSchema,
+);
+export const EcommerceInventoryAdjustment = mongoose.model(
+  "EcommerceInventoryAdjustment",
+  inventoryAdjustmentSchema,
+);

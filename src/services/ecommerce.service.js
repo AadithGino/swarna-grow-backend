@@ -17,6 +17,10 @@ import {
   presentEcommerceAccessState,
 } from "../lib/ecommerce-access.js";
 import { computeProductPriceEstimate } from "../lib/ecommerce-pricing.js";
+import {
+  loadInventoryAvailability,
+  mapPublicAvailability,
+} from "../lib/ecommerce-inventory.js";
 import { normalizeEcommerceSlug } from "../lib/ecommerce-slug.js";
 import { createId } from "../lib/ids.js";
 import { moneyRef } from "../lib/money.js";
@@ -33,7 +37,7 @@ function enforceVersion(doc, expectedVersion) {
   }
 }
 
-async function loadTaxSettings(tenantId) {
+export async function loadTaxSettings(tenantId) {
   return EcommerceTaxSettings.findOne({ tenantId }).lean();
 }
 
@@ -228,6 +232,7 @@ function mapTaxSettingsRow(row) {
   return {
     defaultClassification: row.defaultClassification ?? null,
     rates: row.rates ?? [],
+    hsnSacMappings: row.hsnSacMappings ?? [],
     version: row.version ?? 1,
     updatedAt: row.updatedAt ?? null,
   };
@@ -701,6 +706,7 @@ export async function getTaxSettings(req) {
   return {
     defaultClassification: row.defaultClassification ?? null,
     rates: row.rates ?? [],
+    hsnSacMappings: row.hsnSacMappings ?? [],
     version: row.version ?? 1,
     updatedAt: row.updatedAt ?? null,
   };
@@ -729,6 +735,13 @@ export async function putTaxSettings(req) {
       if (defaultClassification !== undefined) {
         row.defaultClassification = defaultClassification;
       }
+      if (req.body.hsnSacMappings) {
+        row.hsnSacMappings = req.body.hsnSacMappings.map((m) => ({
+          classification: String(m.classification).trim(),
+          hsnSacCode: String(m.hsnSacCode).trim().toUpperCase(),
+          hsnSacType: m.hsnSacType,
+        }));
+      }
       row.updatedBy = req.auth.id;
       row.version += 1;
       await row.save({ session });
@@ -749,6 +762,11 @@ export async function putTaxSettings(req) {
               tenantId: req.auth.tenantId,
               defaultClassification: defaultClassification ?? null,
               rates,
+              hsnSacMappings: (req.body.hsnSacMappings ?? []).map((m) => ({
+                classification: String(m.classification).trim(),
+                hsnSacCode: String(m.hsnSacCode).trim().toUpperCase(),
+                hsnSacType: m.hsnSacType,
+              })),
               updatedBy: req.auth.id,
             },
           ],
@@ -789,8 +807,7 @@ export async function shopListCategories(req) {
 export async function shopListProducts(req) {
   assertEcommerceOperational(req.tenant);
   const activeCategories = await activeCategoryIdsForTenant(req.auth.tenantId);
-  const filter = {
-    status: EcommerceProductStatus.PUBLISHED,
+  const storefrontVisibility = {
     $or: [
       { categoryId: null },
       { categoryId: { $exists: false } },
@@ -798,12 +815,16 @@ export async function shopListProducts(req) {
       { categoryId: { $in: activeCategories } },
     ],
   };
+  const filter = {
+    status: EcommerceProductStatus.PUBLISHED,
+    $and: [storefrontVisibility],
+  };
   if (req.query.categoryId) {
     if (!activeCategories.includes(req.query.categoryId)) {
       return { items: [], meta: { hasMore: false, nextCursor: null } };
     }
     filter.categoryId = req.query.categoryId;
-    delete filter.$or;
+    delete filter.$and;
   }
   if (req.query.featured === "true") filter.featured = true;
   const result = await paginate(EcommerceProduct, {
@@ -820,14 +841,17 @@ export async function shopListProducts(req) {
       row.priceMode === EcommercePriceMode.GOLD_RATE_BASED
         ? await latestRateForPurity(req.auth.tenantId, row.purity)
         : null;
-    items.push(
-      mapProduct(row, {
-        includePricing: true,
-        tenant: req.tenant,
-        rateRow,
-        taxSettings,
-      }),
-    );
+    const mapped = mapProduct(row, {
+      includePricing: true,
+      tenant: req.tenant,
+      rateRow,
+      taxSettings,
+    });
+    const availability = await loadInventoryAvailability(req.auth.tenantId, row._id);
+    items.push({
+      ...mapped,
+      availability: mapPublicAvailability(availability),
+    });
   }
   return { items, meta: result.meta };
 }
@@ -849,10 +873,15 @@ export async function shopGetProduct(req) {
     row.priceMode === EcommercePriceMode.GOLD_RATE_BASED
       ? await latestRateForPurity(req.auth.tenantId, row.purity)
       : null;
-  return mapProduct(row, {
+  const mapped = mapProduct(row, {
     includePricing: true,
     tenant: req.tenant,
     rateRow,
     taxSettings,
   });
+  const availability = await loadInventoryAvailability(req.auth.tenantId, row._id);
+  return {
+    ...mapped,
+    availability: mapPublicAvailability(availability),
+  };
 }

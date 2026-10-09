@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import {
   EcommerceGoldPurity,
+  EcommerceHsnSacType,
   EcommerceMakingChargeMode,
   EcommerceOfferType,
   EcommercePriceMode,
@@ -95,6 +96,8 @@ const productSchema = new mongoose.Schema(
     fixedPricing: fixedPricingSchema,
     offer: offerSchema,
     taxClassification: { type: String, trim: true, maxlength: 64 },
+    hsnSacCode: { type: String, trim: true, maxlength: 8 },
+    hsnSacType: enumField(EcommerceHsnSacType),
     version: versionField,
   },
   baseOptions,
@@ -136,12 +139,22 @@ const taxRateLineSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const hsnSacMappingSchema = new mongoose.Schema(
+  {
+    classification: { type: String, required: true, trim: true, maxlength: 64 },
+    hsnSacCode: { type: String, required: true, trim: true, maxlength: 8 },
+    hsnSacType: enumField(EcommerceHsnSacType, { required: true }),
+  },
+  { _id: false },
+);
+
 const taxSettingsSchema = new mongoose.Schema(
   {
     _id: stringId("etax"),
     tenantId: { type: String, required: true },
     defaultClassification: { type: String, trim: true, maxlength: 64 },
     rates: { type: [taxRateLineSchema], default: [] },
+    hsnSacMappings: { type: [hsnSacMappingSchema], default: [] },
     version: versionField,
     updatedBy: String,
   },

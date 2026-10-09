@@ -265,6 +265,8 @@ export const AuditEntityType = makeEnum(
   "ECOMMERCE_PRODUCT",
   "ECOMMERCE_GOLD_RATE",
   "ECOMMERCE_TAX_SETTINGS",
+  "ECOMMERCE_INVENTORY",
+  "ECOMMERCE_FULFILMENT_SETTINGS",
 );
 export const EcommerceProductStatus = makeEnum("DRAFT", "PUBLISHED", "ARCHIVED");
 export const EcommercePriceMode = makeEnum("FIXED", "GOLD_RATE_BASED");
@@ -275,6 +277,86 @@ export const EcommerceMakingChargeMode = makeEnum(
   "PERCENT_OF_GOLD",
 );
 export const EcommerceOfferType = makeEnum("FIXED_PAISE_OFF", "PERCENT_OFF");
+/** Inventory: tracked SKU quantity vs made-to-order (no stock field). */
+export const EcommerceStockPolicy = makeEnum("QUANTITY_TRACKED", "MADE_TO_ORDER");
+/** Accountant-entered component lines; platform does not infer CGST/SGST/IGST. */
+export const EcommerceCheckoutTaxPresentation = makeEnum(
+  "UNCONFIGURED",
+  "SINGLE_ESTIMATE_ONLY",
+  "ACCOUNTANT_COMPONENT_APPROVED",
+);
+export const EcommerceFulfilmentMode = makeEnum("BRANCH_PICKUP", "DELIVERY");
+export const EcommerceQuoteStatus = makeEnum(
+  "ACTIVE",
+  "EXPIRED",
+  "CONSUMED",
+  "CANCELLED",
+);
+export const EcommerceOrderStatus = makeEnum(
+  "PENDING_PAYMENT",
+  "PAYMENT_EXPIRED",
+  "PAYMENT_FAILED",
+  "PAID",
+  "PROCESSING",
+  "READY_FOR_PICKUP",
+  "SHIPPED",
+  "DELIVERED",
+  "CANCELLED",
+  "REFUND_PENDING",
+  "REFUNDED",
+);
+export const EcommerceStockReleaseReason = makeEnum(
+  "CUSTOMER_CANCEL",
+  "PAYMENT_WINDOW_EXPIRED",
+  "ORDER_SUPERSEDED",
+);
+export const EcommerceTaxSupplyCase = makeEnum("INTRA_STATE", "INTER_STATE");
+export const EcommerceHsnSacType = makeEnum("HSN", "SAC");
+export const EcommerceOrderEventType = makeEnum(
+  "ORDER_CREATED",
+  "QUOTE_ATTACHED",
+  "PAYMENT_INITIATED",
+  "PAYMENT_SUCCEEDED",
+  "PAYMENT_FAILED",
+  "PAYMENT_TIMEOUT",
+  "PAYMENT_EXPIRED",
+  "STOCK_RESERVED",
+  "STOCK_RELEASED",
+  "FULFILMENT_UPDATED",
+  "CANCELLED",
+  "REFUND_INITIATED",
+  "REFUND_CONFIRMED",
+  "REFUND_FAILED",
+  "PAYMENT_LATE_SUCCESS_EXCEPTION",
+  "PAYMENT_DUPLICATE_SUCCESS_EXCEPTION",
+  "PAYMENT_RECONCILED",
+);
+export const EcommercePaymentAttemptStatus = makeEnum(
+  "PENDING",
+  "INITIATED",
+  "SUCCEEDED",
+  "FAILED",
+  "EXPIRED",
+  "CANCELLED",
+);
+export const EcommercePaymentAttemptOperationalStatus = makeEnum(
+  "NORMAL",
+  "AWAITING_PROVIDER",
+  "INITIATION_UNCERTAIN",
+  "STUCK_RECONCILE",
+);
+export const EcommerceOrderPaymentExceptionStatus = makeEnum(
+  "LATE_SUCCESS_REFUND_REQUIRED",
+  "DUPLICATE_PAYMENT_REFUND_REQUIRED",
+);
+export const EcommercePaymentExceptionRefundStatus = makeEnum(
+  "ASSIGNED",
+  "INITIATED",
+  "PROVIDER_PENDING",
+  "SUCCEEDED",
+  "FAILED",
+  "MANUAL_RECORDED",
+);
 export const PhaseMode = makeEnum("SINGLE", "FLEXIBLE_THEN_CAPPED");
 export const CapMode = makeEnum("NONE", "FLEXIBLE_PHASE_AVERAGE");
 export const CarryForwardMode = makeEnum("NONE");

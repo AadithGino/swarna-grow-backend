@@ -122,6 +122,7 @@ test("customer can download staff-attached published product image", async () =>
   });
   const download = await getUploadDownload({
     auth: { tenantId: tenant._id, id: customer._id, type: UserType.CUSTOMER },
+    tenant: entitledTenant(tenant),
     params: { uploadId },
     query: {},
   });
@@ -145,6 +146,52 @@ test("customer cannot download other tenant catalog image", async () => {
         query: {},
       }),
     (err) => err.statusCode === 403 || err.statusCode === 404,
+  );
+});
+
+test("customer catalog image download blocked when store switch is off", async () => {
+  const { tenant, user } = await seedTenantUser({ tenantCode: "IMG4" });
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: user.branchId });
+  const base = staffReq(tenant, user);
+  await ecommerce.putTaxSettings({
+    ...base,
+    body: {
+      rates: [{ code: "GST_3", rateBps: 300, active: true }],
+      defaultClassification: "GST_3",
+    },
+  });
+  const uploadId = await seedPngUpload({
+    tenantId: tenant._id,
+    ownerId: user._id,
+    purpose: UploadPurpose.ECOMMERCE_PRODUCT_IMAGE,
+  });
+  const product = await ecommerce.createProduct({
+    ...base,
+    body: {
+      name: "Earring",
+      priceMode: EcommercePriceMode.FIXED,
+      fixedPricing: { basePricePaise: 20_000 },
+      taxClassification: "GST_3",
+      imageUploadIds: [uploadId],
+    },
+  });
+  await ecommerce.publishProduct({
+    ...base,
+    params: { productId: product.id },
+    body: { expectedVersion: 1 },
+  });
+  await assert.rejects(
+    () =>
+      getUploadDownload({
+        auth: { tenantId: tenant._id, id: customer._id, type: UserType.CUSTOMER },
+        tenant: {
+          ...entitledTenant(tenant),
+          operations: { ecommerceEnabled: false },
+        },
+        params: { uploadId },
+        query: {},
+      }),
+    (err) => err.statusCode === 403,
   );
 });
 

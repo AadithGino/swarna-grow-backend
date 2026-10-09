@@ -22,6 +22,7 @@ import {
   User,
 } from "../models/index.js";
 import { buildBrandingPreviewUrls } from "../lib/branding-preview.js";
+import { attachSubscriptionCatalogPlan } from "../lib/subscription-plan-for-tenant.js";
 import { planPriceForBillingCycle } from "../lib/subscription-provision.js";
 import { resolvePlanFeatureBooleans } from "../lib/feature-entitlements.js";
 import {
@@ -115,7 +116,7 @@ function daysUntil(date) {
 async function loadTenant(tenantId) {
   const tenant = await Tenant.findById(tenantId).select("-integrationSecrets").lean();
   if (!tenant) throw errors.notFound("Tenant");
-  return tenant;
+  return attachSubscriptionCatalogPlan(tenant);
 }
 
 async function loadTenantOwner(tenantId) {
@@ -705,7 +706,11 @@ export async function patchSettingsOperations(req) {
       ]);
     }
     if (patch.ecommerceEnabled === true) {
-      assertCanEnableEcommerceStore(tenant.toObject());
+      const tenantForEntitlement =
+        req.tenant && String(req.tenant._id) === String(tenant._id)
+          ? req.tenant
+          : await attachSubscriptionCatalogPlan(tenant.toObject());
+      assertCanEnableEcommerceStore(tenantForEntitlement);
     }
 
     tenant.operations = {
@@ -738,6 +743,6 @@ export async function patchSettingsOperations(req) {
       after: tenant.toObject(),
       session,
     });
-    return presentOperations(tenant.toObject());
+    return presentOperations(await attachSubscriptionCatalogPlan(tenant.toObject()));
   });
 }

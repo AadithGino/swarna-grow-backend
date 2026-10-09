@@ -348,6 +348,27 @@ export const phonePeProvider = {
   },
 
   verifyCallback(rawBody, authorizationHeader, credentials, tenantId) {
+    const raw = Buffer.isBuffer(rawBody) ? rawBody.toString() : String(rawBody ?? "");
+    if (env.PROVIDER_MODE === "mock") {
+      if (!credentials.webhookUsername || !credentials.webhookPassword) {
+        throw new AppError(
+          "WEBHOOK_CREDENTIALS_MISSING",
+          "PhonePe webhook username and password are not configured.",
+          422,
+        );
+      }
+      const expected = `Basic ${Buffer.from(
+        `${credentials.webhookUsername}:${credentials.webhookPassword}`,
+      ).toString("base64")}`;
+      if (String(authorizationHeader ?? "").trim() !== expected) {
+        throw new AppError("WEBHOOK_SIGNATURE_INVALID", "Invalid webhook signature.", 401);
+      }
+      try {
+        return JSON.parse(raw);
+      } catch {
+        throw new AppError("WEBHOOK_PAYLOAD_INVALID", "Invalid webhook payload.", 400);
+      }
+    }
     assertLiveCredentials(credentials);
     if (!credentials.webhookUsername || !credentials.webhookPassword) {
       throw new AppError(
@@ -357,7 +378,6 @@ export const phonePeProvider = {
       );
     }
     const client = getClientFor(credentials, tenantId);
-    const raw = Buffer.isBuffer(rawBody) ? rawBody.toString() : String(rawBody ?? "");
     return client.validateCallback(
       credentials.webhookUsername,
       credentials.webhookPassword,

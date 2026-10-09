@@ -13,6 +13,13 @@ import {
   ecommerceProductPatchBody,
   ecommerceTaxSettingsBody,
   ecommerceVersionBody,
+  ecommerceInventoryPatchBody,
+  ecommerceInventoryAdjustBody,
+  ecommerceFulfilmentSettingsPutBody,
+  ecommerceOrderFulfilmentTransitionBody,
+  ecommercePaymentExceptionRefundManualBody,
+  ecommercePaymentOperationalAckBody,
+  ecommercePaymentReconcileRetryBody,
 } from "../validators/ecommerce.validators.js";
 
 export const adminEcommerceRouter = Router();
@@ -129,5 +136,113 @@ adminEcommerceRouter.put(
     Permission.ECOMMERCE_WRITE,
     validate({ body: ecommerceTaxSettingsBody }),
     asyncHandler(controller.putTaxSettings),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/inventory",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listInventory)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/inventory/:productId",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getInventoryProduct)),
+);
+adminEcommerceRouter.patch(
+  "/ecommerce/inventory/:productId",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceInventoryPatchBody }),
+    asyncHandler(controller.patchInventoryProduct),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/inventory/:productId/adjust",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceInventoryAdjustBody }),
+    idempotent,
+    asyncHandler(controller.adjustInventoryProduct),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/fulfilment-settings",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getFulfilmentSettings)),
+);
+adminEcommerceRouter.put(
+  "/ecommerce/fulfilment-settings",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceFulfilmentSettingsPutBody }),
+    asyncHandler(controller.putFulfilmentSettings),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/payment-exceptions",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listPaymentExceptions)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/orders",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listOrders)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/orders/:orderId",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getOrder)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/orders/:orderId/payment-attempts",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listOrderPaymentAttempts)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/orders/:orderId/payment-attempt-events",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listOrderPaymentAttemptEvents)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/orders/:orderId/payment-exception-refund",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getOrderPaymentExceptionRefund)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/payment-exception-refund/initiate",
+  ...guarded(
+    Permission.ECOMMERCE_REFUND_OPERATE,
+    asyncHandler(controller.initiateOrderPaymentExceptionRefund),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/payment-exception-refund/record-manual",
+  ...guarded(
+    Permission.ECOMMERCE_REFUND_OPERATE,
+    validate({ body: ecommercePaymentExceptionRefundManualBody }),
+    asyncHandler(controller.recordOrderPaymentExceptionRefundManual),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/fulfilment-transition",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceOrderFulfilmentTransitionBody }),
+    asyncHandler(controller.transitionOrderFulfilment),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/orders/:orderId/events",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listOrderEvents)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/orders/:orderId/payment-attempts/:paymentAttemptId/provider-status",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getOrderPaymentAttemptProviderStatus)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/payment-attempts/:paymentAttemptId/reconcile-retry",
+  ...guarded(
+    Permission.ECOMMERCE_PAYMENT_OPERATE,
+    validate({ body: ecommercePaymentReconcileRetryBody }),
+    asyncHandler(controller.retryOrderPaymentAttemptReconcile),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/payment-attempts/:paymentAttemptId/operational-ack",
+  ...guarded(
+    Permission.ECOMMERCE_PAYMENT_OPERATE,
+    validate({ body: ecommercePaymentOperationalAckBody }),
+    asyncHandler(controller.acknowledgeOrderPaymentAttemptOperational),
   ),
 );

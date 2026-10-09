@@ -18,11 +18,21 @@ try {
     { _id: "splan_pro", tier: PlanTier.PRO, name: "Pro", sortOrder: 3, monthlyPricePaise: 800000, pricePaise: 800000, yearlyPricePaise: 8640000, trialDays: 14, limits: limitsFromApi({ activeCustomers: 3000, branches: 5, staffSeats: 30, schemePlans: 25, whatsappMessagesPerMonth: 20000 }) },
     { _id: "splan_custom", tier: PlanTier.CUSTOM, name: "Custom", sortOrder: 4, priceLabel: "Contact Us", trialDays: 0, limits: limitsFromApi({ activeCustomers: null, branches: null, staffSeats: null, schemePlans: null, whatsappMessagesPerMonth: null }) },
   ];
+  /** Growth/Pro include ecommerce in local demo seeds (Starter stays off). */
+  function seedSubscriptionPlanFeatures(tier) {
+    const features = { ...DEFAULT_PLAN_FEATURES[tier] };
+    if (tier === PlanTier.GROWTH || tier === PlanTier.PRO) {
+      features.ecommerce = true;
+      features.ecommercePayments = true;
+    }
+    return features;
+  }
+
   for (const plan of plans) {
     const payload = {
       ...plan,
       billingCycle: BillingCycle.MONTHLY,
-      features: DEFAULT_PLAN_FEATURES[plan.tier],
+      features: seedSubscriptionPlanFeatures(plan.tier),
       active: true,
     };
     const byId = await SubscriptionPlan.findById(plan._id).lean();

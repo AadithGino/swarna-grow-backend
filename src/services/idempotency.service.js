@@ -6,6 +6,10 @@ import { createId } from "../lib/ids.js";
 const LEASE_MS = 5 * 60_000;
 const stable = (value) => { if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`; if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`; return JSON.stringify(value); };
 
+export function hashIdempotencyBody(body) {
+  return sha256(stable(body ?? {}));
+}
+
 /** Legacy enrol responses stored 422 PAYMENT_INIT_FAILED; allow retry after provider-init fix. */
 function isRepairablePaymentInitFailedRecord(record) {
   return record?.state === "COMPLETED"

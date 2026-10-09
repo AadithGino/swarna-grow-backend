@@ -33,6 +33,7 @@ import { limitsFromApi, limitsToApi, normalizePlanFeatures } from "../constants/
 import { normalizeFeatureFlags } from "../constants/platform-feature-flags.js";
 import {
   effectivePlatformFlags,
+  planFeaturesSnapshotFromPlan,
   resolvePlanFeatureBooleans,
 } from "../lib/feature-entitlements.js";
 import {
@@ -139,6 +140,24 @@ export async function updateSubscriptionPlan(id, body, req) {
     { new: true },
   ).lean();
   if (!row) throw errors.conflict("VERSION_CONFLICT", "Subscription plan not found or changed. Refresh and try again.");
+  if (patch.features != null) {
+    const snapshot = planFeaturesSnapshotFromPlan(row);
+    const enabledFeatures = Object.entries(snapshot)
+      .filter(([, on]) => on)
+      .map(([key]) => key);
+    await Tenant.updateMany(
+      {
+        "subscription.tier": row.tier,
+        status: { $in: [TenantStatus.ACTIVE, TenantStatus.PENDING_SETUP] },
+      },
+      {
+        $set: {
+          "subscription.planFeaturesSnapshot": snapshot,
+          "subscription.features": enabledFeatures,
+        },
+      },
+    );
+  }
   if (req) {
     await auditPlatformMutation({
       req,

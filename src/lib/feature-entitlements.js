@@ -6,6 +6,7 @@ import {
   PLATFORM_FEATURE_FLAG_KEYS,
 } from "../constants/platform-feature-flags.js";
 import { DEFAULT_PLAN_FEATURES, normalizePlanFeatures } from "../constants/plan-features.js";
+import { subscriptionCatalogPlanFromTenant } from "./subscription-plan-for-tenant.js";
 
 const PLAN_FEATURE_KEYS = new Set(
   Object.keys(DEFAULT_PLAN_FEATURES[PlanTier.STARTER]),
@@ -22,9 +23,19 @@ export const PLATFORM_PASSBOOK_TO_PLAN = Object.freeze({
   passbookImageOnPayment: "advancedReports",
 });
 
-export function resolvePlanFeatureBooleans(tenant) {
+function planFeatureBase(tenant) {
   const tier = tenant?.subscription?.tier ?? PlanTier.STARTER;
-  const base = normalizePlanFeatures(null, tier);
+  const tierDefaults = normalizePlanFeatures(null, tier);
+  const catalogPlan = subscriptionCatalogPlanFromTenant(tenant);
+  if (!catalogPlan) return tierDefaults;
+  return {
+    ...tierDefaults,
+    ...normalizePlanFeatures(catalogPlan.features, tier),
+  };
+}
+
+export function resolvePlanFeatureBooleans(tenant) {
+  const base = planFeatureBase(tenant);
   const snapshot = tenant?.subscription?.planFeaturesSnapshot;
   if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
     const merged = { ...base, ...snapshot };

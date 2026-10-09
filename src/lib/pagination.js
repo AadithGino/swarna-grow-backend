@@ -6,7 +6,20 @@ export async function paginate(model, { scope = {}, filters = {}, cursor, limit 
   const [field, direction = "desc"] = sort.split(":");
   if (!/^[A-Za-z][A-Za-z0-9_.]*$/.test(field) || !["asc", "desc"].includes(direction)) throw new AppError("SORT_INVALID", "The requested sort is invalid.", 400);
   const parsed = parseCursor(cursor, { sort, filters });
-  const query = { ...scope, ...filters, ...cursorQuery(parsed, field, direction) };
+  const cursorCond = cursorQuery(parsed, field, direction);
+  const query = { ...scope, ...filters };
+  if (cursorCond.$or) {
+    if (query.$or) {
+      const filterOr = query.$or;
+      delete query.$or;
+      const existingAnd = query.$and
+        ? (Array.isArray(query.$and) ? query.$and : [query.$and])
+        : [];
+      query.$and = [...existingAnd, { $or: filterOr }, cursorCond];
+    } else {
+      Object.assign(query, cursorCond);
+    }
+  }
   let operation = model.find(query, projection).sort({ [field]: direction === "desc" ? -1 : 1, _id: direction === "desc" ? -1 : 1 }).limit(safeLimit + 1).lean();
   for (const path of populate) operation = operation.populate(path);
   const rows = await operation;
