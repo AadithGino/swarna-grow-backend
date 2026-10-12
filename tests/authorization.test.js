@@ -28,7 +28,7 @@ const MATRIX = [
   [Permission.AUDIT_READ, "get", "/api/v1/admin/audit-events"],
   [Permission.CASH_HANDOVER_ACCEPT, "post", `/api/v1/admin/cash/handovers/${createId("handover")}/accept`],
   [Permission.SETTINGS_WRITE, "post", "/api/v1/admin/uploads/presign", { purpose: "KYC_DOCUMENT", fileName: "a.jpg", contentType: "image/jpeg", sizeBytes: 1000 }],
-  [Permission.REPORT_READ, "get", "/api/v1/admin/customers/analytics"],
+  [Permission.REPORT_READ, "get", "/api/v1/admin/dashboard/summary"],
   [Permission.PAYMENT_RECORD, "post", "/api/v1/admin/payments", { schemeId: createId("scheme"), amountPaise: 10000, mode: "CASH" }],
   [Permission.BRANCH_WRITE, "post", "/api/v1/admin/branches", { code: "X1", name: "Extra" }],
 ];

@@ -1,7 +1,9 @@
 import mongoose from "mongoose";
 import {
   EcommerceCheckoutTaxPresentation,
+  EcommerceCodCollectionStatus,
   EcommerceFulfilmentMode,
+  EcommercePaymentMethod,
   EcommerceOrderEventType,
   EcommerceOrderPaymentExceptionStatus,
   EcommerceOrderStatus,
@@ -10,8 +12,17 @@ import {
   EcommercePaymentAttemptStatus,
   EcommercePaymentAttemptOperationalStatus,
   EcommercePaymentExceptionRefundStatus,
+  EcommerceOrderRefundSource,
+  EcommerceOrderCancellationRequestStatus,
+  EcommerceOrderCancellationKind,
+  EcommerceCancellationStockDisposition,
+  EcommerceOrderReturnKind,
+  EcommerceOrderReturnRequestStatus,
   EcommerceQuoteStatus,
   EcommerceStockPolicy,
+  EcommerceCodCustodyStatus,
+  EcommerceCodCustodySettlementMethod,
+  EcommerceFulfilmentHandoverMethod,
 } from "../constants/enums.js";
 import {
   baseOptions,
@@ -110,6 +121,10 @@ const quoteSchema = new mongoose.Schema(
     taxPaise: integerField({ min: 0, default: 0 }),
     totalPaise: integerField({ min: 0, default: 0 }),
     taxConfigVersion: Number,
+    paymentMethod: enumField(EcommercePaymentMethod, {
+      default: EcommercePaymentMethod.ONLINE,
+    }),
+    codPincodeSnapshot: { type: String, trim: true, maxlength: 12 },
     expiresAt: { type: Date, required: true },
     idempotencyKey: { type: String, trim: true, maxlength: 80 },
     creationBodyHash: { type: String, trim: true, maxlength: 64 },
@@ -125,6 +140,36 @@ quoteSchema.index(
     unique: true,
     partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
   },
+);
+
+const orderStockConsumptionEvidenceSchema = new mongoose.Schema(
+  {
+    productId: { type: String, required: true },
+    quantityDeducted: optionalIntegerField({ min: 0, default: 0 }),
+    inventoryId: String,
+    stockPolicyAtConsumption: enumField(EcommerceStockPolicy),
+    consumedAt: Date,
+  },
+  { _id: false },
+);
+
+const orderDeliveryTrackingSchema = new mongoose.Schema(
+  {
+    carrierName: { type: String, trim: true, maxlength: 120, default: "" },
+    trackingNumber: { type: String, trim: true, maxlength: 80, default: "" },
+    trackingUrl: { type: String, trim: true, maxlength: 500, default: "" },
+    dispatchedAt: Date,
+    deliveredAt: Date,
+  },
+  { _id: false },
+);
+
+const orderStorePolicySnapshotSchema = new mongoose.Schema(
+  {
+    version: Number,
+    publishedAt: Date,
+  },
+  { _id: false },
 );
 
 const orderLineSnapshotSchema = new mongoose.Schema(
@@ -166,16 +211,60 @@ const orderSchema = new mongoose.Schema(
     expiresAt: Date,
     stockReleaseReason: enumField(EcommerceStockReleaseReason),
     stockReleasedAt: Date,
+    stockConsumedAt: Date,
+    stockConsumptionEvidence: { type: [orderStockConsumptionEvidenceSchema], default: [] },
+    stockRestockedAt: Date,
+    stockExceptionRecordedAt: Date,
+    stockRestockIdempotencyKey: { type: String, trim: true, maxlength: 80 },
     paidAt: Date,
     successfulPaymentAttemptId: String,
     paymentExceptionStatus: enumField(EcommerceOrderPaymentExceptionStatus),
     paymentExceptionPayload: mongoose.Schema.Types.Mixed,
+    paymentMethod: enumField(EcommercePaymentMethod, {
+      default: EcommercePaymentMethod.ONLINE,
+    }),
+    codPincodeSnapshot: { type: String, trim: true, maxlength: 12 },
+    codCollection: {
+      status: enumField(EcommerceCodCollectionStatus, {
+        default: EcommerceCodCollectionStatus.PENDING,
+      }),
+      amountPaise: optionalIntegerField({ min: 0 }),
+      collectedAt: Date,
+      collectorUserId: String,
+      reference: { type: String, trim: true, maxlength: 120 },
+      collectionIdempotencyKey: { type: String, trim: true, maxlength: 80 },
+    },
+    codCustody: {
+      status: enumField(EcommerceCodCustodyStatus, {
+        default: EcommerceCodCustodyStatus.NONE,
+      }),
+      holderUserId: String,
+      pendingHandoverId: String,
+      settledAt: Date,
+      settlementMethod: enumField(EcommerceCodCustodySettlementMethod),
+      settlementReference: { type: String, trim: true, maxlength: 160 },
+      exceptionNote: { type: String, trim: true, maxlength: 500 },
+    },
+    fulfilmentHandover: {
+      method: enumField(EcommerceFulfilmentHandoverMethod),
+      recipientName: { type: String, trim: true, maxlength: 120 },
+      recordedAt: Date,
+      recordedByUserId: String,
+      deliveryProofReference: { type: String, trim: true, maxlength: 160 },
+      pickupCodeHash: { type: String, trim: true, maxlength: 128 },
+      pickupCodeExpiresAt: Date,
+      pickupVerifiedAt: Date,
+    },
+    activeCancellationRequestId: String,
+    deliveryTracking: { type: orderDeliveryTrackingSchema, default: () => ({}) },
+    storePolicySnapshot: { type: orderStorePolicySnapshotSchema, default: () => ({}) },
     version: versionField,
   },
   baseOptions,
 );
 orderSchema.index({ tenantId: 1, orderNumber: 1 }, { unique: true });
 orderSchema.index({ tenantId: 1, customerId: 1, createdAt: -1 });
+orderSchema.index({ tenantId: 1, createdAt: -1, _id: -1 });
 orderSchema.index({ status: 1, expiresAt: 1 });
 orderSchema.index(
   { tenantId: 1, customerId: 1, idempotencyKey: 1 },
@@ -303,6 +392,11 @@ const paymentExceptionRefundSchema = new mongoose.Schema(
     assignedUserId: String,
     failureReason: { type: String, trim: true, maxlength: 500 },
     providerPayload: mongoose.Schema.Types.Mixed,
+    refundSource: enumField(EcommerceOrderRefundSource, {
+      default: EcommerceOrderRefundSource.PAYMENT_EXCEPTION,
+    }),
+    cancellationRequestId: String,
+    returnRequestId: String,
     version: versionField,
   },
   baseOptions,
@@ -380,6 +474,24 @@ const fulfilmentSettingsSchema = new mongoose.Schema(
     maxCartLines: integerField({ min: 1, default: 50 }),
     maxQuantityPerLine: integerField({ min: 1, default: 99 }),
     pendingPaymentWindowMinutes: integerField({ min: 5, max: 120, default: 30 }),
+    codEnabled: { type: Boolean, default: false },
+    codPincodes: { type: [String], default: [] },
+    codAcceptanceWindowMinutes: integerField({ min: 30, max: 2880, default: 120 }),
+    requireCourierTrackingForShipped: { type: Boolean, default: false },
+    storePolicies: {
+      version: { type: Number, default: 0 },
+      publishedAt: Date,
+      shippingPolicyText: { type: String, trim: true, maxlength: 8000, default: "" },
+      shippingPolicyApprovedAt: Date,
+      returnsPolicyText: { type: String, trim: true, maxlength: 8000, default: "" },
+      returnsPolicyApprovedAt: Date,
+      cancellationPolicyText: { type: String, trim: true, maxlength: 8000, default: "" },
+      cancellationPolicyApprovedAt: Date,
+      refundContactPolicyText: { type: String, trim: true, maxlength: 4000, default: "" },
+      refundContactPolicyApprovedAt: Date,
+      returnEligibilityDays: integerField({ min: 0, max: 365, default: 0 }),
+      returnExcludedCategoryIds: { type: [String], default: [] },
+    },
     checkoutTaxConfig: { type: checkoutTaxConfigSchema, default: () => ({}) },
     version: versionField,
   },
@@ -403,6 +515,173 @@ const inventoryAdjustmentSchema = new mongoose.Schema(
 );
 inventoryAdjustmentSchema.index({ tenantId: 1, productId: 1, createdAt: -1 });
 
+const codManualRefundSchema = new mongoose.Schema(
+  {
+    amountPaise: integerField({ min: 1 }),
+    recipient: { type: String, trim: true, maxlength: 200 },
+    method: { type: String, trim: true, maxlength: 64 },
+    reference: { type: String, trim: true, maxlength: 120 },
+    proofNote: { type: String, trim: true, maxlength: 500 },
+    recordedAt: Date,
+    recordedByUserId: String,
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+  },
+  { _id: false },
+);
+
+const orderCancellationRequestSchema = new mongoose.Schema(
+  {
+    _id: stringId("ecan"),
+    tenantId: tenantField,
+    orderId: { type: String, required: true, index: true },
+    customerId: { type: String, required: true, index: true },
+    kind: enumField(EcommerceOrderCancellationKind, { required: true }),
+    status: enumField(EcommerceOrderCancellationRequestStatus, {
+      default: EcommerceOrderCancellationRequestStatus.PENDING_DECISION,
+    }),
+    reason: { type: String, required: true, trim: true, maxlength: 2000 },
+    decisionReason: { type: String, trim: true, maxlength: 2000 },
+    requesterType: { type: String, trim: true, maxlength: 32 },
+    requesterId: String,
+    decidedAt: Date,
+    decidedByUserId: String,
+    stockDisposition: enumField(EcommerceCancellationStockDisposition),
+    stockDispositionAt: Date,
+    stockDispositionByUserId: String,
+    stockDispositionIdempotencyKey: { type: String, trim: true, maxlength: 80 },
+    onlineRefundId: String,
+    codManualRefund: codManualRefundSchema,
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+    creationBodyHash: { type: String, trim: true, maxlength: 64 },
+    version: versionField,
+  },
+  baseOptions,
+);
+orderCancellationRequestSchema.index({ tenantId: 1, orderId: 1, createdAt: -1 });
+orderCancellationRequestSchema.index(
+  { tenantId: 1, orderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: {
+        $in: [
+          EcommerceOrderCancellationRequestStatus.PENDING_DECISION,
+          EcommerceOrderCancellationRequestStatus.APPROVED_PROCESSING,
+        ],
+      },
+    },
+    name: "ecommerce_order_active_cancellation_unique",
+  },
+);
+orderCancellationRequestSchema.index(
+  { tenantId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+    name: "ecommerce_cancellation_idempotency_tenant_key",
+  },
+);
+
+const orderReturnRequestSchema = new mongoose.Schema(
+  {
+    _id: stringId("eret"),
+    tenantId: tenantField,
+    orderId: { type: String, required: true, index: true },
+    customerId: { type: String, required: true, index: true },
+    kind: enumField(EcommerceOrderReturnKind, { required: true }),
+    status: enumField(EcommerceOrderReturnRequestStatus, {
+      default: EcommerceOrderReturnRequestStatus.PENDING_REVIEW,
+    }),
+    reason: { type: String, required: true, trim: true, maxlength: 2000 },
+    evidenceNote: { type: String, trim: true, maxlength: 1000 },
+    policySnapshotVersion: Number,
+    decisionReason: { type: String, trim: true, maxlength: 2000 },
+    inspectionNote: { type: String, trim: true, maxlength: 2000 },
+    inspectionOutcome: { type: String, trim: true, maxlength: 64 },
+    onlineRefundId: String,
+    manualRefundRecordedAt: Date,
+    manualRefundProof: {
+      amountPaise: Number,
+      recipient: String,
+      method: String,
+      reference: String,
+      proofNote: String,
+      recordedByUserId: String,
+      idempotencyKey: String,
+    },
+    replacementOrderId: String,
+    resolutionNote: { type: String, trim: true, maxlength: 2000 },
+    manualSettlementNote: { type: String, trim: true, maxlength: 2000 },
+    stockRestockedAt: Date,
+    statusHistory: [
+      {
+        status: String,
+        at: Date,
+        actorType: String,
+        actorId: String,
+        note: { type: String, trim: true, maxlength: 2000 },
+      },
+    ],
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+    creationBodyHash: { type: String, trim: true, maxlength: 64 },
+    version: versionField,
+  },
+  baseOptions,
+);
+orderReturnRequestSchema.index({ tenantId: 1, orderId: 1, createdAt: -1 });
+orderReturnRequestSchema.index(
+  { tenantId: 1, orderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: {
+        $in: [
+          EcommerceOrderReturnRequestStatus.PENDING_REVIEW,
+          EcommerceOrderReturnRequestStatus.APPROVED,
+          EcommerceOrderReturnRequestStatus.RECEIVED,
+          EcommerceOrderReturnRequestStatus.INSPECTED,
+        ],
+      },
+    },
+    name: "ecommerce_order_active_return_unique",
+  },
+);
+orderReturnRequestSchema.index(
+  { tenantId: 1, replacementOrderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { replacementOrderId: { $type: "string", $gt: "" } },
+    name: "ecommerce_return_replacement_order_unique",
+  },
+);
+
+const codCustodyHandoverSchema = new mongoose.Schema(
+  {
+    _id: stringId("ecodh"),
+    tenantId: tenantField,
+    orderId: { type: String, required: true, index: true },
+    amountPaise: integerField({ min: 1 }),
+    fromUserId: { type: String, required: true },
+    toUserId: { type: String, required: true },
+    status: { type: String, enum: ["PENDING", "ACCEPTED", "REJECTED"], default: "PENDING" },
+    reference: { type: String, trim: true, maxlength: 160, default: "" },
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+    submittedAt: { type: Date, default: Date.now },
+    settledAt: Date,
+    settledByUserId: String,
+    version: versionField,
+  },
+  baseOptions,
+);
+codCustodyHandoverSchema.index({ tenantId: 1, status: 1, submittedAt: -1 });
+codCustodyHandoverSchema.index(
+  { tenantId: 1, orderId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  },
+);
+
 export const EcommerceCustomerAddress = mongoose.model(
   "EcommerceCustomerAddress",
   addressSchema,
@@ -424,6 +703,14 @@ export const EcommercePaymentExceptionRefund = mongoose.model(
   "EcommercePaymentExceptionRefund",
   paymentExceptionRefundSchema,
 );
+export const EcommerceOrderCancellationRequest = mongoose.model(
+  "EcommerceOrderCancellationRequest",
+  orderCancellationRequestSchema,
+);
+export const EcommerceOrderReturnRequest = mongoose.model(
+  "EcommerceOrderReturnRequest",
+  orderReturnRequestSchema,
+);
 export const EcommerceStockReservation = mongoose.model(
   "EcommerceStockReservation",
   stockReservationSchema,
@@ -435,4 +722,8 @@ export const EcommerceFulfilmentSettings = mongoose.model(
 export const EcommerceInventoryAdjustment = mongoose.model(
   "EcommerceInventoryAdjustment",
   inventoryAdjustmentSchema,
+);
+export const EcommerceCodCustodyHandover = mongoose.model(
+  "EcommerceCodCustodyHandover",
+  codCustodyHandoverSchema,
 );

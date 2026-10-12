@@ -973,7 +973,7 @@ export const grievanceBody = z.object({
   description: z.string().min(10).max(4000),
   relatedEntity: z
     .object({
-      type: z.enum(["PAYMENT", "SCHEME", "REDEMPTION"]),
+      type: z.enum(["PAYMENT", "SCHEME", "REDEMPTION", "ORDER"]),
       id: z.string(),
     })
     .optional(),

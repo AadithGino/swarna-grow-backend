@@ -23,6 +23,14 @@ function uiTypeForMessageType(type) {
       return "SCHEME";
     case "GRIEVANCE":
       return "GRIEVANCE";
+    case "ECOMMERCE_ORDER_CONFIRMED":
+    case "ECOMMERCE_PAYMENT_FAILED":
+    case "ECOMMERCE_PAYMENT_EXPIRED":
+    case "ECOMMERCE_REFUND_COMPLETED":
+    case "ECOMMERCE_FULFILMENT_UPDATE":
+    case "ECOMMERCE_CANCELLATION_UPDATE":
+    case "ECOMMERCE_COD_UPDATE":
+      return "ECOMMERCE";
     default:
       return "GENERAL";
   }
@@ -57,6 +65,15 @@ function titleForRow(row) {
       return "Monthly cap locked";
     case "OTP":
       return "Verification code";
+    case "ECOMMERCE_ORDER_CONFIRMED":
+    case "ECOMMERCE_PAYMENT_FAILED":
+    case "ECOMMERCE_PAYMENT_EXPIRED":
+    case "ECOMMERCE_REFUND_COMPLETED":
+    case "ECOMMERCE_FULFILMENT_UPDATE":
+    case "ECOMMERCE_CANCELLATION_UPDATE":
+    case "ECOMMERCE_COD_UPDATE":
+      if (row.templateParams?.title) return String(row.templateParams.title);
+      return "Shop order update";
     default:
       if (row.templateKey?.includes("PAYMENT_SUCCESS")) return "Payment received";
       return "Update from your jeweller";
@@ -105,13 +122,24 @@ function bodyForRow(row, ctx) {
       return `${label} is now closed. Your passbook and receipts remain available in the app.`;
     case "FLEXI_LOCK_APPLIED":
       return `Your flexible phase has ended and your monthly cap for ${label} is now locked.`;
+    case "ECOMMERCE_ORDER_CONFIRMED":
+    case "ECOMMERCE_PAYMENT_FAILED":
+    case "ECOMMERCE_PAYMENT_EXPIRED":
+    case "ECOMMERCE_REFUND_COMPLETED":
+    case "ECOMMERCE_FULFILMENT_UPDATE":
+    case "ECOMMERCE_CANCELLATION_UPDATE":
+    case "ECOMMERCE_COD_UPDATE":
+      if (row.templateParams?.body) return String(row.templateParams.body);
+      return "Open the shop order page for details.";
     default:
       return "Tap to view details in the app.";
   }
 }
 
 function deepLinkForRow(row, ctx) {
+  if (row.templateParams?.deepLink) return String(row.templateParams.deepLink);
   if (row.deepLink ?? row.actionPath) return row.deepLink ?? row.actionPath;
+  if (row.templateParams?.orderId) return `/shop/order/${row.templateParams.orderId}`;
   const paymentId = row.templateParams?.paymentId;
   const payment = paymentId ? ctx.paymentById?.get(String(paymentId)) : null;
   if (payment?._id) return `/payments/${payment._id}`;
@@ -168,9 +196,11 @@ export function customerNotificationDedupeKey(row) {
   const paymentPart = params.paymentId ?? "";
   const redemptionPart = params.redemptionId ?? "";
   const refundPart = params.refundId ?? params.paymentRefundId ?? "";
+  const orderPart = params.orderId ?? "";
   return [
     row.type,
     String(row.schemeId ?? ""),
+    String(orderPart),
     String(cyclePart),
     String(paymentPart),
     String(redemptionPart),

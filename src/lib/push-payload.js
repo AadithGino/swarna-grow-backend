@@ -69,6 +69,22 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
       body = String(message.templateParams?.body ?? body);
       deepLink = String(message.templateParams?.deepLink ?? "/home");
       break;
+    case MessageType.ECOMMERCE_ORDER_CONFIRMED:
+    case MessageType.ECOMMERCE_PAYMENT_FAILED:
+    case MessageType.ECOMMERCE_PAYMENT_EXPIRED:
+    case MessageType.ECOMMERCE_REFUND_COMPLETED:
+    case MessageType.ECOMMERCE_FULFILMENT_UPDATE:
+    case MessageType.ECOMMERCE_CANCELLATION_UPDATE:
+    case MessageType.ECOMMERCE_COD_UPDATE:
+      title = String(message.templateParams?.title ?? "Shop order update");
+      body = String(message.templateParams?.body ?? "Open your order in the shop.");
+      deepLink = String(
+        message.templateParams?.deepLink
+          ?? (message.templateParams?.orderId
+            ? `/shop/order/${message.templateParams.orderId}`
+            : "/shop/orders"),
+      );
+      break;
     default:
       break;
   }

@@ -41,4 +41,5 @@ export const ECOMMERCE_OUTBOX_TOPICS = Object.freeze({
   PAYMENT_EXPIRED: "ecommerce.payment.expired",
   REFUND_COMPLETED: "ecommerce.refund.completed",
   FULFILMENT_MILESTONE: "ecommerce.fulfilment.milestone",
+  ORDER_UPDATED: "ecommerce.order.updated",
 });

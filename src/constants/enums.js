@@ -181,6 +181,13 @@ export const MessageType = makeEnum(
   "SCHEME_CLOSED",
   "CUSTOMER_STATEMENT",
   "MANUAL_PUSH",
+  "ECOMMERCE_ORDER_CONFIRMED",
+  "ECOMMERCE_PAYMENT_FAILED",
+  "ECOMMERCE_PAYMENT_EXPIRED",
+  "ECOMMERCE_REFUND_COMPLETED",
+  "ECOMMERCE_FULFILMENT_UPDATE",
+  "ECOMMERCE_CANCELLATION_UPDATE",
+  "ECOMMERCE_COD_UPDATE",
 );
 export const MessageTemplateKey = makeEnum(
   "PAYMENT_SUCCESS_MEDIA",
@@ -286,6 +293,7 @@ export const EcommerceCheckoutTaxPresentation = makeEnum(
   "ACCOUNTANT_COMPONENT_APPROVED",
 );
 export const EcommerceFulfilmentMode = makeEnum("BRANCH_PICKUP", "DELIVERY");
+export const EcommercePaymentMethod = makeEnum("ONLINE", "COD");
 export const EcommerceQuoteStatus = makeEnum(
   "ACTIVE",
   "EXPIRED",
@@ -296,6 +304,7 @@ export const EcommerceOrderStatus = makeEnum(
   "PENDING_PAYMENT",
   "PAYMENT_EXPIRED",
   "PAYMENT_FAILED",
+  "COD_PENDING_ACCEPTANCE",
   "PAID",
   "PROCESSING",
   "READY_FOR_PICKUP",
@@ -305,10 +314,15 @@ export const EcommerceOrderStatus = makeEnum(
   "REFUND_PENDING",
   "REFUNDED",
 );
+export const EcommerceCodCollectionStatus = makeEnum("PENDING", "COLLECTED");
 export const EcommerceStockReleaseReason = makeEnum(
   "CUSTOMER_CANCEL",
   "PAYMENT_WINDOW_EXPIRED",
+  "COD_ACCEPTANCE_EXPIRED",
+  "COD_REJECTED",
   "ORDER_SUPERSEDED",
+  "CANCELLATION_RESTOCK",
+  "CANCELLATION_STOCK_EXCEPTION",
 );
 export const EcommerceTaxSupplyCase = makeEnum("INTRA_STATE", "INTER_STATE");
 export const EcommerceHsnSacType = makeEnum("HSN", "SAC");
@@ -330,7 +344,50 @@ export const EcommerceOrderEventType = makeEnum(
   "PAYMENT_LATE_SUCCESS_EXCEPTION",
   "PAYMENT_DUPLICATE_SUCCESS_EXCEPTION",
   "PAYMENT_RECONCILED",
+  "COD_ORDER_PLACED",
+  "COD_ACCEPTED",
+  "COD_REJECTED",
+  "COD_ACCEPTANCE_EXPIRED",
+  "COD_COLLECTION_RECORDED",
+  "COD_CUSTODY_HANDOVER_INITIATED",
+  "COD_CUSTODY_HANDOVER_ACCEPTED",
+  "COD_CUSTODY_BANK_DEPOSIT_RECORDED",
+  "COD_CUSTODY_ADJUSTMENT",
+  "FULFILMENT_HANDOVER_RECORDED",
+  "PICKUP_CODE_ISSUED",
+  "COD_MANUAL_REFUND_RECORDED",
+  "CANCELLATION_REQUESTED",
+  "CANCELLATION_APPROVED",
+  "CANCELLATION_REJECTED",
+  "CANCELLATION_STOCK_DISPOSITION",
+  "CANCELLATION_COMPLETED",
 );
+export const EcommerceOrderCancellationRequestStatus = makeEnum(
+  "PENDING_DECISION",
+  "APPROVED_PROCESSING",
+  "REJECTED",
+  "COMPLETED",
+  "WITHDRAWN",
+);
+export const EcommerceOrderCancellationKind = makeEnum(
+  "CUSTOMER_DIRECT",
+  "CUSTOMER_REQUEST",
+  "ADMIN_INITIATED",
+);
+export const EcommerceCancellationStockDisposition = makeEnum(
+  "RESTOCK_CONFIRMED",
+  "STOCK_EXCEPTION",
+);
+export const EcommerceOrderReturnRequestStatus = makeEnum(
+  "PENDING_REVIEW",
+  "APPROVED",
+  "REJECTED",
+  "RECEIVED",
+  "INSPECTED",
+  "RESOLVED",
+  "CLOSED",
+);
+export const EcommerceOrderReturnKind = makeEnum("RETURN", "EXCHANGE");
 export const EcommercePaymentAttemptStatus = makeEnum(
   "PENDING",
   "INITIATED",
@@ -357,6 +414,15 @@ export const EcommercePaymentExceptionRefundStatus = makeEnum(
   "FAILED",
   "MANUAL_RECORDED",
 );
+export const EcommerceOrderRefundSource = makeEnum(
+  "PAYMENT_EXCEPTION",
+  "ORDER_CANCELLATION",
+  "ORDER_RETURN",
+);
+export const EcommerceOrderReturnInspectionOutcome = makeEnum(
+  "APPROVED_FOR_RESALE",
+  "REJECTED_NOT_RESALABLE",
+);
 export const PhaseMode = makeEnum("SINGLE", "FLEXIBLE_THEN_CAPPED");
 export const CapMode = makeEnum("NONE", "FLEXIBLE_PHASE_AVERAGE");
 export const CarryForwardMode = makeEnum("NONE");
@@ -372,6 +438,9 @@ export const ExportType = makeEnum(
   "CUSTOMER",
   "SCHEME",
   "AUDIT",
+  "ECOMMERCE_SALES",
+  "ECOMMERCE_ORDERS_FULFILMENT",
+  "ECOMMERCE_PRODUCTS",
 );
 export const UploadPurpose = makeEnum(
   "TENANT_LOGO",
@@ -430,6 +499,22 @@ export const GrievanceRelatedEntityType = makeEnum(
   "PAYMENT",
   "SCHEME",
   "REDEMPTION",
+  "ORDER",
+);
+export const EcommerceCodCustodyStatus = makeEnum(
+  "NONE",
+  "WITH_COLLECTOR",
+  "HANDOVER_PENDING",
+  "SETTLED",
+  "EXCEPTION",
+);
+export const EcommerceCodCustodySettlementMethod = makeEnum(
+  "HANDOVER",
+  "BANK_DEPOSIT",
+);
+export const EcommerceFulfilmentHandoverMethod = makeEnum(
+  "PICKUP_CODE",
+  "DELIVERY_PROOF",
 );
 export const PrematurePenaltyMode = makeEnum("NONE", "FLAT", "PERCENT_OF_PAID");
 export const BenefitTreatment = makeEnum("FORFEIT", "FULL");

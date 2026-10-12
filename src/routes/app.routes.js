@@ -26,6 +26,7 @@ import {
   kycSubmitBody,
   grievanceBody,
   grievanceReopenBody,
+  cursorQuery,
 } from "../validators/common.validators.js";
 import {
   ecommerceAddressCreateBody,
@@ -33,7 +34,11 @@ import {
   ecommerceCartPutBody,
   ecommerceQuoteCreateBody,
   ecommerceOrderCreateBody,
+  ecommerceCancellationReasonBody,
+  ecommerceReturnRequestCreateBody,
+  ecommerceTestHarnessPaymentBody,
   ecommercePaymentIntentBody,
+  ecommercePickupConfirmBody,
 } from "../validators/ecommerce.validators.js";
 import { enrolPaymentResponse, paymentIntentAppDto, paymentLinkDto } from "../lib/customer-app-dto.js";
 import { ClosureType, DevicePrincipalType } from "../constants/enums.js";
@@ -295,6 +300,7 @@ appRouter.get("/gold-rate/history", asyncHandler(async (req, res) => {
 
 appRouter.get("/shop/availability", asyncHandler(ecommerce.shopAvailability));
 appRouter.get("/shop/categories", asyncHandler(ecommerce.shopCategories));
+appRouter.get("/shop/store-policies", asyncHandler(ecommerce.shopStorePolicies));
 appRouter.get("/shop/products", asyncHandler(ecommerce.shopProducts));
 appRouter.get("/shop/products/:productIdOrSlug", asyncHandler(ecommerce.shopProduct));
 appRouter.get("/shop/addresses", asyncHandler(ecommerce.shopListAddresses));
@@ -333,11 +339,45 @@ appRouter.post(
   validate({ body: ecommerceOrderCreateBody }),
   asyncHandler(ecommerce.shopCreateOrder),
 );
-appRouter.get("/shop/orders", asyncHandler(ecommerce.shopListOrders));
+appRouter.get(
+  "/shop/orders",
+  validate({ query: cursorQuery }),
+  asyncHandler(ecommerce.shopListOrders),
+);
 appRouter.get("/shop/orders/:orderId", asyncHandler(ecommerce.shopGetOrder));
 appRouter.post(
+  "/shop/orders/:orderId/confirm-pickup",
+  validate({ body: ecommercePickupConfirmBody }),
+  asyncHandler(ecommerce.confirmPickupHandover),
+);
+appRouter.get(
+  "/shop/orders/:orderId/invoice.pdf",
+  asyncHandler(ecommerce.shopOrderInvoicePdf),
+);
+appRouter.post(
   "/shop/orders/:orderId/cancel",
+  validate({ body: ecommerceCancellationReasonBody }),
   asyncHandler(ecommerce.shopCancelOrder),
+);
+appRouter.get(
+  "/shop/orders/:orderId/cancellation",
+  asyncHandler(ecommerce.shopGetOrderCancellation),
+);
+appRouter.post(
+  "/shop/orders/:orderId/cancellation-requests",
+  idempotent,
+  validate({ body: ecommerceCancellationReasonBody }),
+  asyncHandler(ecommerce.shopCreateCancellationRequest),
+);
+appRouter.get(
+  "/shop/orders/:orderId/return",
+  asyncHandler(ecommerce.shopGetOrderReturn),
+);
+appRouter.post(
+  "/shop/orders/:orderId/return-requests",
+  idempotent,
+  validate({ body: ecommerceReturnRequestCreateBody }),
+  asyncHandler(ecommerce.shopCreateReturnRequest),
 );
 appRouter.post(
   "/shop/orders/:orderId/payment-intents",
@@ -347,6 +387,12 @@ appRouter.post(
 appRouter.get(
   "/shop/orders/:orderId/payment-intents/:paymentAttemptId",
   asyncHandler(ecommerce.shopGetOrderPaymentIntent),
+);
+appRouter.post(
+  "/shop/orders/:orderId/test-harness/complete-payment",
+  validate({ body: ecommerceTestHarnessPaymentBody }),
+  idempotent,
+  asyncHandler(ecommerce.shopCompleteTestHarnessPayment),
 );
 
 appRouter.post("/grievances", requireCustomerAppWrite, validate({ body: grievanceBody }), idempotent, asyncHandler(operations.createGrievance));

@@ -1,5 +1,6 @@
 import { AppError } from "./app-error.js";
 import { isPlanFeatureEnabled } from "./feature-entitlements.js";
+import { tenantHasEcommerceOrderHistory } from "./ecommerce-tenant-history.js";
 
 /** Canonical subscription plan feature key for online store entitlement. */
 export const ECOMMERCE_PLAN_FEATURE = "ecommerce";
@@ -12,6 +13,15 @@ export function presentEcommerceAccessState(tenant) {
     enabled,
     active: planEntitled && enabled,
   };
+}
+
+/** Access flags plus server-derived order history (async). */
+export async function presentEcommerceAccessStateForTenant(tenant) {
+  const base = presentEcommerceAccessState(tenant);
+  const hasOrderHistory = tenant?._id
+    ? await tenantHasEcommerceOrderHistory(tenant._id)
+    : false;
+  return { ...base, hasOrderHistory };
 }
 
 export function isEcommerceOperational(tenant) {

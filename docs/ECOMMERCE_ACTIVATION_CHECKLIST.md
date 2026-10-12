@@ -1,5 +1,7 @@
 # Ecommerce activation checklist (current `ecommerce` branches)
 
+API addendum (routes, returns, outbox): [ECOMMERCE_API_CONTRACT.md](./ECOMMERCE_API_CONTRACT.md)
+
 **Purpose:** Separate **code/test gates** from **business approval**, **PhonePe sandbox evidence**, and **deployment** before any live ecommerce payments. This document does **not** authorize production payments.
 
 **Overall production decision:** **NO-GO** until all **Mandatory** gates in §5 are satisfied and product issues a final GO. Enabling production rollout flags is the **last** controlled action (§5.1), not a prerequisite for other gates.

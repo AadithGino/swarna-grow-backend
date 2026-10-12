@@ -3,20 +3,25 @@ import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { assertEcommerceOrderTransition } from "../lib/ecommerce-order-transitions.js";
 import {
+  EcommerceCodCollectionStatus,
   EcommerceFulfilmentMode,
   EcommerceOrderEventType,
   EcommerceOrderStatus,
 } from "../constants/enums.js";
+import { orderUsesCod } from "../lib/ecommerce-cod.js";
 import { EcommerceOrder, EcommerceOrderEvent } from "../models/index.js";
 import {
   ECOMMERCE_OUTBOX_TOPICS,
   enqueueEcommerceOutboxEvent,
 } from "../lib/ecommerce-commerce-outbox.js";
+import { assertDeliveryTrackingForShipped } from "./ecommerce-order-delivery.service.js";
+import { assertFulfilmentHandoverBeforeDelivered } from "./ecommerce-order-handover.service.js";
 
 const BLOCKED_FOR_FULFILMENT = new Set([
   EcommerceOrderStatus.PENDING_PAYMENT,
   EcommerceOrderStatus.PAYMENT_EXPIRED,
   EcommerceOrderStatus.PAYMENT_FAILED,
+  EcommerceOrderStatus.COD_PENDING_ACCEPTANCE,
 ]);
 
 function assertFulfilmentSnapshot(order, targetStatus) {
@@ -64,6 +69,18 @@ export async function transitionAdminOrderFulfilment(req) {
     if (order.paymentExceptionStatus) {
       throw errors.business("FULFILMENT_BLOCKED", "Orders with payment exceptions cannot be fulfilled.");
     }
+    if (order.activeCancellationRequestId) {
+      throw errors.business(
+        "FULFILMENT_BLOCKED",
+        "Resolve the open cancellation request before updating fulfilment.",
+      );
+    }
+    if (targetStatus === EcommerceOrderStatus.CANCELLED) {
+      throw errors.business(
+        "USE_CANCELLATION_FLOW",
+        "Use the dedicated cancellation workflow instead of fulfilment transition.",
+      );
+    }
     if (BLOCKED_FOR_FULFILMENT.has(order.status)) {
       throw errors.business("FULFILMENT_BLOCKED", "Order is not paid.", { status: order.status });
     }
@@ -73,6 +90,17 @@ export async function transitionAdminOrderFulfilment(req) {
       EcommerceOrderStatus.READY_FOR_PICKUP,
       EcommerceOrderStatus.SHIPPED,
     ]);
+    if (
+      targetStatus === EcommerceOrderStatus.DELIVERED
+      && orderUsesCod(order.toObject())
+      && order.codCollection?.status !== EcommerceCodCollectionStatus.COLLECTED
+    ) {
+      throw errors.business(
+        "COD_COLLECTION_REQUIRED",
+        "Record cash collection before marking this COD order delivered.",
+        { codCollectionStatus: order.codCollection?.status ?? EcommerceCodCollectionStatus.PENDING },
+      );
+    }
     if (!allowedFulfilmentStatuses.has(order.status)) {
       throw errors.business("FULFILMENT_BLOCKED", "Order status does not allow fulfilment updates.", {
         status: order.status,
@@ -83,7 +111,26 @@ export async function transitionAdminOrderFulfilment(req) {
     }
     assertFulfilmentSnapshot(order.toObject(), targetStatus);
     assertEcommerceOrderTransition("STAFF", order.status, targetStatus);
+    if (targetStatus === EcommerceOrderStatus.DELIVERED) {
+      assertFulfilmentHandoverBeforeDelivered(order.toObject());
+    }
+    if (targetStatus === EcommerceOrderStatus.SHIPPED) {
+      await assertDeliveryTrackingForShipped({
+        tenantId: req.auth.tenantId,
+        orderId: order._id,
+        session,
+      });
+    }
 
+    const fulfilmentSet = { status: targetStatus };
+    if (
+      targetStatus === EcommerceOrderStatus.DELIVERED
+      && order.fulfilmentMode === EcommerceFulfilmentMode.DELIVERY
+      && !order.deliveryTracking?.deliveredAt
+    ) {
+      fulfilmentSet["deliveryTracking.deliveredAt"] =
+        order.fulfilmentHandover?.recordedAt ?? new Date();
+    }
     const updated = await EcommerceOrder.findOneAndUpdate(
       {
         _id: order._id,
@@ -91,7 +138,7 @@ export async function transitionAdminOrderFulfilment(req) {
         version: expectedVersion,
       },
       {
-        $set: { status: targetStatus },
+        $set: fulfilmentSet,
         $inc: { version: 1 },
       },
       { session, new: true },

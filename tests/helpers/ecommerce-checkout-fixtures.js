@@ -48,6 +48,27 @@ export function disableEcommercePaymentsTestHarness() {
   delete process.env.ECOMMERCE_PAYMENTS_TEST_HARNESS;
 }
 
+const POLICY_PLACEHOLDER =
+  "Jeweller-maintained policy text for automated tests only. Contact the store for authoritative terms.";
+
+export function taxReadyStorePolicies() {
+  const approvedAt = new Date().toISOString();
+  return {
+    version: 1,
+    publishedAt: approvedAt,
+    shippingPolicyText: POLICY_PLACEHOLDER,
+    shippingPolicyApprovedAt: approvedAt,
+    returnsPolicyText: POLICY_PLACEHOLDER,
+    returnsPolicyApprovedAt: approvedAt,
+    cancellationPolicyText: POLICY_PLACEHOLDER,
+    cancellationPolicyApprovedAt: approvedAt,
+    refundContactPolicyText: POLICY_PLACEHOLDER,
+    refundContactPolicyApprovedAt: approvedAt,
+    returnEligibilityDays: 7,
+    returnExcludedCategoryIds: [],
+  };
+}
+
 export function taxReadyFulfilmentBody(branchId) {
   return {
     expectedVersion: 1,
@@ -55,5 +76,6 @@ export function taxReadyFulfilmentBody(branchId) {
     pickupBranchIds: [branchId],
     pendingPaymentWindowMinutes: 30,
     checkoutTaxConfig: taxReadyCheckoutTaxConfig(),
+    storePolicies: taxReadyStorePolicies(),
   };
 }

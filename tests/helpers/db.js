@@ -78,6 +78,23 @@ export async function resetTestDb() {
   const collections = await mongoose.connection.db.collections();
   await Promise.all(collections.map((collection) => collection.deleteMany({})));
   tenantCodeSeq = 0;
+  delete process.env.ECOMMERCE_PAYMENTS_TEST_HARNESS;
+  try {
+    const { clearIdempotencyHeartbeatsForTests } = await import(
+      "../../src/middlewares/idempotency.middleware.js"
+    );
+    clearIdempotencyHeartbeatsForTests();
+  } catch {
+    /* idempotency module may not be loaded yet */
+  }
+  try {
+    const { clearRateLimitStoresForTests } = await import(
+      "../../src/middlewares/security.middleware.js"
+    );
+    await clearRateLimitStoresForTests();
+  } catch {
+    /* security middleware may not be loaded yet */
+  }
 }
 
 export function bearerFor(user, permissions = ROLE_PERMISSIONS[user.role] ?? user.permissions ?? []) {

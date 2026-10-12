@@ -21,6 +21,8 @@ import { Customer } from "../models/index.js";
 import { guarded } from "../lib/route.js";
 import { errors } from "../lib/app-error.js";
 import * as audit from "../services/audit.service.js";
+import * as ecommerceController from "../controllers/ecommerce.controller.js";
+import { cursorQuery } from "../validators/common.validators.js";
 
 export const adminCustomerRouter = Router();
 adminCustomerRouter.get(
@@ -67,6 +69,18 @@ adminCustomerRouter.get(
   ...guarded(
     Permission.MESSAGE_READ,
     asyncHandler(controller.relations("messages")),
+  ),
+);
+adminCustomerRouter.get(
+  "/:customerId/ecommerce/orders/meta",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(ecommerceController.getCustomerEcommerceOrdersMeta)),
+);
+adminCustomerRouter.get(
+  "/:customerId/ecommerce/orders",
+  ...guarded(
+    Permission.ECOMMERCE_READ,
+    validate({ query: cursorQuery }),
+    asyncHandler(ecommerceController.listCustomerEcommerceOrders),
   ),
 );
 adminCustomerRouter.patch(

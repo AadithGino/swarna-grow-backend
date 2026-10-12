@@ -214,6 +214,99 @@ test("delivery stays disabled until configured; unserviceable pin rejected", asy
   );
 });
 
+test("POST delivery quote uses saved address pincode without body pincode", async () => {
+  const { tenant, user, branch } = await seedTenantUser({});
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  await enableEcommerce(tenant);
+  await request(app)
+    .put("/api/v1/admin/ecommerce/fulfilment-settings")
+    .set(adminHeaders(user))
+    .send({
+      expectedVersion: 1,
+      deliveryEnabled: true,
+      serviceablePincodes: ["686692"],
+      deliveryChargePaise: 0,
+      pickupEnabled: true,
+      pickupBranchIds: [branch._id],
+      checkoutTaxConfig: {
+        presentation: EcommerceCheckoutTaxPresentation.ACCOUNTANT_COMPONENT_APPROVED,
+        sellerLegalName: "Test Jewellers",
+        sellerGstin: "32ABCDE1234F1Z5",
+        registeredState: "Kerala",
+        defaultPlaceOfSupplyState: "Kerala",
+        defaultItemTaxClassification: "GST_3",
+        accountantSignOffReference: "CA-1",
+        accountantApprovedAt: new Date().toISOString(),
+        componentLines: [{ componentKey: "CGST", label: "CGST", rateBps: 150 }],
+        componentRules: [
+          {
+            supplyCase: "INTRA_STATE",
+            componentLines: [
+              { componentKey: "CGST", label: "CGST", rateBps: 150 },
+              { componentKey: "SGST", label: "SGST", rateBps: 150 },
+            ],
+          },
+          {
+            supplyCase: "INTER_STATE",
+            componentLines: [{ componentKey: "IGST", label: "IGST", rateBps: 300 }],
+          },
+        ],
+        supportedDestinationStates: ["Kerala", "Karnataka"],
+      },
+    });
+  await ecommerce.putTaxSettings({
+    auth: { tenantId: tenant._id, id: user._id },
+    tenant: { ...tenant.toObject(), subscription: { planFeaturesSnapshot: { ecommerce: true } } },
+    body: {
+      rates: [{ code: "GST_3", rateBps: 300, active: true }],
+      defaultClassification: "GST_3",
+      hsnSacMappings: [{ classification: "GST_3", hsnSacCode: "7113", hsnSacType: "HSN" }],
+    },
+  });
+  const product = await ecommerce.createProduct({
+    auth: { tenantId: tenant._id, id: user._id },
+    tenant: { ...tenant.toObject(), subscription: { planFeaturesSnapshot: { ecommerce: true } } },
+    body: {
+      name: "Ring",
+      slug: "ring-del",
+      priceMode: EcommercePriceMode.FIXED,
+      fixedPricing: { basePricePaise: 100_000 },
+      taxClassification: "GST_3",
+    },
+  });
+  await ecommerce.publishProduct({
+    auth: { tenantId: tenant._id, id: user._id },
+    tenant: { ...tenant.toObject(), subscription: { planFeaturesSnapshot: { ecommerce: true } } },
+    params: { productId: product.id },
+    body: { expectedVersion: 1 },
+  });
+  const token = await customerAccessToken({ tenant, branch, customer });
+  const addrRes = await request(app)
+    .post("/api/v1/app/shop/addresses")
+    .set({ authorization: `Bearer ${token}`, "x-idempotency-key": createId("addr") })
+    .send({
+      line1: "Home",
+      city: "Kottayam",
+      state: "Kerala",
+      pincode: "686692",
+      isDefault: true,
+    });
+  assert.equal(addrRes.status, 201);
+  await request(app)
+    .put("/api/v1/app/shop/cart")
+    .set({ authorization: `Bearer ${token}`, "x-idempotency-key": createId("cart") })
+    .send({ lines: [{ productId: product.id, quantity: 1 }] });
+  const quoteRes = await request(app)
+    .post("/api/v1/app/shop/quotes")
+    .set({ authorization: `Bearer ${token}`, "x-idempotency-key": createId("quote") })
+    .send({
+      fulfilmentMode: "DELIVERY",
+      addressId: addrRes.body.data.id,
+    });
+  assert.equal(quoteRes.status, 201, JSON.stringify(quoteRes.body));
+  assert.equal(quoteRes.body.data.fulfilmentMode, "DELIVERY");
+});
+
 test("checkout tax readiness blocked without accountant configuration", async () => {
   const { tenant, user } = await seedTenantUser({});
   await enableEcommerce(tenant);

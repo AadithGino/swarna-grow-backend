@@ -13,6 +13,11 @@ import { buildWhatsappUsageReport } from "./whatsapp-usage.report.js";
 import { buildBranchPerformanceReport } from "./branch-performance.report.js";
 import { buildSchemePerformanceReport } from "./scheme-performance.report.js";
 import { buildCustomerPerformanceReport } from "./customer-performance.report.js";
+import {
+  buildEcommerceOrdersFulfilmentReport,
+  buildEcommerceProductsReport,
+  buildEcommerceSalesReport,
+} from "./ecommerce-workspace.report.js";
 
 const REPORT_BUILDERS = {
   COLLECTION: buildCollectionReport,
@@ -30,6 +35,9 @@ const REPORT_BUILDERS = {
   BRANCH_PERFORMANCE: buildBranchPerformanceReport,
   SCHEME_PERFORMANCE: buildSchemePerformanceReport,
   CUSTOMER_PERFORMANCE: buildCustomerPerformanceReport,
+  ECOMMERCE_SALES: buildEcommerceSalesReport,
+  ECOMMERCE_ORDERS_FULFILMENT: buildEcommerceOrdersFulfilmentReport,
+  ECOMMERCE_PRODUCTS: buildEcommerceProductsReport,
 };
 
 export async function buildAdminReport(req, reportKey) {

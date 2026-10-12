@@ -45,6 +45,11 @@ export function mapFulfilmentSettings(row) {
     maxCartLines: row?.maxCartLines ?? 50,
     maxQuantityPerLine: row?.maxQuantityPerLine ?? 99,
     checkoutTaxConfig: row?.checkoutTaxConfig ?? {},
+    codEnabled: row?.codEnabled === true,
+    codPincodes: normalizePincodes(row?.codPincodes ?? []),
+    codAcceptanceWindowMinutes: row?.codAcceptanceWindowMinutes ?? null,
+    requireCourierTrackingForShipped: row?.requireCourierTrackingForShipped === true,
+    storePolicies: row?.storePolicies ?? {},
     version: row?.version ?? 1,
   };
 }
@@ -98,8 +103,19 @@ export function customerFulfilmentOptions(settings, branches = []) {
           enabled: true,
           serviceablePincodes: mapped.serviceablePincodes,
           deliveryChargePaise: mapped.deliveryChargePaise,
+          supportedDestinationStates:
+            mapped.checkoutTaxConfig?.supportedDestinationStates ?? [],
+          codEnabled: mapped.codEnabled,
+          codPincodes: mapped.codPincodes,
         }
-      : { enabled: false, serviceablePincodes: [], deliveryChargePaise: null },
+      : {
+          enabled: false,
+          serviceablePincodes: [],
+          deliveryChargePaise: null,
+          supportedDestinationStates: [],
+          codEnabled: false,
+          codPincodes: [],
+        },
     checkoutUsable: false,
   };
 }

@@ -218,6 +218,13 @@ test("payment intent idempotent replay and webhook marks PAID", async () => {
   const attempts = await EcommercePaymentAttempt.countDocuments({ orderId });
   assert.equal(attempts, 1);
 
+  const differentBody = await request(app)
+    .post(`/api/v1/app/shop/orders/${orderId}/payment-intents`)
+    .set({ authorization: `Bearer ${token}`, "x-idempotency-key": idem })
+    .send({ redirectUrl: "https://example.com/changed-return" });
+  assert.equal(differentBody.status, 409);
+  assert.equal(differentBody.body.error?.code, "IDEMPOTENCY_KEY_REUSED");
+
   const merchantOrderId = a.body.data.paymentIntent.merchantOrderId;
   await postCompletedWebhook({
     tenantId: tenant._id,
@@ -234,6 +241,37 @@ test("payment intent idempotent replay and webhook marks PAID", async () => {
     .set({ authorization: `Bearer ${token}` });
   assert.equal(poll.status, 200);
   assert.equal(poll.body.data.paymentIntent.paymentCompleted, true);
+});
+
+test("payment-intent replay cannot initiate a provider charge after order expiry", async () => {
+  const { tenant, user, branch } = await seedTenantUser({});
+  const { product } = await seedReady({ tenant, user, branch });
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const { token, orderId } = await quoteAndOrder({ tenant, branch, product, customer });
+  const idem = createId("pay");
+  const body = { redirectUrl: "https://example.com/return" };
+  const first = await request(app)
+    .post(`/api/v1/app/shop/orders/${orderId}/payment-intents`)
+    .set({ authorization: `Bearer ${token}`, "x-idempotency-key": idem })
+    .send(body);
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const attemptId = first.body.data.paymentIntent.id;
+  await EcommercePaymentAttempt.updateOne(
+    { _id: attemptId },
+    { $set: { status: EcommercePaymentAttemptStatus.PENDING, sdkToken: null, providerOrderId: null } },
+  );
+  await EcommerceOrder.updateOne(
+    { _id: orderId },
+    { $set: { status: EcommerceOrderStatus.PAYMENT_EXPIRED, expiresAt: new Date(0) } },
+  );
+  const replay = await request(app)
+    .post(`/api/v1/app/shop/orders/${orderId}/payment-intents`)
+    .set({ authorization: `Bearer ${token}`, "x-idempotency-key": idem })
+    .send(body);
+  assert.equal(replay.status, 422, JSON.stringify(replay.body));
+  assert.equal(replay.body.error?.code, "ORDER_NOT_PAYABLE");
+  const attempt = await EcommercePaymentAttempt.findById(attemptId).lean();
+  assert.equal(attempt.sdkToken, null);
 });
 
 test("webhook amount mismatch recorded and order stays unpaid", async () => {

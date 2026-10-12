@@ -198,12 +198,23 @@ test("customer cancel vs expiry race releases once", async () => {
   const [cancelRes] = await Promise.all([
     request(app)
       .post(`/api/v1/app/shop/orders/${orderId}/cancel`)
-      .set({ authorization: `Bearer ${token}` }),
+      .set({ authorization: `Bearer ${token}` })
+      .send({ reason: "Customer cancelled during payment window" }),
     runEcommerceOrderPaymentExpiry(new Date()),
   ]);
-  assert.ok([200, 422].includes(cancelRes.status));
+  assert.ok(
+    [200, 422].includes(cancelRes.status),
+    `cancel status ${cancelRes.status}: ${JSON.stringify(cancelRes.body?.error ?? {})}`,
+  );
+  const order = await EcommerceOrder.findById(orderId).lean();
+  assert.ok(
+    [EcommerceOrderStatus.CANCELLED, EcommerceOrderStatus.PAYMENT_EXPIRED].includes(order.status),
+    `terminal status must be cancel or expiry, got ${order.status}`,
+  );
   const released = await EcommerceStockReservation.countDocuments({ orderId, releasedAt: { $ne: null } });
+  const held = await EcommerceStockReservation.countDocuments({ orderId, releasedAt: null });
   assert.equal(released, 1);
+  assert.equal(held, 0);
 });
 
 test("quote blocked when HSN/SAC mapping missing", async () => {

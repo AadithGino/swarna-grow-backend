@@ -28,6 +28,7 @@ import { resolvePlanFeatureBooleans } from "../lib/feature-entitlements.js";
 import {
   assertCanEnableEcommerceStore,
   presentEcommerceAccessState,
+  presentEcommerceAccessStateForTenant,
 } from "../lib/ecommerce-access.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
@@ -239,7 +240,9 @@ export async function getSettingsBrandingForAdmin(req) {
 
 export async function getSettingsOperationsForAdmin(req) {
   const tenant = await loadTenant(req.auth.tenantId);
-  return presentOperations(tenant);
+  const ops = presentOperations(tenant);
+  ops.ecommerce = await presentEcommerceAccessStateForTenant(tenant);
+  return ops;
 }
 
 async function countTenantUsage(tenantId) {
@@ -337,7 +340,7 @@ export async function getSubscriptionForAdmin(req) {
       },
     },
     features: resolvePlanFeatureBooleans(tenant),
-    ecommerce: presentEcommerceAccessState(tenant),
+    ecommerce: await presentEcommerceAccessStateForTenant(tenant),
     pendingUpgradeRequest: await pendingUpgradeRequest(tenantId),
   };
 }

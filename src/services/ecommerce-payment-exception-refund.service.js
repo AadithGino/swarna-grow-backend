@@ -5,6 +5,7 @@ import {
   AlertType,
   EcommerceOrderEventType,
   EcommerceOrderPaymentExceptionStatus,
+  EcommerceOrderRefundSource,
   EcommerceOrderStatus,
   EcommercePaymentExceptionRefundStatus,
 } from "../constants/enums.js";
@@ -133,22 +134,28 @@ export async function initiateAdminPaymentExceptionRefund(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!order) throw errors.notFound("Order");
-  if (!REFUND_APPLICABLE_EXCEPTIONS.has(order.paymentExceptionStatus)) {
-    throw errors.business("REFUND_NOT_APPLICABLE", "Order has no payment exception refund case.");
-  }
-  if (
-    order.status === EcommerceOrderStatus.PAID
-    && order.paymentExceptionStatus
-      !== EcommerceOrderPaymentExceptionStatus.DUPLICATE_PAYMENT_REFUND_REQUIRED
-  ) {
-    throw errors.business("REFUND_NOT_APPLICABLE", "Paid orders use standard refund flows.");
-  }
-
   const refundRow = await EcommercePaymentExceptionRefund.findOne({
     tenantId: req.auth.tenantId,
     orderId: order._id,
   }).lean();
   if (!refundRow) throw errors.notFound("Payment exception refund");
+  const workflowRefund =
+    refundRow.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION
+    || refundRow.refundSource === EcommerceOrderRefundSource.ORDER_RETURN;
+  if (
+    !workflowRefund
+    && !REFUND_APPLICABLE_EXCEPTIONS.has(order.paymentExceptionStatus)
+  ) {
+    throw errors.business("REFUND_NOT_APPLICABLE", "Order has no payment exception refund case.");
+  }
+  if (
+    !workflowRefund
+    && order.status === EcommerceOrderStatus.PAID
+    && order.paymentExceptionStatus
+      !== EcommerceOrderPaymentExceptionStatus.DUPLICATE_PAYMENT_REFUND_REQUIRED
+  ) {
+    throw errors.business("REFUND_NOT_APPLICABLE", "Paid orders use standard refund flows.");
+  }
   if (TERMINAL_REFUND_STATUSES.has(refundRow.status)) {
     return { refund: refundRow, initiated: false };
   }
@@ -365,6 +372,17 @@ export async function recordAdminPaymentExceptionRefundManual(req) {
       payload: { orderId: order._id, refundId: updated._id, manual: true },
       session,
     });
+    if (updated.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION) {
+      const { completeOnlineCancellationAfterRefund } = await import(
+        "./ecommerce-order-cancellation.service.js"
+      );
+      await completeOnlineCancellationAfterRefund({
+        tenantId: req.auth.tenantId,
+        orderId: order._id,
+        refundId: updated._id,
+        session,
+      });
+    }
     return { refund: updated.toObject() };
   });
 }
@@ -388,6 +406,9 @@ export async function confirmPaymentExceptionRefundFromProvider({
     .lean();
   if (!existing) return { outcome: "NOT_FOUND" };
   if (TERMINAL_REFUND_STATUSES.has(existing.status)) {
+    return { outcome: "ALREADY_CLOSED", refund: existing };
+  }
+  if (existing.status === EcommercePaymentExceptionRefundStatus.MANUAL_RECORDED) {
     return { outcome: "ALREADY_CLOSED", refund: existing };
   }
   if (existing.providerRefundId && providerRefundId && existing.providerRefundId !== providerRefundId) {
@@ -456,6 +477,17 @@ export async function confirmPaymentExceptionRefundFromProvider({
     payload: { orderId, refundId: updated._id },
     session,
   });
+  if (updated.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION) {
+    const { completeOnlineCancellationAfterRefund } = await import(
+      "./ecommerce-order-cancellation.service.js"
+    );
+    await completeOnlineCancellationAfterRefund({
+      tenantId,
+      orderId,
+      refundId: updated._id,
+      session,
+    });
+  }
   return { outcome: "SUCCEEDED", refund: updated.toObject() };
 }
 

@@ -6,16 +6,19 @@ import {
 } from "../constants/enums.js";
 import {
   EcommerceCategory,
+  EcommerceFulfilmentSettings,
   EcommerceGoldRate,
   EcommerceProduct,
   EcommerceTaxSettings,
 } from "../models/index.js";
+import { mapPublishedStorePolicies } from "../lib/ecommerce-store-policies.js";
 import {
   assertEcommerceCatalogWrite,
   assertEcommerceOperational,
   isEcommerceCatalogWriteAllowed,
-  presentEcommerceAccessState,
+  presentEcommerceAccessStateForTenant,
 } from "../lib/ecommerce-access.js";
+import { customerHasEcommerceOrderHistory } from "../lib/ecommerce-tenant-history.js";
 import { computeProductPriceEstimate } from "../lib/ecommerce-pricing.js";
 import {
   loadInventoryAvailability,
@@ -258,7 +261,7 @@ async function assertPublishPricingReady(product, tenantId, session) {
 
 export async function getStoreStatus(req) {
   return {
-    ecommerce: presentEcommerceAccessState(req.tenant),
+    ecommerce: await presentEcommerceAccessStateForTenant(req.tenant),
     catalogWriteAllowed: isEcommerceCatalogWriteAllowed(req.tenant),
   };
 }
@@ -787,9 +790,36 @@ export async function putTaxSettings(req) {
 }
 
 export async function shopAvailability(req) {
+  const ecommerce = await presentEcommerceAccessStateForTenant(req.tenant);
+  const hasOrderHistory = req.auth?.id
+    ? await customerHasEcommerceOrderHistory(req.auth.tenantId, req.auth.id)
+    : false;
   return {
-    available: presentEcommerceAccessState(req.tenant).active,
-    ecommerce: presentEcommerceAccessState(req.tenant),
+    available: ecommerce.active,
+    ecommerce: { ...ecommerce, hasOrderHistory },
+    hasOrderHistory,
+    orderHistoryAvailable: hasOrderHistory,
+  };
+}
+
+export async function shopGetStorePolicies(req) {
+  assertEcommerceOperational(req.tenant);
+  const settings = await EcommerceFulfilmentSettings.findOne({ tenantId: req.auth.tenantId }).lean();
+  const mapped = mapPublishedStorePolicies(settings);
+  if (!mapped.ready) {
+    return { published: false, policies: null };
+  }
+  return {
+    published: true,
+    policies: {
+      version: mapped.version,
+      publishedAt: mapped.publishedAt,
+      shippingPolicyText: mapped.shippingPolicyText,
+      returnsPolicyText: mapped.returnsPolicyText,
+      cancellationPolicyText: mapped.cancellationPolicyText,
+      refundContactPolicyText: mapped.refundContactPolicyText,
+      returnEligibilityDays: mapped.returnEligibilityDays,
+    },
   };
 }
 
@@ -827,10 +857,17 @@ export async function shopListProducts(req) {
     delete filter.$and;
   }
   if (req.query.featured === "true") filter.featured = true;
+  const q = String(req.query.q ?? "").trim();
+  if (q.length >= 2) {
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    filter.$and = [...(filter.$and ?? []), { name: { $regex: escaped, $options: "i" } }];
+  }
+  const sortKey = String(req.query.sort ?? "newest").trim();
+  const sort = sortKey === "name" ? "name:asc" : "updatedAt:desc";
   const result = await paginate(EcommerceProduct, {
     scope: { tenantId: req.auth.tenantId },
     filters: filter,
-    sort: "updatedAt:desc",
+    sort,
     limit: req.query.limit,
     cursor: req.query.cursor,
   });

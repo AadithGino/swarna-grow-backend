@@ -2,11 +2,13 @@ import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { assertEcommerceOperational } from "../lib/ecommerce-access.js";
+import { tenantForEcommerceCheckout } from "../lib/ecommerce-checkout-tenant.js";
 import {
   assertCustomerPaymentAllowed,
   deriveEcommerceCheckoutCapability,
 } from "../lib/ecommerce-checkout-capability.js";
 import { findActivePaymentAttempt } from "../lib/ecommerce-payment-in-flight.js";
+import { orderUsesCod } from "../lib/ecommerce-cod.js";
 import { assertOrderPaymentBoundary } from "../lib/ecommerce-order-payment-boundary.js";
 import { EcommercePaymentAttemptOperationalStatus } from "../constants/enums.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
@@ -17,7 +19,6 @@ import {
   EcommerceOrderEvent,
   EcommercePaymentAttempt,
   EcommerceTaxSettings,
-  Tenant,
 } from "../models/index.js";
 import {
   EcommerceOrderEventType,
@@ -64,17 +65,14 @@ export function mapCustomerActivePaymentAttempt(row) {
   };
 }
 
-async function loadPaymentCapability(tenantId, tenantLite) {
-  const tenant =
-    tenantLite?.integrationSecrets != null
-      ? tenantLite
-      : await Tenant.findById(tenantId).select("+integrationSecrets").lean();
+export async function loadPaymentCapability(tenantId, tenantLite) {
+  const tenant = await tenantForEcommerceCheckout(tenantId, tenantLite);
   const fulfilmentRow = await EcommerceFulfilmentSettings.findOne({ tenantId }).lean();
   const taxSettings = await EcommerceTaxSettings.findOne({ tenantId }).lean();
   return deriveEcommerceCheckoutCapability({
     taxSettings,
     fulfilmentSettingsRow: fulfilmentRow ?? {},
-    tenant: tenant ?? tenantLite,
+    tenant,
   });
 }
 
@@ -147,7 +145,7 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
     );
   }
 
-  const tenant = await Tenant.findById(tenantId).select("+integrationSecrets").lean();
+  const tenant = await tenantForEcommerceCheckout(tenantId);
   const credentials = resolvePhonePeCredentials(tenant);
   try {
     const provider = await phonePeProvider.createSdkOrder({
@@ -263,6 +261,11 @@ export async function createEcommercePaymentIntent(req) {
         customerId: req.auth.id,
       }).session(session);
       if (!order) throw errors.notFound("Order");
+      if (orderUsesCod(order.toObject())) {
+        throw errors.business("ORDER_NOT_PAYABLE", "Cash on delivery orders cannot be paid online.", {
+          paymentMethod: order.paymentMethod,
+        });
+      }
       if (order.status === EcommerceOrderStatus.PAID) {
         throw errors.business("ORDER_ALREADY_PAID", "Order is already paid.");
       }
@@ -355,6 +358,12 @@ export async function createEcommercePaymentIntent(req) {
             "This idempotency key was already used with a different request.",
           );
         }
+        if (row.creationBodyHash && row.creationBodyHash !== bodyHash) {
+          throw errors.conflict(
+            "IDEMPOTENCY_KEY_REUSED",
+            "This idempotency key was already used with a different request.",
+          );
+        }
         const order = await EcommerceOrder.findOne({
           _id: row.orderId,
           tenantId: req.auth.tenantId,
@@ -365,6 +374,19 @@ export async function createEcommercePaymentIntent(req) {
         }
       } else throw err;
     } else throw err;
+  }
+
+  // A retry must not initiate a provider charge after cancellation or expiry,
+  // even when it finds an earlier PENDING attempt by idempotency key.
+  const payable = await EcommerceOrder.exists({
+    _id: reserved.order._id,
+    tenantId: req.auth.tenantId,
+    customerId: req.auth.id,
+    status: EcommerceOrderStatus.PENDING_PAYMENT,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!payable) {
+    throw errors.business("ORDER_NOT_PAYABLE", "Order is no longer awaiting payment.");
   }
 
   return initiateProviderForAttempt(

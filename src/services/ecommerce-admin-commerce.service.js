@@ -17,6 +17,8 @@ import {
   mapFulfilmentSettings,
   normalizePincodes,
 } from "../lib/ecommerce-fulfilment.js";
+import { validateCodPincodeConfiguration } from "../lib/ecommerce-cod.js";
+import { clampCodAcceptanceWindowMinutes } from "../lib/ecommerce-cod-pending-policy.js";
 import { evaluateCheckoutTaxReadiness, mapCheckoutReadiness } from "../lib/ecommerce-checkout-tax.js";
 import { clampPendingPaymentWindowMinutes } from "../lib/ecommerce-pending-payment-policy.js";
 import {
@@ -144,6 +146,21 @@ export async function patchAdminInventoryProduct(req) {
       )[0];
     } else {
       enforceVersion(row, req.body.expectedVersion);
+    }
+    const previousPolicy = row.stockPolicy;
+    if (
+      previousPolicy === EcommerceStockPolicy.QUANTITY_TRACKED
+      && policy === EcommerceStockPolicy.MADE_TO_ORDER
+    ) {
+      const reserved = await sumActiveReservations(req.auth.tenantId, product._id, session);
+      if (reserved > 0) {
+        throw new AppError(
+          "INVENTORY_POLICY_CHANGE_BLOCKED",
+          "Cannot switch to made-to-order while active stock reservations exist for this product.",
+          422,
+          { productId: product._id, reservedQuantity: reserved },
+        );
+      }
     }
     row.stockPolicy = policy;
     if (policy === EcommerceStockPolicy.MADE_TO_ORDER) {
@@ -294,6 +311,28 @@ export async function putAdminFulfilmentSettings(req) {
     if (patch.serviceablePincodes) {
       patch.serviceablePincodes = normalizePincodes(patch.serviceablePincodes);
     }
+    if (patch.codAcceptanceWindowMinutes != null) {
+      patch.codAcceptanceWindowMinutes = clampCodAcceptanceWindowMinutes(patch.codAcceptanceWindowMinutes);
+    }
+    const nextCodEnabled = patch.codEnabled ?? row.codEnabled === true;
+    const nextServiceable =
+      patch.serviceablePincodes ?? normalizePincodes(row.serviceablePincodes ?? []);
+    if (patch.codEnabled != null || patch.codPincodes != null) {
+      const codValidation = validateCodPincodeConfiguration({
+        codEnabled: nextCodEnabled,
+        codPincodes: patch.codPincodes ?? row.codPincodes ?? [],
+        serviceablePincodes: nextServiceable,
+      });
+      if (!codValidation.ok) {
+        throw errors.validation(codValidation.errors);
+      }
+      if (patch.codPincodes != null) {
+        patch.codPincodes = codValidation.normalized;
+      }
+      if (nextCodEnabled && patch.codEnabled === false) {
+        patch.codPincodes = [];
+      }
+    }
     if (patch.deliveryChargePaise != null) {
       patch.deliveryChargePaise = sanitizeInventoryQuantity(patch.deliveryChargePaise);
     }
@@ -333,6 +372,20 @@ export async function putAdminFulfilmentSettings(req) {
     Object.assign(row, patch);
     if (row.deliveryEnabled && !deriveDeliveryConfigured(row)) {
       row.deliveryEnabled = false;
+    }
+    if (row.codEnabled !== true) {
+      row.codEnabled = false;
+      row.codPincodes = [];
+    } else {
+      const codValidationFinal = validateCodPincodeConfiguration({
+        codEnabled: true,
+        codPincodes: row.codPincodes ?? [],
+        serviceablePincodes: row.serviceablePincodes ?? [],
+      });
+      if (!codValidationFinal.ok) {
+        throw errors.validation(codValidationFinal.errors);
+      }
+      row.codPincodes = codValidationFinal.normalized;
     }
     row.version += 1;
     await row.save({ session });

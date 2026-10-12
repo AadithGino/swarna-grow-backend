@@ -1,6 +1,10 @@
 import { env } from "../config/env.js";
 import { withTransaction } from "../lib/transaction.js";
 import { expirePendingPaymentOrderRow } from "../lib/ecommerce-order-lifecycle.js";
+import {
+  ECOMMERCE_OUTBOX_TOPICS,
+  enqueueEcommerceOutboxEvent,
+} from "../lib/ecommerce-commerce-outbox.js";
 import { EcommerceOrderEventType, EcommerceOrderStatus } from "../constants/enums.js";
 import { EcommerceOrder, EcommerceOrderEvent } from "../models/index.js";
 import { createId } from "../lib/ids.js";
@@ -53,6 +57,13 @@ export async function runEcommerceOrderPaymentExpiry(at = new Date()) {
             ],
             { session },
           );
+          await enqueueEcommerceOutboxEvent({
+            tenantId: row.tenantId,
+            topic: ECOMMERCE_OUTBOX_TOPICS.PAYMENT_EXPIRED,
+            key: `${row._id}:expired`,
+            payload: { orderId: row._id },
+            session,
+          });
         });
       } catch (err) {
         logger.warn(

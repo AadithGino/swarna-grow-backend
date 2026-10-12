@@ -1,6 +1,8 @@
 import { EcommerceQuoteStatus, EcommerceProductStatus, EcommercePriceMode } from "../constants/enums.js";
 import { isEcommerceOperational } from "./ecommerce-access.js";
+import { EcommercePaymentMethod } from "../constants/enums.js";
 import { assertFulfilmentSelection, mapFulfilmentSettings } from "./ecommerce-fulfilment.js";
+import { evaluateCodEligibility } from "./ecommerce-cod.js";
 import { evaluateCheckoutTaxReadiness } from "./ecommerce-checkout-tax.js";
 import { goldRateFreshness, ECOMMERCE_GOLD_RATE_MAX_AGE_MS } from "./ecommerce-pricing-policy.js";
 import {
@@ -30,6 +32,8 @@ export const REQUOTE_REQUIRED_CODES = new Set([
   "RESERVATION_MISSING",
   "RESERVATION_EXPIRED",
   "QUANTITY_MISMATCH",
+  "COD_NOT_AVAILABLE",
+  "PAYMENT_METHOD_CHANGED",
 ]);
 
 /**
@@ -135,18 +139,54 @@ export async function revalidateQuoteForOrder({
     });
   }
 
+  let addressRow = null;
   if (quote.addressSnapshot?.id) {
-    const addr = await EcommerceCustomerAddress.findOne({
+    addressRow = await EcommerceCustomerAddress.findOne({
       _id: quote.addressSnapshot.id,
       tenantId: quote.tenantId,
       customerId,
     })
       .session(session ?? null)
       .lean();
-    if (!addr) {
+    if (!addressRow) {
       blockers.push({
         code: "ADDRESS_INVALID",
         message: "Delivery address was removed.",
+        requiresNewQuote: true,
+      });
+    }
+  }
+
+  const paymentMethod = quote.paymentMethod ?? EcommercePaymentMethod.ONLINE;
+  if (paymentMethod === EcommercePaymentMethod.COD) {
+    const codEval = evaluateCodEligibility({
+      tenant,
+      taxSettings,
+      fulfilmentSettingsRow: fulfilmentRow ?? {},
+      fulfilmentMode: quote.fulfilmentMode,
+      addressSnapshot: addressRow
+        ? {
+            id: addressRow._id,
+            pincode: addressRow.pincode,
+            state: addressRow.state,
+          }
+        : quote.addressSnapshot,
+    });
+    if (!codEval.eligible) {
+      blockers.push({
+        code: "COD_NOT_AVAILABLE",
+        message: "Cash on delivery is no longer available for this quote.",
+        requiresNewQuote: true,
+        details: codEval.blockers,
+      });
+    } else if (
+      quote.codPincodeSnapshot
+      && codEval.codPincode
+      && quote.codPincodeSnapshot !== codEval.codPincode
+    ) {
+      blockers.push({
+        code: "PAYMENT_METHOD_CHANGED",
+        message: "Delivery address pincode changed; request a new quote.",
         requiresNewQuote: true,
       });
     }

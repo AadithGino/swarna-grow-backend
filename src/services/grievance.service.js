@@ -126,8 +126,12 @@ async function enrichGrievanceDetail(tenantId, row) {
 export async function createGrievance(req) {
   return withTransaction(async (session) => {
     const { validateGrievanceUploadReferences } = await import("./upload.service.js");
+    const { assertGrievanceRelatedEntityForCustomer } = await import("../lib/grievance-related-entity.js");
     const grievanceId = createId("grievance");
     await validateGrievanceUploadReferences(req, req.body.attachmentUploadIds, session, grievanceId);
+    if (req.body.relatedEntity) {
+      await assertGrievanceRelatedEntityForCustomer(req, req.body.relatedEntity, session);
+    }
     const createdAt = new Date();
     const number = await nextSequence(req.auth.tenantId, `grievance:${createdAt.getFullYear()}`, session);
     const row = (await Grievance.create([{

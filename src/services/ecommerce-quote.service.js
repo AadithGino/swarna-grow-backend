@@ -20,6 +20,7 @@ import {
   mapFulfilmentSettings,
 } from "../lib/ecommerce-fulfilment.js";
 import { loadInventoryAvailability } from "../lib/ecommerce-inventory.js";
+import { testPaymentHarnessMetaForClient } from "./ecommerce-test-payment-completion.service.js";
 import {
   cancelActiveQuoteRow,
   expireActiveQuoteRow,
@@ -28,6 +29,8 @@ import {
 import { revalidateQuoteForOrder } from "../lib/ecommerce-quote-revalidation.js";
 import { reserveStockForQuote } from "../lib/ecommerce-stock-reserve.js";
 import { deriveEcommerceCheckoutCapability } from "../lib/ecommerce-checkout-capability.js";
+import { tenantForEcommerceCheckout } from "../lib/ecommerce-checkout-tenant.js";
+import { logQuoteCapabilityDebug } from "../lib/ecommerce-quote-capability-debug.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
 import {
   EcommerceCart,
@@ -38,11 +41,17 @@ import {
   EcommercePriceQuote,
   EcommerceProduct,
   EcommerceTaxSettings,
-  Tenant,
 } from "../models/index.js";
+import {
+  assertQuotePaymentMethodAllowed,
+  derivePaymentMethodOptions,
+  evaluateCodEligibility,
+  resolveQuotePaymentMethod,
+} from "../lib/ecommerce-cod.js";
 import {
   EcommerceCheckoutTaxPresentation,
   EcommerceFulfilmentMode,
+  EcommercePaymentMethod,
   EcommercePriceMode,
   EcommerceProductStatus,
   EcommerceQuoteStatus,
@@ -69,22 +78,30 @@ async function latestRateForPurity(tenantId, purity, session) {
 }
 
 async function loadCheckoutCapability(tenantId, tenantLite) {
-  const tenant =
-    tenantLite?.integrationSecrets != null
-      ? tenantLite
-      : await Tenant.findById(tenantId).select("+integrationSecrets").lean();
+  const tenant = await tenantForEcommerceCheckout(tenantId, tenantLite);
   const fulfilmentRow = await EcommerceFulfilmentSettings.findOne({ tenantId }).lean();
   const taxSettings = await EcommerceTaxSettings.findOne({ tenantId }).lean();
   return deriveEcommerceCheckoutCapability({
     taxSettings,
     fulfilmentSettingsRow: fulfilmentRow ?? {},
-    tenant: tenant ?? tenantLite,
+    tenant,
   });
 }
 
-function mapQuote(row, capability) {
+function mapQuote(row, capability, methodOptions = null) {
   const snap = row.financialSnapshot ?? {};
   const cap = capability ?? { paymentAllowed: false, checkoutUsable: false };
+  const paymentMethod = row.paymentMethod ?? snap.paymentMethod ?? EcommercePaymentMethod.ONLINE;
+  const options =
+    methodOptions
+    ?? derivePaymentMethodOptions({
+      capability: cap,
+      codEvaluation: { eligible: false, blockers: [] },
+    });
+  const orderPlacementAllowed =
+    paymentMethod === EcommercePaymentMethod.COD
+      ? options.orderPlacement[EcommercePaymentMethod.COD] === true
+      : options.orderPlacement[EcommercePaymentMethod.ONLINE] === true;
   return {
     id: row._id,
     status: row.status,
@@ -100,10 +117,18 @@ function mapQuote(row, capability) {
     financialSnapshot: snap,
     expiresAt: row.expiresAt,
     version: row.version ?? 1,
+    paymentMethod,
+    codPincodeSnapshot: row.codPincodeSnapshot ?? snap.codPincodeSnapshot ?? null,
     paymentAllowed: cap.paymentAllowed,
+    orderPlacementAllowed,
+    paymentMethods: options.paymentMethods,
     checkoutUsable: cap.checkoutUsable,
     checkoutTaxReady: cap.checkoutTaxReady ?? false,
-    previewOnly: !cap.paymentAllowed,
+    previewOnly:
+      paymentMethod === EcommercePaymentMethod.ONLINE ? !cap.paymentAllowed : !orderPlacementAllowed,
+    blockers: cap.blockers ?? [],
+    testPaymentHarness:
+      paymentMethod === EcommercePaymentMethod.COD ? null : testPaymentHarnessMetaForClient(),
   };
 }
 
@@ -128,7 +153,20 @@ async function replayQuoteByIdempotencyKey(req, session) {
     row = expired?.toObject?.() ?? { ...row, status: EcommerceQuoteStatus.EXPIRED };
   }
   const capability = await loadCheckoutCapability(req.auth.tenantId, req.tenant);
-  return { quote: mapQuote(row, capability), created: false };
+  const tenant = await tenantForEcommerceCheckout(req.auth.tenantId, req.tenant);
+  const fulfilmentRow = await EcommerceFulfilmentSettings.findOne({
+    tenantId: req.auth.tenantId,
+  }).session(session);
+  const taxSettings = await loadTaxSettings(req.auth.tenantId, session);
+  const codEvaluation = evaluateCodEligibility({
+    tenant,
+    taxSettings,
+    fulfilmentSettingsRow: fulfilmentRow?.toObject?.() ?? fulfilmentRow ?? {},
+    fulfilmentMode: row.fulfilmentMode,
+    addressSnapshot: row.addressSnapshot,
+  });
+  const methodOptions = derivePaymentMethodOptions({ capability, codEvaluation });
+  return { quote: mapQuote(row, capability, methodOptions), created: false };
 }
 
 async function assertProductQuotable(product, tenantId, session) {
@@ -186,14 +224,14 @@ export async function createCustomerQuote(req) {
         mode === EcommerceFulfilmentMode.BRANCH_PICKUP
           ? String(req.body.pickupBranchId ?? "").trim()
           : null;
-      const { fulfilmentChargePaise } = assertFulfilmentSelection(fulfilmentSettings, {
-        mode,
-        pickupBranchId,
-        pincode: req.body.pincode,
-      });
-
+      let fulfilmentChargePaise = 0;
       let addressSnapshot = null;
-      if (mode === EcommerceFulfilmentMode.DELIVERY) {
+      if (mode === EcommerceFulfilmentMode.BRANCH_PICKUP) {
+        ({ fulfilmentChargePaise } = assertFulfilmentSelection(fulfilmentSettings, {
+          mode,
+          pickupBranchId,
+        }));
+      } else if (mode === EcommerceFulfilmentMode.DELIVERY) {
         const addressId = String(req.body.addressId ?? "").trim();
         if (!addressId) {
           throw errors.validation([{ field: "addressId", message: "Delivery address is required." }]);
@@ -213,11 +251,24 @@ export async function createCustomerQuote(req) {
           state: address.state,
           pincode: address.pincode,
         };
-        assertFulfilmentSelection(fulfilmentSettings, {
+        ({ fulfilmentChargePaise } = assertFulfilmentSelection(fulfilmentSettings, {
           mode,
           pincode: address.pincode,
-        });
+        }));
       }
+
+      const paymentMethod = resolveQuotePaymentMethod(req.body);
+      const tenantCheckout = await tenantForEcommerceCheckout(req.auth.tenantId, req.tenant);
+      const codEvaluation = evaluateCodEligibility({
+        tenant: tenantCheckout,
+        taxSettings,
+        fulfilmentSettingsRow: fulfilmentRow?.toObject?.() ?? fulfilmentRow ?? {},
+        fulfilmentMode: mode,
+        addressSnapshot,
+      });
+      assertQuotePaymentMethodAllowed(paymentMethod, codEvaluation);
+      const codPincodeSnapshot =
+        paymentMethod === EcommercePaymentMethod.COD ? codEvaluation.codPincode ?? null : null;
 
       const cart = await EcommerceCart.findOne({
         tenantId: req.auth.tenantId,
@@ -235,11 +286,26 @@ export async function createCustomerQuote(req) {
         checkoutTaxConfig,
       });
       if (!isDestinationStateSupported(checkoutTaxConfig, destinationState)) {
+        const allowed = checkoutTaxConfig?.supportedDestinationStates ?? [];
+        const hint =
+          allowed.length > 0
+            ? `Use delivery state: ${allowed.join(", ")}.`
+            : "Update the delivery address state to match checkout tax settings.";
         throw new AppError(
           "CHECKOUT_NOT_READY",
-          "Destination state is not supported for checkout.",
+          `Destination state "${destinationState || "(missing)"}" is not supported for checkout. ${hint}`,
           422,
-          { code: "UNSUPPORTED_DESTINATION", destinationState },
+          {
+            code: "UNSUPPORTED_DESTINATION",
+            destinationState,
+            supportedDestinationStates: allowed,
+            blockers: [
+              {
+                code: "UNSUPPORTED_DESTINATION",
+                message: `Address state must be one of: ${allowed.length ? allowed.join(", ") : "configured destinations"}.`,
+              },
+            ],
+          },
         );
       }
       const supplyCase = resolveSupplyCase(
@@ -385,6 +451,8 @@ export async function createCustomerQuote(req) {
         taxPresentation: EcommerceCheckoutTaxPresentation.ACCOUNTANT_COMPONENT_APPROVED,
         pickupBranchId,
         quotedAt: new Date().toISOString(),
+        paymentMethod,
+        codPincodeSnapshot,
       };
 
       const row = (
@@ -405,6 +473,8 @@ export async function createCustomerQuote(req) {
               taxPaise,
               totalPaise,
               taxConfigVersion: fulfilmentRow?.version ?? 1,
+              paymentMethod,
+              codPincodeSnapshot,
               expiresAt,
               idempotencyKey,
               creationBodyHash: bodyHash,
@@ -414,7 +484,8 @@ export async function createCustomerQuote(req) {
         )
       )[0];
 
-      return { quote: mapQuote(row.toObject(), capability), created: true };
+      const methodOptions = derivePaymentMethodOptions({ capability, codEvaluation });
+      return { quote: mapQuote(row.toObject(), capability, methodOptions), created: true };
     });
   } catch (err) {
     if (err?.code === 11000 && /idempotencyKey/.test(String(err.message))) {
@@ -437,7 +508,20 @@ export async function createCustomerQuote(req) {
           row = await EcommercePriceQuote.findById(row._id).lean();
         }
         const cap = await loadCheckoutCapability(req.auth.tenantId, req.tenant);
-        return { quote: mapQuote(row, cap), created: false };
+        const tenantReplay = await tenantForEcommerceCheckout(req.auth.tenantId, req.tenant);
+        const fulfilmentReplay = await EcommerceFulfilmentSettings.findOne({
+          tenantId: req.auth.tenantId,
+        }).lean();
+        const taxReplay = await loadTaxSettings(req.auth.tenantId);
+        const codReplay = evaluateCodEligibility({
+          tenant: tenantReplay,
+          taxSettings: taxReplay,
+          fulfilmentSettingsRow: fulfilmentReplay ?? {},
+          fulfilmentMode: row.fulfilmentMode,
+          addressSnapshot: row.addressSnapshot,
+        });
+        const methodOptions = derivePaymentMethodOptions({ capability: cap, codEvaluation: codReplay });
+        return { quote: mapQuote(row, cap, methodOptions), created: false };
       }
     }
     throw err;
@@ -458,8 +542,20 @@ export async function getCustomerQuote(req) {
     });
     row = await EcommercePriceQuote.findById(row._id).lean();
   }
-  const capability = await loadCheckoutCapability(req.auth.tenantId, req.tenant);
-  return mapQuote(row, capability);
+  const tenant = await tenantForEcommerceCheckout(req.auth.tenantId, req.tenant);
+  const capability = await loadCheckoutCapability(req.auth.tenantId, tenant);
+  logQuoteCapabilityDebug(req, { quoteRow: row, tenant, capability });
+  const fulfilmentRow = await EcommerceFulfilmentSettings.findOne({ tenantId: req.auth.tenantId }).lean();
+  const taxSettings = await EcommerceTaxSettings.findOne({ tenantId: req.auth.tenantId }).lean();
+  const codEvaluation = evaluateCodEligibility({
+    tenant,
+    taxSettings,
+    fulfilmentSettingsRow: fulfilmentRow ?? {},
+    fulfilmentMode: row.fulfilmentMode,
+    addressSnapshot: row.addressSnapshot,
+  });
+  const methodOptions = derivePaymentMethodOptions({ capability, codEvaluation });
+  return mapQuote(row, capability, methodOptions);
 }
 
 export async function cancelCustomerQuote(req) {
@@ -469,6 +565,7 @@ export async function cancelCustomerQuote(req) {
     const cancelled = await cancelActiveQuoteRow(
       req.params.quoteId,
       req.auth.tenantId,
+      req.auth.id,
       session,
     );
     if (!cancelled) {
@@ -480,7 +577,6 @@ export async function cancelCustomerQuote(req) {
       if (!row) throw errors.notFound("Quote");
       throw errors.business("QUOTE_NOT_ACTIVE", "Quote cannot be cancelled.", { status: row.status });
     }
-    if (cancelled.customerId !== req.auth.id) throw errors.notFound("Quote");
     return mapQuote(cancelled.toObject(), capability);
   });
 }

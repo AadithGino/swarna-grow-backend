@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EcommercePriceMode, PlanTier } from "../src/constants/enums.js";
 import { EcommerceProduct } from "../src/models/index.js";
 import * as ecommerce from "../src/services/ecommerce.service.js";
-import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import { resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
@@ -130,4 +130,39 @@ test("shop pagination keeps storefront visibility on page 2", async () => {
       }),
     (err) => err.statusCode === 404,
   );
+});
+
+test("shop search and name sort paginate without duplicates", async () => {
+  const { tenant, branch } = await seedTenantUser({});
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const base = {
+    auth: { tenantId: tenant._id, id: customer._id },
+    tenant: {
+      ...tenant.toObject(),
+      subscription: { tier: PlanTier.PRO, planFeaturesSnapshot: { ecommerce: true } },
+      operations: { ecommerceEnabled: true },
+    },
+    params: {},
+    body: {},
+    query: {},
+  };
+  await seedShopBasics(base);
+  for (const name of ["Alpha Ring", "Beta Ring", "Gamma Chain"]) {
+    const p = await publishFixed(base, { name });
+    await EcommerceProduct.updateOne({ _id: p.id }, { $set: { name } });
+  }
+  const onStore = {
+    ...base,
+    tenant: { ...base.tenant, operations: { ecommerceEnabled: true } },
+  };
+  const search = await ecommerce.shopListProducts({ ...onStore, query: { q: "Ring", sort: "name", limit: 1 } });
+  assert.equal(search.items.length, 1);
+  assert.match(String(search.items[0].name), /Ring/i);
+  assert.ok(search.meta.hasMore);
+  const page2 = await ecommerce.shopListProducts({
+    ...onStore,
+    query: { q: "Ring", sort: "name", limit: 1, cursor: search.meta.nextCursor },
+  });
+  assert.equal(page2.items.length, 1);
+  assert.notEqual(page2.items[0].id, search.items[0].id);
 });

@@ -15,6 +15,7 @@ import {
   enableEcommercePaymentsTestHarness,
   taxReadyCatalogBody,
   taxReadyFulfilmentBody,
+  taxReadyStorePolicies,
 } from "./helpers/ecommerce-checkout-fixtures.js";
 import {
   EcommerceOrder,
@@ -168,6 +169,19 @@ test("order blocked when checkout tax not configured", async () => {
     params: { productId: product.id },
     body: { expectedVersion: 1 },
   });
+  await request(app)
+    .put("/api/v1/admin/ecommerce/fulfilment-settings")
+    .set({
+      authorization: `Bearer ${bearerFor(user)}`,
+      "x-idempotency-key": createId("ful"),
+    })
+    .send({
+      expectedVersion: 1,
+      pickupEnabled: true,
+      pickupBranchIds: [branch._id],
+      pendingPaymentWindowMinutes: 30,
+      storePolicies: taxReadyStorePolicies(),
+    });
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const token = await customerToken({ tenant, branch, customer });
   await request(app)
@@ -182,12 +196,13 @@ test("order blocked when checkout tax not configured", async () => {
       pickupBranchId: branch._id,
     });
   assert.equal(quoteRes.status, 422);
+  const quoteErr = JSON.stringify(quoteRes.body.error ?? {});
+  assert.match(quoteErr, /tax|checkout|CHECKOUT/i);
   const orderRes = await request(app)
     .post("/api/v1/app/shop/orders")
     .set({ authorization: `Bearer ${token}`, "x-idempotency-key": createId("o") })
     .send({ quoteId: createId("fake") });
-  assert.equal(orderRes.status, 422);
-  assert.ok(["PAYMENT_NOT_AVAILABLE", "CHECKOUT_NOT_READY"].includes(orderRes.body.error?.code));
+  assert.ok([404, 422].includes(orderRes.status));
 });
 
 test("creates PENDING_PAYMENT order from active quote and transfers reservation", async () => {

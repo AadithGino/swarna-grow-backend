@@ -7,10 +7,19 @@ import {
   assertCustomerOrderCreationAllowed,
   deriveEcommerceCheckoutCapability,
 } from "../lib/ecommerce-checkout-capability.js";
-import { cancelPendingPaymentOrderRow } from "../lib/ecommerce-order-lifecycle.js";
+import { tenantForEcommerceCheckout } from "../lib/ecommerce-checkout-tenant.js";
+import { computeCodAcceptanceExpiresAt } from "../lib/ecommerce-cod-pending-policy.js";
+import { evaluateCodEligibility, orderUsesCod } from "../lib/ecommerce-cod.js";
 import { findActivePaymentAttempt } from "../lib/ecommerce-payment-in-flight.js";
 import { mapCustomerActivePaymentAttempt } from "./ecommerce-payment-intent.service.js";
+import { testPaymentHarnessMetaForClient } from "./ecommerce-test-payment-completion.service.js";
 import { computePendingPaymentExpiresAt } from "../lib/ecommerce-pending-payment-policy.js";
+import { snapshotStorePolicyForOrder } from "../lib/ecommerce-store-policies.js";
+import { isEcommerceOrderInvoiceAvailable } from "../lib/ecommerce-order-invoice-eligibility.js";
+import { paginate } from "../lib/pagination.js";
+import { listAdminOrdersPaginated } from "./ecommerce-admin-order-list.service.js";
+import { attachAdminOrderCustomerDisplay } from "../lib/ecommerce-admin-order-customer-display.js";
+import { attachReturnSummaryToAdminOrder } from "./ecommerce-admin-order-returns.service.js";
 import {
   consumeActiveQuoteRow,
   expireActiveQuoteRow,
@@ -25,12 +34,14 @@ import {
   EcommercePaymentExceptionRefund,
   EcommercePriceQuote,
   EcommerceTaxSettings,
-  Tenant,
 } from "../models/index.js";
 import {
+  EcommerceCodCollectionStatus,
+  EcommerceFulfilmentMode,
   EcommerceOrderEventType,
   EcommerceOrderStatus,
   EcommercePaymentExceptionRefundStatus,
+  EcommercePaymentMethod,
   EcommerceQuoteStatus,
 } from "../constants/enums.js";
 
@@ -80,22 +91,36 @@ function mapRefundPresentation(refundRow) {
 
 function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = null) {
   const pending = row.status === EcommerceOrderStatus.PENDING_PAYMENT;
+  const cod = orderUsesCod(row);
+  const codPending = row.status === EcommerceOrderStatus.COD_PENDING_ACCEPTANCE;
+  const codCollected =
+    row.codCollection?.status === EcommerceCodCollectionStatus.COLLECTED;
   const cap = capability ?? {
     paymentAllowed: false,
     checkoutUsable: false,
     checkoutTaxReady: false,
   };
+  const paymentMethod = row.paymentMethod ?? EcommercePaymentMethod.ONLINE;
+  let statusLabel = String(row.status);
+  if (pending) statusLabel = "Awaiting payment — not charged";
+  else if (row.status === EcommerceOrderStatus.PAYMENT_EXPIRED) {
+    statusLabel = "Payment window expired — not charged";
+  } else if (codPending) {
+    statusLabel = "Awaiting jeweller acceptance — payment due on delivery";
+  } else if (cod && !codCollected) {
+    statusLabel = "Payment due on delivery";
+  }
   return {
     id: row._id,
     orderNumber: row.orderNumber,
     status: row.status,
-    statusLabel: pending
-      ? "Awaiting payment — not charged"
-      : row.status === EcommerceOrderStatus.PAYMENT_EXPIRED
-        ? "Payment window expired — not charged"
-        : String(row.status),
-    paymentAllowed: cap.paymentAllowed,
-    paymentCompleted: row.status === EcommerceOrderStatus.PAID,
+    statusLabel,
+    paymentMethod,
+    codPincodeSnapshot: row.codPincodeSnapshot ?? null,
+    codCollectionStatus: cod ? row.codCollection?.status ?? EcommerceCodCollectionStatus.PENDING : null,
+    paymentAllowed: cod ? false : cap.paymentAllowed,
+    orderPlacementAllowed: false,
+    paymentCompleted: cod ? codCollected : row.status === EcommerceOrderStatus.PAID,
     checkoutUsable: cap.checkoutUsable,
     quoteId: row.quoteId ?? null,
     lines: row.lines ?? [],
@@ -121,7 +146,20 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
         ? row.status
         : null,
     ...mapRefundPresentation(refundRow),
-    activePaymentAttempt,
+    activePaymentAttempt: cod ? null : activePaymentAttempt,
+    testPaymentHarness: cod ? null : testPaymentHarnessMetaForClient(),
+    invoiceAvailable: isEcommerceOrderInvoiceAvailable(row),
+    deliveryTracking:
+      row.fulfilmentMode === EcommerceFulfilmentMode.DELIVERY
+        ? {
+            carrierName: row.deliveryTracking?.carrierName ?? "",
+            trackingNumber: row.deliveryTracking?.trackingNumber ?? "",
+            trackingUrl: row.deliveryTracking?.trackingUrl ?? "",
+            dispatchedAt: row.deliveryTracking?.dispatchedAt ?? null,
+            deliveredAt: row.deliveryTracking?.deliveredAt ?? null,
+          }
+        : null,
+    storePolicySnapshot: row.storePolicySnapshot ?? null,
   };
 }
 
@@ -136,17 +174,14 @@ function mapAdminOrder(row, capability, refundRow) {
   };
 }
 
-async function loadCheckoutContext(tenantId, tenant) {
-  const tenantDoc =
-    tenant?.integrationSecrets != null
-      ? tenant
-      : await Tenant.findById(tenantId).select("+integrationSecrets").lean();
+async function loadCheckoutContext(tenantId, tenantFromRequest) {
+  const tenant = await tenantForEcommerceCheckout(tenantId, tenantFromRequest);
   const fulfilmentRow = await EcommerceFulfilmentSettings.findOne({ tenantId }).lean();
   const taxSettings = await EcommerceTaxSettings.findOne({ tenantId }).lean();
   const capability = deriveEcommerceCheckoutCapability({
     taxSettings,
     fulfilmentSettingsRow: fulfilmentRow ?? {},
-    tenant: tenantDoc ?? tenant,
+    tenant,
   });
   return { fulfilmentRow, taxSettings, capability };
 }
@@ -170,11 +205,10 @@ async function loadExistingOrderByIdempotency(req, bodyHash, capability) {
 
 export async function createCustomerOrder(req) {
   assertEcommerceOperational(req.tenant);
-  const { fulfilmentRow, taxSettings, capability } = await loadCheckoutContext(
+  const { fulfilmentRow, taxSettings, capability: baseCapability } = await loadCheckoutContext(
     req.auth.tenantId,
     req.tenant,
   );
-  assertCustomerOrderCreationAllowed(capability);
 
   const idempotencyKey = String(req.headers["x-idempotency-key"] ?? "").trim();
   if (!idempotencyKey) {
@@ -186,7 +220,7 @@ export async function createCustomerOrder(req) {
     throw errors.validation([{ field: "quoteId", message: "quoteId is required." }]);
   }
 
-  const early = await loadExistingOrderByIdempotency(req, bodyHash, capability);
+  const early = await loadExistingOrderByIdempotency(req, bodyHash, baseCapability);
   if (early) return early;
 
   try {
@@ -203,7 +237,7 @@ export async function createCustomerOrder(req) {
             "This idempotency key was already used with a different request.",
           );
         }
-        return { order: mapCustomerOrder(dup.toObject(), capability), created: false };
+        return { order: mapCustomerOrder(dup.toObject(), baseCapability), created: false };
       }
 
       let quote = await EcommercePriceQuote.findOne({
@@ -219,9 +253,25 @@ export async function createCustomerOrder(req) {
           tenantId: req.auth.tenantId,
         }).session(session);
         if (linked) {
-          return { order: mapCustomerOrder(linked.toObject(), capability), created: false };
+          return { order: mapCustomerOrder(linked.toObject(), baseCapability), created: false };
         }
       }
+
+      const paymentMethod = quote.paymentMethod ?? EcommercePaymentMethod.ONLINE;
+      const tenantCheckout = await tenantForEcommerceCheckout(req.auth.tenantId, req.tenant);
+      const codEvaluation = evaluateCodEligibility({
+        tenant: tenantCheckout,
+        taxSettings,
+        fulfilmentSettingsRow: fulfilmentRow?.toObject?.() ?? fulfilmentRow ?? {},
+        fulfilmentMode: quote.fulfilmentMode,
+        addressSnapshot: quote.addressSnapshot,
+      });
+      const capability = {
+        ...baseCapability,
+        codOrderAllowed: codEvaluation.eligible,
+        codBlockers: codEvaluation.blockers,
+      };
+      assertCustomerOrderCreationAllowed(capability, paymentMethod);
 
       if (quote.status === EcommerceQuoteStatus.ACTIVE && new Date(quote.expiresAt) <= new Date()) {
         await expireActiveQuoteRow(quote._id, req.auth.tenantId, session);
@@ -276,16 +326,17 @@ export async function createCustomerOrder(req) {
         });
       }
 
-      const paymentExpiresAt = computePendingPaymentExpiresAt(
-        new Date(),
-        fulfilmentRow?.toObject?.() ?? fulfilmentRow ?? {},
-      );
+      const fulfilmentSettingsObj = fulfilmentRow?.toObject?.() ?? fulfilmentRow ?? {};
+      const isCod = paymentMethod === EcommercePaymentMethod.COD;
+      const orderExpiresAt = isCod
+        ? computeCodAcceptanceExpiresAt(new Date(), fulfilmentSettingsObj)
+        : computePendingPaymentExpiresAt(new Date(), fulfilmentSettingsObj);
       await transferQuoteReservationsToOrder({
         tenantId: req.auth.tenantId,
         quoteId: quote._id,
         orderId,
         session,
-        expiresAt: paymentExpiresAt,
+        expiresAt: orderExpiresAt,
       });
 
       const orderNumber = `EC-${createId("ordn").slice(-10).toUpperCase()}`;
@@ -295,7 +346,10 @@ export async function createCustomerOrder(req) {
         quoteFinancialSnapshot: quote.financialSnapshot,
         quoteLines: quote.lines,
         consumedAt: new Date().toISOString(),
-        paymentExpiresAt: paymentExpiresAt.toISOString(),
+        paymentMethod,
+        codPincodeSnapshot: quote.codPincodeSnapshot ?? null,
+        paymentExpiresAt: isCod ? null : orderExpiresAt.toISOString(),
+        codAcceptanceExpiresAt: isCod ? orderExpiresAt.toISOString() : null,
       };
 
       const order = (
@@ -306,7 +360,9 @@ export async function createCustomerOrder(req) {
               tenantId: req.auth.tenantId,
               customerId: req.auth.id,
               orderNumber,
-              status: EcommerceOrderStatus.PENDING_PAYMENT,
+              status: isCod
+                ? EcommerceOrderStatus.COD_PENDING_ACCEPTANCE
+                : EcommerceOrderStatus.PENDING_PAYMENT,
               quoteId: quote._id,
               lines: quote.lines,
               fulfilmentMode: quote.fulfilmentMode,
@@ -318,9 +374,15 @@ export async function createCustomerOrder(req) {
               totalPaise: quote.totalPaise,
               taxConfigVersion: quote.taxConfigVersion,
               financialSnapshot,
+              paymentMethod,
+              codPincodeSnapshot: quote.codPincodeSnapshot ?? null,
+              codCollection: isCod
+                ? { status: EcommerceCodCollectionStatus.PENDING }
+                : undefined,
               idempotencyKey,
               creationBodyHash: bodyHash,
-              expiresAt: paymentExpiresAt,
+              expiresAt: orderExpiresAt,
+              storePolicySnapshot: snapshotStorePolicyForOrder(fulfilmentSettingsObj),
             },
           ],
           { session },
@@ -333,12 +395,14 @@ export async function createCustomerOrder(req) {
             _id: createId("eoev"),
             tenantId: req.auth.tenantId,
             orderId: order._id,
-            type: EcommerceOrderEventType.ORDER_CREATED,
+            type: isCod ? EcommerceOrderEventType.COD_ORDER_PLACED : EcommerceOrderEventType.ORDER_CREATED,
             actorType: "CUSTOMER",
             actorId: req.auth.id,
             payload: {
               quoteId: quote._id,
-              paymentExpiresAt: paymentExpiresAt.toISOString(),
+              paymentMethod,
+              paymentExpiresAt: isCod ? null : orderExpiresAt.toISOString(),
+              codAcceptanceExpiresAt: isCod ? orderExpiresAt.toISOString() : null,
             },
           },
         ],
@@ -361,7 +425,7 @@ export async function createCustomerOrder(req) {
             "This idempotency key was already used with a different request.",
           );
         }
-        return { order: mapCustomerOrder(row, capability), created: false };
+        return { order: mapCustomerOrder(row, baseCapability), created: false };
       }
     }
     throw err;
@@ -369,48 +433,9 @@ export async function createCustomerOrder(req) {
 }
 
 export async function cancelCustomerOrder(req) {
-  assertEcommerceOperational(req.tenant);
-  const { capability } = await loadCheckoutContext(req.auth.tenantId, req.tenant);
-  return withTransaction(async (session) => {
-    const result = await cancelPendingPaymentOrderRow({
-      orderId: req.params.orderId,
-      tenantId: req.auth.tenantId,
-      customerId: req.auth.id,
-      session,
-    });
-    if (result.kind === "NOT_FOUND") throw errors.notFound("Order");
-    if (result.kind === "NOT_CANCELLABLE") {
-      if (
-        result.status === EcommerceOrderStatus.PAID
-        || result.status === EcommerceOrderStatus.PROCESSING
-      ) {
-        throw errors.business("ORDER_NOT_CANCELLABLE", "Paid orders cannot be cancelled here.", {
-          status: result.status,
-        });
-      }
-      throw errors.business("ORDER_NOT_CANCELLABLE", "Order cannot be cancelled.", {
-        status: result.status,
-      });
-    }
-    if (result.kind === "RACE") {
-      throw errors.business("ORDER_NOT_CANCELLABLE", "Order is no longer pending payment.");
-    }
-    await EcommerceOrderEvent.create(
-      [
-        {
-          _id: createId("eoev"),
-          tenantId: req.auth.tenantId,
-          orderId: result.order._id,
-          type: EcommerceOrderEventType.CANCELLED,
-          actorType: "CUSTOMER",
-          actorId: req.auth.id,
-          payload: { stockReleaseReason: result.order.stockReleaseReason },
-        },
-      ],
-      { session },
-    );
-    return mapCustomerOrder(result.order.toObject(), capability);
-  });
+  const { directCancelCustomerOrder } = await import("./ecommerce-order-cancellation.service.js");
+  await directCancelCustomerOrder(req);
+  return getCustomerOrder(req);
 }
 
 async function refundRowsByOrderId(tenantId, orderIds) {
@@ -425,26 +450,30 @@ async function refundRowsByOrderId(tenantId, orderIds) {
 }
 
 export async function listCustomerOrders(req) {
-  assertEcommerceOperational(req.tenant);
   const { capability } = await loadCheckoutContext(req.auth.tenantId, req.tenant);
-  const rows = await EcommerceOrder.find({
+  const scope = {
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
-  })
-    .sort({ createdAt: -1 })
-    .limit(Math.min(Number(req.query.limit) || 50, 100))
-    .lean();
+  };
+  const sort = "createdAt:desc";
+  const page = await paginate(EcommerceOrder, {
+    scope,
+    filters: {},
+    cursor: req.query?.cursor,
+    limit: req.query?.limit,
+    sort,
+  });
   const refundMap = await refundRowsByOrderId(
     req.auth.tenantId,
-    rows.map((r) => r._id),
+    page.data.map((r) => r._id),
   );
   return {
-    items: rows.map((r) => mapCustomerOrder(r, capability, refundMap.get(r._id))),
+    items: page.data.map((r) => mapCustomerOrder(r, capability, refundMap.get(r._id))),
+    meta: { ...page.meta, sort },
   };
 }
 
 export async function getCustomerOrder(req) {
-  assertEcommerceOperational(req.tenant);
   const { capability } = await loadCheckoutContext(req.auth.tenantId, req.tenant);
   const row = await EcommerceOrder.findOne({
     _id: req.params.orderId,
@@ -457,27 +486,33 @@ export async function getCustomerOrder(req) {
     orderId: row._id,
   }).lean();
   const activeAttempt = await findActivePaymentAttempt(req.auth.tenantId, row._id);
-  return mapCustomerOrder(
+  const mapped = mapCustomerOrder(
     row,
     capability,
     refund,
     mapCustomerActivePaymentAttempt(activeAttempt),
   );
+  const { mapCancellationCapabilities } = await import("./ecommerce-order-cancellation.service.js");
+  const { EcommerceOrderCancellationRequest } = await import("../models/index.js");
+  const cancellationRequest = row.activeCancellationRequestId
+    ? await EcommerceOrderCancellationRequest.findById(row.activeCancellationRequestId).lean()
+    : null;
+  const { mapCancellationRequest } = await import("./ecommerce-order-cancellation.service.js");
+  return {
+    ...mapped,
+    cancellation: {
+      capabilities: mapCancellationCapabilities(row, activeAttempt),
+      request: mapCancellationRequest(cancellationRequest),
+    },
+  };
 }
 
 export async function listAdminOrders(req) {
   const { capability } = await loadCheckoutContext(req.auth.tenantId, req.tenant);
-  const rows = await EcommerceOrder.find({ tenantId: req.auth.tenantId })
-    .sort({ createdAt: -1 })
-    .limit(Math.min(Number(req.query.limit) || 50, 100))
-    .lean();
-  const refundMap = await refundRowsByOrderId(
-    req.auth.tenantId,
-    rows.map((r) => r._id),
-  );
-  return {
-    items: rows.map((r) => mapAdminOrder(r, capability, refundMap.get(r._id))),
-  };
+  return listAdminOrdersPaginated(req, async (row) => {
+    const refundMap = await refundRowsByOrderId(req.auth.tenantId, [row._id]);
+    return mapAdminOrder(row, capability, refundMap.get(row._id));
+  });
 }
 
 export async function getAdminOrder(req) {
@@ -491,7 +526,12 @@ export async function getAdminOrder(req) {
     tenantId: req.auth.tenantId,
     orderId: row._id,
   }).lean();
-  return mapAdminOrder(row, capability, refund);
+  const mapped = mapAdminOrder(row, capability, refund);
+  const [withCustomer, returnSummary] = await Promise.all([
+    attachAdminOrderCustomerDisplay(req.auth.tenantId, [mapped]),
+    attachReturnSummaryToAdminOrder(req.auth.tenantId, row._id),
+  ]);
+  return { ...withCustomer[0], returnSummary };
 }
 
 export async function listAdminOrderEvents(req) {

@@ -664,6 +664,16 @@ export async function processOutbox(job) {
       return;
     }
     event.error = null;
+  } else if (event.topic.startsWith("ecommerce.")) {
+    const { processEcommerceOutboxEvent } = await import("../lib/ecommerce-outbox-processor.js");
+    const result = await processEcommerceOutboxEvent(event);
+    if (!result.handled) {
+      event.status = "DEAD_LETTER";
+      event.error = `Unhandled ecommerce outbox topic: ${event.topic}`;
+      await event.save();
+      return;
+    }
+    event.error = result.outcome === "NO_DELIVERY_CHANNEL" ? "NO_DELIVERY_CHANNEL" : null;
   } else if (event.topic !== "message.send") {
     event.status = "DEAD_LETTER";
     event.error = `Unhandled outbox topic: ${event.topic}`;
@@ -933,6 +943,10 @@ export async function processMaintenance(job) {
   if (job.name === "ecommerce-order-payment-expiry") {
     const { runEcommerceOrderPaymentExpiry } = await import("../services/ecommerce-order-payment-expiry.service.js");
     await runEcommerceOrderPaymentExpiry(now);
+  }
+  if (job.name === "ecommerce-cod-acceptance-expiry") {
+    const { runEcommerceCodAcceptanceExpiry } = await import("../services/ecommerce-cod-acceptance-expiry.service.js");
+    await runEcommerceCodAcceptanceExpiry(now);
   }
   if (job.name === "ecommerce-payment-reconcile") {
     const { runEcommercePaymentReconcile } = await import("../services/ecommerce-payment-reconcile.service.js");

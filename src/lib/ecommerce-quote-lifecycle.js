@@ -63,11 +63,12 @@ export async function expireActiveQuoteRow(quoteId, tenantId, session, at = new 
   return updated;
 }
 
-export async function cancelActiveQuoteRow(quoteId, tenantId, session, at = new Date()) {
+export async function cancelActiveQuoteRow(quoteId, tenantId, customerId, session, at = new Date()) {
   const updated = await EcommercePriceQuote.findOneAndUpdate(
     {
       _id: quoteId,
       tenantId,
+      customerId,
       status: EcommerceQuoteStatus.ACTIVE,
     },
     {

@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { EcommercePaymentMethod } from "../constants/enums.js";
 import { errors } from "./app-error.js";
 import { evaluateCheckoutTaxReadiness } from "./ecommerce-checkout-tax.js";
 import { isEcommerceOperational } from "./ecommerce-access.js";
@@ -7,6 +8,7 @@ import { assertPlatformCapability } from "./feature-entitlements.js";
 import { isPlanFeatureEnabled } from "./feature-entitlements.js";
 import { resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import { customerAppPaymentsEnabled } from "./customer-app-access.js";
+import { evaluateStorePolicyCheckoutBlockers } from "./ecommerce-store-policies.js";
 
 function gatewayConfigured(tenant) {
   try {
@@ -35,7 +37,7 @@ export function deriveEcommerceCheckoutCapability({
 }) {
   const tax = evaluateCheckoutTaxReadiness(taxSettings, fulfilmentSettingsRow ?? {});
   const storeOperational = isEcommerceOperational(tenant);
-  const blockers = [...tax.blockers];
+  const blockers = [...tax.blockers, ...evaluateStorePolicyCheckoutBlockers(fulfilmentSettingsRow ?? {})];
 
   if (!storeOperational) {
     blockers.push({ code: "STORE_NOT_OPERATIONAL", message: "Online store is not active." });
@@ -115,8 +117,33 @@ export function assertCheckoutChargingAllowed(capability) {
   }
 }
 
-export function assertCustomerOrderCreationAllowed(capability) {
-  assertCheckoutChargingAllowed(capability);
+export function assertCustomerOrderCreationAllowed(capability, paymentMethod = EcommercePaymentMethod.ONLINE) {
+  if (!capability.checkoutTaxReady) {
+    throw errors.business(
+      "CHECKOUT_NOT_READY",
+      "Checkout tax and place-of-supply must be configured before placing an order.",
+      { checkoutTaxReady: false, blockers: capability.blockers },
+    );
+  }
+  if (paymentMethod === EcommercePaymentMethod.ONLINE) {
+    if (!capability.paymentAllowed) {
+      throw errors.business(
+        "PAYMENT_NOT_AVAILABLE",
+        "Checkout payment is not available for this store.",
+        { checkoutTaxReady: capability.checkoutTaxReady, blockers: capability.blockers },
+      );
+    }
+    return;
+  }
+  if (paymentMethod === EcommercePaymentMethod.COD) {
+    if (!capability.codOrderAllowed) {
+      throw errors.business(
+        "COD_NOT_AVAILABLE",
+        "Cash on delivery is not available for this checkout.",
+        { blockers: capability.codBlockers ?? [] },
+      );
+    }
+  }
 }
 
 export function assertCustomerPaymentAllowed(capability) {

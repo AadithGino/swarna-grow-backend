@@ -32,6 +32,7 @@ GET /admin/dues
 GET /admin/dues/count
 GET /admin/ecommerce/categories
 GET /admin/ecommerce/categories/:categoryId
+GET /admin/ecommerce/return-requests
 GET /admin/ecommerce/gold-rates/current
 GET /admin/ecommerce/gold-rates/history
 GET /admin/ecommerce/products
@@ -106,6 +107,8 @@ GET /app/shop/availability
 GET /app/shop/categories
 GET /app/shop/products
 GET /app/shop/products/:productIdOrSlug
+GET /app/shop/store-policies
+GET /app/shop/orders/:orderId/return
 GET /app/scheme-plans
 GET /app/scheme-plans/:planId
 GET /app/schemes
@@ -166,6 +169,7 @@ PATCH /admin/branches/:branchId
 PATCH /admin/customers/:customerId
 PATCH /admin/customers/:customerId/whatsapp-opt
 PATCH /admin/ecommerce/categories/:categoryId
+PATCH /admin/ecommerce/orders/:orderId/delivery-tracking
 PATCH /admin/ecommerce/products/:productId
 PATCH /admin/scheme-plans/:planId
 PATCH /admin/settings/branding
@@ -198,6 +202,12 @@ POST /admin/ecommerce/gold-rates
 POST /admin/ecommerce/products
 POST /admin/ecommerce/products/:productId/archive
 POST /admin/ecommerce/products/:productId/publish
+POST /admin/ecommerce/return-requests/:returnRequestId/decision
+POST /admin/ecommerce/return-requests/:returnRequestId/inspection
+POST /admin/ecommerce/return-requests/:returnRequestId/received
+POST /admin/ecommerce/return-requests/:returnRequestId/record-manual-refund
+POST /admin/ecommerce/return-requests/:returnRequestId/refund-case
+POST /admin/ecommerce/return-requests/:returnRequestId/resolve
 POST /admin/gold-rate
 POST /admin/grievances/:grievanceId/assign
 POST /admin/grievances/:grievanceId/messages

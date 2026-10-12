@@ -14,12 +14,10 @@ export const ECOMMERCE_ORDER_TRANSITIONS = Object.freeze({
     [EcommerceOrderStatus.PROCESSING]: [
       EcommerceOrderStatus.READY_FOR_PICKUP,
       EcommerceOrderStatus.SHIPPED,
-      EcommerceOrderStatus.CANCELLED,
       EcommerceOrderStatus.REFUND_PENDING,
     ],
     [EcommerceOrderStatus.READY_FOR_PICKUP]: [
       EcommerceOrderStatus.DELIVERED,
-      EcommerceOrderStatus.CANCELLED,
       EcommerceOrderStatus.REFUND_PENDING,
     ],
     [EcommerceOrderStatus.SHIPPED]: [
@@ -29,17 +27,17 @@ export const ECOMMERCE_ORDER_TRANSITIONS = Object.freeze({
     [EcommerceOrderStatus.REFUND_PENDING]: [EcommerceOrderStatus.REFUNDED],
   }),
   STAFF: Object.freeze({
-    [EcommerceOrderStatus.PAID]: [EcommerceOrderStatus.PROCESSING, EcommerceOrderStatus.CANCELLED],
+    [EcommerceOrderStatus.PAID]: [EcommerceOrderStatus.PROCESSING],
     [EcommerceOrderStatus.PROCESSING]: [
       EcommerceOrderStatus.READY_FOR_PICKUP,
       EcommerceOrderStatus.SHIPPED,
-      EcommerceOrderStatus.CANCELLED,
     ],
     [EcommerceOrderStatus.READY_FOR_PICKUP]: [EcommerceOrderStatus.DELIVERED],
     [EcommerceOrderStatus.SHIPPED]: [EcommerceOrderStatus.DELIVERED],
   }),
   CUSTOMER: Object.freeze({
     [EcommerceOrderStatus.PENDING_PAYMENT]: [EcommerceOrderStatus.CANCELLED],
+    [EcommerceOrderStatus.COD_PENDING_ACCEPTANCE]: [EcommerceOrderStatus.CANCELLED],
   }),
 });
 
