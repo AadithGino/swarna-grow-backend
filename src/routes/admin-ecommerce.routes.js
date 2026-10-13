@@ -19,7 +19,10 @@ import {
   ecommerceFulfilmentSettingsPutBody,
   ecommerceOrderFulfilmentTransitionBody,
   ecommerceCodOrderActionBody,
-  ecommerceCodCollectionBody,
+  ecommerceCourierCodCollectionBody,
+  ecommerceCodRemittanceBatchCreateBody,
+  ecommerceCodRemittanceLineBody,
+  ecommerceCodRemittanceReconcileBody,
   ecommercePaymentExceptionRefundManualBody,
   ecommercePaymentOperationalAckBody,
   ecommercePaymentReconcileRetryBody,
@@ -37,9 +40,6 @@ import {
   ecommerceSummaryQuery,
   ecommerceReportKeyParam,
   ecommerceDeliveryHandoverBody,
-  ecommerceCodCustodyHandoverBody,
-  ecommerceCodBankDepositBody,
-  ecommerceCodCustodyListQuery,
 } from "../validators/ecommerce.validators.js";
 import { cursorQuery } from "../validators/common.validators.js";
 import {
@@ -397,12 +397,55 @@ adminEcommerceRouter.post(
   ),
 );
 adminEcommerceRouter.post(
-  "/ecommerce/orders/:orderId/cod/record-collection",
+  "/ecommerce/orders/:orderId/courier-cod/confirm-collection",
   ...guarded(
     Permission.ECOMMERCE_FULFILMENT_OPERATE,
-    validate({ body: ecommerceCodCollectionBody }),
+    validate({ body: ecommerceCourierCodCollectionBody }),
     idempotent,
-    asyncHandler(controller.recordCodCollection),
+    asyncHandler(controller.confirmCourierCodCollection),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/courier-cod/summary",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getCourierCodSummary)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/courier-cod/orders",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listCourierCodOrders)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/courier-cod/remittance-batches",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceCodRemittanceBatchCreateBody }),
+    idempotent,
+    asyncHandler(controller.createCodRemittanceBatch),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/courier-cod/remittance-batches",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.listCodRemittanceBatches)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/courier-cod/remittance-batches/:batchId",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getCodRemittanceBatch)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/courier-cod/remittance-batches/:batchId/orders/:orderId/lines",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceCodRemittanceLineBody }),
+    idempotent,
+    asyncHandler(controller.addOrderToCodRemittanceBatch),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/courier-cod/remittance-batches/:batchId/reconcile",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceCodRemittanceReconcileBody }),
+    idempotent,
+    asyncHandler(controller.reconcileCodRemittanceBatch),
   ),
 );
 adminEcommerceRouter.get(
@@ -427,45 +470,6 @@ adminEcommerceRouter.post(
     Permission.ECOMMERCE_PAYMENT_OPERATE,
     validate({ body: ecommercePaymentOperationalAckBody }),
     asyncHandler(controller.acknowledgeOrderPaymentAttemptOperational),
-  ),
-);
-adminEcommerceRouter.get(
-  "/ecommerce/cod-custody/summary",
-  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getCodCustodySummary)),
-);
-adminEcommerceRouter.get(
-  "/ecommerce/cod-custody/orders",
-  ...guarded(
-    Permission.ECOMMERCE_READ,
-    validate({ query: ecommerceCodCustodyListQuery }),
-    asyncHandler(controller.listCodCustodyOrders),
-  ),
-);
-adminEcommerceRouter.post(
-  "/ecommerce/orders/:orderId/cod-custody/handover",
-  ...guarded(
-    Permission.ECOMMERCE_FULFILMENT_OPERATE,
-    idempotent,
-    validate({ body: ecommerceCodCustodyHandoverBody }),
-    asyncHandler(controller.initiateCodCustodyHandover),
-  ),
-);
-adminEcommerceRouter.post(
-  "/ecommerce/cod-custody/handovers/:handoverId/accept",
-  ...guarded(
-    Permission.CASH_HANDOVER_ACCEPT,
-    idempotent,
-    validate({ body: ecommerceVersionBody }),
-    asyncHandler(controller.acceptCodCustodyHandover),
-  ),
-);
-adminEcommerceRouter.post(
-  "/ecommerce/orders/:orderId/cod-custody/bank-deposit",
-  ...guarded(
-    Permission.ECOMMERCE_FULFILMENT_OPERATE,
-    idempotent,
-    validate({ body: ecommerceCodBankDepositBody }),
-    asyncHandler(controller.recordCodBankDeposit),
   ),
 );
 adminEcommerceRouter.post(

@@ -17,7 +17,11 @@ export async function getEcommerceWorkspaceSummary(req) {
     pipeline: metrics.pipeline,
     collections: {
       onlineCollected: moneyMetric(metrics.collections.onlineCollectedPaise),
-      codCollected: moneyMetric(metrics.collections.codCollectedPaise),
+      codCollected: moneyMetric(metrics.collections.codCourierCollectionConfirmedPaise),
+      codCourierCollectionConfirmed: moneyMetric(metrics.collections.codCourierCollectionConfirmedPaise),
+      codBankRemittanceReconciled: moneyMetric(metrics.collections.codBankRemittanceReconciledPaise),
+      codBankRemittanceGross: moneyMetric(metrics.collections.codBankRemittanceGrossPaise),
+      codBankRemittanceFees: moneyMetric(metrics.collections.codBankRemittanceFeePaise),
       grossCollected: moneyMetric(metrics.collections.grossCollectedPaise),
       providerRefundOutflow: moneyMetric(metrics.collections.providerRefundOutflowPaise),
       manualRefundOutflow: moneyMetric(metrics.collections.manualRefundOutflowPaise),

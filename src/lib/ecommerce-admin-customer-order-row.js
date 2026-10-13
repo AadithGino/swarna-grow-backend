@@ -1,8 +1,10 @@
 import {
-  EcommerceCodCollectionStatus,
+  EcommerceCourierCodCollectionStatus,
+  EcommerceCourierCodRemittanceStatus,
   EcommerceOrderStatus,
 } from "../constants/enums.js";
 import { orderUsesCod } from "./ecommerce-cod.js";
+import { isCourierCodCollectionConfirmed } from "./ecommerce-courier-cod.js";
 
 function lineSummary(lines) {
   const rows = Array.isArray(lines) ? lines : [];
@@ -32,10 +34,23 @@ function attentionState(row, refundRow) {
   return { kind: "NONE", label: null };
 }
 
+function codCollectionLabel(row) {
+  const cc = row.courierCod ?? {};
+  if (cc.remittanceStatus === EcommerceCourierCodRemittanceStatus.BANK_RECONCILED) {
+    return "BANK_RECONCILED";
+  }
+  if (cc.remittanceStatus === EcommerceCourierCodRemittanceStatus.DISCREPANCY) {
+    return "REMITTANCE_DISCREPANCY";
+  }
+  if (isCourierCodCollectionConfirmed(row)) {
+    return EcommerceCourierCodCollectionStatus.CONFIRMED;
+  }
+  return cc.collectionStatus ?? EcommerceCourierCodCollectionStatus.PENDING;
+}
+
 export function mapAdminCustomerOrderListRow(row, refundRow) {
   const cod = orderUsesCod(row);
-  const codCollected =
-    row.codCollection?.status === EcommerceCodCollectionStatus.COLLECTED;
+  const codCollected = cod && isCourierCodCollectionConfirmed(row);
   const summary = lineSummary(row.lines);
   const attention = attentionState(row, refundRow);
   return {
@@ -46,10 +61,12 @@ export function mapAdminCustomerOrderListRow(row, refundRow) {
     itemCount: summary.itemCount,
     totalPaise: row.totalPaise ?? 0,
     paymentMethod: row.paymentMethod ?? "ONLINE",
-    codCollectionStatus: cod ? row.codCollection?.status ?? EcommerceCodCollectionStatus.PENDING : null,
-    paymentCollected: cod ? codCollected : row.status !== EcommerceOrderStatus.PENDING_PAYMENT
-      && row.status !== EcommerceOrderStatus.PAYMENT_FAILED
-      && row.status !== EcommerceOrderStatus.PAYMENT_EXPIRED,
+    courierCodCollectionStatus: cod ? codCollectionLabel(row) : null,
+    paymentCollected: cod
+      ? codCollected
+      : row.status !== EcommerceOrderStatus.PENDING_PAYMENT
+        && row.status !== EcommerceOrderStatus.PAYMENT_FAILED
+        && row.status !== EcommerceOrderStatus.PAYMENT_EXPIRED,
     fulfilmentMode: row.fulfilmentMode ?? null,
     status: row.status,
     attentionKind: attention.kind,
@@ -59,21 +76,33 @@ export function mapAdminCustomerOrderListRow(row, refundRow) {
 }
 
 export function summarizeEcommerceCustomerOrderMoney(rows, refundByOrderId) {
-  let grossCollectedPaise = 0;
+  let onlineCollectedPaise = 0;
+  let codCourierConfirmedPaise = 0;
+  let codBankRemittanceReconciledPaise = 0;
   let refundOutflowPaise = 0;
   for (const row of rows) {
     const cod = orderUsesCod(row);
-    const collected = cod
-      ? row.codCollection?.status === EcommerceCodCollectionStatus.COLLECTED
-      : Boolean(row.paidAt);
-    if (collected) grossCollectedPaise += row.totalPaise ?? 0;
+    if (cod) {
+      if (isCourierCodCollectionConfirmed(row)) {
+        codCourierConfirmedPaise += row.totalPaise ?? 0;
+      }
+      if (row.courierCod?.remittanceStatus === EcommerceCourierCodRemittanceStatus.BANK_RECONCILED) {
+        codBankRemittanceReconciledPaise += row.courierCod?.remittanceNetPaise ?? row.totalPaise ?? 0;
+      }
+    } else if (row.paidAt) {
+      onlineCollectedPaise += row.totalPaise ?? 0;
+    }
     const refund = refundByOrderId.get(row._id);
     if (refund && (refund.status === "SUCCEEDED" || refund.status === "MANUAL_RECORDED")) {
       refundOutflowPaise += refund.amountPaise ?? row.totalPaise ?? 0;
     }
   }
+  const grossCollectedPaise = onlineCollectedPaise + codBankRemittanceReconciledPaise;
   return {
     orderCount: rows.length,
+    onlineCollectedPaise,
+    codCourierConfirmedPaise,
+    codBankRemittanceReconciledPaise,
     grossCollectedPaise,
     refundOutflowPaise,
     netCollectedPaise: grossCollectedPaise - refundOutflowPaise,

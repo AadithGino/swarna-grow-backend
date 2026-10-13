@@ -314,7 +314,58 @@ export const EcommerceOrderStatus = makeEnum(
   "REFUND_PENDING",
   "REFUNDED",
 );
-export const EcommerceCodCollectionStatus = makeEnum("PENDING", "COLLECTED");
+/** Courier-reported COD collection on delivery (manual or integration). */
+export const EcommerceCourierCodCollectionStatus = makeEnum(
+  "NOT_APPLICABLE",
+  "PENDING",
+  "CONFIRMED",
+  "NEEDS_REVIEW",
+);
+export const EcommerceCourierCodCollectionSource = makeEnum(
+  "MANUAL_OPERATOR",
+  "COURIER_INTEGRATION",
+);
+export const EcommerceCourierCodRemittanceStatus = makeEnum(
+  "NOT_APPLICABLE",
+  "NOT_DUE",
+  "OWED",
+  "BATCH_PENDING",
+  "BANK_RECONCILED",
+  "DISCREPANCY",
+);
+export const EcommerceCodRemittanceBatchStatus = makeEnum(
+  "DRAFT",
+  "FINALIZED",
+  "BANK_RECONCILED",
+  "DISCREPANCY",
+  "VOID",
+);
+export const EcommerceCodRemittanceLineStatus = makeEnum(
+  "ACTIVE",
+  "RECONCILED",
+  "REMOVED",
+  "VOID",
+);
+export const EcommerceCodRemittanceReconciliationStatus = makeEnum(
+  "PENDING",
+  "MATCHED",
+  "SHORT",
+  "OVER",
+  "NEEDS_REVIEW",
+);
+export const EcommerceCodRefundRemittanceContext = makeEnum(
+  "NOT_COLLECTED",
+  "COLLECTED_REMITTANCE_PENDING",
+  "COLLECTED_REMITTANCE_RECONCILED",
+  "COLLECTED_REMITTANCE_UNKNOWN",
+);
+export const EcommerceCodRefundFundingSource = makeEnum(
+  "NOT_FUNDED",
+  "JEWELLER_OUT_OF_POCKET",
+  "REMITTANCE_ADJUSTMENT",
+  "COURIER_CLAWBACK",
+  "UNDETERMINED",
+);
 export const EcommerceStockReleaseReason = makeEnum(
   "CUSTOMER_CANCEL",
   "PAYMENT_WINDOW_EXPIRED",
@@ -349,6 +400,10 @@ export const EcommerceOrderEventType = makeEnum(
   "COD_REJECTED",
   "COD_ACCEPTANCE_EXPIRED",
   "COD_COLLECTION_RECORDED",
+  "COURIER_COD_COLLECTION_CONFIRMED",
+  "COD_REMITTANCE_BATCH_CREATED",
+  "COD_REMITTANCE_LINE_ADDED",
+  "COD_REMITTANCE_BATCH_RECONCILED",
   "COD_CUSTODY_HANDOVER_INITIATED",
   "COD_CUSTODY_HANDOVER_ACCEPTED",
   "COD_CUSTODY_BANK_DEPOSIT_RECORDED",
@@ -500,17 +555,6 @@ export const GrievanceRelatedEntityType = makeEnum(
   "SCHEME",
   "REDEMPTION",
   "ORDER",
-);
-export const EcommerceCodCustodyStatus = makeEnum(
-  "NONE",
-  "WITH_COLLECTOR",
-  "HANDOVER_PENDING",
-  "SETTLED",
-  "EXCEPTION",
-);
-export const EcommerceCodCustodySettlementMethod = makeEnum(
-  "HANDOVER",
-  "BANK_DEPOSIT",
 );
 export const EcommerceFulfilmentHandoverMethod = makeEnum(
   "PICKUP_CODE",

@@ -14,11 +14,9 @@ This iteration adds customer-scoped admin order history, cursor-paginated custom
 | GET | `/admin/customers/:customerId/ecommerce/orders` | `ecommerce.read` |
 | GET | `/app/shop/orders` | cursor query (`limit`, `cursor`) |
 | POST | `/app/shop/orders/:orderId/confirm-pickup` | customer |
-| GET | `/admin/ecommerce/cod-custody/summary` | `ecommerce.read` |
-| GET | `/admin/ecommerce/cod-custody/orders` | `ecommerce.read` |
-| POST | `/admin/ecommerce/orders/:orderId/cod-custody/handover` | `ecommerce.fulfilment.operate` |
-| POST | `/admin/ecommerce/cod-custody/handovers/:handoverId/accept` | `cash.handover.accept` |
-| POST | `/admin/ecommerce/orders/:orderId/cod-custody/bank-deposit` | `ecommerce.fulfilment.operate` |
+| GET | `/admin/ecommerce/courier-cod/summary` | `ecommerce.read` |
+| POST | `/admin/ecommerce/orders/:orderId/courier-cod/confirm-collection` | `ecommerce.fulfilment.operate` |
+| POST/GET | `/admin/ecommerce/courier-cod/remittance-batches/*` | read / fulfilment operate |
 | POST | `/admin/ecommerce/orders/:orderId/pickup-code` | `ecommerce.fulfilment.operate` |
 | POST | `/admin/ecommerce/orders/:orderId/delivery-handover` | `ecommerce.fulfilment.operate` |
 
@@ -27,10 +25,10 @@ This iteration adds customer-scoped admin order history, cursor-paginated custom
 - `ecommerce.hasOrderHistory` on admin subscription, operations, store-status, and customer shop availability.
 - Grievance `relatedEntity.type`: `ORDER` (validated against customer + tenant).
 
-## Migrations / indexes
+## Courier COD data model
 
-- New collection: `EcommerceCodCustodyHandover` (indexed by tenant + status, idempotency on order).
-- Order schema extensions: `codCustody`, `fulfilmentHandover` (no separate migration script; Mongoose applies on write).
+- `courierCod` on orders; remittance batches/lines collections with tenant-scoped indexes (including unique bank credit reference per provider when reconciled).
+- No staff cash custody or `codCollection` fields — courier manual evidence + bank reconcile only.
 
 ## Unresolved P0 (explicitly out of scope)
 
@@ -39,7 +37,6 @@ This iteration adds customer-scoped admin order history, cursor-paginated custom
 
 ## Product decisions (fail-closed)
 
-- **COD custody handover acceptance** requires `cash.handover.accept` and matching `toUserId`; only the designated receiver may accept.
 - **Delivery proof** cannot be set via courier tracking patch; `deliveredAt` on tracking is no longer user-settable.
 - **Mark DELIVERED** requires recorded handover evidence (pickup code or delivery proof).
 

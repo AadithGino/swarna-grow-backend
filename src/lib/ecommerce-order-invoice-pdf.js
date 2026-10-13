@@ -1,7 +1,6 @@
 import PDFDocument from "pdfkit";
 import { computeComponentTaxPaise } from "./ecommerce-checkout-tax.js";
 import { orderUsesCod } from "./ecommerce-cod.js";
-import { EcommerceCodCollectionStatus } from "../constants/enums.js";
 
 function safeFilename(orderNumber) {
   const base = String(orderNumber ?? "order-invoice").replace(/[^\w.-]+/g, "_");
@@ -41,8 +40,11 @@ function addressLines(snapshot) {
 
 function paymentStatusLabel(order) {
   if (orderUsesCod(order)) {
-    if (order.codCollection?.status === EcommerceCodCollectionStatus.COLLECTED) {
-      return "COD collected";
+    if (order.courierCod?.collectionStatus === "CONFIRMED") {
+      if (order.courierCod?.remittanceStatus === "BANK_RECONCILED") {
+        return "COD — bank remittance reconciled";
+      }
+      return "COD collected by courier — bank remittance pending";
     }
     return "Cash on delivery — payment pending";
   }

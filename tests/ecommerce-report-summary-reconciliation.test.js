@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import {
-  EcommerceCodCollectionStatus,
+  EcommerceCourierCodCollectionStatus,
+  EcommerceCourierCodRemittanceStatus,
   EcommerceOrderStatus,
   EcommercePaymentExceptionRefundStatus,
   EcommercePaymentMethod,
 } from "../src/constants/enums.js";
+import { computeEcommerceCollections } from "../src/lib/ecommerce-workspace-collections.js";
 import { createId } from "../src/lib/ids.js";
 import {
   EcommerceOrder,
@@ -90,7 +92,7 @@ test("sales report totals match workspace summary — online payment", async () 
   assert.ok(report.charts?.collectionsTrend?.series?.length >= 3);
 });
 
-test("sales report totals match workspace summary — COD collection", async () => {
+test("sales report totals match workspace summary — COD courier vs bank", async () => {
   const { tenant, user, customer } = await seedFixture();
   await EcommerceOrder.create({
     _id: createId("eord"),
@@ -100,10 +102,15 @@ test("sales report totals match workspace summary — COD collection", async () 
     status: EcommerceOrderStatus.DELIVERED,
     paymentMethod: EcommercePaymentMethod.COD,
     totalPaise: 30_000,
-    codCollection: {
-      status: EcommerceCodCollectionStatus.COLLECTED,
-      collectedAt: IN_PERIOD,
-      amountPaise: 30_000,
+    courierCod: {
+      collectionStatus: "CONFIRMED",
+      collectionConfirmedAt: IN_PERIOD,
+      expectedAmountPaise: 30_000,
+      remittanceStatus: "BANK_RECONCILED",
+      remittanceGrossPaise: 30_000,
+      remittanceFeePaise: 500,
+      remittanceNetPaise: 29_500,
+      bankCreditedAt: IN_PERIOD,
     },
     lines: [],
     version: 1,
@@ -113,7 +120,59 @@ test("sales report totals match workspace summary — COD collection", async () 
   const summary = await fetchSummary(user);
   const report = await fetchSalesReport(user);
   assert.equal(summary.codCollected.amountPaise, 30_000);
-  assert.equal(summaryPaise(report, "COD_COLLECTED"), 30_000);
+  assert.equal(summary.codBankRemittanceGross.amountPaise, 30_000);
+  assert.equal(summary.codBankRemittanceFees.amountPaise, 500);
+  assert.equal(summary.codBankRemittanceReconciled.amountPaise, 29_500);
+  assert.equal(summaryPaise(report, "COD_COURIER_COLLECTION_CONFIRMED"), 30_000);
+  assert.equal(summaryPaise(report, "COD_BANK_REMITTANCE_RECONCILED"), 29_500);
+  assert.equal(summary.netCollected.amountPaise, 29_500);
+});
+
+test("courier confirmed without bank does not inflate net collections", async () => {
+  const { tenant, user, customer } = await seedFixture();
+  await EcommerceOrder.create({
+    _id: createId("eord"),
+    tenantId: tenant._id,
+    customerId: customer._id,
+    orderNumber: "EC-COD-OWED",
+    status: EcommerceOrderStatus.DELIVERED,
+    paymentMethod: EcommercePaymentMethod.COD,
+    totalPaise: 20_000,
+    courierCod: {
+      collectionStatus: EcommerceCourierCodCollectionStatus.CONFIRMED,
+      collectionConfirmedAt: IN_PERIOD,
+      remittanceStatus: EcommerceCourierCodRemittanceStatus.OWED,
+    },
+    lines: [],
+    version: 1,
+  });
+  await EcommerceOrder.create({
+    _id: createId("eord"),
+    tenantId: tenant._id,
+    customerId: customer._id,
+    orderNumber: "EC-COUR-BANK",
+    status: EcommerceOrderStatus.DELIVERED,
+    paymentMethod: EcommercePaymentMethod.COD,
+    totalPaise: 40_000,
+    courierCod: {
+      collectionStatus: EcommerceCourierCodCollectionStatus.CONFIRMED,
+      collectionConfirmedAt: IN_PERIOD,
+      remittanceStatus: EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
+      remittanceNetPaise: 39_000,
+      bankCreditedAt: IN_PERIOD,
+    },
+    lines: [],
+    version: 1,
+  });
+
+  const metrics = await computeEcommerceCollections(tenant._id, FROM, TO);
+  assert.equal(metrics.codCourierCollectionConfirmedPaise, 60_000);
+  assert.equal(metrics.codBankRemittanceReconciledPaise, 39_000);
+  assert.equal(metrics.grossCollectedPaise, 39_000);
+
+  const summary = await fetchSummary(user);
+  assert.equal(summary.codCollected.amountPaise, 60_000);
+  assert.equal(summary.netCollected.amountPaise, 39_000);
 });
 
 test("provider refund and manual refunds reconcile once", async () => {

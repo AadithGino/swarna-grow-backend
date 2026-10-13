@@ -17,7 +17,7 @@ import * as ecommerceOrderCancellation from "../services/ecommerce-order-cancell
 import * as ecommerceOrderDelivery from "../services/ecommerce-order-delivery.service.js";
 import * as ecommerceOrderReturn from "../services/ecommerce-order-return.service.js";
 import * as ecommerceAdminCustomerOrders from "../services/ecommerce-admin-customer-orders.service.js";
-import * as ecommerceCodCustody from "../services/ecommerce-cod-custody.service.js";
+import * as ecommerceCourierCod from "../services/ecommerce-courier-cod.service.js";
 import * as ecommerceOrderHandover from "../services/ecommerce-order-handover.service.js";
 
 export const storeStatus = async (req, res) =>
@@ -257,8 +257,33 @@ export const acceptCodOrder = async (req, res) =>
 export const rejectCodOrder = async (req, res) =>
   sendSuccess(res, await ecommerceCodOrder.rejectAdminCodOrder(req));
 
-export const recordCodCollection = async (req, res) =>
-  sendSuccess(res, await ecommerceCodOrder.recordAdminCodCollection(req));
+export const confirmCourierCodCollection = async (req, res) =>
+  sendSuccess(res, await ecommerceCourierCod.confirmManualCourierCodCollection(req));
+
+export const getCourierCodSummary = async (req, res) =>
+  sendSuccess(res, await ecommerceCourierCod.getCourierCodWorkspaceSummary(req));
+
+export const createCodRemittanceBatch = async (req, res) =>
+  sendSuccess(res, await ecommerceCourierCod.createCodRemittanceBatch(req));
+
+export const listCodRemittanceBatches = async (req, res) => {
+  const result = await ecommerceCourierCod.listCodRemittanceBatches(req);
+  return sendList(res, result);
+};
+
+export const listCourierCodOrders = async (req, res) => {
+  const result = await ecommerceCourierCod.listCourierCodOrders(req);
+  return sendList(res, result);
+};
+
+export const getCodRemittanceBatch = async (req, res) =>
+  sendSuccess(res, await ecommerceCourierCod.getCodRemittanceBatch(req));
+
+export const addOrderToCodRemittanceBatch = async (req, res) =>
+  sendSuccess(res, await ecommerceCourierCod.addOrderToCodRemittanceBatch(req));
+
+export const reconcileCodRemittanceBatch = async (req, res) =>
+  sendSuccess(res, await ecommerceCourierCod.reconcileCodRemittanceBatch(req));
 
 export const listPaymentExceptions = async (req, res) =>
   sendSuccess(res, await ecommerceExceptionRefund.listAdminPaymentExceptions(req));
@@ -300,23 +325,6 @@ export const listCustomerEcommerceOrders = async (req, res) => {
 
 export const getCustomerEcommerceOrdersMeta = async (req, res) =>
   sendSuccess(res, await ecommerceAdminCustomerOrders.getAdminCustomerEcommerceOrdersMeta(req));
-
-export const getCodCustodySummary = async (req, res) =>
-  sendSuccess(res, await ecommerceCodCustody.getCodCustodyWorkspaceSummary(req));
-
-export const listCodCustodyOrders = async (req, res) => {
-  const result = await ecommerceCodCustody.listCodCustodyOrders(req);
-  return sendList(res, { data: result.items, meta: result.meta });
-};
-
-export const initiateCodCustodyHandover = async (req, res) =>
-  sendSuccess(res, await ecommerceCodCustody.initiateCodCustodyHandover(req));
-
-export const acceptCodCustodyHandover = async (req, res) =>
-  sendSuccess(res, await ecommerceCodCustody.acceptCodCustodyHandover(req));
-
-export const recordCodBankDeposit = async (req, res) =>
-  sendSuccess(res, await ecommerceCodCustody.recordCodBankDeposit(req));
 
 export const issuePickupCode = async (req, res) =>
   sendSuccess(res, await ecommerceOrderHandover.issueAdminPickupCode(req));

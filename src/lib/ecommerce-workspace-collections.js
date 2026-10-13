@@ -5,7 +5,8 @@
  */
 import { env } from "../config/env.js";
 import {
-  EcommerceCodCollectionStatus,
+  EcommerceCourierCodCollectionStatus,
+  EcommerceCourierCodRemittanceStatus,
   EcommercePaymentExceptionRefundStatus,
   EcommercePaymentMethod,
 } from "../constants/enums.js";
@@ -73,11 +74,12 @@ export async function aggregateReturnManualRefundPaise(tenantId, from, to) {
 export async function computeEcommerceCollections(tenantId, from, to) {
   const tenantScope = { tenantId };
   const paidAtRange = istDateRangeMatch("paidAt", from, to);
-  const codCollectedRange = istDateRangeMatch("codCollection.collectedAt", from, to);
+  const codBankRange = istDateRangeMatch("courierCod.bankCreditedAt", from, to);
 
   const [
     onlineAgg,
-    codAgg,
+    codCourierAgg,
+    codBankAgg,
     taxAgg,
     fulfilmentAgg,
     providerRefundPaise,
@@ -109,20 +111,35 @@ export async function computeEcommerceCollections(tenantId, from, to) {
         $match: {
           ...tenantScope,
           paymentMethod: EcommercePaymentMethod.COD,
-          "codCollection.status": EcommerceCodCollectionStatus.COLLECTED,
-          ...dateMatch("codCollection.collectedAt", { from, to }),
+          "courierCod.collectionStatus": EcommerceCourierCodCollectionStatus.CONFIRMED,
+          ...dateMatch("courierCod.collectionConfirmedAt", { from, to }),
         },
       },
       {
         $group: {
           _id: null,
           amountPaise: {
-            $sum: {
-              $ifNull: ["$codCollection.amountPaise", "$totalPaise"],
-            },
+            $sum: { $ifNull: ["$courierCod.expectedAmountPaise", "$totalPaise"] },
           },
-          taxPaise: { $sum: "$taxPaise" },
-          fulfilmentPaise: { $sum: "$fulfilmentChargePaise" },
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+    EcommerceOrder.aggregate([
+      {
+        $match: {
+          ...tenantScope,
+          paymentMethod: EcommercePaymentMethod.COD,
+          "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
+          ...dateMatch("courierCod.bankCreditedAt", { from, to }),
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          netPaise: { $sum: { $ifNull: ["$courierCod.remittanceNetPaise", "$totalPaise"] } },
+          grossPaise: { $sum: { $ifNull: ["$courierCod.remittanceGrossPaise", "$totalPaise"] } },
+          feePaise: { $sum: { $ifNull: ["$courierCod.remittanceFeePaise", 0] } },
           count: { $sum: 1 },
         },
       },
@@ -139,8 +156,8 @@ export async function computeEcommerceCollections(tenantId, from, to) {
             },
             {
               paymentMethod: EcommercePaymentMethod.COD,
-              "codCollection.status": EcommerceCodCollectionStatus.COLLECTED,
-              ...codCollectedRange,
+              "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
+              ...codBankRange,
             },
           ],
         },
@@ -159,8 +176,8 @@ export async function computeEcommerceCollections(tenantId, from, to) {
             },
             {
               paymentMethod: EcommercePaymentMethod.COD,
-              "codCollection.status": EcommerceCodCollectionStatus.COLLECTED,
-              ...codCollectedRange,
+              "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
+              ...codBankRange,
             },
           ],
         },
@@ -174,23 +191,31 @@ export async function computeEcommerceCollections(tenantId, from, to) {
   ]);
 
   const onlineCollectedPaise = onlineAgg[0]?.amountPaise ?? 0;
-  const codCollectedPaise = codAgg[0]?.amountPaise ?? 0;
+  const codCourierCollectionConfirmedPaise = codCourierAgg[0]?.amountPaise ?? 0;
+  const codBankRemittanceReconciledPaise = codBankAgg[0]?.netPaise ?? 0;
+  const codBankRemittanceGrossPaise = codBankAgg[0]?.grossPaise ?? 0;
+  const codBankRemittanceFeePaise = codBankAgg[0]?.feePaise ?? 0;
   const taxPaise = taxAgg[0]?.taxPaise ?? 0;
   const fulfilmentChargePaise = fulfilmentAgg[0]?.fulfilmentPaise ?? 0;
   const manualRefundPaise =
     exceptionManualPaise + codCancelManualPaise + returnManualPaise;
   const refundOutflowPaise = providerRefundPaise + manualRefundPaise;
-  const grossCollectedPaise = onlineCollectedPaise + codCollectedPaise;
+  const grossCollectedPaise = onlineCollectedPaise + codBankRemittanceReconciledPaise;
   const netCollectedPaise = grossCollectedPaise - refundOutflowPaise;
   const onlineCollectedCount = onlineAgg[0]?.count ?? 0;
-  const codCollectedCount = codAgg[0]?.count ?? 0;
-  const collectedOrderCount = onlineCollectedCount + codCollectedCount;
+  const codCourierCollectionConfirmedCount = codCourierAgg[0]?.count ?? 0;
+  const codBankRemittanceReconciledCount = codBankAgg[0]?.count ?? 0;
+  const collectedOrderCount = onlineCollectedCount + codBankRemittanceReconciledCount;
   const averageCollectedOrderValuePaise =
     collectedOrderCount > 0 ? Math.round(grossCollectedPaise / collectedOrderCount) : 0;
 
   return {
     onlineCollectedPaise,
-    codCollectedPaise,
+    codCollectedPaise: codCourierCollectionConfirmedPaise,
+    codCourierCollectionConfirmedPaise,
+    codBankRemittanceReconciledPaise,
+    codBankRemittanceGrossPaise,
+    codBankRemittanceFeePaise,
     grossCollectedPaise,
     taxPaise,
     fulfilmentChargePaise,
@@ -200,7 +225,9 @@ export async function computeEcommerceCollections(tenantId, from, to) {
     netCollectedPaise,
     collectedOrderCount,
     onlineCollectedCount,
-    codCollectedCount,
+    codCollectedCount: codCourierCollectionConfirmedCount,
+    codCourierCollectionConfirmedCount,
+    codBankRemittanceReconciledCount,
     averageCollectedOrderValuePaise,
   };
 }
@@ -225,15 +252,15 @@ export async function computeEcommerceCollectionsDaily(tenantId, from, to) {
           $match: {
             tenantId,
             paymentMethod: EcommercePaymentMethod.COD,
-            "codCollection.status": EcommerceCodCollectionStatus.COLLECTED,
-            ...dateMatch("codCollection.collectedAt", range),
+            "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
+            ...dateMatch("courierCod.bankCreditedAt", range),
           },
         },
         {
           $group: {
-            _id: dayGroup("codCollection.collectedAt"),
+            _id: dayGroup("courierCod.bankCreditedAt"),
             amountPaise: {
-              $sum: { $ifNull: ["$codCollection.amountPaise", "$totalPaise"] },
+              $sum: { $ifNull: ["$courierCod.remittanceNetPaise", "$totalPaise"] },
             },
           },
         },
@@ -320,7 +347,7 @@ export async function aggregateOrdersPlacedDaily(tenantId, from, to) {
 export async function aggregateProductLineTotals(tenantId, from, to) {
   const range = { from, to };
   const paidAtRange = dateMatch("paidAt", range);
-  const codRange = dateMatch("codCollection.collectedAt", range);
+  const codRange = dateMatch("courierCod.bankCreditedAt", range);
   return EcommerceOrder.aggregate([
     {
       $match: {
@@ -333,7 +360,7 @@ export async function aggregateProductLineTotals(tenantId, from, to) {
           },
           {
             paymentMethod: EcommercePaymentMethod.COD,
-            "codCollection.status": EcommerceCodCollectionStatus.COLLECTED,
+            "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
             ...codRange,
           },
         ],

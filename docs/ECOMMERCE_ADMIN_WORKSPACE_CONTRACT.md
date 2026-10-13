@@ -38,7 +38,7 @@ Tenant-scoped admin APIs for order workspace, dashboard KPIs, and reports. Money
 | `codPendingAcceptance=true` | Status `COD_PENDING_ACCEPTANCE` |
 | `cancellationPending=true` | `activeCancellationRequestId` set |
 | `returnPending=true` | Active return request for order |
-| `collected=true` \| `false` | **Collected** = online with `paidAt` **or** COD with `codCollection.status=COLLECTED` (not inferred from status label alone) |
+| `collected=true` \| `false` | **Collected** = online with `paidAt` **or** COD with `courierCod.collectionStatus=CONFIRMED` |
 
 **Customer display:** Each row may include `customerDisplay: { customerId, name, maskedMobile, customerNumber }` from tenant-scoped `Customer` lookup, falling back to checkout `addressSnapshot` (never cross-tenant).
 
@@ -79,7 +79,9 @@ Returns `{ orderId, activeRequest, items[] }` for that order only.
 **Collections (cash-flow in period — separate from placement):**
 
 - `onlineCollectedPaise` — online orders with `paidAt` in period (`totalPaise`).
-- `codCollectedPaise` — COD with `codCollection.status=COLLECTED` and `codCollection.collectedAt` in period (amount from `codCollection.amountPaise` or order total).
+- `codCourierCollectionConfirmedPaise` — `courierCod.collectionConfirmedAt` in period (courier POD; not bank receipt).
+- `codBankRemittanceGrossPaise` / `codBankRemittanceFeePaise` / `codBankRemittanceReconciledPaise` (net) — `courierCod.bankCreditedAt` in period, `remittanceStatus=BANK_RECONCILED`. Net drives `grossCollectedPaise` with online `paidAt`.
+- `codCollectedPaise` — alias of courier collection confirmed for backward-compatible summary keys.
 - **Not revenue:** pending online payment; COD placed/accepted without recorded collection.
 - `providerRefundOutflowPaise` — `EcommercePaymentExceptionRefund` with status `SUCCEEDED` and status-set timestamp (`updatedAt`) in period.
 - `manualRefundOutflowPaise` — exception refunds `MANUAL_RECORDED` (timestamp `updatedAt`) **plus** COD cancellation manual refunds (`codManualRefund.recordedAt`) **plus** return manual refunds (`manualRefundRecordedAt`). Each counted once at its recorded time; the related order may have been placed earlier.

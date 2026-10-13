@@ -32,6 +32,10 @@ GET /admin/dues
 GET /admin/dues/count
 GET /admin/ecommerce/categories
 GET /admin/ecommerce/categories/:categoryId
+GET /admin/ecommerce/courier-cod/orders
+GET /admin/ecommerce/courier-cod/remittance-batches
+GET /admin/ecommerce/courier-cod/remittance-batches/:batchId
+GET /admin/ecommerce/courier-cod/summary
 GET /admin/ecommerce/return-requests
 GET /admin/ecommerce/gold-rates/current
 GET /admin/ecommerce/gold-rates/history
@@ -196,6 +200,10 @@ POST /admin/customers/:customerId/notes
 POST /admin/customers/:customerId/unblock
 POST /admin/dues/bulk-send-links
 POST /admin/exports
+POST /admin/ecommerce/courier-cod/remittance-batches
+POST /admin/ecommerce/courier-cod/remittance-batches/:batchId/orders/:orderId/lines
+POST /admin/ecommerce/courier-cod/remittance-batches/:batchId/reconcile
+POST /admin/ecommerce/orders/:orderId/courier-cod/confirm-collection
 POST /admin/ecommerce/categories
 POST /admin/ecommerce/categories/:categoryId/archive
 POST /admin/ecommerce/gold-rates

@@ -59,3 +59,32 @@ export async function assertGrievanceRelatedEntityForCustomer(req, relatedEntity
   }
   throw errors.business("GRIEVANCE_RELATED_ENTITY_INVALID", "Unsupported related entity type.");
 }
+
+/** Admin/customer detail: human label + portal path for linked records. */
+export async function presentGrievanceRelatedEntity(tenantId, relatedEntity) {
+  if (!relatedEntity?.type || !relatedEntity?.id) return null;
+  const type = relatedEntity.type;
+  const id = String(relatedEntity.id).trim();
+
+  if (type === GrievanceRelatedEntityType.ORDER) {
+    const order = await EcommerceOrder.findOne({ _id: id, tenantId })
+      .select("orderNumber")
+      .lean();
+    const label = order?.orderNumber ? `Order ${order.orderNumber}` : `Order ${id}`;
+    return { type, id, displayLabel: label, path: `/ecommerce/orders/${id}` };
+  }
+  if (type === GrievanceRelatedEntityType.SCHEME) {
+    const scheme = await Scheme.findOne({ _id: id, tenantId }).select("enrollmentNumber").lean();
+    const label = scheme?.enrollmentNumber ? `Scheme ${scheme.enrollmentNumber}` : `Scheme ${id}`;
+    return { type, id, displayLabel: label, path: `/schemes/${id}` };
+  }
+  if (type === GrievanceRelatedEntityType.PAYMENT) {
+    const payment = await Payment.findOne({ _id: id, tenantId }).select("receiptNumber").lean();
+    const label = payment?.receiptNumber ? `Receipt ${payment.receiptNumber}` : `Payment ${id}`;
+    return { type, id, displayLabel: label, path: `/payments/${id}` };
+  }
+  if (type === GrievanceRelatedEntityType.REDEMPTION) {
+    return { type, id, displayLabel: `Redemption ${id}`, path: `/maturity?redemption=${id}` };
+  }
+  return { type, id, displayLabel: id, path: null };
+}

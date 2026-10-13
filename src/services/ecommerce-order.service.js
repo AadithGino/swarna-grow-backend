@@ -10,6 +10,12 @@ import {
 import { tenantForEcommerceCheckout } from "../lib/ecommerce-checkout-tenant.js";
 import { computeCodAcceptanceExpiresAt } from "../lib/ecommerce-cod-pending-policy.js";
 import { evaluateCodEligibility, orderUsesCod } from "../lib/ecommerce-cod.js";
+import {
+  initialCourierCodForOrder,
+  isCourierCodBankReconciled,
+  isCourierCodCollectionConfirmed,
+} from "../lib/ecommerce-courier-cod.js";
+import { attachAdminOrderCourierPresentation } from "../lib/ecommerce-admin-order-courier-presentation.js";
 import { findActivePaymentAttempt } from "../lib/ecommerce-payment-in-flight.js";
 import { mapCustomerActivePaymentAttempt } from "./ecommerce-payment-intent.service.js";
 import { testPaymentHarnessMetaForClient } from "./ecommerce-test-payment-completion.service.js";
@@ -36,7 +42,6 @@ import {
   EcommerceTaxSettings,
 } from "../models/index.js";
 import {
-  EcommerceCodCollectionStatus,
   EcommerceFulfilmentMode,
   EcommerceOrderEventType,
   EcommerceOrderStatus,
@@ -93,8 +98,8 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
   const pending = row.status === EcommerceOrderStatus.PENDING_PAYMENT;
   const cod = orderUsesCod(row);
   const codPending = row.status === EcommerceOrderStatus.COD_PENDING_ACCEPTANCE;
-  const codCollected =
-    row.codCollection?.status === EcommerceCodCollectionStatus.COLLECTED;
+  const codCollected = isCourierCodCollectionConfirmed(row);
+  const codBankSettled = isCourierCodBankReconciled(row);
   const cap = capability ?? {
     paymentAllowed: false,
     checkoutUsable: false,
@@ -117,7 +122,9 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
     statusLabel,
     paymentMethod,
     codPincodeSnapshot: row.codPincodeSnapshot ?? null,
-    codCollectionStatus: cod ? row.codCollection?.status ?? EcommerceCodCollectionStatus.PENDING : null,
+    courierCodCollectionStatus: cod ? row.courierCod?.collectionStatus ?? null : null,
+    courierCodRemittanceStatus: cod ? row.courierCod?.remittanceStatus ?? null : null,
+    codBankRemittanceReconciled: cod ? codBankSettled : null,
     paymentAllowed: cod ? false : cap.paymentAllowed,
     orderPlacementAllowed: false,
     paymentCompleted: cod ? codCollected : row.status === EcommerceOrderStatus.PAID,
@@ -376,9 +383,7 @@ export async function createCustomerOrder(req) {
               financialSnapshot,
               paymentMethod,
               codPincodeSnapshot: quote.codPincodeSnapshot ?? null,
-              codCollection: isCod
-                ? { status: EcommerceCodCollectionStatus.PENDING }
-                : undefined,
+              courierCod: isCod ? initialCourierCodForOrder({ totalPaise: quote.totalPaise }) : undefined,
               idempotencyKey,
               creationBodyHash: bodyHash,
               expiresAt: orderExpiresAt,
@@ -531,7 +536,8 @@ export async function getAdminOrder(req) {
     attachAdminOrderCustomerDisplay(req.auth.tenantId, [mapped]),
     attachReturnSummaryToAdminOrder(req.auth.tenantId, row._id),
   ]);
-  return { ...withCustomer[0], returnSummary };
+  const base = { ...withCustomer[0], returnSummary };
+  return attachAdminOrderCourierPresentation(base, row);
 }
 
 export async function listAdminOrderEvents(req) {

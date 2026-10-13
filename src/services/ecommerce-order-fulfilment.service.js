@@ -3,12 +3,10 @@ import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { assertEcommerceOrderTransition } from "../lib/ecommerce-order-transitions.js";
 import {
-  EcommerceCodCollectionStatus,
   EcommerceFulfilmentMode,
   EcommerceOrderEventType,
   EcommerceOrderStatus,
 } from "../constants/enums.js";
-import { orderUsesCod } from "../lib/ecommerce-cod.js";
 import { EcommerceOrder, EcommerceOrderEvent } from "../models/index.js";
 import {
   ECOMMERCE_OUTBOX_TOPICS,
@@ -90,17 +88,6 @@ export async function transitionAdminOrderFulfilment(req) {
       EcommerceOrderStatus.READY_FOR_PICKUP,
       EcommerceOrderStatus.SHIPPED,
     ]);
-    if (
-      targetStatus === EcommerceOrderStatus.DELIVERED
-      && orderUsesCod(order.toObject())
-      && order.codCollection?.status !== EcommerceCodCollectionStatus.COLLECTED
-    ) {
-      throw errors.business(
-        "COD_COLLECTION_REQUIRED",
-        "Record cash collection before marking this COD order delivered.",
-        { codCollectionStatus: order.codCollection?.status ?? EcommerceCodCollectionStatus.PENDING },
-      );
-    }
     if (!allowedFulfilmentStatuses.has(order.status)) {
       throw errors.business("FULFILMENT_BLOCKED", "Order status does not allow fulfilment updates.", {
         status: order.status,

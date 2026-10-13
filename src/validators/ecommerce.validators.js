@@ -254,11 +254,35 @@ export const ecommerceCodOrderActionBody = z
   })
   .strict();
 
-export const ecommerceCodCollectionBody = z
+export const ecommerceCourierCodCollectionBody = z
   .object({
     expectedVersion: z.number().int().nonnegative(),
-    amountPaise: z.number().int().min(1),
-    reference: z.string().trim().min(2).max(120),
+    reference: z.string().trim().min(2).max(160),
+    evidenceNote: z.string().trim().max(500).optional(),
+    providerId: z.string().trim().min(1).max(64).optional(),
+    trackingReference: z.string().trim().max(120).optional(),
+  })
+  .strict();
+
+export const ecommerceCodRemittanceBatchCreateBody = z
+  .object({
+    providerId: z.string().trim().min(1).max(64).optional(),
+    statementReference: z.string().trim().min(2).max(160),
+  })
+  .strict();
+
+export const ecommerceCodRemittanceLineBody = z
+  .object({
+    grossPaise: z.number().int().min(1),
+    feePaise: z.number().int().min(0).optional(),
+  })
+  .strict();
+
+export const ecommerceCodRemittanceReconcileBody = z
+  .object({
+    bankCreditReference: z.string().trim().min(2).max(160),
+    bankCreditPaise: z.number().int().min(0),
+    bankCreditedAt: z.string().datetime().optional(),
   })
   .strict();
 
@@ -447,25 +471,6 @@ export const ecommerceDeliveryHandoverBody = z
     recipientName: z.string().trim().min(2).max(120),
   })
   .strict();
-
-export const ecommerceCodCustodyHandoverBody = z
-  .object({
-    expectedVersion: z.number().int().nonnegative(),
-    toUserId: z.string().trim().min(4).max(80),
-    reference: z.string().trim().max(160).optional(),
-  })
-  .strict();
-
-export const ecommerceCodBankDepositBody = z
-  .object({
-    expectedVersion: z.number().int().nonnegative(),
-    depositReference: z.string().trim().min(4).max(160),
-  })
-  .strict();
-
-export const ecommerceCodCustodyListQuery = cursorQuery.extend({
-  custodyStatus: z.enum(["OUTSTANDING", "SETTLED", "EXCEPTION"]).optional(),
-});
 
 export const ecommerceReportKeyParam = z.object({
   reportKey: z

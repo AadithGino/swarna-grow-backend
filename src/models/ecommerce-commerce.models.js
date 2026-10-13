@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 import {
   EcommerceCheckoutTaxPresentation,
-  EcommerceCodCollectionStatus,
   EcommerceFulfilmentMode,
   EcommercePaymentMethod,
   EcommerceOrderEventType,
@@ -20,8 +19,14 @@ import {
   EcommerceOrderReturnRequestStatus,
   EcommerceQuoteStatus,
   EcommerceStockPolicy,
-  EcommerceCodCustodyStatus,
-  EcommerceCodCustodySettlementMethod,
+  EcommerceCourierCodCollectionStatus,
+  EcommerceCourierCodCollectionSource,
+  EcommerceCourierCodRemittanceStatus,
+  EcommerceCodRemittanceBatchStatus,
+  EcommerceCodRemittanceLineStatus,
+  EcommerceCodRemittanceReconciliationStatus,
+  EcommerceCodRefundFundingSource,
+  EcommerceCodRefundRemittanceContext,
   EcommerceFulfilmentHandoverMethod,
 } from "../constants/enums.js";
 import {
@@ -224,26 +229,32 @@ const orderSchema = new mongoose.Schema(
       default: EcommercePaymentMethod.ONLINE,
     }),
     codPincodeSnapshot: { type: String, trim: true, maxlength: 12 },
-    codCollection: {
-      status: enumField(EcommerceCodCollectionStatus, {
-        default: EcommerceCodCollectionStatus.PENDING,
+    courierCod: {
+      providerId: { type: String, trim: true, maxlength: 64, default: "MANUAL" },
+      trackingReference: { type: String, trim: true, maxlength: 120 },
+      expectedAmountPaise: optionalIntegerField({ min: 0 }),
+      collectionStatus: enumField(EcommerceCourierCodCollectionStatus, {
+        default: EcommerceCourierCodCollectionStatus.NOT_APPLICABLE,
       }),
-      amountPaise: optionalIntegerField({ min: 0 }),
-      collectedAt: Date,
-      collectorUserId: String,
-      reference: { type: String, trim: true, maxlength: 120 },
+      collectionConfirmedAt: Date,
+      collectionReference: { type: String, trim: true, maxlength: 160 },
+      collectionSource: enumField(EcommerceCourierCodCollectionSource),
+      collectionEvidenceNote: { type: String, trim: true, maxlength: 500 },
       collectionIdempotencyKey: { type: String, trim: true, maxlength: 80 },
-    },
-    codCustody: {
-      status: enumField(EcommerceCodCustodyStatus, {
-        default: EcommerceCodCustodyStatus.NONE,
+      collectionBodyHash: { type: String, trim: true, maxlength: 64 },
+      collectionRecordedByUserId: String,
+      remittanceStatus: enumField(EcommerceCourierCodRemittanceStatus, {
+        default: EcommerceCourierCodRemittanceStatus.NOT_APPLICABLE,
       }),
-      holderUserId: String,
-      pendingHandoverId: String,
-      settledAt: Date,
-      settlementMethod: enumField(EcommerceCodCustodySettlementMethod),
-      settlementReference: { type: String, trim: true, maxlength: 160 },
-      exceptionNote: { type: String, trim: true, maxlength: 500 },
+      activeRemittanceLineId: String,
+      activeRemittanceBatchId: String,
+      remittanceGrossPaise: optionalIntegerField({ min: 0 }),
+      remittanceFeePaise: optionalIntegerField({ min: 0 }),
+      remittanceNetPaise: optionalIntegerField({ min: 0 }),
+      bankCreditReference: { type: String, trim: true, maxlength: 160 },
+      bankCreditedAt: Date,
+      reconciliationStatus: enumField(EcommerceCodRemittanceReconciliationStatus),
+      reconciliationDiscrepancyPaise: optionalIntegerField(),
     },
     fulfilmentHandover: {
       method: enumField(EcommerceFulfilmentHandoverMethod),
@@ -271,6 +282,22 @@ orderSchema.index(
   {
     unique: true,
     partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  },
+);
+orderSchema.index(
+  { tenantId: 1, "courierCod.collectionStatus": 1, "courierCod.collectionConfirmedAt": -1 },
+  {
+    partialFilterExpression: {
+      "courierCod.collectionStatus": EcommerceCourierCodCollectionStatus.CONFIRMED,
+    },
+  },
+);
+orderSchema.index(
+  { tenantId: 1, "courierCod.remittanceStatus": 1, "courierCod.bankCreditedAt": -1 },
+  {
+    partialFilterExpression: {
+      "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
+    },
   },
 );
 
@@ -529,6 +556,16 @@ const codManualRefundSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const codRefundContextSchema = new mongoose.Schema(
+  {
+    remittanceContext: enumField(EcommerceCodRefundRemittanceContext),
+    fundingSource: enumField(EcommerceCodRefundFundingSource),
+    capturedAt: Date,
+    note: { type: String, trim: true, maxlength: 500 },
+  },
+  { _id: false },
+);
+
 const orderCancellationRequestSchema = new mongoose.Schema(
   {
     _id: stringId("ecan"),
@@ -551,6 +588,7 @@ const orderCancellationRequestSchema = new mongoose.Schema(
     stockDispositionIdempotencyKey: { type: String, trim: true, maxlength: 80 },
     onlineRefundId: String,
     codManualRefund: codManualRefundSchema,
+    codRefundContext: codRefundContextSchema,
     idempotencyKey: { type: String, trim: true, maxlength: 80 },
     creationBodyHash: { type: String, trim: true, maxlength: 64 },
     version: versionField,
@@ -655,30 +693,91 @@ orderReturnRequestSchema.index(
   },
 );
 
-const codCustodyHandoverSchema = new mongoose.Schema(
+const codRemittanceBatchSchema = new mongoose.Schema(
   {
-    _id: stringId("ecodh"),
+    _id: stringId("ecrb"),
     tenantId: tenantField,
-    orderId: { type: String, required: true, index: true },
-    amountPaise: integerField({ min: 1 }),
-    fromUserId: { type: String, required: true },
-    toUserId: { type: String, required: true },
-    status: { type: String, enum: ["PENDING", "ACCEPTED", "REJECTED"], default: "PENDING" },
-    reference: { type: String, trim: true, maxlength: 160, default: "" },
+    providerId: { type: String, trim: true, maxlength: 64, default: "MANUAL" },
+    statementReference: { type: String, trim: true, maxlength: 160, default: "" },
+    status: enumField(EcommerceCodRemittanceBatchStatus, {
+      default: EcommerceCodRemittanceBatchStatus.DRAFT,
+    }),
+    grossTotalPaise: optionalIntegerField({ min: 0 }),
+    feeTotalPaise: optionalIntegerField({ min: 0 }),
+    deductionTotalPaise: optionalIntegerField({ min: 0 }),
+    netExpectedPaise: optionalIntegerField({ min: 0 }),
+    bankCreditReference: { type: String, trim: true, maxlength: 160 },
+    bankCreditedAt: Date,
+    reconciliationStatus: enumField(EcommerceCodRemittanceReconciliationStatus, {
+      default: EcommerceCodRemittanceReconciliationStatus.PENDING,
+    }),
+    reconciliationNote: { type: String, trim: true, maxlength: 500 },
+    importSource: { type: String, trim: true, maxlength: 32, default: "MANUAL" },
     idempotencyKey: { type: String, trim: true, maxlength: 80 },
-    submittedAt: { type: Date, default: Date.now },
-    settledAt: Date,
-    settledByUserId: String,
+    creationBodyHash: { type: String, trim: true, maxlength: 64 },
+    reconcileIdempotencyKey: { type: String, trim: true, maxlength: 80 },
+    reconcileBodyHash: { type: String, trim: true, maxlength: 64 },
+    bankCreditPaise: optionalIntegerField({ min: 0 }),
+    createdByUserId: String,
+    finalizedAt: Date,
     version: versionField,
   },
   baseOptions,
 );
-codCustodyHandoverSchema.index({ tenantId: 1, status: 1, submittedAt: -1 });
-codCustodyHandoverSchema.index(
-  { tenantId: 1, orderId: 1, idempotencyKey: 1 },
+codRemittanceBatchSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
+codRemittanceBatchSchema.index(
+  { tenantId: 1, idempotencyKey: 1 },
   {
     unique: true,
     partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  },
+);
+codRemittanceBatchSchema.index(
+  { tenantId: 1, providerId: 1, bankCreditReference: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      bankCreditReference: { $type: "string", $gt: "" },
+      status: { $in: [EcommerceCodRemittanceBatchStatus.BANK_RECONCILED, EcommerceCodRemittanceBatchStatus.DISCREPANCY] },
+    },
+    name: "ecommerce_cod_remittance_bank_credit_unique",
+  },
+);
+
+const codRemittanceLineSchema = new mongoose.Schema(
+  {
+    _id: stringId("ecrl"),
+    tenantId: tenantField,
+    batchId: { type: String, required: true, index: true },
+    orderId: { type: String, required: true, index: true },
+    grossPaise: integerField({ min: 1 }),
+    feePaise: optionalIntegerField({ min: 0 }),
+    netPaise: optionalIntegerField({ min: 0 }),
+    status: enumField(EcommerceCodRemittanceLineStatus, {
+      default: EcommerceCodRemittanceLineStatus.ACTIVE,
+    }),
+    idempotencyKey: { type: String, trim: true, maxlength: 80 },
+    creationBodyHash: { type: String, trim: true, maxlength: 64 },
+    version: versionField,
+  },
+  baseOptions,
+);
+codRemittanceLineSchema.index({ tenantId: 1, batchId: 1, orderId: 1 }, { unique: true });
+codRemittanceLineSchema.index(
+  { tenantId: 1, batchId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  },
+);
+codRemittanceLineSchema.index(
+  { tenantId: 1, orderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: EcommerceCodRemittanceLineStatus.ACTIVE,
+    },
+    name: "ecommerce_cod_remittance_active_order_unique",
   },
 );
 
@@ -723,7 +822,11 @@ export const EcommerceInventoryAdjustment = mongoose.model(
   "EcommerceInventoryAdjustment",
   inventoryAdjustmentSchema,
 );
-export const EcommerceCodCustodyHandover = mongoose.model(
-  "EcommerceCodCustodyHandover",
-  codCustodyHandoverSchema,
+export const EcommerceCodRemittanceBatch = mongoose.model(
+  "EcommerceCodRemittanceBatch",
+  codRemittanceBatchSchema,
+);
+export const EcommerceCodRemittanceLine = mongoose.model(
+  "EcommerceCodRemittanceLine",
+  codRemittanceLineSchema,
 );

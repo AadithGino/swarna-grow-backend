@@ -87,10 +87,28 @@ export async function buildEcommerceSalesReport(req) {
       count: collections.onlineCollectedCount,
     },
     {
-      key: "cod_collected",
-      label: "COD collected (collection recorded in period)",
-      gross: rowMoney(collections.codCollectedPaise),
-      count: collections.codCollectedCount,
+      key: "cod_courier_collection_confirmed",
+      label: "COD courier collection confirmed (collectionConfirmedAt in period)",
+      gross: rowMoney(collections.codCourierCollectionConfirmedPaise),
+      count: collections.codCourierCollectionConfirmedCount,
+    },
+    {
+      key: "cod_bank_remittance_gross",
+      label: "COD bank remittance gross (courierCod.remittanceGrossPaise, bankCreditedAt)",
+      gross: rowMoney(collections.codBankRemittanceGrossPaise),
+      count: collections.codBankRemittanceReconciledCount,
+    },
+    {
+      key: "cod_bank_remittance_fees",
+      label: "COD bank remittance fees (courierCod.remittanceFeePaise)",
+      gross: rowMoney(collections.codBankRemittanceFeePaise),
+      count: collections.codBankRemittanceReconciledCount,
+    },
+    {
+      key: "cod_bank_remittance",
+      label: "COD bank remittance net (courierCod.remittanceNetPaise, bankCreditedAt)",
+      gross: rowMoney(collections.codBankRemittanceReconciledPaise),
+      count: collections.codBankRemittanceReconciledCount,
     },
     {
       key: "tax",
@@ -129,10 +147,22 @@ export async function buildEcommerceSalesReport(req) {
         "Confirmed online payment (paidAt) in this period.",
       ),
       summaryMoney(
+        "COD_COURIER_COLLECTION_CONFIRMED",
+        "COD courier collection confirmed",
+        collections.codCourierCollectionConfirmedPaise,
+        "Courier-reported COD collected (courierCod.collectionConfirmedAt); not bank receipt.",
+      ),
+      summaryMoney(
+        "COD_BANK_REMITTANCE_RECONCILED",
+        "COD bank remittance reconciled",
+        collections.codBankRemittanceReconciledPaise,
+        "Net bank credit reconciled (courierCod.bankCreditedAt) in this period.",
+      ),
+      summaryMoney(
         "COD_COLLECTED",
-        "COD collected",
-        collections.codCollectedPaise,
-        "Cash recorded (codCollection.collectedAt) in this period.",
+        "COD courier collection (alias)",
+        collections.codCourierCollectionConfirmedPaise,
+        "Alias of COD_COURIER_COLLECTION_CONFIRMED for legacy report keys.",
       ),
       summaryMoney(
         "GROSS_COLLECTED",

@@ -106,13 +106,17 @@ async function enrichGrievanceList(tenantId, rows) {
 }
 
 async function enrichGrievanceDetail(tenantId, row) {
-  const [customerMap, branchMap, userMap] = await Promise.all([
+  const { presentGrievanceRelatedEntity } = await import("../lib/grievance-related-entity.js");
+  const [customerMap, branchMap, userMap, relatedEntity] = await Promise.all([
     loadCustomerMap(tenantId, [row.customerId]),
     loadBranchMap(tenantId, [row.branchId]),
     loadUserMap([
       row.assigneeId,
       ...(row.messages ?? []).map((message) => message.actorId),
     ]),
+    row.relatedEntity?.type && row.relatedEntity?.id
+      ? presentGrievanceRelatedEntity(tenantId, row.relatedEntity)
+      : null,
   ]);
   return {
     ...row,
@@ -121,6 +125,7 @@ async function enrichGrievanceDetail(tenantId, row) {
     assignee: userDto(userMap.get(row.assigneeId)),
     firstResponseOverdue: !row.firstResponseAt && row.firstResponseDueAt < new Date(),
     messages: mapGrievanceMessages(row, customerMap, userMap),
+    relatedEntity: relatedEntity ?? row.relatedEntity ?? null,
   };
 }
 export async function createGrievance(req) {

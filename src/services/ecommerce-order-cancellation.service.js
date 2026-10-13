@@ -16,6 +16,11 @@ import {
   paymentAttemptBlocksCustomerCancel,
 } from "../lib/ecommerce-order-cancellation-policy.js";
 import { orderCancellationStockDispositionRequired } from "../lib/ecommerce-order-cancellation-stock.js";
+import {
+  deriveCodRefundRemittanceContext,
+  resolveCodCollectionAmountPaise,
+  suggestCodRefundFundingSource,
+} from "../lib/ecommerce-courier-cod.js";
 import { applyCancellationStockDispositionOnce } from "../lib/ecommerce-order-stock-restock.js";
 import { findActivePaymentAttempt } from "../lib/ecommerce-payment-in-flight.js";
 import {
@@ -591,6 +596,20 @@ export async function decideAdminCancellationRequest(req) {
     }
 
     if (cancellationNeedsCodManualRefund(order.toObject())) {
+      await EcommerceOrderCancellationRequest.updateOne(
+        { _id: request._id },
+        {
+          $set: {
+            codRefundContext: {
+              remittanceContext: deriveCodRefundRemittanceContext(order.toObject()),
+              fundingSource: suggestCodRefundFundingSource(order.toObject()),
+              capturedAt: new Date(),
+              note: "Snapshot at cancellation approval; refund execution requires separate evidence.",
+            },
+          },
+        },
+        { session },
+      );
       await EcommerceOrderEvent.create(
         [
           {
@@ -700,15 +719,18 @@ export async function recordCodCancellationManualRefund(req) {
     if (!cancellationNeedsCodManualRefund(order.toObject())) {
       throw errors.business("COD_MANUAL_REFUND_NOT_APPLICABLE", "Order does not require COD manual refund.");
     }
-    const collectedPaise = Number(order.codCollection?.amountPaise);
+    const collectedPaise = resolveCodCollectionAmountPaise(order.toObject());
     const orderTotalPaise = Number(order.totalPaise);
     if (!Number.isInteger(collectedPaise) || collectedPaise <= 0) {
-      throw errors.business("COD_COLLECTION_MISSING", "COD cash collection amount is not recorded on this order.");
+      throw errors.business(
+        "COD_COLLECTION_MISSING",
+        "Courier COD collection is not confirmed on this order.",
+      );
     }
     if (collectedPaise !== orderTotalPaise) {
       throw errors.business(
         "COD_COLLECTION_AMOUNT_MISMATCH",
-        "Recorded COD collection does not match order total; resolve collection before refund.",
+        "Confirmed COD amount does not match order total; resolve before refund.",
       );
     }
     if (amountPaise !== collectedPaise) {
@@ -773,7 +795,7 @@ export async function recordCodCancellationManualRefund(req) {
           payload: { cancellationRequestId: request._id },
         },
       ],
-      { session },
+      { session, ordered: true },
     );
     return { request: mapCancellationRequest(updatedReq.toObject()), recorded: true };
   });

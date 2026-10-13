@@ -1,6 +1,5 @@
 import { Types } from "mongoose";
 import {
-  EcommerceCodCollectionStatus,
   EcommerceFulfilmentMode,
   EcommerceOrderCancellationRequestStatus,
   EcommerceOrderReturnRequestStatus,
@@ -88,7 +87,7 @@ export function buildAdminOrderListMongoFilter(tenantId, query, ctx = {}) {
           { paymentMethod: EcommercePaymentMethod.ONLINE, paidAt: { $ne: null } },
           {
             paymentMethod: EcommercePaymentMethod.COD,
-            "codCollection.status": EcommerceCodCollectionStatus.COLLECTED,
+            "courierCod.collectionStatus": "CONFIRMED",
           },
         ],
       },
@@ -101,7 +100,7 @@ export function buildAdminOrderListMongoFilter(tenantId, query, ctx = {}) {
           { paymentMethod: EcommercePaymentMethod.ONLINE, paidAt: { $ne: null } },
           {
             paymentMethod: EcommercePaymentMethod.COD,
-            "codCollection.status": EcommerceCodCollectionStatus.COLLECTED,
+            "courierCod.collectionStatus": "CONFIRMED",
           },
         ],
       },

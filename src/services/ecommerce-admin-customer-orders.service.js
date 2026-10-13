@@ -1,44 +1,60 @@
 import {
-  EcommerceCodCollectionStatus,
+  EcommerceCourierCodCollectionStatus,
+  EcommerceCourierCodRemittanceStatus,
   EcommercePaymentExceptionRefundStatus,
+  EcommercePaymentMethod,
 } from "../constants/enums.js";
 import { Customer, EcommerceOrder, EcommercePaymentExceptionRefund } from "../models/index.js";
 import { errors } from "../lib/app-error.js";
 import { paginate } from "../lib/pagination.js";
-import {
-  mapAdminCustomerOrderListRow,
-} from "../lib/ecommerce-admin-customer-order-row.js";
+import { mapAdminCustomerOrderListRow } from "../lib/ecommerce-admin-customer-order-row.js";
 import { customerHasEcommerceOrderHistory } from "../lib/ecommerce-tenant-history.js";
 
 async function aggregateCustomerEcommerceSummary(tenantId, customerId) {
   const match = { tenantId, customerId };
-  const [orderCount, collectedAgg, refundAgg] = await Promise.all([
+  const [orderCount, onlineAgg, codConfirmedAgg, codBankAgg, refundAgg] = await Promise.all([
     EcommerceOrder.countDocuments(match),
     EcommerceOrder.aggregate([
-      { $match: match },
       {
-        $project: {
-          totalPaise: 1,
-          collected: {
-            $cond: [
-              {
-                $or: [
-                  { $ifNull: ["$paidAt", false] },
-                  {
-                    $eq: [
-                      "$codCollection.status",
-                      EcommerceCodCollectionStatus.COLLECTED,
-                    ],
-                  },
-                ],
-              },
-              { $ifNull: ["$totalPaise", 0] },
-              0,
-            ],
+        $match: {
+          ...match,
+          paymentMethod: EcommercePaymentMethod.ONLINE,
+          paidAt: { $ne: null },
+        },
+      },
+      { $group: { _id: null, amountPaise: { $sum: "$totalPaise" } } },
+    ]),
+    EcommerceOrder.aggregate([
+      {
+        $match: {
+          ...match,
+          paymentMethod: EcommercePaymentMethod.COD,
+          "courierCod.collectionStatus": EcommerceCourierCodCollectionStatus.CONFIRMED,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          amountPaise: {
+            $sum: { $ifNull: ["$courierCod.expectedAmountPaise", "$totalPaise"] },
           },
         },
       },
-      { $group: { _id: null, grossCollectedPaise: { $sum: "$collected" } } },
+    ]),
+    EcommerceOrder.aggregate([
+      {
+        $match: {
+          ...match,
+          paymentMethod: EcommercePaymentMethod.COD,
+          "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          amountPaise: { $sum: { $ifNull: ["$courierCod.remittanceNetPaise", "$totalPaise"] } },
+        },
+      },
     ]),
     EcommercePaymentExceptionRefund.aggregate([
       {
@@ -72,10 +88,16 @@ async function aggregateCustomerEcommerceSummary(tenantId, customerId) {
       },
     ]),
   ]);
-  const grossCollectedPaise = collectedAgg[0]?.grossCollectedPaise ?? 0;
+  const onlineCollectedPaise = onlineAgg[0]?.amountPaise ?? 0;
+  const codCourierConfirmedPaise = codConfirmedAgg[0]?.amountPaise ?? 0;
+  const codBankRemittanceReconciledPaise = codBankAgg[0]?.amountPaise ?? 0;
   const refundOutflowPaise = refundAgg[0]?.refundOutflowPaise ?? 0;
+  const grossCollectedPaise = onlineCollectedPaise + codBankRemittanceReconciledPaise;
   return {
     orderCount,
+    onlineCollectedPaise,
+    codCourierConfirmedPaise,
+    codBankRemittanceReconciledPaise,
     grossCollectedPaise,
     refundOutflowPaise,
     netCollectedPaise: grossCollectedPaise - refundOutflowPaise,

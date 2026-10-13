@@ -72,6 +72,24 @@ Delivery orders only. Pickup orders → `422 NOT_DELIVERY_ORDER`.
 
 Dead-letter replay: `node scripts/reconcile-ecommerce-outbox-dead-letter.js` (dry-run first).
 
+## Courier COD (manual operator; no live courier integration)
+
+**Permission:** `ECOMMERCE_FULFILMENT_OPERATE` for writes; `ECOMMERCE_READ` for summary and batch reads.
+
+| Method | Route | Body / notes |
+|--------|--------|----------------|
+| POST | `/admin/ecommerce/orders/:orderId/courier-cod/confirm-collection` | `expectedVersion`, `reference`, optional `evidenceNote`, `providerId` — idempotent via `X-Idempotency-Key` |
+| GET | `/admin/ecommerce/courier-cod/summary` | Workspace counts (pending collection, owed, batches) |
+| GET | `/admin/ecommerce/courier-cod/remittance-batches` | List batches |
+| GET | `/admin/ecommerce/courier-cod/remittance-batches/:batchId` | Batch + lines |
+| POST | `/admin/ecommerce/courier-cod/remittance-batches` | `{ statementReference }` — create draft batch |
+| POST | `/admin/ecommerce/courier-cod/remittance-batches/:batchId/orders/:orderId/lines` | `{ grossPaise, feePaise }` — gross must match order COD total |
+| POST | `/admin/ecommerce/courier-cod/remittance-batches/:batchId/reconcile` | `{ bankCreditReference, bankCreditPaise, bankCreditedAt? }` — idempotent reconcile |
+
+**Removed (do not call):** `/admin/ecommerce/cod-custody/*`, `/admin/ecommerce/orders/:orderId/cod/record-collection`.
+
+See [ECOMMERCE_COD.md](./ECOMMERCE_COD.md) for lifecycle, migration, and reporting date basis.
+
 ## Admin workspace (orders, KPIs, reports)
 
 See **[ECOMMERCE_ADMIN_WORKSPACE_CONTRACT.md](./ECOMMERCE_ADMIN_WORKSPACE_CONTRACT.md)** for:

@@ -1,11 +1,11 @@
 import {
-  EcommerceCodCollectionStatus,
   EcommerceOrderCancellationRequestStatus,
   EcommerceOrderStatus,
   EcommercePaymentAttemptOperationalStatus,
   EcommercePaymentMethod,
 } from "../constants/enums.js";
 import { orderUsesCod } from "./ecommerce-cod.js";
+import { isCourierCodCollectionConfirmed } from "./ecommerce-courier-cod.js";
 
 const SHIPPED_OR_LATER = new Set([
   EcommerceOrderStatus.SHIPPED,
@@ -97,10 +97,7 @@ export function cancellationNeedsOnlineRefund(order) {
 }
 
 export function cancellationNeedsCodManualRefund(order) {
-  return (
-    orderUsesCod(order)
-    && order.codCollection?.status === EcommerceCodCollectionStatus.COLLECTED
-  );
+  return orderUsesCod(order) && isCourierCodCollectionConfirmed(order);
 }
 
 export function activeCancellationStatuses() {

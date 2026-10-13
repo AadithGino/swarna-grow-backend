@@ -97,7 +97,7 @@ async function seedTaxReadyProduct({ tenant, user, branch }) {
     tenant: { ...tenant.toObject(), subscription: { planFeaturesSnapshot: { ecommerce: true } } },
     body: {
       name: "Chain",
-      slug: "chain",
+      slug: `chain-${createId("slug").slice(-10)}`,
       priceMode: EcommercePriceMode.FIXED,
       fixedPricing: { basePricePaise: 100_000 },
       taxClassification: "GST_3",
@@ -253,7 +253,7 @@ test("creates PENDING_PAYMENT order from active quote and transfers reservation"
     .get("/api/v1/app/shop/orders")
     .set({ authorization: `Bearer ${token}` });
   assert.equal(list.status, 200);
-  assert.equal(list.body.data.items.length, 1);
+  assert.equal(Array.isArray(list.body.data) ? list.body.data.length : list.body.data.items.length, 1);
 
   const detail = await request(app)
     .get(`/api/v1/app/shop/orders/${o1.body.data.id}`)

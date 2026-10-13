@@ -261,7 +261,7 @@ test("COD acceptance expiry does not use payment expiry sweep", async () => {
   assert.equal(row.status, EcommerceOrderStatus.CANCELLED);
 });
 
-test("staff accept, collection, and delivered gate", async () => {
+test("staff accept, courier collection, delivery proof, and delivered", async () => {
   const { tenant, user, branch } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   await seedCheckoutReady({ tenant, user, branch });
@@ -303,37 +303,42 @@ test("staff accept, collection, and delivered gate", async () => {
   assert.equal(accept.status, 200);
   assert.equal(accept.body.data.status, EcommerceOrderStatus.PROCESSING);
 
-  const shipBlock = await request(app)
-    .post(`/api/v1/admin/ecommerce/orders/${orderId}/fulfilment-transition`)
-    .set(staffAuth)
-    .send({ expectedVersion: accept.body.data.version, targetStatus: EcommerceOrderStatus.DELIVERED });
-  assert.equal(shipBlock.status, 422);
-
   const shipped = await request(app)
     .post(`/api/v1/admin/ecommerce/orders/${orderId}/fulfilment-transition`)
     .set(staffAuth)
     .send({ expectedVersion: accept.body.data.version, targetStatus: EcommerceOrderStatus.SHIPPED });
   assert.equal(shipped.status, 200);
 
-  const deliverBlock = await request(app)
+  const handoverBlock = await request(app)
     .post(`/api/v1/admin/ecommerce/orders/${orderId}/fulfilment-transition`)
     .set(staffAuth)
     .send({ expectedVersion: shipped.body.data.version, targetStatus: EcommerceOrderStatus.DELIVERED });
-  assert.equal(deliverBlock.status, 422);
+  assert.equal(handoverBlock.status, 422);
 
-  const collect = await request(app)
-    .post(`/api/v1/admin/ecommerce/orders/${orderId}/cod/record-collection`)
-    .set({ ...staffAuth, "x-idempotency-key": createId("col") })
+  const handover = await request(app)
+    .post(`/api/v1/admin/ecommerce/orders/${orderId}/delivery-handover`)
+    .set({ ...staffAuth, "x-idempotency-key": createId("dh") })
     .send({
       expectedVersion: shipped.body.data.version,
-      amountPaise: order.body.data.totalPaise,
-      reference: "RCPT-1",
+      recipientName: "Customer",
+      proofReference: "POD-REF-1",
     });
-  assert.equal(collect.status, 200);
+  assert.equal(handover.status, 200);
 
   const delivered = await request(app)
     .post(`/api/v1/admin/ecommerce/orders/${orderId}/fulfilment-transition`)
     .set(staffAuth)
-    .send({ expectedVersion: collect.body.data.version, targetStatus: EcommerceOrderStatus.DELIVERED });
+    .send({ expectedVersion: handover.body.data.version, targetStatus: EcommerceOrderStatus.DELIVERED });
   assert.equal(delivered.status, 200);
+
+  const collect = await request(app)
+    .post(`/api/v1/admin/ecommerce/orders/${orderId}/courier-cod/confirm-collection`)
+    .set({ ...staffAuth, "x-idempotency-key": createId("col") })
+    .send({
+      expectedVersion: delivered.body.data.version,
+      reference: "COURIER-POD-REF-1",
+      evidenceNote: "Manual courier POD from statement",
+    });
+  assert.equal(collect.status, 200);
+  assert.equal(collect.body.data.courierCod.collectionStatus, "CONFIRMED");
 });
