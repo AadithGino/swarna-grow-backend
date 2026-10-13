@@ -4,11 +4,21 @@ import {
   buildAdminOrderListMongoFilter,
   parseAdminOrderListDate,
 } from "../src/lib/ecommerce-admin-order-list-filter.js";
+import { normalizeAdminOrderListQuery } from "../src/lib/ecommerce-admin-order-list-query.js";
 
 test("parseAdminOrderListDate endOfDay for date-only strings", () => {
   const end = parseAdminOrderListDate("2026-01-15", { endOfDay: true });
   assert.ok(end);
   assert.equal(end.getUTCHours(), 23);
+});
+
+test("needs-action queue filters before pagination and combines with search", () => {
+  const normalized = normalizeAdminOrderListQuery({ needsAction: "true", q: "EC-123" });
+  const filter = buildAdminOrderListMongoFilter("tenant_1", normalized);
+  assert.equal(normalized.needsAction, true);
+  assert.equal(filter.tenantId, "tenant_1");
+  assert.ok(filter.$and.some((condition) => condition.$or?.some((part) => part.status?.$in?.includes("COD_PENDING_ACCEPTANCE"))));
+  assert.ok(filter.$and.some((condition) => condition.$or?.some((part) => part.orderNumber?.$regex)));
 });
 
 test("buildAdminOrderListMongoFilter applies status, payment, dates, q", () => {

@@ -443,6 +443,7 @@ export const ecommerceAdminOrdersListQuery = cursorQuery.extend({
   createdFrom: z.string().trim().max(32).optional(),
   createdTo: z.string().trim().max(32).optional(),
   paymentException: z.enum(["true", "false"]).optional(),
+  needsAction: z.enum(["true"]).optional(),
   codPendingAcceptance: z.enum(["true"]).optional(),
   cancellationPending: z.enum(["true"]).optional(),
   returnPending: z.enum(["true"]).optional(),

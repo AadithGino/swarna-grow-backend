@@ -38,6 +38,7 @@ export function normalizeAdminOrderListQuery(raw = {}) {
   const returnPending = String(raw.returnPending ?? "").trim().toLowerCase() === "true";
   const paymentException =
     String(raw.paymentException ?? "").trim().toLowerCase() === "true";
+  const needsAction = String(raw.needsAction ?? "").trim().toLowerCase() === "true";
 
   const out = {};
   if (q) out.q = q;
@@ -47,6 +48,7 @@ export function normalizeAdminOrderListQuery(raw = {}) {
   if (String(raw.createdFrom ?? "").trim()) out.createdFrom = String(raw.createdFrom).trim();
   if (String(raw.createdTo ?? "").trim()) out.createdTo = String(raw.createdTo).trim();
   if (paymentException) out.paymentException = true;
+  if (needsAction) out.needsAction = true;
   if (codPendingAcceptance) out.codPendingAcceptance = true;
   if (cancellationPending) out.cancellationPending = true;
   if (returnPending) out.returnPending = true;
@@ -64,6 +66,18 @@ export function buildAdminOrderListMongoFilter(tenantId, query, ctx = {}) {
 
   if (query.paymentException) {
     filter.paymentExceptionStatus = { $ne: null };
+  }
+
+  if (query.needsAction) {
+    filter.$and = [
+      ...(filter.$and ?? []),
+      {
+        $or: [
+          { status: { $in: [EcommerceOrderStatus.COD_PENDING_ACCEPTANCE, EcommerceOrderStatus.PENDING_PAYMENT] } },
+          { paymentExceptionStatus: { $exists: true, $ne: null } },
+        ],
+      },
+    ];
   }
 
   if (query.codPendingAcceptance) {
