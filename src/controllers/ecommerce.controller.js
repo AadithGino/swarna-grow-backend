@@ -19,6 +19,7 @@ import * as ecommerceOrderReturn from "../services/ecommerce-order-return.servic
 import * as ecommerceAdminCustomerOrders from "../services/ecommerce-admin-customer-orders.service.js";
 import * as ecommerceCourierCod from "../services/ecommerce-courier-cod.service.js";
 import * as ecommerceOrderHandover from "../services/ecommerce-order-handover.service.js";
+import * as ecommerceBanner from "../services/ecommerce-banner.service.js";
 
 export const storeStatus = async (req, res) =>
   sendSuccess(res, await ecommerce.getStoreStatus(req));
@@ -37,6 +38,33 @@ export const patchCategory = async (req, res) =>
 
 export const archiveCategory = async (req, res) =>
   sendSuccess(res, await ecommerce.archiveCategory(req));
+
+export const listBanners = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.listBanners(req));
+
+export const getBanner = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.getBanner(req));
+
+export const createBanner = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.createBanner(req), {}, 201);
+
+export const patchBanner = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.patchBanner(req));
+
+export const publishBanner = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.publishBanner(req));
+
+export const unpublishBanner = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.unpublishBanner(req));
+
+export const archiveBanner = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.archiveBanner(req));
+
+export const shopHomeBanners = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.shopHomeBanners(req));
+
+export const shopStorefrontBanners = async (req, res) =>
+  sendSuccess(res, await ecommerceBanner.shopStorefrontBanners(req));
 
 export const listProducts = async (req, res) =>
   sendSuccess(res, await ecommerce.listProducts(req));

@@ -99,6 +99,66 @@ See **[ECOMMERCE_ADMIN_WORKSPACE_CONTRACT.md](./ECOMMERCE_ADMIN_WORKSPACE_CONTRA
 - `GET /admin/ecommerce/orders/:orderId/returns` and `returnSummary` on order detail
 - `GET|POST /admin/ecommerce/reports/:reportKey` (+ CSV export via `report.export`)
 
+## Promotional banners (catalog)
+
+**Permissions:** `ECOMMERCE_READ` list/get; `ECOMMERCE_WRITE` create/patch/publish/unpublish/archive. Writes require plan `ecommerce` entitlement (`assertEcommerceCatalogWrite`); reads remain available after downgrade (historical banners).
+
+| Method | Route | Notes |
+|--------|--------|--------|
+| GET | `/admin/ecommerce/banners` | Cursor list; optional `status`, `placement` |
+| POST | `/admin/ecommerce/banners` | Create **DRAFT**; idempotent create |
+| GET | `/admin/ecommerce/banners/:bannerId` | |
+| PATCH | `/admin/ecommerce/banners/:bannerId` | `expectedVersion` required |
+| POST | `/admin/ecommerce/banners/:bannerId/publish` | Requires image + valid schedule/targets |
+| POST | `/admin/ecommerce/banners/:bannerId/unpublish` | → **DRAFT** |
+| POST | `/admin/ecommerce/banners/:bannerId/archive` | → **ARCHIVED** |
+| POST | `/admin/ecommerce/uploads/presign` | `ECOMMERCE_WRITE`; catalog/banner upload purposes only |
+| POST | `/admin/ecommerce/uploads/:uploadId/complete` | Same scope; completes presigned banner/catalog image |
+| GET | `/admin/ecommerce/uploads/:uploadId` | `ECOMMERCE_READ`; catalog/banner image download (no settings permission) |
+
+**Schedule PATCH:** omit `startsAt` / `endsAt` to leave unchanged; send JSON `null` to clear a boundary. Validation runs on the **final** window after merge. **PUBLISHED** banners cannot drop `imageUploadId` without unpublishing first.
+
+**Customer (typed destinations only — no arbitrary URLs):**
+
+| Method | Route | Visibility |
+|--------|--------|------------|
+| GET | `/app/home/banners` | Plan entitled; **HOME** + **BOTH** placements; published + in schedule. Customer UI: **Offers** horizontal rail on home (after Active schemes). |
+| GET | `/app/shop/banners` | Operational store; **SHOP** + **BOTH**. Customer UI: same **Offers** rail inside the catalog grid (after two product rows); hidden while search/filters active. |
+
+Both customer list routes return:
+
+```json
+{
+  "items": [ /* visible promos only */ ],
+  "meta": {
+    "nextVisibilityChangeAt": "2026-01-20T04:30:00.000Z",
+    "serverTime": "2026-01-01T12:00:00.000Z"
+  }
+}
+```
+
+`meta.nextVisibilityChangeAt` is the earliest upcoming schedule start or end among **published** banners on that surface (including promos not yet visible). An empty `items` array may still include a future boundary so clients can refresh at the right time without polling unpublished content.
+
+Example customer item:
+
+```json
+{
+  "id": "ebnr_abc",
+  "title": "Festive edit",
+  "subtitle": "22K highlights",
+  "imageUploadId": "upload_xyz",
+  "imageUrl": "/uploads/upload_xyz",
+  "displayOrder": 0,
+  "startsAt": "2026-01-20T04:30:00.000Z",
+  "endsAt": null,
+  "destination": { "type": "PRODUCT", "productId": "eprd_1", "slug": "gold-ring" }
+}
+```
+
+Upload purpose: `ECOMMERCE_BANNER_IMAGE` (same size/types as catalog images). Customer download allowed only when the banner is published, in schedule, entitled for home and/or shop surface, destination targets are still valid, and **SHOP/CATEGORY/PRODUCT destinations require an operational store** (even for HOME/BOTH placement). This check runs for **every** customer banner download (store on or off). Customers must not pass `subjectId` (or any query owner) to bypass visibility. Unpublish, archive, or end-of-schedule removes customer list entries **and** blocks new `GET /app/uploads/:id` downloads for customers. Presigned image URLs already issued remain valid for up to **15 minutes** (`expiresInSeconds: 900`); list refresh does not revoke them early. **ARCHIVED** banners cannot be published, unpublished, or patched.
+
+Demo posters: `npm run seed:ecommerce-demo -- --apply --allow-demo-data --tenants=MEHER,KAIRALI` seeds published banners (see `scripts/lib/ecommerce-demo-banners.js`).
+
 ## Index / migration notes
 
 - `ecommerce_return_replacement_order_unique` — partial unique on `replacementOrderId`

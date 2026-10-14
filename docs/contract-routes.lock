@@ -30,6 +30,8 @@ GET /admin/dashboard/charts/:chartKey
 GET /admin/dashboard/summary
 GET /admin/dues
 GET /admin/dues/count
+GET /admin/ecommerce/banners
+GET /admin/ecommerce/banners/:bannerId
 GET /admin/ecommerce/categories
 GET /admin/ecommerce/categories/:categoryId
 GET /admin/ecommerce/courier-cod/orders
@@ -101,6 +103,7 @@ GET /app/gold-rate/history
 GET /app/grievances
 GET /app/grievances/:grievanceId
 GET /app/home
+GET /app/home/banners
 GET /app/notifications
 GET /app/payment-intents/:intentId
 GET /app/payments
@@ -108,6 +111,7 @@ GET /app/payments/:linkId/status
 GET /app/payments/:paymentId/receipt
 GET /app/profile
 GET /app/shop/availability
+GET /app/shop/banners
 GET /app/shop/categories
 GET /app/shop/products
 GET /app/shop/products/:productIdOrSlug
@@ -172,6 +176,7 @@ GET /staff/schemes/:schemeId/payable-range
 PATCH /admin/branches/:branchId
 PATCH /admin/customers/:customerId
 PATCH /admin/customers/:customerId/whatsapp-opt
+PATCH /admin/ecommerce/banners/:bannerId
 PATCH /admin/ecommerce/categories/:categoryId
 PATCH /admin/ecommerce/orders/:orderId/delivery-tracking
 PATCH /admin/ecommerce/products/:productId
@@ -203,6 +208,10 @@ POST /admin/exports
 POST /admin/ecommerce/courier-cod/remittance-batches
 POST /admin/ecommerce/courier-cod/remittance-batches/:batchId/orders/:orderId/lines
 POST /admin/ecommerce/courier-cod/remittance-batches/:batchId/reconcile
+POST /admin/ecommerce/banners
+POST /admin/ecommerce/banners/:bannerId/archive
+POST /admin/ecommerce/banners/:bannerId/publish
+POST /admin/ecommerce/banners/:bannerId/unpublish
 POST /admin/ecommerce/orders/:orderId/courier-cod/confirm-collection
 POST /admin/ecommerce/categories
 POST /admin/ecommerce/categories/:categoryId/archive

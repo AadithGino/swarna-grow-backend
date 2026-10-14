@@ -1,5 +1,6 @@
 import path from "node:path";
 import { EcommerceCategory, EcommerceProduct, Upload } from "../models/index.js";
+import { isCustomerVisibleBannerUpload } from "../lib/ecommerce-banner-visibility.js";
 import { EcommerceProductStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
 import { isEcommerceOperational } from "../lib/ecommerce-access.js";
 import { createId } from "../lib/ids.js";
@@ -18,6 +19,7 @@ const RULES = Object.freeze({
   PUSH_BROADCAST_IMAGE: ECOMMERCE_IMAGE_RULE,
   ECOMMERCE_CATEGORY_IMAGE: ECOMMERCE_IMAGE_RULE,
   ECOMMERCE_PRODUCT_IMAGE: ECOMMERCE_IMAGE_RULE,
+  ECOMMERCE_BANNER_IMAGE: ECOMMERCE_IMAGE_RULE,
   KYC_DOCUMENT: { max: 5_000_000, types: ["image/jpeg", "image/png", "application/pdf"] },
   GRIEVANCE_ATTACHMENT: { max: 5_000_000, types: ["image/jpeg", "image/png", "application/pdf"] },
 });
@@ -121,7 +123,10 @@ export async function completeUpload(req) {
   return { uploadId: upload._id, status: upload.status, viewUrl: uploadViewPath(upload._id) };
 }
 
-async function isStorefrontVisibleCatalogUpload(upload) {
+async function isStorefrontVisibleCatalogUpload(upload, tenant) {
+  if (upload.purpose === UploadPurpose.ECOMMERCE_BANNER_IMAGE) {
+    return isCustomerVisibleBannerUpload(upload, tenant);
+  }
   if (
     upload.purpose !== UploadPurpose.ECOMMERCE_CATEGORY_IMAGE
     && upload.purpose !== UploadPurpose.ECOMMERCE_PRODUCT_IMAGE
@@ -156,29 +161,59 @@ async function isStorefrontVisibleCatalogUpload(upload) {
 
 async function canReadUpload(req, upload, { subjectId } = {}) {
   if (upload.ownerId === req.auth.id) return true;
-  if (subjectId && upload.ownerId === subjectId) return true;
+  if (
+    req.auth.type !== "CUSTOMER"
+    && subjectId
+    && upload.ownerId === subjectId
+  ) {
+    return true;
+  }
   if (req.auth.type === "TENANT_USER" && upload.tenantId === req.auth.tenantId) return true;
   if (
     req.auth.type === "CUSTOMER"
     && upload.tenantId === req.auth.tenantId
-    && (await isStorefrontVisibleCatalogUpload(upload))
+    && (await isStorefrontVisibleCatalogUpload(upload, req.tenant))
   ) {
     return true;
   }
   return false;
 }
 
+const ECOMMERCE_CATALOG_UPLOAD_PURPOSES = new Set([
+  UploadPurpose.ECOMMERCE_BANNER_IMAGE,
+  UploadPurpose.ECOMMERCE_CATEGORY_IMAGE,
+  UploadPurpose.ECOMMERCE_PRODUCT_IMAGE,
+]);
+
+export async function assertEcommerceCatalogUploadDownload(req) {
+  const upload = await Upload.findOne({ _id: req.params.uploadId, tenantId: req.auth.tenantId }).lean();
+  if (!upload) throw errors.notFound("Upload");
+  if (!ECOMMERCE_CATALOG_UPLOAD_PURPOSES.has(upload.purpose)) {
+    throw errors.forbidden("This upload is not available on the ecommerce catalog endpoint.");
+  }
+  return upload;
+}
+
 export async function getUploadDownload(req) {
   const upload = await Upload.findOne({ _id: req.params.uploadId, tenantId: req.auth.tenantId }).lean();
   if (!upload) throw errors.notFound("Upload");
-  const subjectId = req.query.subjectId ?? req.params.customerId;
-  if (
+  const subjectId =
     req.auth.type === "CUSTOMER"
-    && (upload.purpose === UploadPurpose.ECOMMERCE_CATEGORY_IMAGE
-      || upload.purpose === UploadPurpose.ECOMMERCE_PRODUCT_IMAGE)
-    && !isEcommerceOperational(req.tenant)
-  ) {
-    throw errors.forbidden("Online store is not active.");
+      ? undefined
+      : (req.query.subjectId ?? req.params.customerId);
+  if (req.auth.type === "CUSTOMER") {
+    if (upload.purpose === UploadPurpose.ECOMMERCE_BANNER_IMAGE) {
+      if (!(await isCustomerVisibleBannerUpload(upload, req.tenant, req.auth.id))) {
+        throw errors.forbidden("This banner image is not available.");
+      }
+    } else if (!isEcommerceOperational(req.tenant)) {
+      const catalogImage =
+        upload.purpose === UploadPurpose.ECOMMERCE_CATEGORY_IMAGE
+        || upload.purpose === UploadPurpose.ECOMMERCE_PRODUCT_IMAGE;
+      if (catalogImage) {
+        throw errors.forbidden("Online store is not active.");
+      }
+    }
   }
   if (!(await canReadUpload(req, upload, { subjectId }))) throw errors.forbidden();
   if (upload.status === UploadStatus.PENDING) {
@@ -247,6 +282,43 @@ function assertAttachableOwner(req, upload, subjectId) {
   );
 }
 
+export async function assertRetainedTenantUpload({
+  req,
+  uploadId,
+  purpose,
+  entityType,
+  entityId,
+  session,
+}) {
+  const upload = await Upload.findOne({ _id: uploadId, tenantId: req.auth.tenantId }).session(session);
+  if (!upload) throw errors.notFound("Upload");
+  if (upload.purpose !== purpose) {
+    throw new AppError(
+      "UPLOAD_PURPOSE_MISMATCH",
+      "This upload cannot be used for the requested attachment.",
+      422,
+      { uploadId: upload._id, expectedPurpose: purpose, actualPurpose: upload.purpose },
+    );
+  }
+  if (!ATTACHABLE_STATUSES.has(upload.status)) {
+    throw new AppError(
+      "UPLOAD_NOT_READY",
+      "This upload has not been completed yet.",
+      422,
+      { uploadId: upload._id, status: upload.status },
+    );
+  }
+  if (
+    upload.status === UploadStatus.ATTACHED
+    && (upload.attachedEntityType !== entityType || upload.attachedEntityId !== entityId)
+  ) {
+    throw new AppError("UPLOAD_ALREADY_ATTACHED", "This upload is already bound to another record.", 409, {
+      uploadId: upload._id,
+    });
+  }
+  return upload;
+}
+
 export async function validateUploadReferences({
   req,
   uploadIds = [],
@@ -261,6 +333,13 @@ export async function validateUploadReferences({
   const uploads = await Upload.find({ _id: { $in: ids }, tenantId: req.auth.tenantId }).session(session);
   if (uploads.length !== ids.length) throw errors.notFound("Upload");
   for (const upload of uploads) {
+    if (
+      upload.status === UploadStatus.ATTACHED
+      && upload.attachedEntityType === entityType
+      && upload.attachedEntityId === entityId
+    ) {
+      continue;
+    }
     if (upload.purpose !== purpose) {
       throw new AppError(
         "UPLOAD_PURPOSE_MISMATCH",

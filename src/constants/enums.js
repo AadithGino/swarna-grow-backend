@@ -269,6 +269,7 @@ export const AuditEntityType = makeEnum(
   "INVOICE",
   "TEMPLATE",
   "ECOMMERCE_CATEGORY",
+  "ECOMMERCE_BANNER",
   "ECOMMERCE_PRODUCT",
   "ECOMMERCE_GOLD_RATE",
   "ECOMMERCE_TAX_SETTINGS",
@@ -276,6 +277,17 @@ export const AuditEntityType = makeEnum(
   "ECOMMERCE_FULFILMENT_SETTINGS",
 );
 export const EcommerceProductStatus = makeEnum("DRAFT", "PUBLISHED", "ARCHIVED");
+export const EcommerceBannerStatus = makeEnum("DRAFT", "PUBLISHED", "ARCHIVED");
+export const EcommerceBannerPlacement = makeEnum("HOME", "SHOP", "BOTH");
+export const EcommerceBannerDestination = makeEnum(
+  "NONE",
+  "HOME",
+  "SHOP",
+  "CATEGORY",
+  "PRODUCT",
+  "SCHEMES",
+  "ORDERS",
+);
 export const EcommercePriceMode = makeEnum("FIXED", "GOLD_RATE_BASED");
 export const EcommerceGoldPurity = makeEnum("18K", "22K", "24K");
 export const EcommerceMakingChargeMode = makeEnum(
@@ -504,6 +516,7 @@ export const UploadPurpose = makeEnum(
   "PUSH_BROADCAST_IMAGE",
   "ECOMMERCE_CATEGORY_IMAGE",
   "ECOMMERCE_PRODUCT_IMAGE",
+  "ECOMMERCE_BANNER_IMAGE",
 );
 export const WebhookProvider = makeEnum("PHONEPE", "WHATSAPP");
 export const JobStatus = makeEnum(

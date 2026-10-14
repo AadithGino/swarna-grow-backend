@@ -298,7 +298,9 @@ appRouter.get("/gold-rate/history", asyncHandler(async (req, res) => {
   sendSuccess(res, await GoldRate.find({ tenantId: req.auth.tenantId }).sort({ effectiveDate: -1 }).limit(100).lean());
 }));
 
+appRouter.get("/home/banners", asyncHandler(ecommerce.shopHomeBanners));
 appRouter.get("/shop/availability", asyncHandler(ecommerce.shopAvailability));
+appRouter.get("/shop/banners", asyncHandler(ecommerce.shopStorefrontBanners));
 appRouter.get("/shop/categories", asyncHandler(ecommerce.shopCategories));
 appRouter.get("/shop/store-policies", asyncHandler(ecommerce.shopStorePolicies));
 appRouter.get("/shop/products", asyncHandler(ecommerce.shopProducts));

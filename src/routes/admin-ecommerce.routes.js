@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as controller from "../controllers/ecommerce.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
+import { sendSuccess } from "../lib/response.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { guarded } from "../lib/route.js";
@@ -9,6 +10,8 @@ import { Permission } from "../constants/permissions.js";
 import {
   ecommerceCategoryCreateBody,
   ecommerceCategoryPatchBody,
+  ecommerceBannerCreateBody,
+  ecommerceBannerPatchBody,
   ecommerceGoldRateBody,
   ecommerceProductCreateBody,
   ecommerceProductPatchBody,
@@ -41,7 +44,12 @@ import {
   ecommerceReportKeyParam,
   ecommerceDeliveryHandoverBody,
 } from "../validators/ecommerce.validators.js";
-import { cursorQuery } from "../validators/common.validators.js";
+import { cursorQuery, uploadBody } from "../validators/common.validators.js";
+import { uploadCompleteBody } from "../validators/admin-mutation.validators.js";
+import { assertEcommerceCatalogUploadDownload, presignUpload } from "../services/upload.service.js";
+import * as uploadController from "../controllers/upload.controller.js";
+import { UploadPurpose } from "../constants/enums.js";
+import { errors } from "../lib/app-error.js";
 import {
   reportExportAliasBody,
 } from "../validators/admin-mutation.validators.js";
@@ -84,6 +92,116 @@ adminEcommerceRouter.post(
     validate({ body: ecommerceVersionBody }),
     idempotent,
     asyncHandler(controller.archiveCategory),
+  ),
+);
+const ECOMMERCE_CATALOG_UPLOAD_PURPOSES = new Set([
+  UploadPurpose.ECOMMERCE_BANNER_IMAGE,
+  UploadPurpose.ECOMMERCE_CATEGORY_IMAGE,
+  UploadPurpose.ECOMMERCE_PRODUCT_IMAGE,
+]);
+
+function assertEcommerceCatalogUploadPurpose(req, _res, next) {
+  if (!ECOMMERCE_CATALOG_UPLOAD_PURPOSES.has(req.body?.purpose)) {
+    next(
+      errors.validation([
+        { field: "purpose", message: "This upload purpose is not allowed on the ecommerce catalog endpoint." },
+      ]),
+    );
+    return;
+  }
+  next();
+}
+
+async function assertEcommerceCatalogUploadOnComplete(req, _res, next) {
+  try {
+    await assertEcommerceCatalogUploadDownload(req);
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+adminEcommerceRouter.post(
+  "/ecommerce/uploads/presign",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: uploadBody }),
+    assertEcommerceCatalogUploadPurpose,
+    idempotent,
+    asyncHandler(async (req, res) => sendSuccess(res, await presignUpload(req), {}, 201)),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/uploads/:uploadId/complete",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: uploadCompleteBody }),
+    assertEcommerceCatalogUploadOnComplete,
+    idempotent,
+    asyncHandler(uploadController.complete),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/uploads/:uploadId",
+  ...guarded(
+    Permission.ECOMMERCE_READ,
+    asyncHandler(async (req, res) => {
+      await assertEcommerceCatalogUploadDownload(req);
+      return uploadController.download(req, res);
+    }),
+  ),
+);
+
+adminEcommerceRouter.get(
+  "/ecommerce/banners",
+  ...guarded(Permission.ECOMMERCE_READ, validate({ query: cursorQuery }), asyncHandler(controller.listBanners)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/banners",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceBannerCreateBody }),
+    idempotent,
+    asyncHandler(controller.createBanner),
+  ),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/banners/:bannerId",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getBanner)),
+);
+adminEcommerceRouter.patch(
+  "/ecommerce/banners/:bannerId",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceBannerPatchBody }),
+    asyncHandler(controller.patchBanner),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/banners/:bannerId/publish",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceVersionBody }),
+    idempotent,
+    asyncHandler(controller.publishBanner),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/banners/:bannerId/unpublish",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceVersionBody }),
+    idempotent,
+    asyncHandler(controller.unpublishBanner),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/banners/:bannerId/archive",
+  ...guarded(
+    Permission.ECOMMERCE_WRITE,
+    validate({ body: ecommerceVersionBody }),
+    idempotent,
+    asyncHandler(controller.archiveBanner),
   ),
 );
 adminEcommerceRouter.get(

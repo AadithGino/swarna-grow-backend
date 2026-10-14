@@ -28,6 +28,7 @@ import {
   User,
 } from "../../src/models/index.js";
 import { ensureDemoProductImageUpload } from "./ecommerce-demo-images.js";
+import { upsertDemoBanners } from "./ecommerce-demo-banners.js";
 import {
   DEMO_TAX_CLASSIFICATION,
   ensureDemoDisplayTaxSettings,
@@ -877,9 +878,13 @@ export async function runEcommerceDemoSeed({
     );
     await ensureGoldRatesForDemo(req, dryRun, report, [...purities]);
 
+    const productIds = {};
     for (const pSpec of productSpecs) {
       try {
-        await upsertProduct(req, code, pSpec, taxClassification, dryRun, report);
+        const pid = await upsertProduct(req, code, pSpec, taxClassification, dryRun, report);
+        if (pid) productIds[pSpec.key] = pid;
+        const last = report.products.filter((p) => p.key === pSpec.key).pop();
+        if (last?.id) productIds[pSpec.key] = last.id;
       } catch (err) {
         report.products.push({
           key: pSpec.key,
@@ -888,6 +893,8 @@ export async function runEcommerceDemoSeed({
         });
       }
     }
+
+    await upsertDemoBanners(req, code, { categoryIds, productIds }, dryRun, report);
 
     await archiveOrphanMislabeledDemoProducts(req, code, dryRun, report);
 
@@ -966,6 +973,7 @@ export function adminPortalPaths() {
   return {
     catalog: "/ecommerce",
     categories: "/ecommerce/categories",
+    banners: "/ecommerce/banners",
     goldRates: "/ecommerce/gold-rates",
     tax: "/ecommerce/tax",
     inventory: "/ecommerce/inventory",

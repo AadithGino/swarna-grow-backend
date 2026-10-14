@@ -89,6 +89,25 @@ export const ecommerceVersionBody = z
   })
   .strict();
 
+export const ecommerceBannerCreateBody = z
+  .object({
+    title: z.string().trim().min(1).max(120),
+    subtitle: z.string().trim().max(200).optional(),
+    imageUploadId: z.union([z.string().trim().min(1), z.null()]).optional(),
+    placement: enumSchema(E.EcommerceBannerPlacement),
+    displayOrder: z.number().int().optional(),
+    destinationType: enumSchema(E.EcommerceBannerDestination).optional(),
+    targetCategoryId: z.string().optional().nullable(),
+    targetProductId: z.string().optional().nullable(),
+    startsAt: z.string().datetime().optional().nullable(),
+    endsAt: z.string().datetime().optional().nullable(),
+  })
+  .strict();
+
+export const ecommerceBannerPatchBody = ecommerceBannerCreateBody.partial().extend({
+  expectedVersion: z.number().int().positive(),
+});
+
 export const ecommerceGoldRateBody = z
   .object({
     purity: enumSchema(E.EcommerceGoldPurity),

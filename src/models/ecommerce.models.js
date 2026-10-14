@@ -6,6 +6,9 @@ import {
   EcommerceOfferType,
   EcommercePriceMode,
   EcommerceProductStatus,
+  EcommerceBannerStatus,
+  EcommerceBannerPlacement,
+  EcommerceBannerDestination,
 } from "../constants/enums.js";
 import {
   baseOptions,
@@ -162,7 +165,32 @@ const taxSettingsSchema = new mongoose.Schema(
 );
 taxSettingsSchema.index({ tenantId: 1 }, { unique: true, name: "ecommerce_tax_tenant_unique" });
 
+const bannerSchema = new mongoose.Schema(
+  {
+    _id: stringId("ebnr"),
+    tenantId: tenantField,
+    title: { type: String, required: true, trim: true, maxlength: 120 },
+    subtitle: { type: String, trim: true, maxlength: 200, default: "" },
+    imageUploadId: String,
+    placement: enumField(EcommerceBannerPlacement, { required: true }),
+    displayOrder: integerField({ default: 0 }),
+    status: enumField(EcommerceBannerStatus, { default: EcommerceBannerStatus.DRAFT }),
+    destinationType: enumField(EcommerceBannerDestination, {
+      default: EcommerceBannerDestination.NONE,
+    }),
+    targetCategoryId: String,
+    targetProductId: String,
+    startsAt: Date,
+    endsAt: Date,
+    version: versionField,
+  },
+  baseOptions,
+);
+bannerSchema.index({ tenantId: 1, status: 1, displayOrder: 1 });
+bannerSchema.index({ tenantId: 1, placement: 1, status: 1, displayOrder: 1 });
+
 export const EcommerceCategory = mongoose.model("EcommerceCategory", categorySchema);
+export const EcommerceBanner = mongoose.model("EcommerceBanner", bannerSchema);
 export const EcommerceProduct = mongoose.model("EcommerceProduct", productSchema);
 export const EcommerceGoldRate = mongoose.model("EcommerceGoldRate", ecommerceGoldRateSchema);
 export const EcommerceTaxSettings = mongoose.model("EcommerceTaxSettings", taxSettingsSchema);

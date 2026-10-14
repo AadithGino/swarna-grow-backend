@@ -47,3 +47,37 @@ export async function ensureDemoProductImageUpload({ tenantId, ownerUserId, prod
   });
   return uploadId;
 }
+
+export async function ensureDemoBannerImageUpload({ tenantId, ownerUserId, bannerKey }) {
+  const stableKey = `demo-ec-banner/${tenantId}/${bannerKey}`;
+  const existing = await Upload.findOne({
+    tenantId,
+    purpose: UploadPurpose.ECOMMERCE_BANNER_IMAGE,
+    fileName: `${stableKey}.png`,
+    status: UploadStatus.UPLOADED,
+  }).lean();
+  if (existing) return existing._id;
+
+  const fileBody = demoPngBuffer();
+  const uploadId = createId("upload");
+  const objectKey = `${tenantId}/ecommerce_banner_image/${uploadId}/demo.png`;
+  await storageProvider.uploadFile({
+    objectKey,
+    body: fileBody,
+    contentType: "image/png",
+  });
+  await Upload.create({
+    _id: uploadId,
+    tenantId,
+    ownerId: ownerUserId,
+    purpose: UploadPurpose.ECOMMERCE_BANNER_IMAGE,
+    fileName: `${stableKey}.png`,
+    contentType: "image/png",
+    sizeBytes: fileBody.length,
+    objectKey,
+    status: UploadStatus.UPLOADED,
+    attachedEntityType: "ECOMMERCE_BANNER",
+    expiresAt: new Date(Date.now() + 365 * 86_400_000),
+  });
+  return uploadId;
+}
