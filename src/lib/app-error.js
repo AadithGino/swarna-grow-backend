@@ -14,7 +14,7 @@ export const errors = Object.freeze({
   unauthenticated: (message = "Authentication is required.") => new AppError("UNAUTHENTICATED", message, 401),
   forbidden: (message = "You do not have permission to perform this action.") => new AppError("FORBIDDEN", message, 403),
   notFound: (resource = "Resource") => new AppError("RESOURCE_NOT_FOUND", `${resource} was not found.`, 404),
-  conflict: (code, message) => new AppError(code, message, 409),
+  conflict: (code, message, details) => new AppError(code, message, 409, details),
   business: (code, message, details) => new AppError(code, message, 422, details),
   dependency: (message) => new AppError("DEPENDENCY_UNAVAILABLE", message, 503),
 });

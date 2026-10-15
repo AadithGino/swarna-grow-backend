@@ -6,6 +6,7 @@ node_modules
 google-services.json
 GoogleService-Info.plist
 **/firebase-adminsdk*.json
+*firebase-adminsdk*.json
 coverage/
 logs/
 tmp/

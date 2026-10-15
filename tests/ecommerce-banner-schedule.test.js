@@ -7,12 +7,11 @@ import {
   UploadPurpose,
   UserType,
 } from "../src/constants/enums.js";
-import { Tenant, User } from "../src/models/index.js";
+import { User } from "../src/models/index.js";
 import { PlanTier } from "../src/constants/enums.js";
 import { createId } from "../src/lib/ids.js";
 import * as banners from "../src/services/ecommerce-banner.service.js";
 import {
-  bearerFor,
   resetTestDb,
   seedTenantUser,
   startTestDb,

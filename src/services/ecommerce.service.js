@@ -36,7 +36,13 @@ import { uploadViewPath, validateUploadReferences } from "./upload.service.js";
 function enforceVersion(doc, expectedVersion) {
   if (expectedVersion == null) return;
   if (Number(doc.version) !== Number(expectedVersion)) {
-    throw errors.conflict("VERSION_CONFLICT", "Record was updated elsewhere. Refresh and retry.");
+    throw errors.conflict("VERSION_CONFLICT", "Record was updated elsewhere. Refresh and retry.", {
+      current: {
+        version: doc.version,
+        updatedAt: doc.updatedAt ?? null,
+        id: doc._id,
+      },
+    });
   }
 }
 
@@ -523,13 +529,24 @@ export async function getProduct(req) {
 
 export async function patchProduct(req) {
   assertEcommerceCatalogWrite(req.tenant);
-  return withTransaction(async (session) => {
+  const notificationIntent = req.body.notification;
+  const {
+    assertPromotionNotificationAuthorized,
+    buildOfferIntent,
+    persistCampaignIntent,
+    mergePromotionResult,
+    tryEnqueuePromotionAfterCommit,
+  } = await import("./ecommerce-promotion.service.js");
+  assertPromotionNotificationAuthorized(req, notificationIntent);
+  let pendingCampaignId = null;
+  const result = await withTransaction(async (session) => {
     const row = await EcommerceProduct.findOne({
       _id: req.params.productId,
       tenantId: req.auth.tenantId,
     }).session(session);
     if (!row) throw errors.notFound("Product");
     enforceVersion(row, req.body.expectedVersion);
+    const before = row.toObject();
     validateProductPricingFields({
       ...row.toObject(),
       ...req.body,
@@ -537,6 +554,7 @@ export async function patchProduct(req) {
     });
     const patch = { ...req.body };
     delete patch.expectedVersion;
+    delete patch.notification;
     if (patch.slug != null) patch.slug = normalizeEcommerceSlug(patch.slug);
     const merged = { ...row.toObject(), ...patch, priceMode: patch.priceMode ?? row.priceMode };
     const nextCategoryId =
@@ -569,23 +587,114 @@ export async function patchProduct(req) {
       after: row.toObject(),
       session,
     });
-    return mapProductWithPricing(row.toObject(), {
+    const mapped = await mapProductWithPricing(row.toObject(), {
       tenant: req.tenant,
       tenantId: req.auth.tenantId,
       session,
     });
+    let promotion = { queued: false };
+    if (notificationIntent?.enabled && notificationIntent?.kind === "OFFER") {
+      const intent = await buildOfferIntent(req, {
+        before,
+        after: row.toObject(),
+        notification: notificationIntent,
+      });
+      if (!intent) {
+        promotion = { queued: false };
+      } else if (intent.skip) {
+        promotion = { queued: false, reason: intent.reason };
+      } else {
+        const persisted = await persistCampaignIntent(session, req, intent);
+        pendingCampaignId = persisted.campaignId ?? null;
+        promotion = mergePromotionResult(
+          {
+            campaign: persisted.campaign,
+            intentPersisted: Boolean(pendingCampaignId),
+            duplicate: Boolean(persisted.duplicate),
+            scheduled: Boolean(intent.scheduledFor),
+          },
+          null,
+        );
+      }
+    }
+    return { mapped, promotion };
   });
+  const enq = await tryEnqueuePromotionAfterCommit(pendingCampaignId, req.auth.tenantId);
+  return { ...result.mapped, promotion: mergePromotionResult(result.promotion, enq) };
 }
 
 export async function publishProduct(req) {
   assertEcommerceCatalogWrite(req.tenant);
-  return patchProduct({
-    ...req,
-    body: {
-      expectedVersion: req.body.expectedVersion,
+  const notificationIntent = req.body.notification;
+  const {
+    assertPromotionNotificationAuthorized,
+    buildNewArrivalIntent,
+    persistCampaignIntent,
+    mergePromotionResult,
+    tryEnqueuePromotionAfterCommit,
+  } = await import("./ecommerce-promotion.service.js");
+  assertPromotionNotificationAuthorized(req, notificationIntent);
+  let isFirstPublication = false;
+  let pendingCampaignId = null;
+  let promotion = { queued: false };
+  const result = await withTransaction(async (session) => {
+    const row = await EcommerceProduct.findOne({
+      _id: req.params.productId,
+      tenantId: req.auth.tenantId,
+    }).session(session);
+    if (!row) throw errors.notFound("Product");
+    enforceVersion(row, req.body.expectedVersion);
+    const wasPublished = row.status === EcommerceProductStatus.PUBLISHED;
+    isFirstPublication = !wasPublished && !row.firstPublishedAt;
+    validateProductPricingFields({
+      ...row.toObject(),
       status: EcommerceProductStatus.PUBLISHED,
-    },
+      priceMode: row.priceMode,
+    });
+    const merged = { ...row.toObject(), status: EcommerceProductStatus.PUBLISHED };
+    await assertActiveCategoryForTenant(req.auth.tenantId, merged.categoryId, session);
+    await assertPublishPricingReady(merged, req.auth.tenantId, session);
+    row.status = EcommerceProductStatus.PUBLISHED;
+    if (!row.firstPublishedAt && !wasPublished) {
+      row.firstPublishedAt = new Date();
+    }
+    row.version += 1;
+    await row.save({ session });
+    await writeAudit({
+      req,
+      action: "ECOMMERCE_PRODUCT_PUBLISHED",
+      entityType: AuditEntityType.ECOMMERCE_PRODUCT,
+      entityId: row._id,
+      after: row.toObject(),
+      session,
+    });
+    const product = row.toObject();
+    if (notificationIntent?.enabled && isFirstPublication) {
+      const intent = await buildNewArrivalIntent(req, product, notificationIntent);
+      if (intent) {
+        const persisted = await persistCampaignIntent(session, req, intent);
+        pendingCampaignId = persisted.campaignId ?? null;
+        promotion = mergePromotionResult(
+          {
+            campaign: persisted.campaign,
+            intentPersisted: Boolean(pendingCampaignId),
+            duplicate: Boolean(persisted.duplicate),
+          },
+          null,
+        );
+      }
+    } else if (notificationIntent?.enabled && !isFirstPublication) {
+      promotion = { queued: false, reason: "NOT_FIRST_PUBLICATION" };
+    }
+    return product;
   });
+  const enq = await tryEnqueuePromotionAfterCommit(pendingCampaignId, req.auth.tenantId);
+  promotion = mergePromotionResult(promotion, enq);
+  const mapped = await mapProductWithPricing(result, {
+    tenant: req.tenant,
+    tenantId: req.auth.tenantId,
+  });
+  return { ...mapped, promotion };
 }
 
 export async function archiveProduct(req) {
@@ -616,7 +725,20 @@ export async function previewProductPrice(req) {
 
 export async function setEcommerceGoldRate(req) {
   assertEcommerceCatalogWrite(req.tenant);
-  return withTransaction(async (session) => {
+  const notificationIntent = req.body.notification;
+  const {
+    assertPromotionNotificationAuthorized,
+    buildEcommerceGoldRateNotificationIntent,
+    persistRateNotificationIntent,
+    mergePromotionResult,
+    finalizeRateNotificationAfterCommit,
+  } = await import("./gold-rate-notification.service.js");
+  assertPromotionNotificationAuthorized(req, notificationIntent);
+  let pendingCampaignId = null;
+  let notification = { intentPersisted: false };
+  const { resolveEcommerceGoldRateEffectiveAt } = await import("../lib/ecommerce-gold-rate-effective.js");
+  const { effectiveAt } = resolveEcommerceGoldRateEffectiveAt(req.body);
+  const mapped = await withTransaction(async (session) => {
     const row = (
       await EcommerceGoldRate.create(
         [
@@ -625,7 +747,7 @@ export async function setEcommerceGoldRate(req) {
             tenantId: req.auth.tenantId,
             purity: req.body.purity,
             ratePerGramPaise: req.body.ratePerGramPaise,
-            effectiveAt: new Date(req.body.effectiveAt),
+            effectiveAt,
             enteredBy: req.auth.id,
           },
         ],
@@ -640,6 +762,26 @@ export async function setEcommerceGoldRate(req) {
       after: row.toObject(),
       session,
     });
+    if (notificationIntent?.enabled) {
+      const intent = buildEcommerceGoldRateNotificationIntent(req, row.toObject(), {
+        effectiveTiming: req.body.effectiveTiming ?? (req.body.effectiveAt ? "SCHEDULED" : "NOW"),
+      });
+      if (intent.skip) {
+        notification = { intentPersisted: false, skipped: true, reason: intent.reason };
+      } else {
+        const persisted = await persistRateNotificationIntent(session, req, intent);
+        pendingCampaignId = persisted.campaignId ?? null;
+        notification = mergePromotionResult(
+          {
+            intentPersisted: Boolean(pendingCampaignId),
+            duplicate: Boolean(persisted.duplicate),
+            scheduled: Boolean(intent.scheduledFor && new Date(intent.scheduledFor).getTime() > Date.now()),
+            campaign: persisted.campaign,
+          },
+          null,
+        );
+      }
+    }
     return {
       id: row._id,
       purity: row.purity,
@@ -647,8 +789,14 @@ export async function setEcommerceGoldRate(req) {
       ratePerGram: moneyRef(row.ratePerGramPaise),
       effectiveAt: row.effectiveAt,
       version: row.version,
+      notification,
     };
   });
+  if (pendingCampaignId) {
+    const enq = await finalizeRateNotificationAfterCommit(pendingCampaignId, req.auth.tenantId);
+    mapped.notification = mergePromotionResult(mapped.notification, enq);
+  }
+  return mapped;
 }
 
 export async function listEcommerceGoldRates(req) {

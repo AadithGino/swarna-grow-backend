@@ -333,13 +333,6 @@ export async function validateUploadReferences({
   const uploads = await Upload.find({ _id: { $in: ids }, tenantId: req.auth.tenantId }).session(session);
   if (uploads.length !== ids.length) throw errors.notFound("Upload");
   for (const upload of uploads) {
-    if (
-      upload.status === UploadStatus.ATTACHED
-      && upload.attachedEntityType === entityType
-      && upload.attachedEntityId === entityId
-    ) {
-      continue;
-    }
     if (upload.purpose !== purpose) {
       throw new AppError(
         "UPLOAD_PURPOSE_MISMATCH",
@@ -347,6 +340,13 @@ export async function validateUploadReferences({
         422,
         { uploadId: upload._id, expectedPurpose: purpose, actualPurpose: upload.purpose },
       );
+    }
+    if (
+      upload.status === UploadStatus.ATTACHED
+      && upload.attachedEntityType === entityType
+      && upload.attachedEntityId === entityId
+    ) {
+      continue;
     }
     if (!ATTACHABLE_STATUSES.has(upload.status)) {
       throw new AppError(

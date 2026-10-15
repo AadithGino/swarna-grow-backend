@@ -20,6 +20,7 @@ import * as ecommerceAdminCustomerOrders from "../services/ecommerce-admin-custo
 import * as ecommerceCourierCod from "../services/ecommerce-courier-cod.service.js";
 import * as ecommerceOrderHandover from "../services/ecommerce-order-handover.service.js";
 import * as ecommerceBanner from "../services/ecommerce-banner.service.js";
+import * as ecommercePromotion from "../services/ecommerce-promotion.service.js";
 
 export const storeStatus = async (req, res) =>
   sendSuccess(res, await ecommerce.getStoreStatus(req));
@@ -86,6 +87,24 @@ export const archiveProduct = async (req, res) =>
 
 export const previewProductPrice = async (req, res) =>
   sendSuccess(res, await ecommerce.previewProductPrice(req));
+
+export const previewProductPromotion = async (req, res) =>
+  sendSuccess(res, await ecommercePromotion.previewProductPromotion(req));
+
+export const sendProductPromotion = async (req, res) =>
+  sendSuccess(res, await ecommercePromotion.sendProductPromotion(req), {}, 202);
+
+export const previewCategoryPromotion = async (req, res) =>
+  sendSuccess(res, await ecommercePromotion.previewCategoryPromotion(req));
+
+export const sendCategoryPromotion = async (req, res) =>
+  sendSuccess(res, await ecommercePromotion.sendCategoryPromotion(req), {}, 202);
+
+export const listEcommercePromotionCampaigns = async (req, res) =>
+  sendSuccess(res, await ecommercePromotion.listPromotionCampaigns(req));
+
+export const getEcommercePromotionCampaign = async (req, res) =>
+  sendSuccess(res, await ecommercePromotion.getPromotionCampaign(req));
 
 export const setGoldRate = async (req, res) =>
   sendSuccess(res, await ecommerce.setEcommerceGoldRate(req), {}, 201);

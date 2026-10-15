@@ -78,9 +78,42 @@ export const ecommerceProductCreateBody = z
   })
   .strict();
 
+const ecommercePromotionAudienceFields = {
+  audience: z.enum(["ALL_DEVICES", "BRANCH", "CUSTOMERS"]).optional(),
+  branchId: z.string().trim().min(1).optional(),
+  customerIds: z.array(z.string().trim().min(1)).max(500).optional(),
+};
+
+export const ecommercePromotionNotificationIntentBody = z
+  .object({
+    enabled: z.boolean(),
+    kind: z.enum(["NEW_ARRIVAL", "OFFER"]).optional(),
+    title: z.string().trim().min(2).max(120).optional(),
+    body: z.string().trim().min(2).max(500).optional(),
+    ...ecommercePromotionAudienceFields,
+  })
+  .strict();
+
+export const ecommercePromotionPreviewBody = z
+  .object({
+    title: z.string().trim().min(2).max(120).optional(),
+    body: z.string().trim().min(2).max(500).optional(),
+    ...ecommercePromotionAudienceFields,
+  })
+  .strict();
+
+export const ecommercePromotionSendBody = z
+  .object({
+    title: z.string().trim().min(2).max(120).optional(),
+    body: z.string().trim().min(2).max(500).optional(),
+    ...ecommercePromotionAudienceFields,
+  })
+  .strict();
+
 export const ecommerceProductPatchBody = ecommerceProductCreateBody.partial().extend({
   expectedVersion: z.number().int().positive(),
   status: enumSchema(E.EcommerceProductStatus).optional(),
+  notification: ecommercePromotionNotificationIntentBody.optional(),
 });
 
 export const ecommerceVersionBody = z
@@ -88,6 +121,10 @@ export const ecommerceVersionBody = z
     expectedVersion: z.number().int().positive(),
   })
   .strict();
+
+export const ecommercePublishProductBody = ecommerceVersionBody.extend({
+  notification: ecommercePromotionNotificationIntentBody.optional(),
+});
 
 export const ecommerceBannerCreateBody = z
   .object({
@@ -112,9 +149,33 @@ export const ecommerceGoldRateBody = z
   .object({
     purity: enumSchema(E.EcommerceGoldPurity),
     ratePerGramPaise: z.number().int().min(1),
-    effectiveAt: z.string().datetime(),
+    effectiveTiming: z.enum(["NOW", "SCHEDULED"]).optional(),
+    effectiveAt: z.string().datetime().optional(),
+    notification: z
+      .object({
+        enabled: z.boolean(),
+      })
+      .strict()
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const timing = value.effectiveTiming ?? (value.effectiveAt ? "SCHEDULED" : "NOW");
+    if (timing === "SCHEDULED" && !value.effectiveAt) {
+      ctx.addIssue({
+        code: "custom",
+        message: "effectiveAt is required when effectiveTiming is SCHEDULED.",
+        path: ["effectiveAt"],
+      });
+    }
+    if (timing === "NOW" && value.effectiveAt) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Do not send effectiveAt when effectiveTiming is NOW.",
+        path: ["effectiveAt"],
+      });
+    }
+  });
 
 const taxRateLine = z.object({
   code: z.string().trim().min(1).max(32),

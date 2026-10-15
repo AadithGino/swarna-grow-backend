@@ -1390,15 +1390,28 @@ export async function createStaff(req) {
 }
 export async function setGoldRate(req) {
   const { assertV1GoldPurity, V1_GOLD_PURITY } = await import("../lib/gold-rate-lookup.js");
+  const { resolveAuthorizedSchemeGoldRateBranchId } = await import("../lib/gold-rate-branch-auth.js");
   assertV1GoldPurity(req.body.purity);
-  return withTransaction(async (session) => {
+  const authorizedBranchId = await resolveAuthorizedSchemeGoldRateBranchId(req, req.body.branchId);
+  const notificationIntent = req.body.notification;
+  const {
+    assertPromotionNotificationAuthorized,
+    buildSchemeGoldRateNotificationIntent,
+    persistRateNotificationIntent,
+    mergePromotionResult,
+    finalizeRateNotificationAfterCommit,
+  } = await import("./gold-rate-notification.service.js");
+  assertPromotionNotificationAuthorized(req, notificationIntent);
+  let pendingCampaignId = null;
+  let notification = { intentPersisted: false };
+  const result = await withTransaction(async (session) => {
     const rate = (
       await GoldRate.create(
         [
           {
             _id: createId("grt"),
             tenantId: req.auth.tenantId,
-            branchId: req.body.branchId ?? null,
+            branchId: authorizedBranchId,
             effectiveDate: req.body.effectiveDate,
             ratePerGramPaise: req.body.ratePerGramPaise,
             purity: V1_GOLD_PURITY,
@@ -1417,8 +1430,31 @@ export async function setGoldRate(req) {
       after: rate.toObject(),
       session,
     });
-    return { ...rate.toObject(), auditEventId };
+    if (notificationIntent?.enabled) {
+      const intent = buildSchemeGoldRateNotificationIntent(req, rate.toObject());
+      if (intent.skip) {
+        notification = { intentPersisted: false, skipped: true, reason: intent.reason };
+      } else {
+        const persisted = await persistRateNotificationIntent(session, req, intent);
+        pendingCampaignId = persisted.campaignId ?? null;
+        notification = mergePromotionResult(
+          {
+            intentPersisted: Boolean(pendingCampaignId),
+            duplicate: Boolean(persisted.duplicate),
+            scheduled: Boolean(intent.scheduledFor && new Date(intent.scheduledFor).getTime() > Date.now()),
+            campaign: persisted.campaign,
+          },
+          null,
+        );
+      }
+    }
+    return { ...rate.toObject(), auditEventId, notification };
   });
+  if (pendingCampaignId) {
+    const enq = await finalizeRateNotificationAfterCommit(pendingCampaignId, req.auth.tenantId);
+    result.notification = mergePromotionResult(result.notification, enq);
+  }
+  return result;
 }
 
 export async function listGoldRateHistory(req) {

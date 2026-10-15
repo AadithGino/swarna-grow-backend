@@ -188,6 +188,12 @@ export const MessageType = makeEnum(
   "ECOMMERCE_FULFILMENT_UPDATE",
   "ECOMMERCE_CANCELLATION_UPDATE",
   "ECOMMERCE_COD_UPDATE",
+  "ECOMMERCE_PRODUCT_PROMOTION",
+  "ECOMMERCE_CATEGORY_PROMOTION",
+  "ECOMMERCE_NEW_ARRIVAL",
+  "ECOMMERCE_OFFER",
+  "SCHEME_GOLD_RATE_UPDATED",
+  "ECOMMERCE_GOLD_RATE_UPDATED",
 );
 export const MessageTemplateKey = makeEnum(
   "PAYMENT_SUCCESS_MEDIA",
@@ -277,6 +283,28 @@ export const AuditEntityType = makeEnum(
   "ECOMMERCE_FULFILMENT_SETTINGS",
 );
 export const EcommerceProductStatus = makeEnum("DRAFT", "PUBLISHED", "ARCHIVED");
+export const EcommercePromotionKind = makeEnum(
+  "MANUAL_PRODUCT",
+  "MANUAL_CATEGORY",
+  "NEW_ARRIVAL",
+  "OFFER",
+  "SCHEME_GOLD_RATE",
+  "ECOMMERCE_GOLD_RATE",
+);
+export const EcommercePromotionCampaignStatus = makeEnum(
+  "DRAFT",
+  "QUEUED",
+  "SENDING",
+  "SENT",
+  "FAILED",
+  "CANCELLED",
+);
+export const PushBroadcastSourceKind = makeEnum(
+  "MANUAL",
+  "ECOMMERCE_PROMOTION",
+  "GOLD_RATE_NOTIFICATION",
+);
+export const GoldRateNotificationSource = makeEnum("SCHEME", "ECOMMERCE");
 export const EcommerceBannerStatus = makeEnum("DRAFT", "PUBLISHED", "ARCHIVED");
 export const EcommerceBannerPlacement = makeEnum("HOME", "SHOP", "BOTH");
 export const EcommerceBannerDestination = makeEnum(

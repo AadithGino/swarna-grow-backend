@@ -956,6 +956,13 @@ export const branchUpdateBody = z
   })
   .strict();
 
+const rateNotificationIntent = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict()
+  .optional();
+
 export const goldRateBody = z
   .object({
     branchId: z.string().nullable().optional(),
@@ -963,6 +970,7 @@ export const goldRateBody = z
     effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     purity: z.literal("22K").default("22K"),
     source: z.string().max(120).optional(),
+    notification: rateNotificationIntent,
   })
   .superRefine((value, context) => {
     refineCalendarDateField(context, ["effectiveDate"], value.effectiveDate);

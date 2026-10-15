@@ -9,6 +9,8 @@ import {
   EcommerceBannerStatus,
   EcommerceBannerPlacement,
   EcommerceBannerDestination,
+  EcommercePromotionCampaignStatus,
+  EcommercePromotionKind,
 } from "../constants/enums.js";
 import {
   baseOptions,
@@ -16,6 +18,7 @@ import {
   immutablePlugin,
   integerField,
   optionalIntegerField,
+  branchField,
   stringId,
   tenantField,
   versionField,
@@ -101,6 +104,7 @@ const productSchema = new mongoose.Schema(
     taxClassification: { type: String, trim: true, maxlength: 64 },
     hsnSacCode: { type: String, trim: true, maxlength: 8 },
     hsnSacType: enumField(EcommerceHsnSacType),
+    firstPublishedAt: Date,
     version: versionField,
   },
   baseOptions,
@@ -189,8 +193,67 @@ const bannerSchema = new mongoose.Schema(
 bannerSchema.index({ tenantId: 1, status: 1, displayOrder: 1 });
 bannerSchema.index({ tenantId: 1, placement: 1, status: 1, displayOrder: 1 });
 
+const promotionCampaignSchema = new mongoose.Schema(
+  {
+    _id: stringId("epcm"),
+    tenantId: tenantField,
+    businessKey: { type: String, required: true, trim: true, maxlength: 200 },
+    kind: enumField(EcommercePromotionKind, { required: true }),
+    status: enumField(EcommercePromotionCampaignStatus, {
+      default: EcommercePromotionCampaignStatus.QUEUED,
+    }),
+    productId: String,
+    categoryId: String,
+    broadcastId: String,
+    title: { type: String, trim: true, maxlength: 120 },
+    body: { type: String, trim: true, maxlength: 500 },
+    deepLink: { type: String, trim: true, maxlength: 512 },
+    audience: { type: String, enum: ["ALL_DEVICES", "BRANCH", "CUSTOMERS"], default: "ALL_DEVICES" },
+    branchId: branchField,
+    customerIds: { type: [String], default: [] },
+    imageUploadId: String,
+    scheduledFor: Date,
+    offerRevision: { type: String, trim: true, maxlength: 128 },
+    stats: {
+      eligibleCustomers: integerField({ min: 0 }),
+      messagesQueued: integerField({ min: 0 }),
+      delivered: integerField({ min: 0 }),
+      failed: integerField({ min: 0 }),
+      pending: integerField({ min: 0 }),
+    },
+    requestedBy: { type: String, required: true },
+    scopeBranchId: branchField,
+    skippedReason: String,
+    deliveryLeaseOwner: String,
+    deliveryLeaseExpiresAt: Date,
+    deliveryAttemptCount: integerField({ min: 0 }),
+    titleOverridden: { type: Boolean, default: false },
+    bodyOverridden: { type: Boolean, default: false },
+    fanoutCompletedAt: Date,
+    rateId: String,
+    rateSource: { type: String, enum: ["SCHEME", "ECOMMERCE"] },
+    purity: String,
+    ratePerGramPaise: optionalIntegerField({ min: 0 }),
+    schemeEffectiveDate: String,
+    ecommerceEffectiveAt: Date,
+    version: versionField,
+  },
+  baseOptions,
+);
+promotionCampaignSchema.index({ tenantId: 1, rateId: 1 });
+promotionCampaignSchema.index({ tenantId: 1, businessKey: 1 }, { unique: true });
+promotionCampaignSchema.index({ tenantId: 1, productId: 1, createdAt: -1 });
+promotionCampaignSchema.index({ tenantId: 1, categoryId: 1, createdAt: -1 });
+promotionCampaignSchema.index({ tenantId: 1, status: 1, scheduledFor: 1 });
+promotionCampaignSchema.index({ tenantId: 1, status: 1, deliveryLeaseExpiresAt: 1 });
+promotionCampaignSchema.index({ tenantId: 1, broadcastId: 1 });
+
 export const EcommerceCategory = mongoose.model("EcommerceCategory", categorySchema);
 export const EcommerceBanner = mongoose.model("EcommerceBanner", bannerSchema);
 export const EcommerceProduct = mongoose.model("EcommerceProduct", productSchema);
 export const EcommerceGoldRate = mongoose.model("EcommerceGoldRate", ecommerceGoldRateSchema);
 export const EcommerceTaxSettings = mongoose.model("EcommerceTaxSettings", taxSettingsSchema);
+export const EcommercePromotionCampaign = mongoose.model(
+  "EcommercePromotionCampaign",
+  promotionCampaignSchema,
+);

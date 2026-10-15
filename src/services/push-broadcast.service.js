@@ -5,6 +5,7 @@ import {
   JobStatus,
   MessageStatus,
   MessageType,
+  PushBroadcastSourceKind,
   UploadPurpose,
 } from "../constants/enums.js";
 import { env } from "../config/env.js";
@@ -17,8 +18,13 @@ import {
   broadcastIdempotencyKey,
   deterministicBroadcastMessageId,
 } from "../lib/broadcast-message-id.js";
-import { resolveBroadcastPushImage } from "../lib/broadcast-push-image.js";
+import { resolveBroadcastPushImage, resolvePromotionPushImage } from "../lib/broadcast-push-image.js";
 import { dispatchPriorityForMessageType } from "../lib/message-dispatch-priority.js";
+import {
+  createSchemeRateApplicabilityCache,
+  filterCustomersForSchemeRatePage,
+} from "../lib/scheme-rate-fanout-filter.js";
+import { ensureRunnableMaintenanceJob } from "../lib/maintenance-queue-job.js";
 import { incrementOpsMetric, OpsMetric } from "../lib/ops-metrics.js";
 import { randomToken } from "../lib/crypto.js";
 import {
@@ -168,7 +174,6 @@ async function aggregateDeliveryStats(tenantId, broadcastId) {
       $match: {
         tenantId,
         channel: "PUSH",
-        type: MessageType.MANUAL_PUSH,
         "templateParams.broadcastId": broadcastId,
       },
     },
@@ -480,12 +485,27 @@ async function releaseLeaseThenScheduleContinuation({
   );
 }
 
-function templateParamsForCustomer(broadcast, _customer) {
+function templateParamsForCustomer(broadcast, customer) {
+  const campaignKey = broadcast.campaignBusinessKey ?? broadcast._id;
   const params = {
     broadcastId: broadcast._id,
     title: broadcast.title,
     body: broadcast.body,
     deepLink: broadcast.deepLink,
+    inboxEventKey: `${campaignKey}:${customer._id}`,
+    productId: broadcast.productId ?? "",
+    categoryId: broadcast.categoryId ?? "",
+    promotionKind: broadcast.promotionKind ?? "",
+    campaignBusinessKey: campaignKey,
+    rateId: broadcast.rateId ?? "",
+    rateSource: broadcast.rateSource ?? "",
+    purity: broadcast.ratePurity ?? "",
+    ratePerGramPaise: broadcast.ratePerGramPaise != null ? String(broadcast.ratePerGramPaise) : "",
+    schemeEffectiveDate: broadcast.schemeEffectiveDate ?? "",
+    effectiveAt: broadcast.ecommerceEffectiveAt
+      ? new Date(broadcast.ecommerceEffectiveAt).toISOString()
+      : "",
+    branchId: broadcast.branchId ?? "",
   };
   if (
     broadcast.pushImageUrl
@@ -500,6 +520,7 @@ function templateParamsForCustomer(broadcast, _customer) {
 export function buildBroadcastChunkWrites({ broadcast, customers }) {
   const messageOps = [];
   const messageIds = [];
+  const messageType = broadcast.messageType ?? MessageType.MANUAL_PUSH;
   for (const customer of customers) {
     const messageId = deterministicBroadcastMessageId(
       broadcast.tenantId,
@@ -521,12 +542,12 @@ export function buildBroadcastChunkWrites({ broadcast, customers }) {
             tenantId: broadcast.tenantId,
             branchId: customer.branchId ?? broadcast.branchId ?? null,
             customerId: customer._id,
-            type: MessageType.MANUAL_PUSH,
+            type: messageType,
             status: MessageStatus.QUEUED,
             channel: "PUSH",
-            templateKey: MessageType.MANUAL_PUSH,
+            templateKey: messageType,
             templateParams: templateParamsForCustomer(broadcast, customer),
-            dispatchPriority: dispatchPriorityForMessageType(MessageType.MANUAL_PUSH),
+            dispatchPriority: dispatchPriorityForMessageType(messageType),
             broadcastIdempotencyKey: idempotencyKey,
           },
         },
@@ -537,17 +558,116 @@ export function buildBroadcastChunkWrites({ broadcast, customers }) {
   return { messageOps, outboxOps: [], messageIds };
 }
 
+/** Ecommerce marketing broadcast — queues behind an in-flight tenant broadcast instead of failing. */
+export async function createEcommercePromotionBroadcast({
+  req,
+  title,
+  body,
+  deepLink,
+  audience,
+  branchId,
+  customerIds,
+  messageType,
+  promotionKind,
+  productId,
+  categoryId,
+  campaignBusinessKey,
+  imageSourceUploadId,
+  audienceCount,
+  sourceKind = PushBroadcastSourceKind.ECOMMERCE_PROMOTION,
+  rateId,
+  rateSource,
+  ratePurity,
+  ratePerGramPaise,
+  schemeEffectiveDate,
+  ecommerceEffectiveAt,
+}) {
+  const tenantId = req.auth.tenantId;
+  const inFlight = await PushBroadcast.exists({
+    tenantId,
+    status: { $in: ACTIVE_BROADCAST_STATUSES },
+  });
+
+  const broadcast = await PushBroadcast.create({
+    _id: createId("pbc"),
+    tenantId,
+    branchId: audience === "BRANCH" ? branchId : null,
+    requestedBy: req.auth.id,
+    title,
+    body,
+    deepLink,
+    audience,
+    customerIds,
+    messageType,
+    sourceKind,
+    productId: productId ?? undefined,
+    categoryId: categoryId ?? undefined,
+    campaignBusinessKey,
+    promotionKind,
+    rateId: rateId ?? undefined,
+    rateSource: rateSource ?? undefined,
+    ratePurity: ratePurity ?? undefined,
+    ratePerGramPaise: ratePerGramPaise ?? undefined,
+    schemeEffectiveDate: schemeEffectiveDate ?? undefined,
+    ecommerceEffectiveAt: ecommerceEffectiveAt ?? undefined,
+    imageSourceUploadId: imageSourceUploadId ?? undefined,
+    fanoutContinuationPending: Boolean(inFlight),
+    status: JobStatus.QUEUED,
+    stats: {
+      audienceCount: audienceCount ?? 0,
+      messagesQueued: 0,
+      delivered: 0,
+      failed: 0,
+    },
+  });
+
+  await writeAudit({
+    req,
+    action: "ECOMMERCE_PROMOTION_BROADCAST_QUEUED",
+    entityType: "MESSAGE",
+    entityId: broadcast._id,
+    after: broadcast.toObject(),
+  });
+
+  if (!inFlight) {
+    const queue = getQueue("maintenance");
+    await queue?.add(
+      "push-broadcast-fanout",
+      { broadcastId: broadcast._id },
+      {
+        jobId: `${broadcast._id}-fanout`,
+        attempts: 8,
+        backoff: { type: "exponential", delay: 5000 },
+      },
+    );
+  }
+  return broadcast.toObject();
+}
+
+const schemeFanoutCaches = new Map();
+
 async function scheduleNextFanoutChunk(broadcastId, cursorCustomerId) {
   const queue = getQueue("maintenance");
-  await queue?.add(
+  const jobId = `${broadcastId}-fanout-${cursorCustomerId ?? "start"}`;
+  await ensureRunnableMaintenanceJob(
+    queue,
     "push-broadcast-fanout",
     { broadcastId },
+    jobId,
     {
-      jobId: `${broadcastId}-fanout-${cursorCustomerId ?? "start"}`,
       attempts: 8,
       backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: 1000,
+      removeOnFail: 5000,
     },
   );
+}
+
+/** Ensure fan-out is queued when reusing an idempotent ecommerce promotion broadcast. */
+export async function schedulePushBroadcastFanoutJob(broadcastId) {
+  const row = await PushBroadcast.findById(broadcastId).lean();
+  if (!row || row.status === JobStatus.COMPLETED || row.status === JobStatus.FAILED) return;
+  await scheduleNextFanoutChunk(broadcastId, row.cursorCustomerId ?? null);
 }
 
 /**
@@ -636,8 +756,12 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       );
       broadcast.startedAt = new Date();
     }
-    if (broadcast.imageUploadId && !broadcast.pushImageUrl && !broadcast.pushImageUrlValidUntil) {
-      const resolved = await resolveBroadcastPushImage(broadcast.imageUploadId);
+    const imageId = broadcast.imageSourceUploadId ?? broadcast.imageUploadId;
+    if (imageId && !broadcast.pushImageUrl && !broadcast.pushImageUrlValidUntil) {
+      const resolved = broadcast.sourceKind === PushBroadcastSourceKind.ECOMMERCE_PROMOTION
+        || broadcast.sourceKind === PushBroadcastSourceKind.GOLD_RATE_NOTIFICATION
+        ? await resolvePromotionPushImage(imageId, { tenantId })
+        : await resolveBroadcastPushImage(imageId);
       await PushBroadcast.updateOne(
         { _id: broadcastId, tenantId, leaseOwner: leaseToken },
         {
@@ -651,6 +775,35 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       broadcast.pushImageUrlValidUntil = resolved.validUntil ?? undefined;
     }
 
+    if (
+      broadcast.messageType === MessageType.SCHEME_GOLD_RATE_UPDATED
+      && broadcast.schemeEffectiveDate
+    ) {
+      const { today } = await import("../lib/date.js");
+      const ymd = String(broadcast.schemeEffectiveDate).slice(0, 10);
+      const businessToday = today();
+      if (ymd !== businessToday) {
+        schemeFanoutCaches.delete(broadcastId);
+        const terminalReason = ymd < businessToday ? "STALE_BUSINESS_DATE" : "NOT_DUE";
+        await PushBroadcast.updateOne(
+          { _id: broadcastId, tenantId, leaseOwner: leaseToken },
+          {
+            $set: {
+              status: JobStatus.FAILED,
+              error: terminalReason,
+              completedAt: new Date(),
+            },
+          },
+        );
+        incrementOpsMetric(OpsMetric.BROADCAST_FAILED);
+        const { reconcilePromotionCampaignByBroadcast } = await import(
+          "./ecommerce-promotion-delivery.service.js"
+        );
+        await reconcilePromotionCampaignByBroadcast(broadcastId, tenantId);
+        return;
+      }
+    }
+
     const customers = await fetchAudienceCustomerPage({
       tenantId,
       broadcast: broadcast.toObject(),
@@ -658,7 +811,28 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       limit: chunkSize(),
     });
 
+    let deliverCustomers = customers;
+    if (
+      broadcast.rateId
+      && broadcast.schemeEffectiveDate
+      && broadcast.messageType === MessageType.SCHEME_GOLD_RATE_UPDATED
+    ) {
+      let cache = schemeFanoutCaches.get(broadcastId);
+      if (!cache) {
+        cache = createSchemeRateApplicabilityCache();
+        schemeFanoutCaches.set(broadcastId, cache);
+      }
+      deliverCustomers = await filterCustomersForSchemeRatePage({
+        tenantId,
+        customers,
+        targetRateId: broadcast.rateId,
+        effectiveDateYmd: broadcast.schemeEffectiveDate,
+        cache,
+      });
+    }
+
     if (!customers.length) {
+      schemeFanoutCaches.delete(broadcastId);
       await PushBroadcast.updateOne(
         {
           _id: broadcastId,
@@ -680,12 +854,15 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       );
       incrementOpsMetric(OpsMetric.BROADCAST_COMPLETED);
       incrementOpsMetric(OpsMetric.FCM_CAMPAIGN_COMPLETED);
+      await kickDeferredPromotionBroadcasts(tenantId);
+      const { reconcilePromotionCampaignByBroadcast } = await import("./ecommerce-promotion-delivery.service.js");
+      await reconcilePromotionCampaignByBroadcast(broadcastId, tenantId);
       return;
     }
 
     const { messageOps } = buildBroadcastChunkWrites({
       broadcast: broadcast.toObject(),
-      customers,
+      customers: deliverCustomers,
     });
     let upsertedMessages = 0;
     if (messageOps.length) {
@@ -742,6 +919,9 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       );
       incrementOpsMetric(OpsMetric.BROADCAST_COMPLETED);
       incrementOpsMetric(OpsMetric.FCM_CAMPAIGN_COMPLETED);
+      await kickDeferredPromotionBroadcasts(tenantId);
+      const { reconcilePromotionCampaignByBroadcast } = await import("./ecommerce-promotion-delivery.service.js");
+      await reconcilePromotionCampaignByBroadcast(broadcastId, tenantId);
     }
   } catch (error) {
     const attempts = (broadcast.chunkAttempts ?? 0) + 1;
@@ -766,6 +946,8 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
     );
     if (terminal) {
       incrementOpsMetric(OpsMetric.BROADCAST_FAILED);
+      const { reconcilePromotionCampaignByBroadcast } = await import("./ecommerce-promotion-delivery.service.js");
+      await reconcilePromotionCampaignByBroadcast(broadcastId, tenantId);
     } else {
       const current = await PushBroadcast.findOne({
         _id: broadcastId,
@@ -803,4 +985,35 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       await clearBroadcastLease({ broadcastId, tenantId, leaseToken });
     }
   }
+}
+
+async function kickDeferredPromotionBroadcasts(tenantId) {
+  const pending = await PushBroadcast.findOne({
+    tenantId,
+    sourceKind: {
+      $in: [
+        PushBroadcastSourceKind.ECOMMERCE_PROMOTION,
+        PushBroadcastSourceKind.GOLD_RATE_NOTIFICATION,
+      ],
+    },
+    fanoutContinuationPending: true,
+    status: JobStatus.QUEUED,
+  })
+    .sort({ createdAt: 1 })
+    .lean();
+  if (!pending) return;
+  await PushBroadcast.updateOne(
+    { _id: pending._id, tenantId },
+    { $set: { fanoutContinuationPending: false } },
+  );
+  const queue = getQueue("maintenance");
+  await queue?.add(
+    "push-broadcast-fanout",
+    { broadcastId: pending._id },
+    {
+      jobId: `${pending._id}-fanout-deferred`,
+      attempts: 8,
+      backoff: { type: "exponential", delay: 5000 },
+    },
+  );
 }

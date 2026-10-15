@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { AlertSeverity, AlertStatus, AlertType, CashAdjustmentDirection, CashHandoverStatus, ClosureType, ExportStatus, ExportType, HandoverInitiator, JobStatus, MessageChannel, MessageStatus, MessageType, PostSettlementRefundCaseStatus, PostSettlementRefundDisposition, RedemptionMode, RedemptionStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
+import { AlertSeverity, AlertStatus, AlertType, CashAdjustmentDirection, CashHandoverStatus, ClosureType, ExportStatus, ExportType, HandoverInitiator, JobStatus, MessageChannel, MessageStatus, MessageType, PostSettlementRefundCaseStatus, PostSettlementRefundDisposition, PushBroadcastSourceKind, RedemptionMode, RedemptionStatus, UploadPurpose, UploadStatus } from "../constants/enums.js";
 import { baseOptions, branchField, enumField, immutablePlugin, integerField, optionalIntegerField, stringId, tenantField, versionField } from "./schema-helpers.js";
 
 const goldRateSchema = new mongoose.Schema({ _id: stringId("grt"), tenantId: tenantField, branchId: branchField, ratePerGramPaise: integerField({ required: true, min: 1 }), effectiveDate: { type: String, required: true }, purity: { type: String, enum: ["22K"], default: "22K" }, source: String, enteredBy: String, version: versionField }, baseOptions);
@@ -82,6 +82,19 @@ const pushBroadcastSchema = new mongoose.Schema({
   body: { type: String, required: true, trim: true },
   deepLink: { type: String, default: "/home" },
   imageUploadId: String,
+  messageType: enumField(MessageType, { default: MessageType.MANUAL_PUSH }),
+  sourceKind: enumField(PushBroadcastSourceKind, { default: PushBroadcastSourceKind.MANUAL }),
+  productId: String,
+  categoryId: String,
+  campaignBusinessKey: String,
+  promotionKind: String,
+  rateId: String,
+  rateSource: String,
+  ratePurity: String,
+  ratePerGramPaise: optionalIntegerField({ min: 0 }),
+  schemeEffectiveDate: String,
+  ecommerceEffectiveAt: Date,
+  imageSourceUploadId: String,
   audience: { type: String, enum: ["ALL_DEVICES", "BRANCH", "CUSTOMERS"], required: true },
   customerIds: { type: [String], default: [] },
   status: enumField(JobStatus, { default: JobStatus.QUEUED }),
@@ -107,6 +120,21 @@ pushBroadcastSchema.index({ tenantId: 1, status: 1 });
 pushBroadcastSchema.index({ tenantId: 1, status: 1, leaseExpiresAt: 1 });
 pushBroadcastSchema.index({ status: 1, fanoutContinuationPending: 1, leaseExpiresAt: 1 });
 pushBroadcastSchema.index({ tenantId: 1, status: 1, branchId: 1, cursorCustomerId: 1 });
+pushBroadcastSchema.index(
+  { tenantId: 1, campaignBusinessKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      campaignBusinessKey: { $type: "string" },
+      sourceKind: {
+        $in: [
+          PushBroadcastSourceKind.ECOMMERCE_PROMOTION,
+          PushBroadcastSourceKind.GOLD_RATE_NOTIFICATION,
+        ],
+      },
+    },
+  },
+);
 
 const uploadSchema = new mongoose.Schema({ _id: stringId("upl"), tenantId: tenantField, ownerId: String, purpose: enumField(UploadPurpose, { required: true }), fileName: String, contentType: String, sizeBytes: integerField(), objectKey: String, status: enumField(UploadStatus, { default: UploadStatus.PENDING }), expiresAt: Date, attachedEntityType: String, attachedEntityId: String, scannedAt: Date, scanProvider: String }, baseOptions);
 uploadSchema.index({ tenantId: 1, attachedEntityType: 1, attachedEntityId: 1 });

@@ -15,6 +15,9 @@ import {
   ecommerceGoldRateBody,
   ecommerceProductCreateBody,
   ecommerceProductPatchBody,
+  ecommercePublishProductBody,
+  ecommercePromotionPreviewBody,
+  ecommercePromotionSendBody,
   ecommerceTaxSettingsBody,
   ecommerceVersionBody,
   ecommerceInventoryPatchBody,
@@ -233,10 +236,48 @@ adminEcommerceRouter.post(
   "/ecommerce/products/:productId/publish",
   ...guarded(
     Permission.ECOMMERCE_WRITE,
-    validate({ body: ecommerceVersionBody }),
+    validate({ body: ecommercePublishProductBody }),
     idempotent,
     asyncHandler(controller.publishProduct),
   ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/products/:productId/notifications/preview",
+  ...guarded(
+    Permission.ECOMMERCE_READ,
+    validate({ body: ecommercePromotionPreviewBody }),
+    asyncHandler(controller.previewProductPromotion),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/products/:productId/notifications",
+  requirePermission(Permission.ECOMMERCE_WRITE, Permission.MESSAGE_SEND),
+  validate({ body: ecommercePromotionSendBody }),
+  idempotent,
+  asyncHandler(controller.sendProductPromotion),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/categories/:categoryId/notifications/preview",
+  ...guarded(
+    Permission.ECOMMERCE_READ,
+    validate({ body: ecommercePromotionPreviewBody }),
+    asyncHandler(controller.previewCategoryPromotion),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/categories/:categoryId/notifications",
+  requirePermission(Permission.ECOMMERCE_WRITE, Permission.MESSAGE_SEND),
+  validate({ body: ecommercePromotionSendBody }),
+  idempotent,
+  asyncHandler(controller.sendCategoryPromotion),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/notifications",
+  ...guarded(Permission.ECOMMERCE_READ, validate({ query: cursorQuery }), asyncHandler(controller.listEcommercePromotionCampaigns)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/notifications/:campaignId",
+  ...guarded(Permission.ECOMMERCE_READ, asyncHandler(controller.getEcommercePromotionCampaign)),
 );
 adminEcommerceRouter.post(
   "/ecommerce/products/:productId/archive",

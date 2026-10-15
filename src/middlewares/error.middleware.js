@@ -28,6 +28,7 @@ export function errorHandler(error, req, res, _next) {
       || details.paymentState
       || details.blockingIntentIds
       || Array.isArray(details.blockers)
+      || details.current
     ) {
       // Structured app errors (tenant pickers, payment quotes, checkout readiness, etc.)
     } else {

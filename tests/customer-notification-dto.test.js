@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildNotificationContext,
+  customerNotificationDedupeKey,
   dedupeCustomerNotificationRows,
   mapCustomerNotification,
 } from "../src/lib/customer-notification-dto.js";
@@ -103,4 +104,41 @@ test("notification dedupe — different event types for same scheme stay distinc
     },
   ]);
   assert.equal(deduped.length, 2);
+});
+
+test("manual push inbox uses templateParams copy", () => {
+  const dto = mapCustomerNotification({
+    _id: "msg_m",
+    type: "MANUAL_PUSH",
+    templateParams: {
+      title: "Festive edit",
+      body: "Browse new arrivals.",
+      deepLink: "/shop/ring-gold",
+      broadcastId: "pbc_1",
+    },
+    createdAt: "2026-10-01T09:00:00.000Z",
+    readAt: null,
+  });
+  assert.equal(dto.title, "Festive edit");
+  assert.equal(dto.body, "Browse new arrivals.");
+  assert.equal(dto.deepLink, "/shop/ring-gold");
+});
+
+test("notification dedupe — separate manual broadcasts stay distinct", () => {
+  const a = {
+    _id: "m1",
+    type: "MANUAL_PUSH",
+    channel: "PUSH",
+    templateParams: { broadcastId: "pbc_a", title: "A" },
+    createdAt: "2026-10-01T09:00:00.000Z",
+  };
+  const b = {
+    _id: "m2",
+    type: "MANUAL_PUSH",
+    channel: "PUSH",
+    templateParams: { broadcastId: "pbc_b", title: "B" },
+    createdAt: "2026-10-01T10:00:00.000Z",
+  };
+  assert.notEqual(customerNotificationDedupeKey(a), customerNotificationDedupeKey(b));
+  assert.equal(dedupeCustomerNotificationRows([a, b]).length, 2);
 });

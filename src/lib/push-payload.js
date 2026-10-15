@@ -65,9 +65,18 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
       body = `Your flexible phase has ended and your monthly cap for ${label} is now locked.`;
       break;
     case MessageType.MANUAL_PUSH:
+    case MessageType.ECOMMERCE_PRODUCT_PROMOTION:
+    case MessageType.ECOMMERCE_CATEGORY_PROMOTION:
+    case MessageType.ECOMMERCE_NEW_ARRIVAL:
+    case MessageType.ECOMMERCE_OFFER:
+    case MessageType.SCHEME_GOLD_RATE_UPDATED:
+    case MessageType.ECOMMERCE_GOLD_RATE_UPDATED:
       title = String(message.templateParams?.title ?? title);
       body = String(message.templateParams?.body ?? body);
-      deepLink = String(message.templateParams?.deepLink ?? "/home");
+      deepLink = String(
+        message.templateParams?.deepLink
+          ?? (type === MessageType.SCHEME_GOLD_RATE_UPDATED ? "/gold-rate/current" : "/shop"),
+      );
       break;
     case MessageType.ECOMMERCE_ORDER_CONFIRMED:
     case MessageType.ECOMMERCE_PAYMENT_FAILED:
@@ -89,16 +98,29 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
       break;
   }
 
+  const data = {
+    messageId: message._id,
+    messageType: type,
+    schemeId: scheme?._id ?? message.schemeId ?? "",
+    paymentId: payment?._id ?? message.templateParams?.paymentId ?? "",
+    productId: String(message.templateParams?.productId ?? ""),
+    categoryId: String(message.templateParams?.categoryId ?? ""),
+    promotionKind: String(message.templateParams?.promotionKind ?? ""),
+    campaignBusinessKey: String(message.templateParams?.campaignBusinessKey ?? ""),
+    deepLink,
+    jewellerName: jeweller,
+    rateId: String(message.templateParams?.rateId ?? ""),
+    rateSource: String(message.templateParams?.rateSource ?? ""),
+    purity: String(message.templateParams?.purity ?? ""),
+    ratePerGramPaise: String(message.templateParams?.ratePerGramPaise ?? ""),
+    schemeEffectiveDate: String(message.templateParams?.schemeEffectiveDate ?? ""),
+    effectiveAt: String(message.templateParams?.effectiveAt ?? ""),
+    branchId: String(message.templateParams?.branchId ?? ""),
+  };
+
   return {
     title,
     body,
-    data: {
-      messageId: message._id,
-      messageType: type,
-      schemeId: scheme?._id ?? message.schemeId ?? "",
-      paymentId: payment?._id ?? message.templateParams?.paymentId ?? "",
-      deepLink,
-      jewellerName: jeweller,
-    },
+    data,
   };
 }

@@ -50,6 +50,7 @@ GET /admin/exports
 GET /admin/exports/:exportId
 GET /admin/gold-rate/current
 GET /admin/gold-rate/history
+GET /admin/gold-rate/notifications
 GET /admin/grievances
 GET /admin/grievances/:grievanceId
 GET /admin/grievances/:grievanceId/audit-events
@@ -219,6 +220,12 @@ POST /admin/ecommerce/gold-rates
 POST /admin/ecommerce/products
 POST /admin/ecommerce/products/:productId/archive
 POST /admin/ecommerce/products/:productId/publish
+POST /admin/ecommerce/products/:productId/notifications/preview
+POST /admin/ecommerce/products/:productId/notifications
+POST /admin/ecommerce/categories/:categoryId/notifications/preview
+POST /admin/ecommerce/categories/:categoryId/notifications
+GET /admin/ecommerce/notifications
+GET /admin/ecommerce/notifications/:campaignId
 POST /admin/ecommerce/return-requests/:returnRequestId/decision
 POST /admin/ecommerce/return-requests/:returnRequestId/inspection
 POST /admin/ecommerce/return-requests/:returnRequestId/received

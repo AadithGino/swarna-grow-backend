@@ -948,6 +948,14 @@ export async function processMaintenance(job) {
     const { runEcommerceCodAcceptanceExpiry } = await import("../services/ecommerce-cod-acceptance-expiry.service.js");
     await runEcommerceCodAcceptanceExpiry(now);
   }
+  if (job.name === "ecommerce-promotion-deliver") {
+    const { deliverPromotionCampaign } = await import("../services/ecommerce-promotion.service.js");
+    await deliverPromotionCampaign(job.data.campaignId, job.data.tenantId);
+  }
+  if (job.name === "ecommerce-promotion-maintenance") {
+    const { runEcommercePromotionMaintenance } = await import("../services/ecommerce-promotion.service.js");
+    await runEcommercePromotionMaintenance(now);
+  }
   if (job.name === "ecommerce-payment-reconcile") {
     const { runEcommercePaymentReconcile } = await import("../services/ecommerce-payment-reconcile.service.js");
     await runEcommercePaymentReconcile(now);

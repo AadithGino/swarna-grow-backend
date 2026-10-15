@@ -130,6 +130,10 @@ adminConfigRouter.post("/staff/:staffId/reset-password", ...guarded(Permission.S
 adminConfigRouter.post("/gold-rate", ...guarded(Permission.GOLD_RATE_WRITE, validate({ body: goldRateBody }), idempotent, asyncHandler(controller.goldRate)));
 adminConfigRouter.get("/gold-rate/current", ...guarded(Permission.GOLD_RATE_READ, asyncHandler(controller.currentRate)));
 adminConfigRouter.get("/gold-rate/history", ...guarded(Permission.GOLD_RATE_READ, asyncHandler(controller.rateHistory)));
+adminConfigRouter.get(
+  "/gold-rate/notifications",
+  ...guarded(Permission.GOLD_RATE_READ, asyncHandler(controller.goldRateNotifications)),
+);
 adminConfigRouter.get("/subscription", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.subscription)));
 adminConfigRouter.get("/subscription/available-plans", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.availablePlans)));
 adminConfigRouter.post(

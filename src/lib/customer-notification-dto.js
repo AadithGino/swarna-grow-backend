@@ -30,7 +30,13 @@ function uiTypeForMessageType(type) {
     case "ECOMMERCE_FULFILMENT_UPDATE":
     case "ECOMMERCE_CANCELLATION_UPDATE":
     case "ECOMMERCE_COD_UPDATE":
-      return "ECOMMERCE";
+    case "ECOMMERCE_PRODUCT_PROMOTION":
+    case "ECOMMERCE_CATEGORY_PROMOTION":
+    case "ECOMMERCE_NEW_ARRIVAL":
+    case "ECOMMERCE_OFFER":
+    case "SCHEME_GOLD_RATE_UPDATED":
+    case "ECOMMERCE_GOLD_RATE_UPDATED":
+      return type === "SCHEME_GOLD_RATE_UPDATED" ? "SCHEME" : "ECOMMERCE";
     default:
       return "GENERAL";
   }
@@ -74,6 +80,15 @@ function titleForRow(row) {
     case "ECOMMERCE_COD_UPDATE":
       if (row.templateParams?.title) return String(row.templateParams.title);
       return "Shop order update";
+    case "MANUAL_PUSH":
+    case "ECOMMERCE_PRODUCT_PROMOTION":
+    case "ECOMMERCE_CATEGORY_PROMOTION":
+    case "ECOMMERCE_NEW_ARRIVAL":
+    case "ECOMMERCE_OFFER":
+    case "SCHEME_GOLD_RATE_UPDATED":
+    case "ECOMMERCE_GOLD_RATE_UPDATED":
+      if (row.templateParams?.title) return String(row.templateParams.title);
+      return "Update from your jeweller";
     default:
       if (row.templateKey?.includes("PAYMENT_SUCCESS")) return "Payment received";
       return "Update from your jeweller";
@@ -131,6 +146,13 @@ function bodyForRow(row, ctx) {
     case "ECOMMERCE_COD_UPDATE":
       if (row.templateParams?.body) return String(row.templateParams.body);
       return "Open the shop order page for details.";
+    case "MANUAL_PUSH":
+    case "ECOMMERCE_PRODUCT_PROMOTION":
+    case "ECOMMERCE_CATEGORY_PROMOTION":
+    case "ECOMMERCE_NEW_ARRIVAL":
+    case "ECOMMERCE_OFFER":
+      if (row.templateParams?.body) return String(row.templateParams.body);
+      return "Tap to view details in the app.";
     default:
       return "Tap to view details in the app.";
   }
@@ -149,6 +171,8 @@ function deepLinkForRow(row, ctx) {
 
 function ctaForRow(row, ctx) {
   if (row.ctaLabel) return row.ctaLabel;
+  if (row.templateParams?.productId) return "View product";
+  if (row.templateParams?.categoryId) return "View category";
   const paymentId = row.templateParams?.paymentId;
   if (paymentId && ctx.paymentById?.has(String(paymentId))) return "View receipt";
   if (row.type === "PAYMENT_DUE" || row.type === "PAYMENT_OVERDUE") return "Pay now";
@@ -183,6 +207,7 @@ export function customerNotificationDedupeKey(row) {
   if (row.reminderDedupeKey) return String(row.reminderDedupeKey);
   const params = row.templateParams ?? {};
   if (params.inboxEventKey) return String(params.inboxEventKey);
+  if (params.broadcastId) return `${row.type}|broadcast:${params.broadcastId}`;
   if (params.outboxEventId) return `${row.type}|${params.outboxEventId}`;
   const cyclePart =
     params.cycleKey ??

@@ -81,6 +81,10 @@ export const currentRate = async (req, res) => {
 };
 export const rateHistory = async (req, res) =>
   sendList(res, await tenant.listGoldRateHistory(req));
+export const goldRateNotifications = async (req, res) => {
+  const { listSchemeGoldRateNotificationCampaigns } = await import("../services/gold-rate-notification.service.js");
+  sendList(res, await listSchemeGoldRateNotificationCampaigns(req));
+};
 export const subscription = async (req, res) =>
   sendSuccess(res, await tenantSettings.getSubscriptionForAdmin(req));
 export const availablePlans = async (req, res) =>
