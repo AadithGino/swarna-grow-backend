@@ -25,6 +25,12 @@ import {
   mapPublicAvailability,
 } from "../lib/ecommerce-inventory.js";
 import { normalizeEcommerceSlug } from "../lib/ecommerce-slug.js";
+import {
+  buildMergedProductForPatch,
+  PRICING_PATCH_KEYS,
+  pricingFieldsFromPatchAssign,
+  validateProductScheduleWindows,
+} from "../lib/ecommerce-product-patch.js";
 import { createId } from "../lib/ids.js";
 import { moneyRef } from "../lib/money.js";
 import { paginate } from "../lib/pagination.js";
@@ -547,16 +553,14 @@ export async function patchProduct(req) {
     if (!row) throw errors.notFound("Product");
     enforceVersion(row, req.body.expectedVersion);
     const before = row.toObject();
-    validateProductPricingFields({
-      ...row.toObject(),
-      ...req.body,
-      priceMode: req.body.priceMode ?? row.priceMode,
-    });
     const patch = { ...req.body };
     delete patch.expectedVersion;
     delete patch.notification;
     if (patch.slug != null) patch.slug = normalizeEcommerceSlug(patch.slug);
-    const merged = { ...row.toObject(), ...patch, priceMode: patch.priceMode ?? row.priceMode };
+    const merged = buildMergedProductForPatch(before, patch);
+    validateProductPricingFields(merged);
+    validateProductScheduleWindows(merged);
+    const pricingAssign = pricingFieldsFromPatchAssign(merged, patch);
     const nextCategoryId =
       patch.categoryId !== undefined ? patch.categoryId : row.categoryId;
     const nextStatus = patch.status ?? row.status;
@@ -576,7 +580,9 @@ export async function patchProduct(req) {
         entityId: row._id,
       });
     }
-    Object.assign(row, patch);
+    const scalarPatch = { ...patch };
+    for (const key of PRICING_PATCH_KEYS) delete scalarPatch[key];
+    Object.assign(row, scalarPatch, pricingAssign);
     row.version += 1;
     await row.save({ session });
     await writeAudit({

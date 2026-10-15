@@ -10,6 +10,7 @@ import {
 } from "../constants/enums.js";
 import { env } from "../config/env.js";
 import { createId } from "../lib/ids.js";
+import { now as calendarNow } from "../lib/date.js";
 import { paginate } from "../lib/pagination.js";
 import { effectiveScope } from "../lib/query-filters.js";
 import { errors } from "../lib/app-error.js";
@@ -25,6 +26,10 @@ import {
   filterCustomersForSchemeRatePage,
 } from "../lib/scheme-rate-fanout-filter.js";
 import { ensureRunnableMaintenanceJob } from "../lib/maintenance-queue-job.js";
+import {
+  buildActiveFanoutRecoveryFilter,
+  isFutureFanoutDeferral,
+} from "../lib/fanout-recovery.js";
 import { incrementOpsMetric, OpsMetric } from "../lib/ops-metrics.js";
 import { randomToken } from "../lib/crypto.js";
 import {
@@ -413,40 +418,33 @@ export async function clearBroadcastLease({ broadcastId, tenantId, leaseToken })
   );
 }
 
-function leaseAvailableFilter(now) {
+export { buildActiveFanoutRecoveryFilter };
+
+function resumeNotBlockingFutureFilter(now) {
   return {
     $or: [
-      { leaseExpiresAt: { $lte: now } },
-      { leaseOwner: null },
-      { leaseOwner: { $exists: false } },
+      { fanoutResumeAt: null },
+      { fanoutResumeAt: { $exists: false } },
+      { fanoutResumeAt: { $lte: now } },
     ],
   };
 }
 
 /** Bounded scan: re-enqueue deterministic continuation jobs for unfinished broadcasts. */
 export async function recoverActivePushBroadcastFanouts({ limit = 25 } = {}) {
-  const now = new Date();
-  const rows = await PushBroadcast.find({
-    status: { $in: ACTIVE_BROADCAST_STATUSES },
-    $or: [
-      { fanoutContinuationPending: true },
-      {
-        fanoutContinuationPending: { $ne: true },
-        status: JobStatus.QUEUED,
-      },
-    ],
-    ...leaseAvailableFilter(now),
-  })
+  const now = calendarNow().toDate();
+  const rows = await PushBroadcast.find(buildActiveFanoutRecoveryFilter(now))
     .sort({ updatedAt: 1 })
     .limit(Math.max(1, limit))
     .lean();
   let enqueued = 0;
+  let delayed = 0;
   for (const row of rows) {
-    const cursor = row.cursorCustomerId ?? null;
-    await scheduleNextFanoutChunk(row._id, cursor);
-    enqueued += 1;
+    const outcome = await enqueueFanoutRecoveryForBroadcast(row, now);
+    if (outcome.mode === "delayed") delayed += 1;
+    else enqueued += 1;
   }
-  return { scanned: rows.length, enqueued };
+  return { scanned: rows.length, enqueued, delayed };
 }
 
 export async function processPushBroadcastFanoutRecovery() {
@@ -455,14 +453,13 @@ export async function processPushBroadcastFanoutRecovery() {
 
 /** @deprecated Use recoverActivePushBroadcastFanouts via maintenance job. */
 export async function recoverStalePushBroadcastFanout(broadcastId) {
-  const now = new Date();
+  const now = calendarNow().toDate();
   const row = await PushBroadcast.findOne({
     _id: broadcastId,
-    status: { $in: ACTIVE_BROADCAST_STATUSES },
-    ...leaseAvailableFilter(now),
+    ...buildActiveFanoutRecoveryFilter(now),
   }).lean();
   if (!row) return false;
-  await scheduleNextFanoutChunk(broadcastId, row.cursorCustomerId ?? null);
+  await enqueueFanoutRecoveryForBroadcast(row, now);
   return true;
 }
 
@@ -644,17 +641,16 @@ export async function createEcommercePromotionBroadcast({
   return broadcast.toObject();
 }
 
-const schemeFanoutCaches = new Map();
-
-async function scheduleNextFanoutChunk(broadcastId, cursorCustomerId) {
+async function scheduleNextFanoutChunk(broadcastId, cursorCustomerId, { delayMs = 0, jobId: jobIdOverride } = {}) {
   const queue = getQueue("maintenance");
-  const jobId = `${broadcastId}-fanout-${cursorCustomerId ?? "start"}`;
-  await ensureRunnableMaintenanceJob(
+  const jobId = jobIdOverride ?? `${broadcastId}-fanout-${cursorCustomerId ?? "start"}`;
+  return ensureRunnableMaintenanceJob(
     queue,
     "push-broadcast-fanout",
     { broadcastId },
     jobId,
     {
+      ...(delayMs > 0 ? { delay: delayMs } : {}),
       attempts: 8,
       backoff: { type: "exponential", delay: 5000 },
       removeOnComplete: 1000,
@@ -663,10 +659,76 @@ async function scheduleNextFanoutChunk(broadcastId, cursorCustomerId) {
   );
 }
 
+/** Enqueue (or reuse) a delayed NOT_DUE continuation at the persisted due instant. */
+export async function enqueueDelayedFanoutContinuation({ broadcastId, resumeAt, businessYmd }) {
+  const delayMs = Math.max(0, resumeAt.getTime() - calendarNow().valueOf());
+  const { fanoutDueJobId } = await import("../lib/fanout-not-due-schedule.js");
+  const jobId = fanoutDueJobId(broadcastId, resumeAt, businessYmd);
+  const result = await scheduleNextFanoutChunk(broadcastId, null, {
+    delayMs,
+    jobId,
+  });
+  return { ...result, delayMs, jobId, resumeAt, mode: "delayed" };
+}
+
+async function enqueueFanoutRecoveryForBroadcast(row, now = new Date()) {
+  if (isFutureFanoutDeferral(row, now)) {
+    return enqueueDelayedFanoutContinuation({
+      broadcastId: row._id,
+      resumeAt: new Date(row.fanoutResumeAt),
+      businessYmd: row.schemeEffectiveDate ?? undefined,
+    });
+  }
+  await scheduleNextFanoutChunk(row._id, row.cursorCustomerId ?? null);
+  return { mode: "immediate" };
+}
+
+/** Persist NOT_DUE deferral and enqueue a delayed continuation at the authoritative due instant. */
+export async function scheduleFanoutContinuationAt({
+  broadcastId,
+  tenantId,
+  leaseToken,
+  resumeAt,
+  businessYmd,
+}) {
+  if (!leaseToken) {
+    return { deferred: false, stale: true, reason: "LEASE_REQUIRED" };
+  }
+  const deferResult = await PushBroadcast.updateOne(
+    {
+      _id: broadcastId,
+      tenantId,
+      leaseOwner: leaseToken,
+      status: { $in: ACTIVE_BROADCAST_STATUSES },
+    },
+    {
+      $set: {
+        fanoutResumeAt: resumeAt,
+        fanoutContinuationPending: true,
+      },
+      $unset: { leaseOwner: "", leaseExpiresAt: "" },
+    },
+  );
+  if (deferResult.matchedCount === 0) {
+    return { deferred: false, stale: true, reason: "LEASE_OR_STATE_MISMATCH" };
+  }
+  const enqueue = await enqueueDelayedFanoutContinuation({ broadcastId, resumeAt, businessYmd });
+  return { deferred: true, stale: false, ...enqueue };
+}
+
 /** Ensure fan-out is queued when reusing an idempotent ecommerce promotion broadcast. */
 export async function schedulePushBroadcastFanoutJob(broadcastId) {
   const row = await PushBroadcast.findById(broadcastId).lean();
   if (!row || row.status === JobStatus.COMPLETED || row.status === JobStatus.FAILED) return;
+  const now = calendarNow().toDate();
+  if (isFutureFanoutDeferral(row, now)) {
+    await enqueueDelayedFanoutContinuation({
+      broadcastId,
+      resumeAt: new Date(row.fanoutResumeAt),
+      businessYmd: row.schemeEffectiveDate ?? undefined,
+    });
+    return;
+  }
   await scheduleNextFanoutChunk(broadcastId, row.cursorCustomerId ?? null);
 }
 
@@ -775,33 +837,59 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       broadcast.pushImageUrlValidUntil = resolved.validUntil ?? undefined;
     }
 
-    if (
-      broadcast.messageType === MessageType.SCHEME_GOLD_RATE_UPDATED
-      && broadcast.schemeEffectiveDate
-    ) {
-      const { today } = await import("../lib/date.js");
-      const ymd = String(broadcast.schemeEffectiveDate).slice(0, 10);
-      const businessToday = today();
-      if (ymd !== businessToday) {
-        schemeFanoutCaches.delete(broadcastId);
-        const terminalReason = ymd < businessToday ? "STALE_BUSINESS_DATE" : "NOT_DUE";
-        await PushBroadcast.updateOne(
-          { _id: broadcastId, tenantId, leaseOwner: leaseToken },
-          {
-            $set: {
-              status: JobStatus.FAILED,
-              error: terminalReason,
-              completedAt: new Date(),
-            },
-          },
-        );
-        incrementOpsMetric(OpsMetric.BROADCAST_FAILED);
-        const { reconcilePromotionCampaignByBroadcast } = await import(
-          "./ecommerce-promotion-delivery.service.js"
-        );
-        await reconcilePromotionCampaignByBroadcast(broadcastId, tenantId);
+    const {
+      revalidatePromotionBroadcastChunk,
+      stopPromotionBroadcastFanout,
+    } = await import("./ecommerce-promotion-delivery.service.js");
+    const chunkValidation = await revalidatePromotionBroadcastChunk(broadcast.toObject());
+    if (chunkValidation.ok && broadcast.fanoutResumeAt) {
+      await PushBroadcast.updateOne(
+        {
+          _id: broadcastId,
+          tenantId,
+          leaseOwner: leaseToken,
+          status: { $in: ACTIVE_BROADCAST_STATUSES },
+          fanoutResumeAt: { $lte: calendarNow().toDate() },
+        },
+        {
+          $unset: { fanoutResumeAt: "" },
+          $set: { fanoutContinuationPending: false },
+        },
+      );
+      broadcast.fanoutResumeAt = undefined;
+      broadcast.fanoutContinuationPending = false;
+    }
+    if (!chunkValidation.ok) {
+      if (chunkValidation.reason === "NOT_DUE") {
+        const { resolveFanoutNotDueResumeAt } = await import("../lib/fanout-not-due-schedule.js");
+        const resumeAt = resolveFanoutNotDueResumeAt(broadcast.toObject());
+        if (resumeAt) {
+          const deferResult = await scheduleFanoutContinuationAt({
+            broadcastId,
+            tenantId,
+            leaseToken,
+            resumeAt,
+            businessYmd: broadcast.schemeEffectiveDate ?? undefined,
+          });
+          if (deferResult.deferred || deferResult.stale) {
+            leaseReleasedEarly = deferResult.deferred;
+          }
+          return;
+        }
+        await clearBroadcastLease({ broadcastId, tenantId, leaseToken });
+        leaseReleasedEarly = true;
         return;
       }
+      const stopResult = await stopPromotionBroadcastFanout({
+        broadcastId,
+        tenantId,
+        leaseToken,
+        reason: chunkValidation.reason,
+      });
+      if (stopResult.stopped) {
+        leaseReleasedEarly = true;
+      }
+      return;
     }
 
     const customers = await fetchAudienceCustomerPage({
@@ -817,11 +905,7 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
       && broadcast.schemeEffectiveDate
       && broadcast.messageType === MessageType.SCHEME_GOLD_RATE_UPDATED
     ) {
-      let cache = schemeFanoutCaches.get(broadcastId);
-      if (!cache) {
-        cache = createSchemeRateApplicabilityCache();
-        schemeFanoutCaches.set(broadcastId, cache);
-      }
+      const cache = createSchemeRateApplicabilityCache();
       deliverCustomers = await filterCustomersForSchemeRatePage({
         tenantId,
         customers,
@@ -832,7 +916,6 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
     }
 
     if (!customers.length) {
-      schemeFanoutCaches.delete(broadcastId);
       await PushBroadcast.updateOne(
         {
           _id: broadcastId,
@@ -987,7 +1070,8 @@ export async function processPushBroadcastFanout(broadcastId, _workerLabel = ran
   }
 }
 
-async function kickDeferredPromotionBroadcasts(tenantId) {
+export async function kickDeferredPromotionBroadcasts(tenantId) {
+  const now = calendarNow().toDate();
   const pending = await PushBroadcast.findOne({
     tenantId,
     sourceKind: {
@@ -998,6 +1082,7 @@ async function kickDeferredPromotionBroadcasts(tenantId) {
     },
     fanoutContinuationPending: true,
     status: JobStatus.QUEUED,
+    ...resumeNotBlockingFutureFilter(now),
   })
     .sort({ createdAt: 1 })
     .lean();

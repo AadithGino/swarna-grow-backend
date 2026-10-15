@@ -13,13 +13,15 @@ const makingChargeBody = z
   .strict()
   .optional();
 
+const clearableScheduleIso = z.union([z.string().datetime(), z.null()]).optional();
+
 const offerBody = z
   .object({
     type: enumSchema(E.EcommerceOfferType),
     valuePaise: z.number().int().min(0).optional(),
     percentBps: z.number().int().min(0).max(10_000).optional(),
-    startsAt: z.string().datetime().optional(),
-    endsAt: z.string().datetime().optional(),
+    startsAt: clearableScheduleIso,
+    endsAt: clearableScheduleIso,
   })
   .strict()
   .optional()
@@ -28,9 +30,9 @@ const offerBody = z
 const fixedPricingBody = z
   .object({
     basePricePaise: z.number().int().min(0),
-    salePricePaise: z.number().int().min(0).optional(),
-    saleStartsAt: z.string().datetime().optional(),
-    saleEndsAt: z.string().datetime().optional(),
+    salePricePaise: z.union([z.number().int().min(0), z.null()]).optional(),
+    saleStartsAt: clearableScheduleIso,
+    saleEndsAt: clearableScheduleIso,
   })
   .strict()
   .optional();

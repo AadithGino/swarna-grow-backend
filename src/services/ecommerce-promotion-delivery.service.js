@@ -59,7 +59,7 @@ function dispatchReqFromCampaign(campaign, tenant) {
   };
 }
 
-async function revalidateCampaignTarget(campaign, tenant, atMs = Date.now()) {
+export async function revalidateCampaignTarget(campaign, tenant, atMs = Date.now()) {
   if (campaign.kind === EcommercePromotionKind.SCHEME_GOLD_RATE) {
     return revalidateSchemeGoldRateNotification(campaign, tenant);
   }
@@ -166,7 +166,7 @@ export const CAMPAIGN_DELIVERY_LEASE_MS = 5 * 60 * 1000;
 export const MAX_CAMPAIGN_DELIVERY_ATTEMPTS = 12;
 const MAINTENANCE_SCAN_LIMIT = 50;
 
-const TERMINAL_CANCEL_REASONS = new Set([
+export const TERMINAL_CANCEL_REASONS = new Set([
   "STORE_INACTIVE",
   "PRODUCT_NOT_PUBLISHED",
   "CATEGORY_INACTIVE",
@@ -175,11 +175,17 @@ const TERMINAL_CANCEL_REASONS = new Set([
   "TARGET_MISSING",
   "TENANT_MISSING",
   "NO_ELIGIBLE_DEVICES",
+  "NO_ELIGIBLE_RECIPIENTS",
   "RATE_MISSING",
   "RATE_SUPERSEDED",
   "STALE_BUSINESS_DATE",
   "NOT_DUE",
+  "DELIVERY_ATTEMPTS_EXCEEDED",
 ]);
+
+export function isTerminalCampaignCancelReason(reason) {
+  return Boolean(reason && TERMINAL_CANCEL_REASONS.has(reason));
+}
 
 export function isTransientInfrastructureError(error) {
   const code = error?.code ?? error?.name ?? "";
@@ -382,27 +388,94 @@ export async function aggregateCampaignMessageStats(tenantId, broadcastId) {
   return { messagesQueued, delivered, failed, pending, byStatus, allTerminal };
 }
 
+export async function revalidatePromotionBroadcastChunk(broadcast, atMs = Date.now()) {
+  if (!broadcast?.campaignBusinessKey) return { ok: true };
+  const campaign = await EcommercePromotionCampaign.findOne({
+    tenantId: broadcast.tenantId,
+    businessKey: broadcast.campaignBusinessKey,
+  }).lean();
+  if (!campaign) return { ok: true };
+  const tenant = await Tenant.findById(broadcast.tenantId).lean();
+  if (!tenant) return { ok: false, reason: "TENANT_MISSING" };
+  return revalidateCampaignTarget(campaign, tenant, atMs);
+}
+
+export async function markPromotionCampaignStoppedForBroadcast(broadcastId, tenantId, reason) {
+  const broadcast = await PushBroadcast.findOne({ _id: broadcastId, tenantId }).lean();
+  if (!broadcast?.campaignBusinessKey) return;
+  await EcommercePromotionCampaign.updateOne(
+    {
+      tenantId,
+      businessKey: broadcast.campaignBusinessKey,
+      status: { $in: [EcommercePromotionCampaignStatus.QUEUED, EcommercePromotionCampaignStatus.SENDING] },
+      $or: [
+        { skippedReason: null },
+        { skippedReason: { $exists: false } },
+        { skippedReason: { $nin: [...TERMINAL_CANCEL_REASONS] } },
+      ],
+    },
+    {
+      $set: {
+        status: EcommercePromotionCampaignStatus.CANCELLED,
+        skippedReason: reason,
+        deliveryLeaseOwner: null,
+        deliveryLeaseExpiresAt: null,
+        dispatchReconciledAt: null,
+      },
+    },
+  );
+}
+
+function dispatchStatsSettled(fanoutDone, msgStats) {
+  if (!fanoutDone) return false;
+  if (msgStats.messagesQueued === 0) return true;
+  return msgStats.allTerminal;
+}
+
+function cancelledReasonFilter(campaign) {
+  const reason = campaign.skippedReason;
+  if (reason == null || reason === "") {
+    return {
+      $or: [{ skippedReason: null }, { skippedReason: { $exists: false } }, { skippedReason: "" }],
+    };
+  }
+  return { skippedReason: reason };
+}
+
+/** Campaigns with outstanding message dispatch accounting (includes stopped/cancelled fanouts). */
+export async function listCampaignsForDispatchReconciliation(limit = MAINTENANCE_SCAN_LIMIT) {
+  return EcommercePromotionCampaign.find({
+    broadcastId: { $ne: null },
+    dispatchReconciledAt: null,
+    status: {
+      $in: [
+        EcommercePromotionCampaignStatus.SENDING,
+        EcommercePromotionCampaignStatus.CANCELLED,
+        EcommercePromotionCampaignStatus.FAILED,
+      ],
+    },
+  })
+    .sort({ updatedAt: 1, createdAt: 1 })
+    .limit(limit)
+    .select("_id tenantId")
+    .lean();
+}
+
 export async function reconcilePromotionCampaignDispatch(campaignId, tenantId) {
   const campaign = await EcommercePromotionCampaign.findOne({ _id: campaignId, tenantId }).lean();
-  if (!campaign?.broadcastId) return;
+  if (!campaign?.broadcastId) return { skipped: true, reason: "NO_BROADCAST" };
+  if (campaign.dispatchReconciledAt) return { skipped: true, reason: "ALREADY_RECONCILED" };
 
   const broadcast = await PushBroadcast.findOne({
     _id: campaign.broadcastId,
     tenantId,
   }).lean();
-  if (!broadcast) return;
+  if (!broadcast) return { skipped: true, reason: "BROADCAST_MISSING" };
 
   const msgStats = await aggregateCampaignMessageStats(tenantId, broadcast._id);
   const fanoutDone = broadcast.status === JobStatus.COMPLETED || broadcast.status === JobStatus.FAILED;
-
-  let nextStatus = EcommercePromotionCampaignStatus.SENDING;
-  if (fanoutDone && broadcast.status === JobStatus.FAILED) {
-    nextStatus = EcommercePromotionCampaignStatus.FAILED;
-  } else if (fanoutDone && msgStats.messagesQueued > 0 && msgStats.allTerminal) {
-    nextStatus = msgStats.delivered > 0
-      ? EcommercePromotionCampaignStatus.SENT
-      : EcommercePromotionCampaignStatus.FAILED;
-  }
+  const preservedCancel = campaign.status === EcommercePromotionCampaignStatus.CANCELLED;
+  const dispatchSettled = dispatchStatsSettled(fanoutDone, msgStats);
 
   const stats = {
     eligibleCustomers: broadcast.stats?.audienceCount ?? campaign.stats?.eligibleCustomers ?? msgStats.messagesQueued,
@@ -412,26 +485,216 @@ export async function reconcilePromotionCampaignDispatch(campaignId, tenantId) {
     pending: msgStats.pending,
   };
 
-  await EcommercePromotionCampaign.updateOne(
+  const sharedSet = {
+    stats,
+    deliveryLeaseOwner: null,
+    deliveryLeaseExpiresAt: null,
+    ...(fanoutDone && !campaign.fanoutCompletedAt
+      ? { fanoutCompletedAt: broadcast.completedAt ?? new Date() }
+      : {}),
+    ...(dispatchSettled ? { dispatchReconciledAt: new Date() } : {}),
+  };
+
+  if (preservedCancel) {
+    const result = await EcommercePromotionCampaign.updateOne(
+      {
+        _id: campaignId,
+        tenantId,
+        status: EcommercePromotionCampaignStatus.CANCELLED,
+        ...cancelledReasonFilter(campaign),
+        dispatchReconciledAt: null,
+      },
+      { $set: sharedSet },
+    );
+    return {
+      updated: result.modifiedCount > 0,
+      status: EcommercePromotionCampaignStatus.CANCELLED,
+      skippedReason: campaign.skippedReason ?? null,
+      stats,
+      dispatchSettled,
+    };
+  }
+
+  let nextStatus = EcommercePromotionCampaignStatus.SENDING;
+  let skippedReason = campaign.skippedReason ?? null;
+  if (fanoutDone && broadcast.status === JobStatus.FAILED) {
+    nextStatus = EcommercePromotionCampaignStatus.FAILED;
+  } else if (
+    fanoutDone
+    && broadcast.status === JobStatus.COMPLETED
+    && msgStats.messagesQueued === 0
+  ) {
+    nextStatus = EcommercePromotionCampaignStatus.CANCELLED;
+    skippedReason = skippedReason ?? "NO_ELIGIBLE_RECIPIENTS";
+  } else if (fanoutDone && msgStats.messagesQueued > 0 && msgStats.allTerminal) {
+    nextStatus = msgStats.delivered > 0
+      ? EcommercePromotionCampaignStatus.SENT
+      : EcommercePromotionCampaignStatus.FAILED;
+  }
+
+  const setPayload = {
+    ...sharedSet,
+    status: nextStatus,
+  };
+  if (skippedReason) {
+    setPayload.skippedReason = skippedReason;
+  }
+
+  const result = await EcommercePromotionCampaign.updateOne(
     {
       _id: campaignId,
       tenantId,
+      status: { $nin: [EcommercePromotionCampaignStatus.CANCELLED] },
+      dispatchReconciledAt: null,
+    },
+    { $set: setPayload },
+  );
+  return {
+    updated: result.modifiedCount > 0,
+    status: nextStatus,
+    skippedReason,
+    stats,
+    dispatchSettled,
+  };
+}
+
+async function markFanoutStopRecoveryCompletedIfHandoffDone(broadcastId, tenantId) {
+  const broadcast = await PushBroadcast.findOne({ _id: broadcastId, tenantId }).lean();
+  if (!broadcast) return { marked: false, reason: "NOT_FOUND" };
+  if (broadcast.fanoutStopRecoveryCompletedAt) return { marked: false, reason: "ALREADY_MARKED" };
+  if (broadcast.campaignBusinessKey) {
+    const openCampaign = await EcommercePromotionCampaign.exists({
+      tenantId,
+      businessKey: broadcast.campaignBusinessKey,
+      status: {
+        $in: [EcommercePromotionCampaignStatus.QUEUED, EcommercePromotionCampaignStatus.SENDING],
+      },
+    });
+    if (openCampaign) return { marked: false, reason: "CAMPAIGN_STILL_OPEN" };
+  }
+  const result = await PushBroadcast.updateOne(
+    {
+      _id: broadcastId,
+      tenantId,
       $or: [
-        { fanoutCompletedAt: { $exists: false } },
-        { fanoutCompletedAt: campaign.fanoutCompletedAt ?? null },
-        { updatedAt: { $lte: new Date() } },
+        { fanoutStopRecoveryCompletedAt: null },
+        { fanoutStopRecoveryCompletedAt: { $exists: false } },
       ],
+    },
+    { $set: { fanoutStopRecoveryCompletedAt: new Date() } },
+  );
+  return { marked: result.modifiedCount > 0, reason: result.modifiedCount > 0 ? "OK" : "RACE" };
+}
+
+async function completePromotionStopAfterBroadcast(broadcastId, tenantId, reason, { countMetric = false } = {}) {
+  await markPromotionCampaignStoppedForBroadcast(broadcastId, tenantId, reason);
+  if (countMetric) {
+    const { incrementOpsMetric, OpsMetric } = await import("../lib/ops-metrics.js");
+    incrementOpsMetric(OpsMetric.BROADCAST_COMPLETED);
+  }
+  await reconcilePromotionCampaignByBroadcast(broadcastId, tenantId);
+  const { kickDeferredPromotionBroadcasts } = await import("./push-broadcast.service.js");
+  await kickDeferredPromotionBroadcasts(tenantId);
+  await markFanoutStopRecoveryCompletedIfHandoffDone(broadcastId, tenantId);
+}
+
+/** Finish campaign cancellation when broadcast already stopped (crash/recovery path). */
+export async function recoverIncompletePromotionBroadcastStops(limit = MAINTENANCE_SCAN_LIMIT) {
+  const rows = await PushBroadcast.find({
+    tenantId: { $exists: true },
+    status: JobStatus.COMPLETED,
+    fanoutStopReason: { $type: "string" },
+    campaignBusinessKey: { $type: "string" },
+    $or: [
+      { fanoutStopRecoveryCompletedAt: null },
+      { fanoutStopRecoveryCompletedAt: { $exists: false } },
+    ],
+  })
+    .sort({ completedAt: 1, updatedAt: 1 })
+    .limit(limit)
+    .select("_id tenantId fanoutStopReason error campaignBusinessKey")
+    .lean();
+
+  let recovered = 0;
+  let backfilled = 0;
+  for (const broadcast of rows) {
+    const reason = broadcast.fanoutStopReason ?? broadcast.error;
+    if (!reason) continue;
+    const campaign = await EcommercePromotionCampaign.findOne({
+      tenantId: broadcast.tenantId,
+      businessKey: broadcast.campaignBusinessKey,
+      status: { $in: [EcommercePromotionCampaignStatus.QUEUED, EcommercePromotionCampaignStatus.SENDING] },
+    }).lean();
+    if (!campaign) {
+      const mark = await markFanoutStopRecoveryCompletedIfHandoffDone(broadcast._id, broadcast.tenantId);
+      if (mark.marked) backfilled += 1;
+      continue;
+    }
+    await completePromotionStopAfterBroadcast(broadcast._id, broadcast.tenantId, reason, {
+      countMetric: false,
+    });
+    recovered += 1;
+  }
+  return { recovered, backfilled, scanned: rows.length };
+}
+
+/**
+ * Stop fanout without creating more messages. Requires valid lease ownership for worker-initiated stops.
+ * @returns {{ stopped: boolean, stale?: boolean, idempotent?: boolean, reason?: string }}
+ */
+export async function stopPromotionBroadcastFanout({
+  broadcastId,
+  tenantId,
+  leaseToken,
+  reason,
+}) {
+  if (!leaseToken) {
+    return { stopped: false, reason: "LEASE_REQUIRED" };
+  }
+
+  const stoppedAt = new Date();
+  const broadcastResult = await PushBroadcast.updateOne(
+    {
+      _id: broadcastId,
+      tenantId,
+      leaseOwner: leaseToken,
+      status: { $in: [JobStatus.QUEUED, JobStatus.PROCESSING] },
     },
     {
       $set: {
-        status: nextStatus,
-        stats,
-        ...(fanoutDone && !campaign.fanoutCompletedAt ? { fanoutCompletedAt: broadcast.completedAt ?? new Date() } : {}),
-        deliveryLeaseOwner: null,
-        deliveryLeaseExpiresAt: null,
+        status: JobStatus.COMPLETED,
+        completedAt: stoppedAt,
+        error: reason,
+        fanoutStopReason: reason,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        fanoutContinuationPending: false,
+        fanoutResumeAt: null,
       },
     },
   );
+
+  if (broadcastResult.matchedCount > 0) {
+    await completePromotionStopAfterBroadcast(broadcastId, tenantId, reason, { countMetric: true });
+    return { stopped: true, reason };
+  }
+
+  const row = await PushBroadcast.findOne({ _id: broadcastId, tenantId }).lean();
+  if (!row) return { stopped: false, reason: "NOT_FOUND" };
+
+  if (
+    row.status === JobStatus.COMPLETED
+    && (row.fanoutStopReason === reason || row.error === reason)
+  ) {
+    await completePromotionStopAfterBroadcast(broadcastId, tenantId, reason, { countMetric: false });
+    return { stopped: true, idempotent: true, reason };
+  }
+
+  if (row.status === JobStatus.QUEUED || row.status === JobStatus.PROCESSING) {
+    return { stopped: false, stale: true, reason: "LEASE_OR_STATE_MISMATCH" };
+  }
+
+  return { stopped: false, reason: "ALREADY_TERMINAL" };
 }
 
 export async function reconcilePromotionCampaignByBroadcast(broadcastId, tenantId) {
@@ -648,16 +911,10 @@ export async function recoverStalePromotionCampaigns(now = new Date()) {
 
 export async function runEcommercePromotionMaintenance(now = new Date()) {
   await recoverStalePromotionCampaigns(now);
+  await recoverIncompletePromotionBroadcastStops(MAINTENANCE_SCAN_LIMIT);
 
-  const sending = await EcommercePromotionCampaign.find({
-    status: EcommercePromotionCampaignStatus.SENDING,
-    broadcastId: { $ne: null },
-  })
-    .sort({ updatedAt: 1 })
-    .limit(MAINTENANCE_SCAN_LIMIT)
-    .select("_id tenantId")
-    .lean();
-  for (const row of sending) {
+  const dispatchReconcile = await listCampaignsForDispatchReconciliation(MAINTENANCE_SCAN_LIMIT);
+  for (const row of dispatchReconcile) {
     await reconcilePromotionCampaignDispatch(row._id, row.tenantId);
   }
 
@@ -686,5 +943,9 @@ export async function runEcommercePromotionMaintenance(now = new Date()) {
     });
     if (result.enqueued) enqueued += 1;
   }
-  return { enqueued, reconciled: sending.length, staleReleased: (await recoverStalePromotionCampaigns(now)).released };
+  return {
+    enqueued,
+    reconciled: dispatchReconcile.length,
+    staleReleased: (await recoverStalePromotionCampaigns(now)).released,
+  };
 }

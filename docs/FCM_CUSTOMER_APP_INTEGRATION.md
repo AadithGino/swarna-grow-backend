@@ -252,6 +252,8 @@ Example payment success:
 
 E-commerce and manual campaigns may set `deepLink` under `/shop/order/...` or custom paths from template params.
 
+Gold-rate and promotion pushes also include string metadata in `data`: `rateId`, `rateSource`, `purity`, `ratePerGramPaise`, `schemeEffectiveDate`, `effectiveAt`, `branchId`, `productId`, `categoryId`, `campaignBusinessKey`. See `docs/FLUTTER_CUSTOMER_API_GUIDE.md` §11 for the full customer routing matrix.
+
 ---
 
 ## Checklist for Flutter developer

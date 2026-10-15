@@ -230,6 +230,8 @@ const promotionCampaignSchema = new mongoose.Schema(
     titleOverridden: { type: Boolean, default: false },
     bodyOverridden: { type: Boolean, default: false },
     fanoutCompletedAt: Date,
+    /** Set when fanout is done and all linked Message rows are terminal (or none were created). */
+    dispatchReconciledAt: Date,
     rateId: String,
     rateSource: { type: String, enum: ["SCHEME", "ECOMMERCE"] },
     purity: String,
@@ -247,6 +249,10 @@ promotionCampaignSchema.index({ tenantId: 1, categoryId: 1, createdAt: -1 });
 promotionCampaignSchema.index({ tenantId: 1, status: 1, scheduledFor: 1 });
 promotionCampaignSchema.index({ tenantId: 1, status: 1, deliveryLeaseExpiresAt: 1 });
 promotionCampaignSchema.index({ tenantId: 1, broadcastId: 1 });
+promotionCampaignSchema.index(
+  { dispatchReconciledAt: 1, status: 1, updatedAt: 1 },
+  { partialFilterExpression: { broadcastId: { $type: "string" } } },
+);
 
 export const EcommerceCategory = mongoose.model("EcommerceCategory", categorySchema);
 export const EcommerceBanner = mongoose.model("EcommerceBanner", bannerSchema);

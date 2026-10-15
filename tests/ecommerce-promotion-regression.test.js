@@ -86,6 +86,82 @@ test("making-charge offer copy uses pricing-engine discount fields", () => {
   assert.match(copy.body, /₹/);
 });
 
+test("completed fanout with zero messages becomes CANCELLED with NO_ELIGIBLE_RECIPIENTS", async () => {
+  const { tenant, user } = await seedTenantUser({});
+  await enableEcommerce(tenant);
+  const campaignId = createId("epcm");
+  const broadcastId = createId("pb");
+  const businessKey = `manual-product:zero:${Date.now()}`;
+  await EcommercePromotionCampaign.create({
+    _id: campaignId,
+    tenantId: tenant._id,
+    businessKey,
+    kind: EcommercePromotionKind.MANUAL_PRODUCT,
+    status: EcommercePromotionCampaignStatus.SENDING,
+    broadcastId,
+    title: "T",
+    body: "B",
+    audience: "ALL_DEVICES",
+    requestedBy: user._id,
+  });
+  await PushBroadcast.create({
+    _id: broadcastId,
+    tenantId: tenant._id,
+    requestedBy: user._id,
+    title: "T",
+    body: "B",
+    audience: "ALL_DEVICES",
+    status: JobStatus.COMPLETED,
+    campaignBusinessKey: businessKey,
+    sourceKind: "ECOMMERCE_PROMOTION",
+    stats: { audienceCount: 0, messagesQueued: 0 },
+    completedAt: new Date(),
+  });
+  await reconcilePromotionCampaignDispatch(campaignId, tenant._id);
+  const row = await EcommercePromotionCampaign.findById(campaignId).lean();
+  assert.equal(row.status, EcommercePromotionCampaignStatus.CANCELLED);
+  assert.equal(row.skippedReason, "NO_ELIGIBLE_RECIPIENTS");
+  assert.equal(row.stats.messagesQueued, 0);
+});
+
+test("reconciliation preserves terminal stop reason from fanout revalidation", async () => {
+  const { tenant, user } = await seedTenantUser({});
+  await enableEcommerce(tenant);
+  const campaignId = createId("epcm");
+  const broadcastId = createId("pb");
+  const businessKey = `offer:stop:${Date.now()}`;
+  await EcommercePromotionCampaign.create({
+    _id: campaignId,
+    tenantId: tenant._id,
+    businessKey,
+    kind: EcommercePromotionKind.OFFER,
+    status: EcommercePromotionCampaignStatus.CANCELLED,
+    skippedReason: "PRODUCT_NOT_PUBLISHED",
+    broadcastId,
+    title: "T",
+    body: "B",
+    audience: "ALL_DEVICES",
+    requestedBy: user._id,
+  });
+  await PushBroadcast.create({
+    _id: broadcastId,
+    tenantId: tenant._id,
+    requestedBy: user._id,
+    title: "T",
+    body: "B",
+    audience: "ALL_DEVICES",
+    status: JobStatus.COMPLETED,
+    campaignBusinessKey: businessKey,
+    sourceKind: "ECOMMERCE_PROMOTION",
+    stats: { audienceCount: 0, messagesQueued: 0 },
+    completedAt: new Date(),
+  });
+  await reconcilePromotionCampaignDispatch(campaignId, tenant._id);
+  const row = await EcommercePromotionCampaign.findById(campaignId).lean();
+  assert.equal(row.status, EcommercePromotionCampaignStatus.CANCELLED);
+  assert.equal(row.skippedReason, "PRODUCT_NOT_PUBLISHED");
+});
+
 test("completed fanout with queued messages stays SENDING until dispatch finishes", async () => {
   const { tenant, user } = await seedTenantUser({});
   await enableEcommerce(tenant);

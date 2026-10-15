@@ -106,6 +106,11 @@ const pushBroadcastSchema = new mongoose.Schema({
   },
   cursorCustomerId: String,
   fanoutContinuationPending: { type: Boolean, default: false },
+  /** Earliest time a NOT_DUE fanout chunk should run (persisted for maintenance recovery). */
+  fanoutResumeAt: Date,
+  fanoutStopReason: String,
+  /** Set when campaign stop handoff after fanoutStopReason is complete (maintenance scan exclusion). */
+  fanoutStopRecoveryCompletedAt: Date,
   chunkAttempts: integerField({ min: 0 }),
   leaseOwner: String,
   leaseExpiresAt: Date,
@@ -119,6 +124,12 @@ pushBroadcastSchema.index({ tenantId: 1, createdAt: -1 });
 pushBroadcastSchema.index({ tenantId: 1, status: 1 });
 pushBroadcastSchema.index({ tenantId: 1, status: 1, leaseExpiresAt: 1 });
 pushBroadcastSchema.index({ status: 1, fanoutContinuationPending: 1, leaseExpiresAt: 1 });
+pushBroadcastSchema.index({ status: 1, fanoutResumeAt: 1, updatedAt: 1 });
+pushBroadcastSchema.index({ status: 1, completedAt: 1, campaignBusinessKey: 1 });
+pushBroadcastSchema.index(
+  { status: 1, fanoutStopRecoveryCompletedAt: 1, completedAt: 1 },
+  { partialFilterExpression: { fanoutStopReason: { $type: "string" } } },
+);
 pushBroadcastSchema.index({ tenantId: 1, status: 1, branchId: 1, cursorCustomerId: 1 });
 pushBroadcastSchema.index(
   { tenantId: 1, campaignBusinessKey: 1 },

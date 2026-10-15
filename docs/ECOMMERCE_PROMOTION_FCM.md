@@ -73,11 +73,23 @@ Message types: `SCHEME_GOLD_RATE_UPDATED`, `ECOMMERCE_GOLD_RATE_UPDATED`. Deep l
 
 FCM `data` (strings): `rateId`, `rateSource`, `purity`, `ratePerGramPaise`, `schemeEffectiveDate`, `effectiveAt`, `branchId`, plus `messageType`, `campaignBusinessKey`, `deepLink`.
 
-Historical backfill (explicit past `effectiveAt` / scheme business date before today IST) does not create notification intent. Future rates schedule until effective. Stale prior-day scheme dailies cancel at delivery with `STALE_BUSINESS_DATE`.
+Historical backfill (explicit past `effectiveAt` / scheme business date before today IST) does not create notification intent. Future rates schedule until effective. Stale prior-day scheme dailies stop fanout with campaign `CANCELLED` + `skippedReason: STALE_BUSINESS_DATE` (same path as other chunk revalidation stops).
+
+**Worker stop fencing** — `stopPromotionBroadcastFanout` requires the caller’s fanout `leaseToken`. The broadcast must atomically transition to terminal `COMPLETED` with `fanoutStopReason`, clearing `leaseOwner` / lease expiry; only then is the campaign cancelled, stats reconciled, and deferred broadcasts kicked. A stale worker (lost lease) gets `{ stopped: false, stale: true }` with no campaign or metric side effects. If the process dies after the broadcast transition, `recoverIncompletePromotionBroadcastStops` (maintenance) completes cancellation idempotently.
+
+**NOT_DUE deferral** — When chunk revalidation returns `NOT_DUE`, fanout atomically persists `fanoutResumeAt` + `fanoutContinuationPending` and clears the lease under the current `leaseToken`; stale workers cannot write deferral state. After persistence, a **delayed** maintenance job is enqueued with id `{broadcastId}-fanout-due-{businessYmd}` (distinct from `{broadcastId}-fanout-*` chunk jobs). Campaign stays `SENDING`. Recovery uses `$and` scheduling + lease filters; future `fanoutResumeAt` rows only get delayed re-enqueue, never immediate chunk jobs.
+
+**Stop recovery marker** — `fanoutStopRecoveryCompletedAt` on `PushBroadcast` excludes finished stop handoffs from `recoverIncompletePromotionBroadcastStops` scans (avoids starvation). Set after campaign cancellation handoff; independent of `dispatchReconciledAt`.
+
+**Dispatch reconciliation** — After fanout stops or completes, maintenance refreshes `stats.*` from persisted `Message` rows until all linked messages are terminal (or none were created), then sets `dispatchReconciledAt`. Applies to every `CANCELLED` campaign with a `broadcastId` and unset `dispatchReconciledAt` (any `skippedReason`, including null/legacy). Stopped campaigns keep their original `skippedReason`; stats continue to update until dispatch settles. `delivered` counts FCM acceptance (`SENT`/`DELIVERED`/`READ`), not confirmed device delivery.
 
 ## Native app
 
 Flutter must register FCM via `POST /app/devices/fcm-token` and handle tap using `data.deepLink`. See `docs/FCM_CUSTOMER_APP_INTEGRATION.md`.
+
+## Production deployment
+
+Index rollout, broadcast-key migration, and API/worker/scheduler restart order: **`docs/ECOMMERCE_PROMOTION_DEPLOYMENT.md`**.
 
 ## Schema
 

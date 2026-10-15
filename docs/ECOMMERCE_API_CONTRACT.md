@@ -2,6 +2,8 @@
 
 Base prefix: `/api/v1`. Money in **paise**. See [API_CONTRACT.md](./API_CONTRACT.md) for envelope conventions.
 
+**Flutter / customer app:** end-to-end shop flows with example payloads → [ECOMMERCE_CUSTOMER_APP_GUIDE.md](./ECOMMERCE_CUSTOMER_APP_GUIDE.md).
+
 ## Customer shop (`CUSTOMER` → `/app/shop/*`)
 
 ### `GET /app/shop/store-policies`
@@ -158,6 +160,22 @@ Example customer item:
 Upload purpose: `ECOMMERCE_BANNER_IMAGE` (same size/types as catalog images). Customer download allowed only when the banner is published, in schedule, entitled for home and/or shop surface, destination targets are still valid, and **SHOP/CATEGORY/PRODUCT destinations require an operational store** (even for HOME/BOTH placement). This check runs for **every** customer banner download (store on or off). Customers must not pass `subjectId` (or any query owner) to bypass visibility. Unpublish, archive, or end-of-schedule removes customer list entries **and** blocks new `GET /app/uploads/:id` downloads for customers. Presigned image URLs already issued remain valid for up to **15 minutes** (`expiresInSeconds: 900`); list refresh does not revoke them early. **ARCHIVED** banners cannot be published, unpublished, or patched.
 
 Demo posters: `npm run seed:ecommerce-demo -- --apply --allow-demo-data --tenants=MEHER,KAIRALI` seeds published banners (see `scripts/lib/ecommerce-demo-banners.js`).
+
+## Admin product PATCH schedule semantics
+
+`PATCH /admin/ecommerce/products/:productId` merges nested pricing fields field-by-field:
+
+| Request value | Effect |
+|---------------|--------|
+| Field omitted | Stored value preserved (including sub-second UTC instants on schedules). |
+| `null` on clearable schedule or sale fields | Clears the stored value. |
+| ISO-8601 datetime string | Replaces the stored instant (validated; start must not be after end in merged state). |
+| `offer: null` | Removes the entire making-charge offer (gold-rate products). |
+| `priceMode` change | Replaces pricing shape for the new mode; does not deep-merge across modes. |
+
+Promotion fanout revalidates campaign targets **before each fanout chunk** (including resume). Invalid targets stop new messages with `skippedReason` on the campaign (e.g. `PRODUCT_NOT_PUBLISHED`, `STALE_BUSINESS_DATE`, `NO_ELIGIBLE_RECIPIENTS`). Completed fanout with zero message rows terminates as `CANCELLED` + `NO_ELIGIBLE_RECIPIENTS`, not `SENT`.
+
+Maintenance continues **dispatch reconciliation** for stopped campaigns (`dispatchReconciledAt` null) until linked `Message` rows reach terminal states, then sets `dispatchReconciledAt`. Campaign `status`/`skippedReason` stay unchanged while stats refresh.
 
 ## Index / migration notes
 
