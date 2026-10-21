@@ -20,7 +20,8 @@ import {
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resetTestDb, startTestDb, stopTestDb } from "./helpers/db.js";
+import { bearerFor, resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
+import { publishDefaultAssetSettings } from "./helpers/digital-metals-live-ready.js";
 
 const app = createApp();
 const routesSource = readFileSync(
@@ -321,11 +322,74 @@ test("PUT /tenants/:tenantId/flags valid acceptance", async () => {
   mark("PUT /tenants/:tenantId/flags");
 });
 
+test("POST /tenants/:tenantId/digital-metals/pause valid acceptance", async () => {
+  const token = await seedPlatformAdminToken(app);
+  const { tenant } = await seedTenantContext();
+  const pause = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/digital-metals/pause`, {
+    body: { pause: true, reason: "Platform acceptance test pause" },
+    idempotencyKey: "valid-dm-pause",
+  });
+  assert.equal(pause.status, 200);
+  const resume = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/digital-metals/pause`, {
+    body: { pause: false },
+    idempotencyKey: "valid-dm-resume",
+  });
+  assert.equal(resume.status, 200);
+  mark("POST /tenants/:tenantId/digital-metals/pause");
+});
+
+test("POST /tenants/:tenantId/digital-metals/tax-profile/approve valid acceptance", async () => {
+  const platformToken = await seedPlatformAdminToken(app);
+  const { tenant, user } = await seedTenantUser({});
+  await Tenant.updateOne(
+    { _id: tenant._id },
+    {
+      $set: {
+        "operations.digitalMetalsEnabled": true,
+        "subscription.planFeaturesSnapshot.digitalMetals": true,
+        "subscription.tier": PlanTier.GROWTH,
+      },
+    },
+  );
+  await publishDefaultAssetSettings(app, bearerFor(user));
+  const tax = await platformRequest(
+    app,
+    platformToken,
+    "POST",
+    `/api/v1/platform/tenants/${tenant._id}/digital-metals/tax-profile/approve`,
+    { body: { approve: true }, idempotencyKey: "valid-dm-tax-approve" },
+  );
+  assert.equal(tax.status, 200);
+  mark("POST /tenants/:tenantId/digital-metals/tax-profile/approve");
+});
+
+test("POST /tenants/:tenantId/digital-metals/terms/publish valid acceptance", async () => {
+  const platformToken = await seedPlatformAdminToken(app);
+  const { tenant } = await seedTenantContext();
+  const terms = await platformRequest(
+    app,
+    platformToken,
+    "POST",
+    `/api/v1/platform/tenants/${tenant._id}/digital-metals/terms/publish`,
+    {
+      body: {
+        termsVersion: "2026-10-20-acceptance",
+        contentSnapshot:
+          "Digital Gold & Silver terms acceptance snapshot — immutable customer copy for platform mutation gate.",
+        contentRef: "mock://terms/2026-10-20",
+      },
+      idempotencyKey: "valid-dm-terms-publish",
+    },
+  );
+  assert.equal(terms.status, 200);
+  mark("POST /tenants/:tenantId/digital-metals/terms/publish");
+});
+
 test("platform mutation valid coverage table is complete", () => {
   const missing = routeKeys.filter((k) => !validRouteCoverage[k]);
   assert.deepEqual(missing, [], `Missing valid HTTP acceptance for: ${missing.join(", ")}`);
-  assert.equal(routeKeys.length, 27);
-  assert.equal(Object.keys(platformRouteValidators).length, 27);
+  assert.equal(routeKeys.length, 30);
+  assert.equal(Object.keys(platformRouteValidators).length, 30);
   for (const key of routeKeys) {
     const row = platformRouteValidators[key];
     assert.ok(row.body || row.params, key);

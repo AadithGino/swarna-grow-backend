@@ -9,13 +9,19 @@ import { sendSuccess } from "../lib/response.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { platformAppConfigBody, platformLoginBody } from "../validators/common.validators.js";
 import {
+  platformDigitalMetalsTaxApproveBody,
+  platformDigitalMetalsTermsBody,
+} from "../validators/digital-metals.validators.js";
+import {
   platformCreatePlanBody,
   platformCreateTenantBody,
   platformDeprecatePlanBody,
+  platformDigitalMetalsPauseBody,
   platformFcmIntegrationBody,
   platformFlagsBody,
   platformInvoiceCreateBody,
   platformMarkInvoicePaidBody,
+  platformLogoutBody,
   platformOwnerCredentialsBody,
   platformPhonePeIntegrationBody,
   platformSubscriptionCancelBody,
@@ -27,7 +33,6 @@ import {
   platformTenantListQuery,
   platformTenantTemplateBody,
   platformUpdatePlanBody,
-  platformLogoutBody,
   platformUpdateTenantBody,
   platformWebhookRetryBody,
   platformWhatsappIntegrationBody,
@@ -75,6 +80,32 @@ platformRouter.post("/tenants/:tenantId/subscription/change-plan", tenantIdParam
 platformRouter.patch("/tenants/:tenantId/subscription/limits", tenantIdParam, validate({ body: platformSubscriptionLimitsBody }), idempotent, asyncHandler(controller.subscriptionAction("limits")));
 platformRouter.post("/tenants/:tenantId/subscription/extend", tenantIdParam, validate({ body: platformSubscriptionExtendBody }), idempotent, asyncHandler(controller.subscriptionAction("extend")));
 platformRouter.post("/tenants/:tenantId/subscription/cancel", tenantIdParam, validate({ body: platformSubscriptionCancelBody }), idempotent, asyncHandler(controller.subscriptionAction("cancel")));
+platformRouter.get(
+  "/tenants/:tenantId/digital-metals",
+  tenantIdParam,
+  asyncHandler(controller.digitalMetalsStatus),
+);
+platformRouter.post(
+  "/tenants/:tenantId/digital-metals/pause",
+  tenantIdParam,
+  validate({ body: platformDigitalMetalsPauseBody }),
+  idempotent,
+  asyncHandler(controller.digitalMetalsPause),
+);
+platformRouter.post(
+  "/tenants/:tenantId/digital-metals/tax-profile/approve",
+  tenantIdParam,
+  validate({ body: platformDigitalMetalsTaxApproveBody }),
+  idempotent,
+  asyncHandler(controller.digitalMetalsTaxApprove),
+);
+platformRouter.post(
+  "/tenants/:tenantId/digital-metals/terms/publish",
+  tenantIdParam,
+  validate({ body: platformDigitalMetalsTermsBody }),
+  idempotent,
+  asyncHandler(controller.digitalMetalsTermsPublish),
+);
 platformRouter.post("/tenants/:tenantId/invoices", tenantIdParam, validate({ body: platformInvoiceCreateBody }), idempotent, asyncHandler(controller.invoice));
 platformRouter.get("/tenants/:tenantId/invoices", tenantIdParam, asyncHandler(controller.invoices));
 platformRouter.post("/invoices/:invoiceId/mark-paid", invoiceIdParam, validate({ body: platformMarkInvoicePaidBody }), idempotent, asyncHandler(controller.markInvoicePaid));
@@ -83,6 +114,11 @@ platformRouter.put("/tenants/:tenantId/flags", tenantIdParam, validate({ body: p
 platformRouter.get("/template-definitions", asyncHandler(controller.templates));
 platformRouter.get("/app-config", asyncHandler(controller.appConfig(false)));
 platformRouter.put("/app-config", idempotent, validate({ body: platformAppConfigBody }), asyncHandler(controller.appConfig(true)));
+platformRouter.get("/digital-metals/hedge-health", asyncHandler(controller.digitalMetalsHedgeHealth));
+platformRouter.get(
+  "/digital-metals/operations/summary",
+  asyncHandler(controller.digitalMetalsOperationsSummary),
+);
 platformRouter.get("/dashboard/summary", asyncHandler(controller.summary));
 platformRouter.get("/dashboard/charts/:chartKey", asyncHandler(controller.chart));
 platformRouter.get("/audit-logs", asyncHandler(controller.auditLogs));

@@ -1,0 +1,56 @@
+[
+  {
+    "area": "_meta",
+    "ok": true,
+    "detail": "{\"runId\":\"2026-10-19T05-18-38-851Z\",\"frontend\":\"http://localhost:5173\",\"api\":\"http://localhost:4050/api/v1\",\"startedAt\":\"2026-10-19T05:18:38.852Z\"}",
+    "at": "2026-10-19T05:18:38.852Z"
+  },
+  {
+    "area": "portal-api-connectivity",
+    "ok": true,
+    "detail": "capability HTTP 200",
+    "at": "2026-10-19T05:18:41.709Z"
+  },
+  {
+    "area": "procurement-ui-flow",
+    "ok": false,
+    "detail": "\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('procurement-entry-dmpce_01M599J3D11KHKB3K7HXZBWK9D')\nExpected: visible\nTimeout: 20000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByTestId('procurement-entry-dmpce_01M599J3D11KHKB3K7HXZBWK9D') with timeout 20000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('procurement-entry-dmpce_01M599J3D11KHKB3K7HXZBWK9D')\u001b[22m\n",
+    "at": "2026-10-19T05:19:08.285Z"
+  },
+  {
+    "area": "deep-link-refresh-hedge",
+    "ok": true,
+    "detail": "hedge testid visible after reload",
+    "at": "2026-10-19T05:19:16.216Z"
+  },
+  {
+    "area": "hedge-invalidation-banner",
+    "ok": true,
+    "detail": "banner cleared after re-close",
+    "at": "2026-10-19T05:19:43.507Z"
+  },
+  {
+    "area": "admin-document-surfaces",
+    "ok": true,
+    "detail": "sells, payouts, redemption lists",
+    "at": "2026-10-19T05:19:48.252Z"
+  },
+  {
+    "area": "permission-denial-procurement",
+    "ok": true,
+    "detail": "procurement hidden for limited staff",
+    "at": "2026-10-19T05:19:49.272Z"
+  },
+  {
+    "area": "customer-statement-document",
+    "ok": false,
+    "detail": "\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByRole('button', { name: /Request PDF/i }).first()\nExpected: visible\nTimeout: 20000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByRole('button', { name: /Request PDF/i }).first() with timeout 20000ms\u001b[22m\n\u001b[2m  - waiting for getByRole('button', { name: /Request PDF/i }).first()\u001b[22m\n",
+    "at": "2026-10-19T05:20:12.935Z"
+  },
+  {
+    "area": "paused-trading-customer-capability",
+    "ok": true,
+    "detail": "canPlaceNewBuy false",
+    "at": "2026-10-19T05:20:15.461Z"
+  }
+]

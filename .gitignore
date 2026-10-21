@@ -21,3 +21,5 @@ docs/e2e-visual-*.json
 docs/tenant-*-results.json
 docs/tenant-report-kpi-contract.json
 scripts/.ecommerce-payment-test-ui-session.json
+.vercel
+.env*

@@ -248,3 +248,57 @@ test("terminal message status remains immutable", async () => {
   const msg = await Message.findById(message._id).lean();
   assert.equal(msg.status, "DELIVERED");
 });
+
+test("concurrent ensurePushDeliveries through processMessage creates one row per device", async () => {
+  const { tenant, branch } = await seedTenantUser();
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const reg = await registerFcmDevice({
+    tenantId: tenant._id,
+    principalType: DevicePrincipalType.CUSTOMER,
+    principalId: customer._id,
+    deviceId: "dev_conc_create",
+    platform: "android",
+    fcmToken: "proc-conc-create",
+  });
+  const message = await Message.create({
+    _id: createId("msg"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerId: customer._id,
+    type: MessageType.MANUAL_PUSH,
+    status: "QUEUED",
+    channel: "PUSH",
+    templateKey: MessageType.MANUAL_PUSH,
+    templateParams: { title: "T", body: "B" },
+    dispatchPriority: 10,
+  });
+  pushProviderTestHooks.sendOverride = async ({ devices }) => ({
+    outcomes: devices.map((device) => ({
+      deviceRegistrationId: device.deviceRegistrationId,
+      kind: PushOutcomeKind.SUCCESS,
+      providerMessageId: "mock/conc-create",
+    })),
+    successCount: devices.length,
+    failureCount: 0,
+    invalidRegistrationIds: [],
+    invalidTokens: [],
+  });
+  await Promise.all([
+    processMessage({ data: { messageId: message._id }, moveToDelayed: async () => {}, token: "a" }),
+    processMessage({ data: { messageId: message._id }, moveToDelayed: async () => {}, token: "b" }),
+  ]);
+  assert.equal(
+    await PushDeviceDelivery.countDocuments({
+      tenantId: tenant._id,
+      messageId: message._id,
+      deviceRegistrationId: reg._id,
+    }),
+    1,
+  );
+  const row = await PushDeviceDelivery.findOne({
+    tenantId: tenant._id,
+    messageId: message._id,
+    deviceRegistrationId: reg._id,
+  }).lean();
+  assert.notEqual(row.status, PushDeviceDeliveryStatus.PERMANENT_FAILED);
+});

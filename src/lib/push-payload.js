@@ -94,6 +94,16 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
             : "/shop/orders"),
       );
       break;
+    case MessageType.DIGITAL_METAL_PURCHASE_CREDITED:
+    case MessageType.DIGITAL_METAL_PURCHASE_PAYMENT_FAILED:
+    case MessageType.DIGITAL_METAL_SELL_EXECUTED:
+    case MessageType.DIGITAL_METAL_PAYOUT_UPDATE:
+    case MessageType.DIGITAL_METAL_REDEMPTION_UPDATE:
+    case MessageType.DIGITAL_METAL_DOCUMENT_READY:
+      title = String(message.templateParams?.title ?? "Digital metals update");
+      body = String(message.templateParams?.body ?? "Open digital metals in the app.");
+      deepLink = String(message.templateParams?.deepLink ?? "/digital-metals");
+      break;
     default:
       break;
   }

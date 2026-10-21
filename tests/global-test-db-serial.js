@@ -2,7 +2,8 @@
  * Serializes every test in the process so shared Mongo resetTestDb() cannot
  * interleave across sibling tests (Node runs top-level tests in parallel by default).
  */
-import { afterEach, beforeEach } from "node:test";
+import { after, afterEach, before, beforeEach } from "node:test";
+import { startTestDb, stopTestDb } from "./helpers/db.js";
 
 const hookOpts = { scope: "global" };
 
@@ -18,4 +19,12 @@ beforeEach(async () => {
 
 afterEach(() => {
   releaseTurn();
+}, hookOpts);
+
+before(async () => {
+  await startTestDb();
+}, hookOpts);
+
+after(async () => {
+  await stopTestDb({ force: true });
 }, hookOpts);

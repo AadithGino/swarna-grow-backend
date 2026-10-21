@@ -33,7 +33,11 @@ import { errors, AppError } from "../lib/app-error.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { withTransaction } from "../lib/transaction.js";
-import { applyWeightPrecisionMg, decimalRoundingMode, moneyToWeightMg } from "../lib/money.js";
+import {
+  applyWeightPrecisionMg,
+  decimalRoundingMode,
+  moneyToWeightMg,
+} from "../lib/money.js";
 import { today } from "../lib/date.js";
 import { assertPlatformCapability } from "../lib/feature-entitlements.js";
 import { env } from "../config/env.js";
@@ -181,7 +185,9 @@ async function paymentListSummary(req, filters, query) {
     netCollectedAmount: moneyRef(settledNetPaise),
     grossSuccessfulAmount: moneyRef(collectedGrossPaise),
     refundedAmount: moneyRef(collectedRefundedPaise),
-    totalRefundedAmount: moneyRef(collectedRefundedPaise + fullyReversedGrossPaise),
+    totalRefundedAmount: moneyRef(
+      collectedRefundedPaise + fullyReversedGrossPaise,
+    ),
     fullyReversedAmount: moneyRef(fullyReversedGrossPaise),
     pendingAmount: moneyRef(pending.grossAmountPaise),
     failedAmount: moneyRef(failed.grossAmountPaise),
@@ -270,8 +276,8 @@ function checkAmount(quote, amountPaise) {
       quote,
     );
   if (
-    quote.allowedAmountsPaise?.length
-    && !quote.allowedAmountsPaise.includes(amountPaise)
+    quote.allowedAmountsPaise?.length &&
+    !quote.allowedAmountsPaise.includes(amountPaise)
   ) {
     throw errors.business(
       "INVALID_PAYMENT_AMOUNT",
@@ -376,21 +382,33 @@ async function gatewayCredentials(tenantId) {
   const tenant = await Tenant.findById(tenantId)
     .select("+integrationSecrets")
     .lean();
-  const { resolvePhonePeCredentials } = await import("../integrations/phonepe.provider.js");
+  const { resolvePhonePeCredentials } =
+    await import("../integrations/phonepe.provider.js");
   return resolvePhonePeCredentials(tenant) ?? {};
 }
 
 /** In mock provider mode, simulate webhook completion when the customer polls status. */
-export async function maybeCompleteMockGatewayPayment({ tenantId, link, intent, payment }) {
-  if (env.PROVIDER_MODE !== "mock" || !payment || payment.status !== PaymentStatus.PENDING) {
+export async function maybeCompleteMockGatewayPayment({
+  tenantId,
+  link,
+  intent,
+  payment,
+}) {
+  if (
+    env.PROVIDER_MODE !== "mock" ||
+    !payment ||
+    payment.status !== PaymentStatus.PENDING
+  ) {
     return payment;
   }
   const source = intent ?? link;
   if (!source) return payment;
 
-  const { finalizeGatewaySuccess } = await import("./finalize-gateway-success.service.js");
+  const { finalizeGatewaySuccess } =
+    await import("./finalize-gateway-success.service.js");
   const reference = intent?._id ?? link?._id;
-  const providerTransactionId = payment.providerTransactionId ?? `mock_${payment._id}`;
+  const providerTransactionId =
+    payment.providerTransactionId ?? `mock_${payment._id}`;
   await finalizeGatewaySuccess({
     tenantId,
     reference,
@@ -406,7 +424,8 @@ export async function maybeCompleteMockGatewayPayment({ tenantId, link, intent, 
 }
 
 export async function recordPayment(req, override = {}) {
-  const { rejectClientReferenceDateFields } = await import("../lib/payment-reference-date-override.js");
+  const { rejectClientReferenceDateFields } =
+    await import("../lib/payment-reference-date-override.js");
   rejectClientReferenceDateFields(req);
   if (
     !override.gateway &&
@@ -420,381 +439,403 @@ export async function recordPayment(req, override = {}) {
   if (override.session) {
     return recordPaymentInSession(override.session, req, override);
   }
-  return withTransaction((session) => recordPaymentInSession(session, req, override));
+  return withTransaction((session) =>
+    recordPaymentInSession(session, req, override),
+  );
 }
 
 async function recordPaymentInSession(session, req, override) {
-    const scheme = await Scheme.findOne({
-      _id: req.body.schemeId,
-      tenantId: req.auth.tenantId,
-    }).session(session);
-    if (!scheme) throw errors.notFound("Scheme");
-    const gatewayLateSuccess =
-      override.lateSuccess
-      || (override.gateway && scheme.status === SchemeStatus.ENROLMENT_EXPIRED);
-    await assertStaffCanAccessScheme(req, scheme, session);
-    const customerRow = await Customer.findOne({
-      _id: scheme.customerId,
-      tenantId: scheme.tenantId,
-    })
-      .select("branchId")
-      .session(session)
-      .lean();
-    const paymentBranchId = resolvePaymentBranchId(req, scheme, customerRow);
-    let quote;
+  const scheme = await Scheme.findOne({
+    _id: req.body.schemeId,
+    tenantId: req.auth.tenantId,
+  }).session(session);
+  if (!scheme) throw errors.notFound("Scheme");
+  const gatewayLateSuccess =
+    override.lateSuccess ||
+    (override.gateway && scheme.status === SchemeStatus.ENROLMENT_EXPIRED);
+  await assertStaffCanAccessScheme(req, scheme, session);
+  const customerRow = await Customer.findOne({
+    _id: scheme.customerId,
+    tenantId: scheme.tenantId,
+  })
+    .select("branchId")
+    .session(session)
+    .lean();
+  const paymentBranchId = resolvePaymentBranchId(req, scheme, customerRow);
+  let quote;
+  try {
+    const { resolveInternalPayableReferenceDate } =
+      await import("../lib/payment-reference-date-override.js");
+    quote = await payableRange(req, scheme.toObject(), {
+      referenceDate: resolveInternalPayableReferenceDate(override),
+    });
+  } catch (error) {
+    if (!gatewayLateSuccess) throw error;
+    quote = null;
+  }
+  if (!override.gateway && scheme.paymentPattern === "FIXED") {
+    const { fixedPaymentTestHookBeforeManualFixedReservationGate } =
+      await import("../lib/fixed-payment-test-hooks.js");
+    await fixedPaymentTestHookBeforeManualFixedReservationGate();
+    const {
+      sumActiveFixedReservationPaise,
+      assertNoBlockingFixedReservations,
+    } = await import("../lib/fixed-payment-reservation.js");
+    const blocking = await sumActiveFixedReservationPaise(
+      scheme.tenantId,
+      scheme._id,
+    );
+    assertNoBlockingFixedReservations(
+      blocking,
+      "Cancel pending payment links before recording a manual fixed payment.",
+    );
+  }
+  if (
+    override.gateway &&
+    scheme.paymentPattern === "FIXED" &&
+    override.fixedReservationIntent
+  ) {
+    const { fixedReservationConsumable } =
+      await import("../lib/fixed-payment-reservation.js");
+    const consumable = fixedReservationConsumable(
+      override.fixedReservationIntent,
+      scheme.toObject(),
+      scheme.planSnapshot?.paymentRules ?? {},
+    );
+    if (
+      !consumable.ok ||
+      Number(req.body.amountPaise) !==
+        Number(override.fixedReservationIntent.amountPaise)
+    ) {
+      override._forceUnallocatedFixedGateway = {
+        reason: consumable.reason ?? "RESERVATION_AMOUNT_MISMATCH",
+      };
+      quote = null;
+    } else {
+      quote = consumable.quote;
+      req.body.expectedVersion =
+        override.fixedReservationIntent.positionVersion;
+    }
+  }
+  if (quote?.targetCycle) req.body.targetCycle = quote.targetCycle;
+  if (quote) {
     try {
-      const { resolveInternalPayableReferenceDate } = await import("../lib/payment-reference-date-override.js");
-      quote = await payableRange(req, scheme.toObject(), {
-        referenceDate: resolveInternalPayableReferenceDate(override),
-      });
+      checkAmount(quote, req.body.amountPaise);
     } catch (error) {
       if (!gatewayLateSuccess) throw error;
       quote = null;
     }
-    if (
-      !override.gateway &&
-      scheme.paymentPattern === "FIXED"
-    ) {
-      const { fixedPaymentTestHookBeforeManualFixedReservationGate } =
-        await import("../lib/fixed-payment-test-hooks.js");
-      await fixedPaymentTestHookBeforeManualFixedReservationGate();
-      const { sumActiveFixedReservationPaise, assertNoBlockingFixedReservations } =
-        await import("../lib/fixed-payment-reservation.js");
-      const blocking = await sumActiveFixedReservationPaise(
-        scheme.tenantId,
-        scheme._id,
-      );
-      assertNoBlockingFixedReservations(
-        blocking,
-        "Cancel pending payment links before recording a manual fixed payment.",
-      );
-    }
-    if (
-      override.gateway &&
-      scheme.paymentPattern === "FIXED" &&
-      override.fixedReservationIntent
-    ) {
-      const { fixedReservationConsumable } = await import("../lib/fixed-payment-reservation.js");
-      const consumable = fixedReservationConsumable(
-        override.fixedReservationIntent,
-        scheme.toObject(),
-        scheme.planSnapshot?.paymentRules ?? {},
-      );
-      if (
-        !consumable.ok
-        || Number(req.body.amountPaise) !== Number(override.fixedReservationIntent.amountPaise)
-      ) {
-        override._forceUnallocatedFixedGateway = {
-          reason: consumable.reason ?? "RESERVATION_AMOUNT_MISMATCH",
-        };
-        quote = null;
-      } else {
-        quote = consumable.quote;
-        req.body.expectedVersion = override.fixedReservationIntent.positionVersion;
-      }
-    }
-    if (quote?.targetCycle) req.body.targetCycle = quote.targetCycle;
-    if (quote) {
-      try {
-        checkAmount(quote, req.body.amountPaise);
-      } catch (error) {
-        if (!gatewayLateSuccess) throw error;
-        quote = null;
-      }
-    }
-    if (
-      quote?.payable &&
-      !override.gateway &&
-      scheme.paymentPattern === "FLEXIBLE"
-    ) {
-      const pending = await PaymentIntent.aggregate([
-        {
-          $match: {
-            tenantId: scheme.tenantId,
-            schemeId: scheme._id,
-            targetCycle: req.body.targetCycle,
-            status: PaymentIntentStatus.PENDING,
-            reservationExpiresAt: { $gt: new Date() },
-          },
+  }
+  if (
+    quote?.payable &&
+    !override.gateway &&
+    scheme.paymentPattern === "FLEXIBLE"
+  ) {
+    const pending = await PaymentIntent.aggregate([
+      {
+        $match: {
+          tenantId: scheme.tenantId,
+          schemeId: scheme._id,
+          targetCycle: req.body.targetCycle,
+          status: PaymentIntentStatus.PENDING,
+          reservationExpiresAt: { $gt: new Date() },
         },
-        {
-          $group: {
-            _id: null,
-            amountPaise: { $sum: "$amountPaise" },
-            intentIds: { $push: "$_id" },
-          },
+      },
+      {
+        $group: {
+          _id: null,
+          amountPaise: { $sum: "$amountPaise" },
+          intentIds: { $push: "$_id" },
         },
-      ]).session(session);
-      if (
-        (pending[0]?.amountPaise ?? 0) + req.body.amountPaise >
-        quote.maxPayablePaise
-      )
-        throw errors.business(
-          "PAYMENT_CONFIRMATION_PENDING",
-          "A pending online payment is reserving part of this cycle's allowance.",
-          {
-            blockingIntentIds: pending[0]?.intentIds ?? [],
-            reservedPaise: pending[0]?.amountPaise ?? 0,
-          },
-        );
-    }
+      },
+    ]).session(session);
     if (
-      !gatewayLateSuccess &&
-      quote?.expectedVersion &&
-      req.body.expectedVersion &&
-      quote.expectedVersion !== req.body.expectedVersion
+      (pending[0]?.amountPaise ?? 0) + req.body.amountPaise >
+      quote.maxPayablePaise
     )
+      throw errors.business(
+        "PAYMENT_CONFIRMATION_PENDING",
+        "A pending online payment is reserving part of this cycle's allowance.",
+        {
+          blockingIntentIds: pending[0]?.intentIds ?? [],
+          reservedPaise: pending[0]?.amountPaise ?? 0,
+        },
+      );
+  }
+  if (
+    !gatewayLateSuccess &&
+    quote?.expectedVersion &&
+    req.body.expectedVersion &&
+    quote.expectedVersion !== req.body.expectedVersion
+  )
+    throw new AppError(
+      "VERSION_CONFLICT",
+      "The payable position changed. Refresh and try again.",
+      409,
+    );
+  if (!gatewayLateSuccess && quote)
+    assertExpectedPositionVersion(scheme, quote, req.body);
+  if (!gatewayLateSuccess && quote && scheme.paymentPattern === "FLEXIBLE")
+    await assertMaxPaymentsPerCycle({
+      scheme,
+      targetCycle: req.body.targetCycle,
+      session,
+    });
+  let rate;
+  let weightMg = 0;
+  if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
+    const goldRules = scheme.planSnapshot?.goldRules ?? {};
+    rate = await currentGoldRate(
+      {
+        tenantId: scheme.tenantId,
+        branchId: paymentBranchId ?? scheme.branchId,
+      },
+      today(),
+    );
+    if (!rate) {
+      throw errors.business(
+        "GOLD_RATE_NOT_SET",
+        "Today's 22K gold rate must be set before accepting this payment.",
+      );
+    }
+    if (rate.purity && rate.purity !== "22K") {
+      throw errors.business(
+        "GOLD_PURITY_NOT_SUPPORTED",
+        "Only 22K gold rates can be used for payments.",
+      );
+    }
+    const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
+    weightMg = moneyToWeightMg(
+      req.body.amountPaise,
+      rate.ratePerGramPaise,
+      rounding,
+    );
+    weightMg = applyWeightPrecisionMg(
+      weightMg,
+      goldRules.weightPrecisionMg,
+      rounding,
+    );
+    if (!(weightMg > 0)) {
+      throw errors.business(
+        "GOLD_WEIGHT_ROUNDS_TO_ZERO",
+        "This payment amount rounds to zero gold weight at the current rate.",
+      );
+    }
+  }
+  let payment;
+  if (override.existingPaymentId) {
+    payment = await Payment.findOne({
+      _id: override.existingPaymentId,
+      tenantId: scheme.tenantId,
+      status: {
+        $in: gatewayLateSuccess
+          ? [PaymentStatus.PENDING, PaymentStatus.FAILED]
+          : [PaymentStatus.PENDING],
+      },
+    }).session(session);
+    if (!payment)
       throw new AppError(
-        "VERSION_CONFLICT",
-        "The payable position changed. Refresh and try again.",
+        "PAYMENT_ALREADY_RECORDED",
+        "This gateway attempt is no longer pending.",
         409,
       );
-    if (!gatewayLateSuccess && quote)
-      assertExpectedPositionVersion(scheme, quote, req.body);
-    if (!gatewayLateSuccess && quote && scheme.paymentPattern === "FLEXIBLE")
-      await assertMaxPaymentsPerCycle({
-        scheme,
-        targetCycle: req.body.targetCycle,
-        session,
-      });
-    let rate;
-    let weightMg = 0;
-    if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
-      const goldRules = scheme.planSnapshot?.goldRules ?? {};
-      rate = await currentGoldRate(
-        {
-          tenantId: scheme.tenantId,
-          branchId: paymentBranchId ?? scheme.branchId,
-        },
-        today(),
-      );
-      if (!rate) {
-        throw errors.business(
-          "GOLD_RATE_NOT_SET",
-          "Today's 22K gold rate must be set before accepting this payment.",
-        );
-      }
-      if (rate.purity && rate.purity !== "22K") {
-        throw errors.business(
-          "GOLD_PURITY_NOT_SUPPORTED",
-          "Only 22K gold rates can be used for payments.",
-        );
-      }
-      const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
-      weightMg = moneyToWeightMg(req.body.amountPaise, rate.ratePerGramPaise, rounding);
-      weightMg = applyWeightPrecisionMg(weightMg, goldRules.weightPrecisionMg, rounding);
-      if (!(weightMg > 0)) {
-        throw errors.business(
-          "GOLD_WEIGHT_ROUNDS_TO_ZERO",
-          "This payment amount rounds to zero gold weight at the current rate.",
-        );
-      }
-    }
-    let payment;
-    if (override.existingPaymentId) {
-      payment = await Payment.findOne({
-        _id: override.existingPaymentId,
-        tenantId: scheme.tenantId,
-        status: {
-          $in: gatewayLateSuccess
-            ? [PaymentStatus.PENDING, PaymentStatus.FAILED]
-            : [PaymentStatus.PENDING],
-        },
-      }).session(session);
-      if (!payment)
-        throw new AppError(
-          "PAYMENT_ALREADY_RECORDED",
-          "This gateway attempt is no longer pending.",
-          409,
-        );
-      // PERF(audit): single counter per tenant/year serializes concurrent payments under load — see audit doc
-      payment.receiptNumber = await nextReceipt(scheme.tenantId, session);
-      payment.status = quote
-        ? PaymentStatus.SUCCESS
-        : PaymentStatus.UNALLOCATED_PENDING_REVIEW;
-      payment.allocatedAmountPaise = quote ? req.body.amountPaise : 0;
-      payment.weightMg = weightMg;
-      payment.ratePerGramPaise = rate?.ratePerGramPaise ?? 0;
-      payment.targetCycle = req.body.targetCycle;
-      if (override.providerTransactionId)
-        payment.providerTransactionId = override.providerTransactionId;
-      payment.providerPayload = override.providerPayload;
-      payment.paidAt = override.paidAt ?? new Date();
-      payment.isLateSuccess = Boolean(gatewayLateSuccess);
-      payment.lateSuccessDetectedVia = override.lateSuccessDetectedVia;
-      payment.gatewayCompletedAt = override.gatewayCompletedAt;
-      payment.delayMinutes = gatewayLateSuccess
-        ? Math.max(
-            0,
-            Math.floor(
-              ((override.paidAt ?? new Date()) - payment.createdAt) / 60_000,
-            ),
-          )
-        : 0;
-      payment.requiresReview = !quote;
-      payment.reviewReason = !quote
-        ? "NO_PAYABLE_POSITION_AVAILABLE"
-        : undefined;
-      await payment.save({ session });
-      gatewayTxFaultCheckpoint("recordPayment:payment-saved");
-    } else {
-      const paymentDoc = {
-        _id: createId("payment"),
+    // PERF(audit): single counter per tenant/year serializes concurrent payments under load — see audit doc
+    payment.receiptNumber = await nextReceipt(scheme.tenantId, session);
+    payment.status = quote
+      ? PaymentStatus.SUCCESS
+      : PaymentStatus.UNALLOCATED_PENDING_REVIEW;
+    payment.allocatedAmountPaise = quote ? req.body.amountPaise : 0;
+    payment.weightMg = weightMg;
+    payment.ratePerGramPaise = rate?.ratePerGramPaise ?? 0;
+    payment.targetCycle = req.body.targetCycle;
+    if (override.providerTransactionId)
+      payment.providerTransactionId = override.providerTransactionId;
+    payment.providerPayload = override.providerPayload;
+    payment.paidAt = override.paidAt ?? new Date();
+    payment.isLateSuccess = Boolean(gatewayLateSuccess);
+    payment.lateSuccessDetectedVia = override.lateSuccessDetectedVia;
+    payment.gatewayCompletedAt = override.gatewayCompletedAt;
+    payment.delayMinutes = gatewayLateSuccess
+      ? Math.max(
+          0,
+          Math.floor(
+            ((override.paidAt ?? new Date()) - payment.createdAt) / 60_000,
+          ),
+        )
+      : 0;
+    payment.requiresReview = !quote;
+    payment.reviewReason = !quote ? "NO_PAYABLE_POSITION_AVAILABLE" : undefined;
+    await payment.save({ session });
+    gatewayTxFaultCheckpoint("recordPayment:payment-saved");
+  } else {
+    const paymentDoc = {
+      _id: createId("payment"),
+      tenantId: scheme.tenantId,
+      branchId: paymentBranchId,
+      schemeId: scheme._id,
+      customerId: scheme.customerId,
+      receiptNumber: await nextReceipt(scheme.tenantId, session),
+      amountPaise: req.body.amountPaise,
+      allocatedAmountPaise: req.body.amountPaise,
+      weightMg,
+      ratePerGramPaise: rate?.ratePerGramPaise ?? 0,
+      mode: override.gateway ? PaymentMode.ONLINE_GATEWAY : req.body.mode,
+      status: PaymentStatus.SUCCESS,
+      source: override.source ?? sourceFor(req),
+      reference: req.body.reference ?? undefined,
+      remarks: req.body.remarks ?? undefined,
+      collectedBy: req.auth.id,
+      targetCycle: req.body.targetCycle ?? undefined,
+      providerPayload: override.providerPayload,
+      paidAt: override.paidAt ?? new Date(),
+    };
+    if (override.providerTransactionId)
+      paymentDoc.providerTransactionId = override.providerTransactionId;
+    payment = (await Payment.create([paymentDoc], { session }))[0];
+    gatewayTxFaultCheckpoint("recordPayment:payment-saved");
+  }
+  const type = !quote
+    ? LedgerEntryType.UNALLOCATED_PAYMENT
+    : scheme.paymentPattern === "FLEXIBLE" &&
+        scheme.flexiblePhase === "FLEXIBLE"
+      ? LedgerEntryType.FREE_WINDOW_PAYMENT
+      : LedgerEntryType.INSTALLMENT_PAYMENT;
+  const sequence = await nextSchemeLedgerSequence(
+    scheme.tenantId,
+    scheme._id,
+    session,
+  );
+  await LedgerEntry.create(
+    [
+      {
+        _id: createId("ledger"),
         tenantId: scheme.tenantId,
         branchId: paymentBranchId,
         schemeId: scheme._id,
         customerId: scheme.customerId,
-        receiptNumber: await nextReceipt(scheme.tenantId, session),
-        amountPaise: req.body.amountPaise,
-        allocatedAmountPaise: req.body.amountPaise,
+        paymentId: payment._id,
+        type,
+        sequence,
+        amountPaise: payment.amountPaise,
         weightMg,
         ratePerGramPaise: rate?.ratePerGramPaise ?? 0,
-        mode: override.gateway ? PaymentMode.ONLINE_GATEWAY : req.body.mode,
-        status: PaymentStatus.SUCCESS,
-        source: override.source ?? sourceFor(req),
-        reference: req.body.reference ?? undefined,
-        remarks: req.body.remarks ?? undefined,
-        collectedBy: req.auth.id,
-        targetCycle: req.body.targetCycle ?? undefined,
-        providerPayload: override.providerPayload,
-        paidAt: override.paidAt ?? new Date(),
-      };
-      if (override.providerTransactionId)
-        paymentDoc.providerTransactionId = override.providerTransactionId;
-      payment = (await Payment.create([paymentDoc], { session }))[0];
-      gatewayTxFaultCheckpoint("recordPayment:payment-saved");
-    }
-    const type = !quote
-      ? LedgerEntryType.UNALLOCATED_PAYMENT
-      : scheme.paymentPattern === "FLEXIBLE" &&
-          scheme.flexiblePhase === "FLEXIBLE"
-        ? LedgerEntryType.FREE_WINDOW_PAYMENT
-        : LedgerEntryType.INSTALLMENT_PAYMENT;
-    const sequence = await nextSchemeLedgerSequence(
-      scheme.tenantId,
-      scheme._id,
-      session,
+        cycle: req.body.targetCycle,
+        actorType: override.actorType ?? "USER",
+        actorId: req.auth.id,
+        description: "Scheme contribution",
+      },
+    ],
+    { session },
+  );
+  gatewayTxFaultCheckpoint("recordPayment:ledger-created");
+  if (quote && scheme.paymentPattern === "FIXED") {
+    const { fixedPaymentTestHookBeforeFixedSchemeCommit } =
+      await import("../lib/fixed-payment-test-hooks.js");
+    await fixedPaymentTestHookBeforeFixedSchemeCommit();
+    const { allocateFixedPaymentToInstallments } =
+      await import("../lib/fixed-payment-policy.js");
+    allocateFixedPaymentToInstallments(
+      scheme,
+      payment.amountPaise,
+      scheme.planSnapshot?.paymentRules ?? {},
     );
-    await LedgerEntry.create(
-      [
-        {
-          _id: createId("ledger"),
-          tenantId: scheme.tenantId,
-          branchId: paymentBranchId,
-          schemeId: scheme._id,
-          customerId: scheme.customerId,
-          paymentId: payment._id,
-          type,
-          sequence,
-          amountPaise: payment.amountPaise,
-          weightMg,
-          ratePerGramPaise: rate?.ratePerGramPaise ?? 0,
-          cycle: req.body.targetCycle,
-          actorType: override.actorType ?? "USER",
-          actorId: req.auth.id,
-          description: "Scheme contribution",
-        },
-      ],
-      { session },
-    );
-    gatewayTxFaultCheckpoint("recordPayment:ledger-created");
-    if (quote && scheme.paymentPattern === "FIXED") {
-      const { fixedPaymentTestHookBeforeFixedSchemeCommit } =
-        await import("../lib/fixed-payment-test-hooks.js");
-      await fixedPaymentTestHookBeforeFixedSchemeCommit();
-      const { allocateFixedPaymentToInstallments } = await import("../lib/fixed-payment-policy.js");
-      allocateFixedPaymentToInstallments(
-        scheme,
-        payment.amountPaise,
-        scheme.planSnapshot?.paymentRules ?? {},
-      );
-      if (
-        scheme.status === SchemeStatus.DEFAULTED &&
-        !(scheme.installments ?? []).some((row) => row.status === "OVERDUE")
-      ) {
-        scheme.status = SchemeStatus.ACTIVE;
-      }
-    } else if (quote) {
-      const cycleKey =
-        req.body.targetCycle ?? new Date().toISOString().slice(0, 7);
-      const cycle = scheme.cycles.find((row) => row.cycle === cycleKey);
-      if (cycle) {
-        cycle.paidPaise += payment.amountPaise;
-        cycle.remainingPaise = Math.max(0, cycle.capPaise - cycle.paidPaise);
-        cycle.status =
-          cycle.remainingPaise === 0 && cycle.capPaise > 0
-            ? "PAID"
-            : "PARTIALLY_PAID";
-      }
-      scheme.positionVersion += 1;
-    }
-    scheme.version += 1;
-    await scheme.save({ session });
-    gatewayTxFaultCheckpoint("recordPayment:scheme-saved");
-    if (quote && payment.status === PaymentStatus.SUCCESS && !override.skipActivation) {
-      const { activateSchemeAfterAllocatedFirstPayment } = await import("../lib/scheme-activation.js");
-      await activateSchemeAfterAllocatedFirstPayment({
-        scheme,
-        payment,
-        session,
-        req,
-      });
-    }
     if (
-      gatewayLateSuccess
-      && payment.status === PaymentStatus.UNALLOCATED_PENDING_REVIEW
+      scheme.status === SchemeStatus.DEFAULTED &&
+      !(scheme.installments ?? []).some((row) => row.status === "OVERDUE")
     ) {
-      const { recordLateSuccessOnExpiredEnrolment } = await import("../lib/late-enrolment-payment-review.js");
-      await recordLateSuccessOnExpiredEnrolment({
-        session,
-        tenantId: scheme.tenantId,
-        scheme,
-        payment,
-      });
+      scheme.status = SchemeStatus.ACTIVE;
     }
-    if (payment.status === PaymentStatus.UNALLOCATED_PENDING_REVIEW && override._forceUnallocatedFixedGateway) {
-      const { recordStaleFixedReservationGatewaySuccess } = await import("../lib/fixed-payment-reservation.js");
-      await recordStaleFixedReservationGatewaySuccess({
-        session,
-        tenantId: scheme.tenantId,
-        scheme,
-        payment,
-        reason: override._forceUnallocatedFixedGateway.reason,
-      });
+  } else if (quote) {
+    const cycleKey =
+      req.body.targetCycle ?? new Date().toISOString().slice(0, 7);
+    const cycle = scheme.cycles.find((row) => row.cycle === cycleKey);
+    if (cycle) {
+      cycle.paidPaise += payment.amountPaise;
+      cycle.remainingPaise = Math.max(0, cycle.capPaise - cycle.paidPaise);
+      cycle.status =
+        cycle.remainingPaise === 0 && cycle.capPaise > 0
+          ? "PAID"
+          : "PARTIALLY_PAID";
     }
-    await OutboxEvent.create(
-      [
-        {
-          tenantId: scheme.tenantId,
-          topic: "payment.succeeded",
-          key: payment._id,
-          payload: {
-            paymentId: payment._id,
-            customerId: scheme.customerId,
-            schemeId: scheme._id,
-            branchId: payment.branchId ?? scheme.branchId,
-          },
-        },
-      ],
-      { session },
-    );
-    gatewayTxFaultCheckpoint("recordPayment:outbox-created");
-    const auditEventId = await writeAudit({
-      req,
-      action: "PAYMENT_RECORDED",
-      entityType: AuditEntityType.PAYMENT,
-      entityId: payment._id,
-      after: payment.toObject(),
-      actorType: override.actorType,
+    scheme.positionVersion += 1;
+  }
+  scheme.version += 1;
+  await scheme.save({ session });
+  gatewayTxFaultCheckpoint("recordPayment:scheme-saved");
+  if (
+    quote &&
+    payment.status === PaymentStatus.SUCCESS &&
+    !override.skipActivation
+  ) {
+    const { activateSchemeAfterAllocatedFirstPayment } =
+      await import("../lib/scheme-activation.js");
+    await activateSchemeAfterAllocatedFirstPayment({
+      scheme,
+      payment,
       session,
+      req,
     });
-    gatewayTxFaultCheckpoint("recordPayment:audit-written");
-    return {
-      ...payment.toObject(),
-      auditEventId,
-      schemeVersion: scheme.version,
-      positionVersion: scheme.positionVersion,
-    };
+  }
+  if (
+    gatewayLateSuccess &&
+    payment.status === PaymentStatus.UNALLOCATED_PENDING_REVIEW
+  ) {
+    const { recordLateSuccessOnExpiredEnrolment } =
+      await import("../lib/late-enrolment-payment-review.js");
+    await recordLateSuccessOnExpiredEnrolment({
+      session,
+      tenantId: scheme.tenantId,
+      scheme,
+      payment,
+    });
+  }
+  if (
+    payment.status === PaymentStatus.UNALLOCATED_PENDING_REVIEW &&
+    override._forceUnallocatedFixedGateway
+  ) {
+    const { recordStaleFixedReservationGatewaySuccess } =
+      await import("../lib/fixed-payment-reservation.js");
+    await recordStaleFixedReservationGatewaySuccess({
+      session,
+      tenantId: scheme.tenantId,
+      scheme,
+      payment,
+      reason: override._forceUnallocatedFixedGateway.reason,
+    });
+  }
+  await OutboxEvent.create(
+    [
+      {
+        tenantId: scheme.tenantId,
+        topic: "payment.succeeded",
+        key: payment._id,
+        payload: {
+          paymentId: payment._id,
+          customerId: scheme.customerId,
+          schemeId: scheme._id,
+          branchId: payment.branchId ?? scheme.branchId,
+        },
+      },
+    ],
+    { session },
+  );
+  gatewayTxFaultCheckpoint("recordPayment:outbox-created");
+  const auditEventId = await writeAudit({
+    req,
+    action: "PAYMENT_RECORDED",
+    entityType: AuditEntityType.PAYMENT,
+    entityId: payment._id,
+    after: payment.toObject(),
+    actorType: override.actorType,
+    session,
+  });
+  gatewayTxFaultCheckpoint("recordPayment:audit-written");
+  return {
+    ...payment.toObject(),
+    auditEventId,
+    schemeVersion: scheme.version,
+    positionVersion: scheme.positionVersion,
+  };
 }
 export async function listPayments(req) {
   const filters = {};
@@ -954,8 +995,8 @@ export async function reversePayment(req) {
         "Only successful payments can be reversed.",
       );
     if (
-      payment.mode === PaymentMode.ONLINE_GATEWAY
-      || payment.mode === PaymentMode.LEGACY_ONLINE
+      payment.mode === PaymentMode.ONLINE_GATEWAY ||
+      payment.mode === PaymentMode.LEGACY_ONLINE
     ) {
       throw errors.business(
         "GATEWAY_PAYMENT_USE_REFUND",
@@ -968,7 +1009,9 @@ export async function reversePayment(req) {
       .select("operations")
       .session(session)
       .lean();
-    const windowHours = Number(tenant?.operations?.paymentReversalWindowHours ?? 48);
+    const windowHours = Number(
+      tenant?.operations?.paymentReversalWindowHours ?? 48,
+    );
     const paidAtMs = payment.paidAt ? new Date(payment.paidAt).getTime() : 0;
     if (paidAtMs && Date.now() - paidAtMs > windowHours * 3_600_000) {
       throw errors.business(
@@ -980,9 +1023,9 @@ export async function reversePayment(req) {
     const scheme = await Scheme.findById(payment.schemeId).session(session);
     if (!scheme) throw errors.notFound("Scheme");
     if (
-      scheme.status === SchemeStatus.REDEEMED
-      || scheme.status === SchemeStatus.CLOSED_PREMATURE
-      || scheme.status === SchemeStatus.MATURED
+      scheme.status === SchemeStatus.REDEEMED ||
+      scheme.status === SchemeStatus.CLOSED_PREMATURE ||
+      scheme.status === SchemeStatus.MATURED
     ) {
       throw errors.business(
         "REVERSAL_SCHEME_TERMINAL",
@@ -996,15 +1039,18 @@ export async function reversePayment(req) {
         branchId: payment.branchId,
         staffId: payment.collectedBy,
       });
-      const balanceBefore = await cashBalance({
-        tenantId: payment.tenantId,
-        branchId: payment.branchId,
-        staffId: payment.collectedBy,
-      }, session);
+      const balanceBefore = await cashBalance(
+        {
+          tenantId: payment.tenantId,
+          branchId: payment.branchId,
+          staffId: payment.collectedBy,
+        },
+        session,
+      );
       const inHandAfter = balanceBefore.cashInHandPaise - payment.amountPaise;
       if (
-        balanceBefore.cashPendingAcceptancePaise > 0
-        && inHandAfter < balanceBefore.cashPendingAcceptancePaise
+        balanceBefore.cashPendingAcceptancePaise > 0 &&
+        inHandAfter < balanceBefore.cashPendingAcceptancePaise
       ) {
         throw errors.business(
           "CASH_REVERSAL_BLOCKED_BY_PENDING_HANDOVER",
@@ -1058,32 +1104,42 @@ export async function reversePayment(req) {
     await scheme.save({ session });
     let cashAdjustmentId;
     if (payment.mode === PaymentMode.CASH && payment.collectedBy) {
-      const balance = await cashBalance({
-        tenantId: payment.tenantId,
-        branchId: payment.branchId,
-        staffId: payment.collectedBy,
-      }, session);
+      const balance = await cashBalance(
+        {
+          tenantId: payment.tenantId,
+          branchId: payment.branchId,
+          staffId: payment.collectedBy,
+        },
+        session,
+      );
       const inHandAfter = balance.cashInHandPaise - payment.amountPaise;
       if (inHandAfter < 0 && balance.handedOverPaise > 0) {
         const handoverExists = await CashHandover.exists({
           tenantId: payment.tenantId,
           staffId: payment.collectedBy,
           ...(payment.branchId ? { branchId: payment.branchId } : {}),
-          status: { $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY] },
+          status: {
+            $in: [CashHandoverStatus.ACCEPTED, CashHandoverStatus.DISCREPANCY],
+          },
           submittedAt: { $gte: payment.paidAt },
         }).session(session);
         if (handoverExists) {
           cashAdjustmentId = createId("cad");
-          await CashAdjustment.create([{
-            _id: cashAdjustmentId,
-            tenantId: payment.tenantId,
-            branchId: payment.branchId,
-            staffId: payment.collectedBy,
-            direction: CashAdjustmentDirection.CREDIT,
-            amountPaise: payment.amountPaise,
-            reason: `REVERSAL_AFTER_HANDOVER_ACCEPTED payment:${payment._id}`,
-            createdBy: req.auth.id,
-          }], { session });
+          await CashAdjustment.create(
+            [
+              {
+                _id: cashAdjustmentId,
+                tenantId: payment.tenantId,
+                branchId: payment.branchId,
+                staffId: payment.collectedBy,
+                direction: CashAdjustmentDirection.CREDIT,
+                amountPaise: payment.amountPaise,
+                reason: `REVERSAL_AFTER_HANDOVER_ACCEPTED payment:${payment._id}`,
+                createdBy: req.auth.id,
+              },
+            ],
+            { session },
+          );
         }
       }
     }
@@ -1096,7 +1152,12 @@ export async function reversePayment(req) {
       metadata: cashAdjustmentId ? { cashAdjustmentId } : undefined,
       session,
     });
-    return { id: payment._id, status: payment.status, auditEventId, cashAdjustmentId };
+    return {
+      id: payment._id,
+      status: payment.status,
+      auditEventId,
+      cashAdjustmentId,
+    };
   });
 }
 const PAYMENT_LINK_MAX_EXPIRES_MINUTES = 30;
@@ -1107,18 +1168,18 @@ export async function reservePaymentLinkInSession(
   {
     token = randomToken(32),
     expiresAt = new Date(
-      Date.now()
-        + Math.min(
+      Date.now() +
+        Math.min(
           PAYMENT_LINK_MAX_EXPIRES_MINUTES,
           Number(req.body.expiresInMinutes ?? PAYMENT_LINK_MAX_EXPIRES_MINUTES),
-        )
-        * 60_000,
+        ) *
+          60_000,
     ),
   } = {},
 ) {
   if (
-    req.body.expiresInMinutes != null
-    && Number(req.body.expiresInMinutes) > PAYMENT_LINK_MAX_EXPIRES_MINUTES
+    req.body.expiresInMinutes != null &&
+    Number(req.body.expiresInMinutes) > PAYMENT_LINK_MAX_EXPIRES_MINUTES
   ) {
     throw errors.validation([
       {
@@ -1127,7 +1188,10 @@ export async function reservePaymentLinkInSession(
       },
     ]);
   }
-  const tenant = await Tenant.findById(req.auth.tenantId).select("featureFlags subscription").session(session).lean();
+  const tenant = await Tenant.findById(req.auth.tenantId)
+    .select("featureFlags subscription")
+    .session(session)
+    .lean();
   assertPlatformCapability(tenant, "onlinePayments");
   const scheme = await Scheme.findOne({
     _id: req.body.schemeId,
@@ -1137,7 +1201,8 @@ export async function reservePaymentLinkInSession(
   const quote = await payableRange(req, scheme.toObject());
   let targetCycle = quote.targetCycle;
   let intent;
-  let positionVersion = quote.positionVersion ?? quote.expectedPositionVersion ?? scheme.version;
+  let positionVersion =
+    quote.positionVersion ?? quote.expectedPositionVersion ?? scheme.version;
   if (scheme.paymentPattern === "FLEXIBLE") {
     assertExpectedPositionVersion(scheme, quote, req.body);
     await assertMaxPaymentsPerCycle({ scheme, targetCycle, session });
@@ -1184,7 +1249,8 @@ export async function reservePaymentLinkInSession(
       )
     )[0];
   } else if (scheme.paymentPattern === "FIXED") {
-    const { reserveFixedPaymentIntentInSession } = await import("../lib/fixed-payment-reservation.js");
+    const { reserveFixedPaymentIntentInSession } =
+      await import("../lib/fixed-payment-reservation.js");
     const reserved = await reserveFixedPaymentIntentInSession(session, {
       tenantId: scheme.tenantId,
       scheme,
@@ -1230,11 +1296,16 @@ export async function reservePaymentLinkInSession(
 }
 
 export async function createPaymentLink(req) {
-  return withTransaction((session) => reservePaymentLinkInSession(session, req));
+  return withTransaction((session) =>
+    reservePaymentLinkInSession(session, req),
+  );
 }
 
 export async function reservePaymentIntentInSession(session, req) {
-  const tenant = await Tenant.findById(req.auth.tenantId).select("featureFlags subscription").session(session).lean();
+  const tenant = await Tenant.findById(req.auth.tenantId)
+    .select("featureFlags subscription")
+    .session(session)
+    .lean();
   assertPlatformCapability(tenant, "onlinePayments");
   const scheme = await Scheme.findOne({
     _id: req.params?.schemeId ?? req.body.schemeId,
@@ -1324,7 +1395,9 @@ export async function reservePaymentIntentInSession(session, req) {
 }
 
 export async function initiateProviderForReservedIntent(req, reserved) {
-  const tenant = await Tenant.findById(reserved.tenantId).select("operations branding").lean();
+  const tenant = await Tenant.findById(reserved.tenantId)
+    .select("operations branding")
+    .lean();
   assertCustomerPaymentsEnabled(tenant);
   assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
   const provider = await phonePeProvider.createPayment({
@@ -1435,14 +1508,30 @@ function assertRedirectUrlAllowed(redirectUrl, tenant) {
   const allowedOrigins = new Set(env.corsOrigins);
   const brandingUrl = tenant?.branding?.websiteUrl;
   if (brandingUrl) {
-    try { allowedOrigins.add(new URL(brandingUrl).origin); } catch { /* ignore invalid branding url */ }
+    try {
+      allowedOrigins.add(new URL(brandingUrl).origin);
+    } catch {
+      /* ignore invalid branding url */
+    }
   }
   let origin;
-  try { origin = new URL(redirectUrl).origin; } catch {
-    throw errors.validation([{ field: "redirectUrl", message: "redirectUrl must be a valid absolute URL." }]);
+  try {
+    origin = new URL(redirectUrl).origin;
+  } catch {
+    throw errors.validation([
+      {
+        field: "redirectUrl",
+        message: "redirectUrl must be a valid absolute URL.",
+      },
+    ]);
   }
   if (!allowedOrigins.has(origin)) {
-    throw errors.validation([{ field: "redirectUrl", message: "redirectUrl origin is not allowed for this jeweller." }]);
+    throw errors.validation([
+      {
+        field: "redirectUrl",
+        message: "redirectUrl origin is not allowed for this jeweller.",
+      },
+    ]);
   }
 }
 
@@ -1456,7 +1545,9 @@ function customerCheckoutPreference() {
 
 export async function initiatePublicPayment(req) {
   let link = await getPublicLink(req.params.linkToken, false);
-  const tenant = await Tenant.findById(link.tenantId).select("operations branding").lean();
+  const tenant = await Tenant.findById(link.tenantId)
+    .select("operations branding")
+    .lean();
   assertCustomerPaymentsEnabled(tenant);
   assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
   if (link.paymentId && !isPaymentLinkClaim(link.paymentId)) {
@@ -1491,7 +1582,12 @@ export async function initiatePublicPayment(req) {
         },
       ],
     },
-    { $set: { initiationClaimToken: claimMarker, initiationClaimExpiresAt: claimExpiresAt } },
+    {
+      $set: {
+        initiationClaimToken: claimMarker,
+        initiationClaimExpiresAt: claimExpiresAt,
+      },
+    },
     { new: true },
   );
   if (!claimed) {
@@ -1504,7 +1600,10 @@ export async function initiatePublicPayment(req) {
         status: existing?.status,
       };
     }
-    throw errors.business("PAYMENT_LINK_BUSY", "Another payment attempt is already in progress for this link.");
+    throw errors.business(
+      "PAYMENT_LINK_BUSY",
+      "Another payment attempt is already in progress for this link.",
+    );
   }
   link = claimed;
   try {
@@ -1539,8 +1638,14 @@ export async function initiatePublicPayment(req) {
       },
     );
     if (committed.modifiedCount !== 1) {
-      await Payment.deleteOne({ _id: pending._id, status: PaymentStatus.PENDING });
-      throw errors.business("PAYMENT_LINK_CLAIM_LOST", "The payment-link claim expired before initiation completed.");
+      await Payment.deleteOne({
+        _id: pending._id,
+        status: PaymentStatus.PENDING,
+      });
+      throw errors.business(
+        "PAYMENT_LINK_CLAIM_LOST",
+        "The payment-link claim expired before initiation completed.",
+      );
     }
     if (link.paymentIntentId) {
       await PaymentIntent.updateOne(
@@ -1668,7 +1773,9 @@ export async function createSdkPaymentIntent(req) {
     };
   });
   try {
-    const tenant = await Tenant.findById(reserved.tenantId).select("operations branding").lean();
+    const tenant = await Tenant.findById(reserved.tenantId)
+      .select("operations branding")
+      .lean();
     assertCustomerPaymentsEnabled(tenant);
     assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
     const provider = await phonePeProvider.createSdkOrder({

@@ -47,6 +47,7 @@ const messageSchema = new mongoose.Schema({
   dispatchedAt: Date,
   broadcastIdempotencyKey: String,
   reminderDedupeKey: String,
+  logicalResendCount: { type: Number, default: 0 },
 }, baseOptions);
 messageSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
 messageSchema.index({ tenantId: 1, "templateParams.broadcastId": 1, createdAt: -1 });
@@ -69,6 +70,13 @@ messageSchema.index(
   {
     unique: true,
     partialFilterExpression: { reminderDedupeKey: { $type: "string" } },
+  },
+);
+messageSchema.index(
+  { tenantId: 1, "templateParams.inboxEventKey": 1 },
+  {
+    unique: true,
+    partialFilterExpression: { "templateParams.inboxEventKey": { $type: "string" } },
   },
 );
 messageSchema.index({ tenantId: 1, customerId: 1, channel: 1, createdAt: -1 });

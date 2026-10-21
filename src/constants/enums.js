@@ -161,7 +161,10 @@ export const RedemptionMode = makeEnum(
 /** Gold-weight plan cash payout valuation (frozen in enrollment planSnapshot). */
 export const CashSettlementBasis = makeEnum("GOLD_VALUE", "PAID_AMOUNT");
 /** Monetary benefit inclusion when cashSettlementBasis is PAID_AMOUNT. */
-export const PaidAmountBenefitTreatment = makeEnum("EXCLUDE", "INCLUDE_MONETARY");
+export const PaidAmountBenefitTreatment = makeEnum(
+  "EXCLUDE",
+  "INCLUDE_MONETARY",
+);
 export const RedemptionStatus = makeEnum(
   "REQUESTED",
   "PENDING_APPROVAL",
@@ -194,6 +197,12 @@ export const MessageType = makeEnum(
   "ECOMMERCE_OFFER",
   "SCHEME_GOLD_RATE_UPDATED",
   "ECOMMERCE_GOLD_RATE_UPDATED",
+  "DIGITAL_METAL_PURCHASE_CREDITED",
+  "DIGITAL_METAL_PURCHASE_PAYMENT_FAILED",
+  "DIGITAL_METAL_SELL_EXECUTED",
+  "DIGITAL_METAL_PAYOUT_UPDATE",
+  "DIGITAL_METAL_REDEMPTION_UPDATE",
+  "DIGITAL_METAL_DOCUMENT_READY",
 );
 export const MessageTemplateKey = makeEnum(
   "PAYMENT_SUCCESS_MEDIA",
@@ -282,7 +291,11 @@ export const AuditEntityType = makeEnum(
   "ECOMMERCE_INVENTORY",
   "ECOMMERCE_FULFILMENT_SETTINGS",
 );
-export const EcommerceProductStatus = makeEnum("DRAFT", "PUBLISHED", "ARCHIVED");
+export const EcommerceProductStatus = makeEnum(
+  "DRAFT",
+  "PUBLISHED",
+  "ARCHIVED",
+);
 export const EcommercePromotionKind = makeEnum(
   "MANUAL_PRODUCT",
   "MANUAL_CATEGORY",
@@ -325,7 +338,10 @@ export const EcommerceMakingChargeMode = makeEnum(
 );
 export const EcommerceOfferType = makeEnum("FIXED_PAISE_OFF", "PERCENT_OFF");
 /** Inventory: tracked SKU quantity vs made-to-order (no stock field). */
-export const EcommerceStockPolicy = makeEnum("QUANTITY_TRACKED", "MADE_TO_ORDER");
+export const EcommerceStockPolicy = makeEnum(
+  "QUANTITY_TRACKED",
+  "MADE_TO_ORDER",
+);
 /** Accountant-entered component lines; platform does not infer CGST/SGST/IGST. */
 export const EcommerceCheckoutTaxPresentation = makeEnum(
   "UNCONFIGURED",
@@ -545,6 +561,12 @@ export const UploadPurpose = makeEnum(
   "ECOMMERCE_CATEGORY_IMAGE",
   "ECOMMERCE_PRODUCT_IMAGE",
   "ECOMMERCE_BANNER_IMAGE",
+  "DIGITAL_METAL_PURCHASE_INVOICE",
+  "DIGITAL_METAL_CHARGE_RECEIPT",
+  "DIGITAL_METAL_HANDOVER_RECEIPT",
+  "DIGITAL_METAL_SELL_ACK",
+  "DIGITAL_METAL_PAYOUT_RECEIPT",
+  "DIGITAL_METAL_STATEMENT",
 );
 export const WebhookProvider = makeEnum("PHONEPE", "WHATSAPP");
 export const JobStatus = makeEnum(

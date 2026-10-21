@@ -1,0 +1,56 @@
+[
+  {
+    "area": "_meta",
+    "ok": true,
+    "detail": "{\"runId\":\"2026-10-19T06-53-10-759Z\",\"frontend\":\"http://localhost:5173\",\"api\":\"http://localhost:4050/api/v1\",\"startedAt\":\"2026-10-19T06:53:10.760Z\"}",
+    "at": "2026-10-19T06:53:10.760Z"
+  },
+  {
+    "area": "portal-api-connectivity",
+    "ok": true,
+    "detail": "capability HTTP 200",
+    "at": "2026-10-19T06:53:14.437Z"
+  },
+  {
+    "area": "procurement-ui-flow",
+    "ok": true,
+    "detail": "UI create + approver UI approve commitment PQE2C8",
+    "at": "2026-10-19T06:53:22.551Z"
+  },
+  {
+    "area": "deep-link-refresh-hedge",
+    "ok": true,
+    "detail": "hedge testid visible after reload",
+    "at": "2026-10-19T06:53:30.016Z"
+  },
+  {
+    "area": "hedge-invalidation-banner",
+    "ok": true,
+    "detail": "banner cleared after re-close",
+    "at": "2026-10-19T06:53:55.132Z"
+  },
+  {
+    "area": "admin-document-surfaces",
+    "ok": true,
+    "detail": "sells, payouts, redemption lists",
+    "at": "2026-10-19T06:53:59.973Z"
+  },
+  {
+    "area": "permission-denial-procurement",
+    "ok": true,
+    "detail": "procurement hidden for limited staff",
+    "at": "2026-10-19T06:54:01.034Z"
+  },
+  {
+    "area": "customer-statement-document",
+    "ok": true,
+    "detail": "READY + download-url HTTP 200",
+    "at": "2026-10-19T06:54:12.285Z"
+  },
+  {
+    "area": "paused-trading-customer-capability",
+    "ok": true,
+    "detail": "canPlaceNewBuy false",
+    "at": "2026-10-19T06:54:14.075Z"
+  }
+]

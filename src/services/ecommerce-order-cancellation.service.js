@@ -1,6 +1,6 @@
 import { createId } from "../lib/ids.js";
 import { errors } from "../lib/app-error.js";
-import { withTransaction } from "../lib/transaction.js";
+import { withTransaction, withTransientTransactionRetry } from "../lib/transaction.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
 import {
   cancelCodPendingAcceptanceOrderRow,
@@ -429,7 +429,7 @@ export async function decideAdminCancellationRequest(req) {
     ]);
   }
 
-  const txResult = await withTransaction(async (session) => {
+  const txResult = await withTransientTransactionRetry(async (session) => {
     const order = await loadTenantOrder(req, session);
     const request = await attachActiveRequest(order, session);
     if (!request || request.status !== EcommerceOrderCancellationRequestStatus.PENDING_DECISION) {

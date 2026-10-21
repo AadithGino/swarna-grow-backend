@@ -12,6 +12,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     advancedReports: false,
     ecommerce: false,
     ecommercePayments: false,
+    digitalMetals: false,
   },
   [PlanTier.GROWTH]: {
     multiBranch: true,
@@ -23,6 +24,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     advancedReports: false,
     ecommerce: false,
     ecommercePayments: false,
+    digitalMetals: false,
   },
   [PlanTier.PRO]: {
     multiBranch: true,
@@ -34,6 +36,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     advancedReports: true,
     ecommerce: false,
     ecommercePayments: false,
+    digitalMetals: false,
   },
   [PlanTier.CUSTOM]: {
     multiBranch: true,
@@ -45,6 +48,7 @@ export const DEFAULT_PLAN_FEATURES = Object.freeze({
     advancedReports: true,
     ecommerce: false,
     ecommercePayments: false,
+    digitalMetals: false,
   },
 });
 

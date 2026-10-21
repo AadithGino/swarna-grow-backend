@@ -1,0 +1,33 @@
+# BullMQ workers + scheduler registration (Vercel cannot run these long-lived).
+# 1. Create Upstash Redis → copy REDIS_URL (rediss://…).
+# 2. Render Dashboard → New → Blueprint → this repo.
+# 3. Set env group: MONGODB_URI, REDIS_URL, REDIS_REQUIRED=true, same secrets as Vercel.
+
+services:
+  - type: worker
+    name: swarnagrow-worker
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_REQUIRED
+        value: "true"
+      - key: SCHEDULER_REQUIRE_WORKER_ROLES
+        value: "false"
+
+  - type: cron
+    name: swarnagrow-scheduler-register
+    runtime: node
+    schedule: "0 6 * * *"
+    buildCommand: npm install
+    startCommand: npm run scheduler
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_REQUIRED
+        value: "true"
+      - key: SCHEDULER_REQUIRE_WORKER_ROLES
+        value: "false"

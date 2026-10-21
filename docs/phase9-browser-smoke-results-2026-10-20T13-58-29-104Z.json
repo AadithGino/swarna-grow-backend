@@ -1,0 +1,56 @@
+[
+  {
+    "area": "_meta",
+    "ok": true,
+    "detail": "{\"runId\":\"2026-10-20T13-58-29-104Z\",\"frontend\":\"http://localhost:5173\",\"api\":\"http://localhost:4050/api/v1\",\"startedAt\":\"2026-10-20T13:58:29.105Z\"}",
+    "at": "2026-10-20T13:58:29.105Z"
+  },
+  {
+    "area": "portal-api-connectivity",
+    "ok": true,
+    "detail": "capability HTTP 200",
+    "at": "2026-10-20T13:58:33.949Z"
+  },
+  {
+    "area": "procurement-ui-flow",
+    "ok": true,
+    "detail": "UI create + approver UI approve commitment Z46YYS",
+    "at": "2026-10-20T13:58:44.047Z"
+  },
+  {
+    "area": "deep-link-refresh-hedge",
+    "ok": true,
+    "detail": "hedge testid visible after reload",
+    "at": "2026-10-20T13:58:56.627Z"
+  },
+  {
+    "area": "hedge-invalidation-banner",
+    "ok": true,
+    "detail": "banner cleared after re-close",
+    "at": "2026-10-20T14:00:07.011Z"
+  },
+  {
+    "area": "admin-document-surfaces",
+    "ok": true,
+    "detail": "sells, payouts, redemption lists",
+    "at": "2026-10-20T14:00:14.891Z"
+  },
+  {
+    "area": "permission-denial-procurement",
+    "ok": true,
+    "detail": "procurement hidden for limited staff",
+    "at": "2026-10-20T14:00:16.537Z"
+  },
+  {
+    "area": "customer-statement-document",
+    "ok": false,
+    "detail": "artifact dmdoc_01M599RE0EM2E9GB60923MQ494 DOWNLOAD_URL_HTTP: download-url 500",
+    "at": "2026-10-20T14:00:40.129Z"
+  },
+  {
+    "area": "paused-trading-customer-capability",
+    "ok": true,
+    "detail": "canPlaceNewBuy false",
+    "at": "2026-10-20T14:00:42.412Z"
+  }
+]

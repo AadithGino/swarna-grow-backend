@@ -1,0 +1,6 @@
+tests
+test-results
+docs/phase9-pdf-samples
+docs/phase9-browser-smoke-results*.json
+*.zip
+node_modules/.cache

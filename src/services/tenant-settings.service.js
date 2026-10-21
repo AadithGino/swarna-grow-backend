@@ -30,6 +30,11 @@ import {
   presentEcommerceAccessState,
   presentEcommerceAccessStateForTenant,
 } from "../lib/ecommerce-access.js";
+import {
+  assertCanEnableDigitalMetalsModule,
+  presentDigitalMetalsAccessState,
+  presentDigitalMetalsAccessStateForTenant,
+} from "../lib/digital-metals-access.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { now } from "../lib/date.js";
@@ -194,7 +199,9 @@ function presentOperations(tenant) {
     redemptionApprovalRequired: ops.redemptionApprovalRequired ?? true,
     termsAndConditions: ops.termsAndConditions ?? "",
     ecommerceEnabled: ops.ecommerceEnabled === true,
+    digitalMetalsEnabled: ops.digitalMetalsEnabled === true,
     ecommerce: presentEcommerceAccessState(tenant),
+    digitalMetals: presentDigitalMetalsAccessState(tenant),
     audit: { version: tenant.version ?? 1 },
   };
 }
@@ -242,6 +249,7 @@ export async function getSettingsOperationsForAdmin(req) {
   const tenant = await loadTenant(req.auth.tenantId);
   const ops = presentOperations(tenant);
   ops.ecommerce = await presentEcommerceAccessStateForTenant(tenant);
+  ops.digitalMetals = await presentDigitalMetalsAccessStateForTenant(tenant);
   return ops;
 }
 
@@ -341,6 +349,7 @@ export async function getSubscriptionForAdmin(req) {
     },
     features: resolvePlanFeatureBooleans(tenant),
     ecommerce: await presentEcommerceAccessStateForTenant(tenant),
+    digitalMetals: await presentDigitalMetalsAccessStateForTenant(tenant),
     pendingUpgradeRequest: await pendingUpgradeRequest(tenantId),
   };
 }
@@ -697,6 +706,21 @@ export async function patchSettingsOperations(req) {
     enforceVersion(tenant, req.body.expectedVersion);
     const patch = { ...req.body };
     delete patch.expectedVersion;
+    const digitalMetalsProtectedOps = [
+      "digitalMetalsTaxProfileApprovedAt",
+      "digitalMetalsTaxProfileFingerprint",
+      "digitalMetalsTermsVersion",
+      "digitalMetalsTermsContentHash",
+      "digitalMetalsPlatformPaused",
+      "digitalMetalsPlatformPauseReason",
+      "digitalMetalsPaused",
+      "digitalMetalsPauseReason",
+      "digitalMetalsPausedAt",
+      "digitalMetalsPausedBy",
+    ];
+    for (const key of digitalMetalsProtectedOps) {
+      if (key in patch) delete patch[key];
+    }
     if (
       patch.customerLoginMode != null &&
       !Object.values(CustomerLoginMode).includes(patch.customerLoginMode)
@@ -714,6 +738,13 @@ export async function patchSettingsOperations(req) {
           ? req.tenant
           : await attachSubscriptionCatalogPlan(tenant.toObject());
       assertCanEnableEcommerceStore(tenantForEntitlement);
+    }
+    if (patch.digitalMetalsEnabled === true) {
+      const tenantForEntitlement =
+        req.tenant && String(req.tenant._id) === String(tenant._id)
+          ? req.tenant
+          : await attachSubscriptionCatalogPlan(tenant.toObject());
+      assertCanEnableDigitalMetalsModule(tenantForEntitlement);
     }
 
     tenant.operations = {

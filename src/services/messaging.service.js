@@ -21,6 +21,10 @@ import {
   buildCountTrendPoints,
   reportTrendGroupBy,
 } from "./report-builders/report-envelope.js";
+import {
+  messageHasLogicalInboxIdentity,
+  retryLogicalInboxMessageDispatch,
+} from "../lib/message-logical-resend.js";
 
 export async function messageBranchScope(req) {
   const tenantId = req.auth.tenantId;
@@ -274,6 +278,9 @@ export async function resendMessage(req) {
     ...(await messageBranchScope(req)),
   }).lean();
   if (!original) throw errors.notFound("Message");
+  if (original.channel === "PUSH" && messageHasLogicalInboxIdentity(original)) {
+    return retryLogicalInboxMessageDispatch(req, original);
+  }
   return queueMessage(req, {
     branchId: original.branchId,
     customerId: original.customerId,

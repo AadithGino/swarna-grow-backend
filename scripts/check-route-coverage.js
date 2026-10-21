@@ -2,7 +2,7 @@ import fs from "node:fs";
 
 const expected = new Set(fs.readFileSync(new URL("../docs/contract-routes.lock", import.meta.url), "utf8").trim().split("\n").map((line) => line.replace(/\/$/, "")));
 const routeFiles = {
-  "admin-config.routes.js": "/admin", "admin-analytics.routes.js": "/admin", "admin-operations.routes.js": "/admin", "admin-schemes.routes.js": "/admin", "admin-ecommerce.routes.js": "/admin", "admin-customers.routes.js": "/admin/customers",
+  "admin-config.routes.js": "/admin", "admin-analytics.routes.js": "/admin", "admin-operations.routes.js": "/admin", "admin-schemes.routes.js": "/admin", "admin-ecommerce.routes.js": "/admin", "admin-digital-metals.routes.js": "/admin", "admin-customers.routes.js": "/admin/customers",
   "staff.routes.js": "/staff", "app.routes.js": "/app", "app-auth.routes.js": "/app/auth", "auth.routes.js": "/auth", "public.routes.js": "/public", "platform.routes.js": "/platform", "webhook.routes.js": "/webhooks",
 };
 const actual = new Set();
@@ -12,6 +12,7 @@ const permissionGatedFiles = new Set([
   "admin-operations.routes.js",
   "admin-schemes.routes.js",
   "admin-ecommerce.routes.js",
+  "admin-digital-metals.routes.js",
   "admin-customers.routes.js",
   "staff.routes.js",
 ]);
@@ -60,4 +61,36 @@ if (missing.length) {
   process.stderr.write(`Missing ${missing.length} contract routes:\n${missing.join("\n")}\n`);
   process.exit(1);
 }
+
+function routesFromSource(source, prefix) {
+  const out = [];
+  for (const match of source.matchAll(/\.\s*(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]([^;]*)\)/gi)) {
+    const method = match[1].toUpperCase();
+    const path = `${(prefix + match[2]).replace(/\/$/, "")}`;
+    out.push(`${method} ${path}`);
+  }
+  return out;
+}
+
+/** Digital Metals contract surface must be fully listed in contract-routes.lock. */
+const digitalMetalsScoped = [
+  ...routesFromSource(
+    fs.readFileSync(new URL("../src/routes/admin-digital-metals.routes.js", import.meta.url), "utf8"),
+    "/admin",
+  ),
+  ...routesFromSource(
+    fs.readFileSync(new URL("../src/routes/app.routes.js", import.meta.url), "utf8"),
+    "/app",
+  ).filter((route) => route.includes("/digital-metals/")),
+];
+const digitalMetalsUndeclared = [...new Set(digitalMetalsScoped)]
+  .filter((route) => !expected.has(route))
+  .sort();
+if (digitalMetalsUndeclared.length) {
+  process.stderr.write(
+    `Undeclared digital-metals contract routes (${digitalMetalsUndeclared.length}):\n${digitalMetalsUndeclared.join("\n")}\n`,
+  );
+  process.exit(1);
+}
+
 process.stdout.write(`Route coverage passed for ${expected.size} applicable contract routes.\n`);

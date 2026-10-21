@@ -15,6 +15,15 @@ import {
   restockLinesFromEvidence,
 } from "./ecommerce-order-stock-consumed-evidence.js";
 
+/** Abort txn so withTransientTransactionRetry can re-read committed inventory versions. */
+function throwInventoryVersionWriteConflict(productId) {
+  const err = new Error("Inventory version conflict during restock");
+  err.code = 112;
+  err.codeName = "WriteConflict";
+  err.productId = productId;
+  throw err;
+}
+
 /**
  * After paid/accepted orders: restock only when staff confirms physical availability.
  * Quantities come from order consumption evidence, not current SKU policy.
@@ -77,14 +86,9 @@ export async function applyCancellationStockDispositionOnce({
         { _id: inv._id, tenantId, version: inv.version },
         { $inc: { quantityOnHand: qty, version: 1 } },
         { session, new: true },
-      );
+      ).lean();
       if (!updated) {
-        throw new AppError(
-          "STOCK_RESTOCK_FAILED",
-          "Could not restock inventory for cancellation.",
-          409,
-          { productId: line.productId },
-        );
+        throwInventoryVersionWriteConflict(line.productId);
       }
       await EcommerceInventoryAdjustment.create(
         [

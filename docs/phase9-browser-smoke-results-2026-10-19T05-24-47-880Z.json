@@ -1,0 +1,56 @@
+[
+  {
+    "area": "_meta",
+    "ok": true,
+    "detail": "{\"runId\":\"2026-10-19T05-24-47-880Z\",\"frontend\":\"http://localhost:5173\",\"api\":\"http://localhost:4050/api/v1\",\"startedAt\":\"2026-10-19T05:24:47.880Z\"}",
+    "at": "2026-10-19T05:24:47.880Z"
+  },
+  {
+    "area": "portal-api-connectivity",
+    "ok": true,
+    "detail": "capability HTTP 200",
+    "at": "2026-10-19T05:24:50.245Z"
+  },
+  {
+    "area": "procurement-ui-flow",
+    "ok": false,
+    "detail": "\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('procurement-entry-dmpce_01M599XBA4Z9PEJ287V3ZSS6YK').or(getByTestId('digital-metals-procurement').getByRole('button').filter({ hasText: '1000000' }))\nExpected: visible\nTimeout: 20000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByTestId('procurement-entry-dmpce_01M599XBA4Z9PEJ287V3ZSS6YK').or(getByTestId('digital-metals-procurement').getByRole('button').filter({ h",
+    "at": "2026-10-19T05:25:16.423Z"
+  },
+  {
+    "area": "deep-link-refresh-hedge",
+    "ok": true,
+    "detail": "hedge testid visible after reload",
+    "at": "2026-10-19T05:25:24.407Z"
+  },
+  {
+    "area": "hedge-invalidation-banner",
+    "ok": true,
+    "detail": "banner cleared after re-close",
+    "at": "2026-10-19T05:25:51.241Z"
+  },
+  {
+    "area": "admin-document-surfaces",
+    "ok": true,
+    "detail": "sells, payouts, redemption lists",
+    "at": "2026-10-19T05:25:56.545Z"
+  },
+  {
+    "area": "permission-denial-procurement",
+    "ok": true,
+    "detail": "procurement hidden for limited staff",
+    "at": "2026-10-19T05:25:57.564Z"
+  },
+  {
+    "area": "customer-statement-document",
+    "ok": true,
+    "detail": "READY + download-url HTTP 200",
+    "at": "2026-10-19T05:26:06.837Z"
+  },
+  {
+    "area": "paused-trading-customer-capability",
+    "ok": true,
+    "detail": "canPlaceNewBuy false",
+    "at": "2026-10-19T05:26:09.211Z"
+  }
+]

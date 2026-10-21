@@ -1368,3 +1368,39 @@ export async function updateAppConfig(body, req) {
   }
   return next;
 }
+
+export async function setPlatformDigitalMetalsPause(tenantId, body, req) {
+  const tenant = await Tenant.findById(tenantId);
+  if (!tenant) throw errors.notFound("Tenant");
+  const pause = body.pause === true;
+  const reason = String(body.reason ?? "").trim();
+  if (pause && reason.length < 3) {
+    throw new AppError("VALIDATION_FAILED", "reason is required when pausing (min 3 characters).", 422);
+  }
+  const before = tenant.operations?.toObject?.() ?? tenant.operations ?? {};
+  tenant.operations = {
+    ...before,
+    digitalMetalsPlatformPaused: pause,
+    digitalMetalsPlatformPauseReason: pause ? reason : "",
+    ...(pause
+      ? { digitalMetalsPausedAt: new Date(), digitalMetalsPausedBy: req?.auth?.id ?? "platform" }
+      : {}),
+  };
+  tenant.version += 1;
+  await tenant.save();
+  await auditPlatformMutation({
+    req,
+    action: pause ? "PLATFORM_DIGITAL_METALS_PAUSED" : "PLATFORM_DIGITAL_METALS_RESUMED",
+    entityType: AuditEntityType.TENANT,
+    entityId: tenantId,
+    tenantId,
+    before,
+    after: tenant.operations?.toObject?.() ?? tenant.operations,
+  });
+  return {
+    tenantId,
+    digitalMetalsPlatformPaused: pause,
+    reason: pause ? reason : null,
+    version: tenant.version,
+  };
+}

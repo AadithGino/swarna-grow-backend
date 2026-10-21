@@ -1,6 +1,10 @@
 import { z } from "zod";
 import * as E from "../constants/enums.js";
 import { passwordPolicySchema, platformAppConfigBody, positivePaise } from "./common.validators.js";
+import {
+  platformDigitalMetalsTaxApproveBody,
+  platformDigitalMetalsTermsBody,
+} from "./digital-metals.validators.js";
 
 const enumSchema = (enumeration) => z.enum(Object.values(enumeration));
 const id = z.string().trim().min(4).max(80);
@@ -92,6 +96,11 @@ export const platformOwnerCredentialsBody = z.object({
 export const platformTenantActionBody = z.object({
   reason: z.string().trim().min(3).max(500).optional(),
   note: z.string().trim().max(500).optional(),
+}).strict();
+
+export const platformDigitalMetalsPauseBody = z.object({
+  pause: z.boolean(),
+  reason: z.string().trim().min(3).max(500).optional(),
 }).strict();
 
 export const platformWhatsappIntegrationBody = z.object({
@@ -192,6 +201,15 @@ export const platformRouteValidators = {
   "PATCH /tenants/:tenantId/subscription/limits": { params: tenantIdParam, body: platformSubscriptionLimitsBody },
   "POST /tenants/:tenantId/subscription/extend": { params: tenantIdParam, body: platformSubscriptionExtendBody },
   "POST /tenants/:tenantId/subscription/cancel": { params: tenantIdParam, body: platformSubscriptionCancelBody },
+  "POST /tenants/:tenantId/digital-metals/pause": { params: tenantIdParam, body: platformDigitalMetalsPauseBody },
+  "POST /tenants/:tenantId/digital-metals/tax-profile/approve": {
+    params: tenantIdParam,
+    body: platformDigitalMetalsTaxApproveBody,
+  },
+  "POST /tenants/:tenantId/digital-metals/terms/publish": {
+    params: tenantIdParam,
+    body: platformDigitalMetalsTermsBody,
+  },
   "POST /tenants/:tenantId/invoices": { params: tenantIdParam, body: platformInvoiceCreateBody },
   "POST /invoices/:invoiceId/mark-paid": { params: invoiceIdParam, body: platformMarkInvoicePaidBody },
   "PUT /tenants/:tenantId/flags": { params: tenantIdParam, body: platformFlagsBody },

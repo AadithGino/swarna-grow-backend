@@ -75,6 +75,20 @@ const tenantOperationsSchema = new mongoose.Schema(
     redemptionApprovalRequired: { type: Boolean, default: true },
     termsAndConditions: { type: String, default: "" },
     ecommerceEnabled: { type: Boolean, default: false },
+    digitalMetalsEnabled: { type: Boolean, default: false },
+    digitalMetalsPaused: { type: Boolean, default: false },
+    digitalMetalsPauseReason: { type: String, default: "" },
+    digitalMetalsPausedAt: Date,
+    digitalMetalsPausedBy: String,
+    /** Platform-only emergency pause (tenant cannot clear via settings). */
+    digitalMetalsPlatformPaused: { type: Boolean, default: false },
+    digitalMetalsPlatformPauseReason: { type: String, default: "" },
+    /** U1 — platform approval bound to tax profile fingerprint (invalidates on settings/tax change). */
+    digitalMetalsTaxProfileApprovedAt: Date,
+    digitalMetalsTaxProfileFingerprint: { type: String, default: "" },
+    /** U2 — published terms version + immutable content hash (see DigitalMetalTermsPublication). */
+    digitalMetalsTermsVersion: { type: String, default: "" },
+    digitalMetalsTermsContentHash: { type: String, default: "" },
   },
   { _id: false },
 );

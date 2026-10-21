@@ -1,6 +1,7 @@
 import { createHash, randomInt } from "node:crypto";
 
 export const PICKUP_CODE_TTL_MS = 48 * 60 * 60 * 1000;
+export const PICKUP_CODE_MAX_ATTEMPTS = 5;
 
 export function generatePickupCode() {
   return String(randomInt(100_000, 1_000_000));

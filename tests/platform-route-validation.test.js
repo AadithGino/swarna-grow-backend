@@ -14,5 +14,5 @@ test("platform mutation registry stays aligned with platform.routes.js", () => {
     routesSource,
     validators: platformRouteValidators,
   });
-  assert.equal(routeCount, 27);
+  assert.equal(routeCount, 30);
 });

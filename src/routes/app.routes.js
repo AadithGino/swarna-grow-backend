@@ -5,6 +5,7 @@ import * as upload from "../controllers/upload.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import * as operations from "../controllers/operations.controller.js";
 import * as ecommerce from "../controllers/ecommerce.controller.js";
+import * as digitalMetals from "../controllers/digital-metals.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
@@ -28,6 +29,22 @@ import {
   grievanceReopenBody,
   cursorQuery,
 } from "../validators/common.validators.js";
+import {
+  digitalMetalsBankDestinationCreateBody,
+  digitalMetalsBankDestinationPatchBody,
+  digitalMetalsBuyOrderCreateBody,
+  digitalMetalsBuyPaymentIntentBody,
+  digitalMetalsCustomerBuyQuoteBody,
+  digitalMetalsCustomerSellQuoteBody,
+  digitalMetalsSellOrderConfirmBody,
+  digitalMetalsRedemptionQuoteBody,
+  digitalMetalsRedemptionOrderCreateBody,
+  digitalMetalsRedemptionPaymentIntentBody,
+  digitalMetalsSellOrderCreateBody,
+  digitalMetalsDocumentRequestBody,
+  digitalMetalsCustomerOrderListQuery,
+} from "../validators/digital-metals.validators.js";
+import { attachDigitalMetalsCapability } from "../middlewares/digital-metals.middleware.js";
 import {
   ecommerceAddressCreateBody,
   ecommerceAddressPatchBody,
@@ -298,6 +315,205 @@ appRouter.get("/gold-rate/history", asyncHandler(async (req, res) => {
   sendSuccess(res, await GoldRate.find({ tenantId: req.auth.tenantId }).sort({ effectiveDate: -1 }).limit(100).lean());
 }));
 
+appRouter.get("/digital-metals/capability", asyncHandler(digitalMetals.customerCapability));
+appRouter.get("/digital-metals/portfolio", asyncHandler(digitalMetals.customerPortfolio));
+appRouter.get("/digital-metals/passbook", asyncHandler(digitalMetals.customerPassbook));
+appRouter.get("/digital-metals/statements/metal", asyncHandler(digitalMetals.customerMetalStatement));
+appRouter.get("/digital-metals/statements/metal.pdf", asyncHandler(digitalMetals.customerMetalStatementPdf));
+appRouter.get(
+  "/digital-metals/redemption/orders/:orderId/charge-receipt.pdf",
+  asyncHandler(digitalMetals.customerRedemptionChargeReceipt),
+);
+appRouter.get(
+  "/digital-metals/redemption/orders/:orderId/handover-receipt.pdf",
+  asyncHandler(digitalMetals.customerPhysicalHandoverReceipt),
+);
+appRouter.get(
+  "/digital-metals/sell-orders/:orderId/acknowledgement.pdf",
+  asyncHandler(digitalMetals.customerSellAcknowledgement),
+);
+appRouter.post(
+  "/digital-metals/documents/request",
+  validate({ body: digitalMetalsDocumentRequestBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerRequestDigitalMetalDocument),
+);
+appRouter.get(
+  "/digital-metals/documents/by-subject",
+  asyncHandler(digitalMetals.customerFindDigitalMetalDocumentBySubject),
+);
+appRouter.get(
+  "/digital-metals/documents/:artifactId",
+  asyncHandler(digitalMetals.customerGetDigitalMetalDocument),
+);
+appRouter.get(
+  "/digital-metals/documents/:artifactId/download-url",
+  asyncHandler(digitalMetals.customerGetDigitalMetalDocumentDownloadUrl),
+);
+appRouter.post(
+  "/digital-metals/documents/:artifactId/retry",
+  idempotent,
+  asyncHandler(digitalMetals.customerRetryDigitalMetalDocument),
+);
+appRouter.post(
+  "/digital-metals/quotes/buy",
+  validate({ body: digitalMetalsCustomerBuyQuoteBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerBuyQuote),
+);
+appRouter.post(
+  "/digital-metals/buy-orders",
+  validate({ body: digitalMetalsBuyOrderCreateBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerCreateBuyOrder),
+);
+appRouter.get(
+  "/digital-metals/buy-orders",
+  attachDigitalMetalsCapability,
+  validate({ query: digitalMetalsCustomerOrderListQuery }),
+  asyncHandler(digitalMetals.customerListBuyOrders),
+);
+appRouter.get("/digital-metals/buy-orders/:orderId", asyncHandler(digitalMetals.customerGetBuyOrder));
+appRouter.get(
+  "/digital-metals/buy-orders/:orderId/invoice",
+  asyncHandler(digitalMetals.customerStreamBuyOrderInvoice),
+);
+appRouter.post(
+  "/digital-metals/buy-orders/:orderId/payment-intents",
+  validate({ body: digitalMetalsBuyPaymentIntentBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerCreateBuyPaymentIntent),
+);
+appRouter.get(
+  "/digital-metals/buy-orders/:orderId/payment-intents/:paymentAttemptId",
+  asyncHandler(digitalMetals.customerGetBuyPaymentIntent),
+);
+appRouter.post(
+  "/digital-metals/buy-orders/:orderId/test-harness/complete-payment",
+  idempotent,
+  asyncHandler(digitalMetals.customerCompleteBuyTestHarnessPayment),
+);
+appRouter.post(
+  "/digital-metals/quotes/sell",
+  validate({ body: digitalMetalsCustomerSellQuoteBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerSellQuote),
+);
+appRouter.get(
+  "/digital-metals/orders/open-summary",
+  attachDigitalMetalsCapability,
+  asyncHandler(digitalMetals.customerOpenOrdersSummary),
+);
+appRouter.post(
+  "/digital-metals/sell-orders",
+  validate({ body: digitalMetalsSellOrderCreateBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerCreateSellOrder),
+);
+appRouter.get(
+  "/digital-metals/sell-orders",
+  attachDigitalMetalsCapability,
+  validate({ query: digitalMetalsCustomerOrderListQuery }),
+  asyncHandler(digitalMetals.customerListSellOrders),
+);
+appRouter.post(
+  "/digital-metals/sell-orders/:orderId/confirm",
+  validate({ body: digitalMetalsSellOrderConfirmBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerConfirmSellOrder),
+);
+appRouter.post(
+  "/digital-metals/sell-orders/:orderId/cancel",
+  idempotent,
+  asyncHandler(digitalMetals.customerCancelSellOrder),
+);
+appRouter.get(
+  "/digital-metals/sell-orders/:orderId",
+  asyncHandler(digitalMetals.customerGetSellOrder),
+);
+appRouter.get(
+  "/digital-metals/sell-orders/:orderId/payout-status",
+  asyncHandler(digitalMetals.customerGetSellOrderPayoutStatus),
+);
+appRouter.get(
+  "/digital-metals/delivery-addresses",
+  asyncHandler(digitalMetals.customerListDigitalMetalsDeliveryAddresses),
+);
+appRouter.post(
+  "/digital-metals/delivery-addresses",
+  validate({ body: ecommerceAddressCreateBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerCreateDigitalMetalsDeliveryAddress),
+);
+appRouter.get(
+  "/digital-metals/redemption/catalogue",
+  asyncHandler(digitalMetals.customerRedemptionCatalogue),
+);
+appRouter.post(
+  "/digital-metals/quotes/redemption",
+  validate({ body: digitalMetalsRedemptionQuoteBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerRedemptionQuote),
+);
+appRouter.post(
+  "/digital-metals/redemption/orders",
+  validate({ body: digitalMetalsRedemptionOrderCreateBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerCreateRedemptionOrder),
+);
+appRouter.get(
+  "/digital-metals/redemption/orders",
+  attachDigitalMetalsCapability,
+  validate({ query: digitalMetalsCustomerOrderListQuery }),
+  asyncHandler(digitalMetals.customerListRedemptionOrders),
+);
+appRouter.get(
+  "/digital-metals/redemption/orders/:orderId",
+  asyncHandler(digitalMetals.customerGetRedemptionOrder),
+);
+appRouter.post(
+  "/digital-metals/redemption/orders/:orderId/cancel",
+  idempotent,
+  asyncHandler(digitalMetals.customerCancelRedemptionOrder),
+);
+appRouter.post(
+  "/digital-metals/redemption/orders/:orderId/payment-intents",
+  validate({ body: digitalMetalsRedemptionPaymentIntentBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerCreateRedemptionPaymentIntent),
+);
+appRouter.post(
+  "/digital-metals/redemption/orders/:orderId/test-harness/complete-payment",
+  idempotent,
+  asyncHandler(digitalMetals.customerCompleteRedemptionTestHarnessPayment),
+);
+appRouter.get(
+  "/digital-metals/redemption/orders/:orderId/payment-intents/:paymentAttemptId",
+  asyncHandler(digitalMetals.customerPollRedemptionChargePayment),
+);
+appRouter.get(
+  "/digital-metals/redemption/orders/:orderId/fulfilment",
+  asyncHandler(digitalMetals.customerRedemptionFulfilmentProgress),
+);
+appRouter.get(
+  "/digital-metals/redemption/orders/:orderId/pickup-instructions",
+  asyncHandler(digitalMetals.customerRedemptionPickupReveal),
+);
+appRouter.get(
+  "/digital-metals/bank-destinations",
+  asyncHandler(digitalMetals.customerListBankDestinations),
+);
+appRouter.post(
+  "/digital-metals/bank-destinations",
+  validate({ body: digitalMetalsBankDestinationCreateBody }),
+  idempotent,
+  asyncHandler(digitalMetals.customerCreateBankDestination),
+);
+appRouter.patch(
+  "/digital-metals/bank-destinations/:destinationId",
+  validate({ body: digitalMetalsBankDestinationPatchBody }),
+  asyncHandler(digitalMetals.customerPatchBankDestination),
+);
 appRouter.get("/home/banners", asyncHandler(ecommerce.shopHomeBanners));
 appRouter.get("/shop/availability", asyncHandler(ecommerce.shopAvailability));
 appRouter.get("/shop/banners", asyncHandler(ecommerce.shopStorefrontBanners));

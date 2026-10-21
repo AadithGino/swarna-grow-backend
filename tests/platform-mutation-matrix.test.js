@@ -31,7 +31,7 @@ const routesSource = readFileSync(
 );
 
 /** Authenticated platform mutations (must stay in sync with platform.routes.js). */
-export const PLATFORM_MUTATION_ROUTE_COUNT = 27;
+export const PLATFORM_MUTATION_ROUTE_COUNT = 30;
 
 function malformedBodyFor(routeKey) {
   if (routeKey === "PUT /app-config") {
@@ -264,8 +264,8 @@ test("platform mutation matrix case count", () => {
   const bodyRoutes = routeKeys.filter((k) => platformRouteValidators[k].body).length;
   const paramRoutes = routeKeys.filter((k) => platformRouteValidators[k].params).length;
   const totalCases = 1 + bodyRoutes * 2 + paramRoutes + 3;
-  assert.equal(bodyRoutes, 26);
-  assert.equal(paramRoutes, 23);
-  assert.equal(totalCases, 79);
-  assert.equal(PLATFORM_MUTATION_ROUTE_COUNT, 27);
+  assert.equal(bodyRoutes, 29);
+  assert.equal(paramRoutes, 26);
+  assert.equal(totalCases, 88);
+  assert.equal(PLATFORM_MUTATION_ROUTE_COUNT, 30);
 });

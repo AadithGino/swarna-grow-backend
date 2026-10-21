@@ -413,7 +413,9 @@ const redemptionRules = z.object({
   allowedModes: z.array(enumSchema(E.RedemptionMode)).min(1),
   redeemAtAnyBranch: z.boolean(),
   cashSettlementBasis: enumSchema(E.CashSettlementBasis).optional(),
-  paidAmountBenefitTreatment: enumSchema(E.PaidAmountBenefitTreatment).optional(),
+  paidAmountBenefitTreatment: enumSchema(
+    E.PaidAmountBenefitTreatment,
+  ).optional(),
 });
 const availability = z.object({
   allBranches: z.boolean(),
@@ -897,6 +899,7 @@ export const tenantOperationsPatchBody = z
       .optional(),
     customerSelfEnrolEnabled: z.boolean().optional(),
     ecommerceEnabled: z.boolean().optional(),
+    digitalMetalsEnabled: z.boolean().optional(),
     customerSelfRegistrationEnabled: z.boolean().optional(),
     customerLoginMode: enumSchema(E.CustomerLoginMode).optional(),
     customerAppWriteEnabled: z.boolean().optional(),

@@ -11,10 +11,11 @@ let replSet;
 let tenantCodeSeq = 0;
 /** Nested test files in one process must not tear down Mongo while siblings still run. */
 let testDbRefCount = 0;
+/** One in-flight boot per process — avoids parallel MongoMemoryReplSet.create (port collisions). */
+let testDbBootPromise;
 
-export async function startTestDb() {
-  testDbRefCount += 1;
-  if (testDbRefCount > 1 && mongoose.connection.readyState === 1) {
+async function bootTestDbOnce() {
+  if (mongoose.connection.readyState === 1 && replSet) {
     return;
   }
   if (mongoose.connection.readyState === 1) await mongoose.disconnect();
@@ -25,7 +26,10 @@ export async function startTestDb() {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      replSet = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } });
+      replSet = await MongoMemoryReplSet.create({
+        replSet: { count: 1, storageEngine: "wiredTiger" },
+        instanceOpts: [{ launchTimeout: 120_000 }],
+      });
       await replSet.waitUntilRunning();
       await mongoose.connect(replSet.getUri("swarnagrow_test"));
       await mongoose.connection.db.admin().command({ ping: 1 });
@@ -44,9 +48,22 @@ export async function startTestDb() {
   throw lastError;
 }
 
-export async function stopTestDb() {
+export async function startTestDb() {
+  testDbRefCount += 1;
+  if (mongoose.connection.readyState === 1 && replSet) {
+    return;
+  }
+  if (!testDbBootPromise) {
+    testDbBootPromise = bootTestDbOnce().finally(() => {
+      testDbBootPromise = undefined;
+    });
+  }
+  await testDbBootPromise;
+}
+
+export async function stopTestDb(options = {}) {
+  const force = options?.force === true;
   testDbRefCount = Math.max(0, testDbRefCount - 1);
-  if (testDbRefCount > 0) return;
 
   const { clearIdempotencyHeartbeatsForTests } = await import("../../src/middlewares/idempotency.middleware.js");
   const { clearRateLimitStoresForTests } = await import("../../src/middlewares/security.middleware.js");
@@ -54,6 +71,12 @@ export async function stopTestDb() {
   clearIdempotencyHeartbeatsForTests();
   await clearRateLimitStoresForTests();
   await disconnectRedis().catch(() => {});
+
+  if (!force) {
+    return;
+  }
+
+  testDbRefCount = 0;
 
   const disconnect = mongoose.connection.readyState !== 0
     ? mongoose.disconnect()
@@ -66,6 +89,7 @@ export async function stopTestDb() {
   if (replSet) {
     const instance = replSet;
     replSet = undefined;
+    testDbBootPromise = undefined;
     await Promise.race([
       instance.stop({ doCleanup: true, force: true }),
       new Promise((resolve) => setTimeout(resolve, 8000)),

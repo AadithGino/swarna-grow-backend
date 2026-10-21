@@ -35,3 +35,30 @@ export const chart = async (req, res) => sendSuccess(res, await platform.platfor
 export const auditLogs = async (req, res) => sendList(res, await platform.listAuditLogs(req));
 export const appConfig = (write = false) => async (req, res) =>
   sendSuccess(res, write ? await platform.updateAppConfig(req.body, req) : await platform.getAppConfig());
+export const digitalMetalsPause = async (req, res) =>
+  sendSuccess(res, await platform.setPlatformDigitalMetalsPause(req.params.tenantId, req.body, req));
+
+export const digitalMetalsStatus = async (req, res) => {
+  const { getPlatformDigitalMetalsStatus } = await import("../services/digital-metals-phase2.service.js");
+  return sendSuccess(res, await getPlatformDigitalMetalsStatus(req.params.tenantId));
+};
+
+export const digitalMetalsTaxApprove = async (req, res) => {
+  const { platformApproveDigitalMetalsTax } = await import("../services/digital-metals-phase2.service.js");
+  return sendSuccess(res, await platformApproveDigitalMetalsTax(req.params.tenantId, req.body, req));
+};
+
+export const digitalMetalsOperationsSummary = async (req, res) => {
+  const { platformDigitalMetalsOperationsSummary } = await import("./digital-metals.controller.js");
+  return platformDigitalMetalsOperationsSummary(req, res);
+};
+
+export const digitalMetalsHedgeHealth = async (req, res) => {
+  const { platformDigitalMetalsHedgeHealth } = await import("./digital-metals.controller.js");
+  return platformDigitalMetalsHedgeHealth(req, res);
+};
+
+export const digitalMetalsTermsPublish = async (req, res) => {
+  const { platformPublishDigitalMetalsTerms } = await import("../services/digital-metals-phase2.service.js");
+  return sendSuccess(res, await platformPublishDigitalMetalsTerms(req.params.tenantId, req.body, req));
+};

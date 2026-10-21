@@ -62,6 +62,7 @@ export async function processMessage(job) {
         summarizePushDeliveries,
         casFinalizePushMessageFromSummary,
         casFailPushMessageNoDevices,
+        finalizeOrphanPushDeliveries,
         PushDeliveryApplyResult,
       } = await import("../services/push-delivery.service.js");
       const { PushDeviceDeliveryStatus } = await import("../constants/enums.js");
@@ -90,6 +91,9 @@ export async function processMessage(job) {
         messageId: message._id,
         devices,
       });
+      const eligibleRegistrationIds = devices.map(
+        (device) => device.deviceRegistrationId ?? `legacy:${device.tokenHash}`,
+      );
       await reclaimStaleProcessingDeliveries({
         tenantId: message.tenantId,
         messageId: message._id,
@@ -119,6 +123,11 @@ export async function processMessage(job) {
           messageId: message._id,
         });
         if (summaryBeforeSend.processingActive > 0) return;
+        await finalizeOrphanPushDeliveries({
+          tenantId: message.tenantId,
+          messageId: message._id,
+          eligibleRegistrationIds,
+        });
         const pendingStill = await listDeliveriesToSend(message._id, message.tenantId);
         if (pendingStill.length) return;
         if (!devices.length) {
@@ -354,7 +363,30 @@ export async function processWebhook(job) {
       if (normalized.refund || isPhonePeRefundCallback(event.payload?.type)) {
         phonePeHandled = true;
         const { isEcommercePhonePeRefundPayload } = await import("../lib/ecommerce-payment-reference.js");
-        if (isEcommercePhonePeRefundPayload(payload)) {
+        const { isDigitalMetalBuyPhonePeRefundPayload } = await import(
+          "../lib/digital-metals-payment-reference.js"
+        );
+        const { isDigitalMetalRedemptionChargeRefundMerchantId } = await import(
+          "../lib/digital-metals-payment-reference.js"
+        );
+        const refundRef = payload.refundId ?? payload.merchantRefundId ?? null;
+        if (refundRef && isDigitalMetalRedemptionChargeRefundMerchantId(refundRef)) {
+          const { confirmRedemptionChargeRefundFromProvider } = await import(
+            "../services/digital-metals-redemption-charge-refund.service.js"
+          );
+          await confirmRedemptionChargeRefundFromProvider({
+            tenantId: event.tenantId,
+            payload,
+          });
+        } else if (isDigitalMetalBuyPhonePeRefundPayload(payload)) {
+          const { confirmDigitalMetalPaymentExceptionRefundFromProvider } = await import(
+            "../services/digital-metals-payment-exception.service.js"
+          );
+          await confirmDigitalMetalPaymentExceptionRefundFromProvider({
+            tenantId: event.tenantId,
+            payload,
+          });
+        } else if (isEcommercePhonePeRefundPayload(payload)) {
           const { processEcommercePhonePeRefundWebhook } = await import(
             "../services/ecommerce-payment-exception-refund.service.js"
           );
@@ -380,7 +412,26 @@ export async function processWebhook(job) {
         phonePeHandled = true;
         const { processEcommercePhonePeWebhook } = await import("../services/ecommerce-payment-finalize.service.js");
         const { isEcommercePaymentMerchantOrderId } = await import("../lib/ecommerce-payment-reference.js");
-        if (reference && isEcommercePaymentMerchantOrderId(reference)) {
+        const { processDigitalMetalBuyPhonePeWebhook } = await import(
+          "../services/digital-metals-buy-finalize.service.js"
+        );
+        const { isDigitalMetalBuyPaymentMerchantOrderId, isDigitalMetalRedemptionChargeMerchantOrderId } =
+          await import("../lib/digital-metals-payment-reference.js");
+        const { processDigitalMetalRedemptionChargePhonePeWebhook } = await import(
+          "../services/digital-metals-redemption-charge-finalize.service.js"
+        );
+        if (reference && isDigitalMetalBuyPaymentMerchantOrderId(reference)) {
+          await processDigitalMetalBuyPhonePeWebhook({
+            tenantId: event.tenantId,
+            normalized,
+            webhookEventId: event._id,
+          });
+        } else if (reference && isDigitalMetalRedemptionChargeMerchantOrderId(reference)) {
+          await processDigitalMetalRedemptionChargePhonePeWebhook({
+            tenantId: event.tenantId,
+            payload: normalized?.raw ?? normalized,
+          });
+        } else if (reference && isEcommercePaymentMerchantOrderId(reference)) {
           await processEcommercePhonePeWebhook({
             tenantId: event.tenantId,
             normalized,
@@ -460,7 +511,26 @@ export async function processWebhook(job) {
         phonePeHandled = true;
         const { processEcommercePhonePeWebhook } = await import("../services/ecommerce-payment-finalize.service.js");
         const { isEcommercePaymentMerchantOrderId } = await import("../lib/ecommerce-payment-reference.js");
-        if (reference && isEcommercePaymentMerchantOrderId(reference)) {
+        const { processDigitalMetalBuyPhonePeWebhook } = await import(
+          "../services/digital-metals-buy-finalize.service.js"
+        );
+        const { isDigitalMetalBuyPaymentMerchantOrderId, isDigitalMetalRedemptionChargeMerchantOrderId } =
+          await import("../lib/digital-metals-payment-reference.js");
+        const { processDigitalMetalRedemptionChargePhonePeWebhook } = await import(
+          "../services/digital-metals-redemption-charge-finalize.service.js"
+        );
+        if (reference && isDigitalMetalBuyPaymentMerchantOrderId(reference)) {
+          await processDigitalMetalBuyPhonePeWebhook({
+            tenantId: event.tenantId,
+            normalized,
+            webhookEventId: event._id,
+          });
+        } else if (reference && isDigitalMetalRedemptionChargeMerchantOrderId(reference)) {
+          await processDigitalMetalRedemptionChargePhonePeWebhook({
+            tenantId: event.tenantId,
+            payload: normalized?.raw ?? normalized,
+          });
+        } else if (reference && isEcommercePaymentMerchantOrderId(reference)) {
           await processEcommercePhonePeWebhook({
             tenantId: event.tenantId,
             normalized,
@@ -959,5 +1029,17 @@ export async function processMaintenance(job) {
   if (job.name === "ecommerce-payment-reconcile") {
     const { runEcommercePaymentReconcile } = await import("../services/ecommerce-payment-reconcile.service.js");
     await runEcommercePaymentReconcile(now);
+  }
+  if (job.name === "digital-metals-payment-reconcile") {
+    const { runDigitalMetalBuyPaymentReconcile } = await import(
+      "../services/digital-metals-payment-reconcile.service.js"
+    );
+    await runDigitalMetalBuyPaymentReconcile(now);
+  }
+  if (job.name === "digital-metals-outbox-dispatch") {
+    const { runDigitalMetalOutboxDispatch } = await import(
+      "../services/digital-metals-outbox-dispatch.service.js"
+    );
+    await runDigitalMetalOutboxDispatch(now);
   }
 }

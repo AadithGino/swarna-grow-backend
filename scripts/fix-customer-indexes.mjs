@@ -1,4 +1,3 @@
-/* global console */
 /**
  * One-time dev helper: drop legacy passbook sparse index that collided on null.
  * Run: node scripts/fix-customer-indexes.mjs

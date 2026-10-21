@@ -37,28 +37,28 @@ function claimableFilter(now) {
   };
 }
 
-export async function ensurePushDeliveries({ tenantId, messageId, devices }) {
-  const ops = devices.map((device) => ({
-    updateOne: {
-      filter: {
-        tenantId,
-        messageId,
-        deviceRegistrationId: device.deviceRegistrationId ?? `legacy:${device.tokenHash}`,
-      },
-      update: {
+export async function ensurePushDeliveries({ tenantId, messageId, devices }, session) {
+  if (!devices?.length) return { inserted: 0 };
+  let inserted = 0;
+  for (const device of devices) {
+    const deviceRegistrationId = deviceRegistrationKey(device);
+    const result = await PushDeviceDelivery.updateOne(
+      { tenantId, messageId, deviceRegistrationId },
+      {
         $setOnInsert: {
           _id: createId("pdd"),
           tenantId,
           messageId,
-          deviceRegistrationId: device.deviceRegistrationId ?? `legacy:${device.tokenHash}`,
+          deviceRegistrationId,
           status: PushDeviceDeliveryStatus.QUEUED,
           attemptCount: 0,
         },
       },
-      upsert: true,
-    },
-  }));
-  if (ops.length) await PushDeviceDelivery.bulkWrite(ops, { ordered: false });
+      { upsert: true, session: session ?? undefined },
+    );
+    if (result.upsertedCount > 0) inserted += 1;
+  }
+  return { inserted };
 }
 
 export async function listDeliveriesToSend(messageId, tenantId) {
@@ -129,19 +129,23 @@ async function upsertDeliveryExhaustedAlert({ tenantId, messageId, attempts }) {
   incrementOpsMetric(OpsMetric.FCM_DELIVERY_EXHAUSTED_ALERT);
 }
 
-export async function summarizePushDeliveries({ tenantId, messageId }) {
+export async function summarizePushDeliveries({ tenantId, messageId }, session) {
   const now = new Date();
-  const rows = await PushDeviceDelivery.aggregate([
+  let agg = PushDeviceDelivery.aggregate([
     { $match: { tenantId, messageId } },
     { $group: { _id: "$status", count: { $sum: 1 } } },
   ]);
+  if (session) agg = agg.session(session);
+  const rows = await agg;
   const byStatus = Object.fromEntries(rows.map((row) => [row._id, row.count]));
-  const processingActive = await PushDeviceDelivery.countDocuments({
+  let processingActiveQuery = PushDeviceDelivery.countDocuments({
     tenantId,
     messageId,
     status: PushDeviceDeliveryStatus.PROCESSING,
     claimExpiresAt: { $gt: now },
   });
+  if (session) processingActiveQuery = processingActiveQuery.session(session);
+  const processingActive = await processingActiveQuery;
   return {
     queued: Number(byStatus[PushDeviceDeliveryStatus.QUEUED] ?? 0),
     processingActive,
@@ -312,6 +316,195 @@ export async function casFinalizePushMessageFromSummary({
     { new: true },
   ).lean();
   return { applied: Boolean(updated), status: updated?.status ?? null };
+}
+
+function deviceRegistrationKey(device) {
+  return device.deviceRegistrationId ?? `legacy:${device.tokenHash}`;
+}
+
+/**
+ * Mark pending deliveries for registrations no longer eligible; keep SUCCEEDED untouched.
+ */
+export async function reconcilePushDeliveriesWithEligibleDevices(
+  { tenantId, messageId, eligibleRegistrationIds },
+  session,
+) {
+  const eligible = new Set(eligibleRegistrationIds ?? []);
+  const now = new Date();
+  let rowsQuery = PushDeviceDelivery.find({ tenantId, messageId }).lean();
+  if (session) rowsQuery = rowsQuery.session(session);
+  const rows = await rowsQuery;
+  let finalized = 0;
+  for (const row of rows) {
+    if (
+      row.status === PushDeviceDeliveryStatus.SUCCEEDED
+      || row.status === PushDeviceDeliveryStatus.PERMANENT_FAILED
+    ) {
+      continue;
+    }
+    if (eligible.has(row.deviceRegistrationId)) continue;
+    if (deliveryHasActiveClaim(row, now)) continue;
+
+    const statusFilter =
+      row.status === PushDeviceDeliveryStatus.PROCESSING
+        ? {
+            status: PushDeviceDeliveryStatus.PROCESSING,
+            $or: [
+              { claimExpiresAt: { $lte: now } },
+              { claimExpiresAt: null },
+              { claimExpiresAt: { $exists: false } },
+            ],
+          }
+        : { status: row.status };
+
+    const updated = await PushDeviceDelivery.findOneAndUpdate(
+      {
+        _id: row._id,
+        tenantId,
+        messageId,
+        deviceRegistrationId: row.deviceRegistrationId,
+        ...statusFilter,
+      },
+      {
+        $set: {
+          status: PushDeviceDeliveryStatus.PERMANENT_FAILED,
+          lastErrorKind: "DEVICE_INELIGIBLE",
+          lastErrorCode: "DEVICE_INELIGIBLE",
+        },
+        $unset: { claimToken: "", claimExpiresAt: "" },
+      },
+      { new: true, session: session ?? undefined },
+    ).lean();
+    if (updated) finalized += 1;
+  }
+  return { finalized };
+}
+
+export async function finalizeOrphanPushDeliveries({ tenantId, messageId, eligibleRegistrationIds }) {
+  return reconcilePushDeliveriesWithEligibleDevices({
+    tenantId,
+    messageId,
+    eligibleRegistrationIds,
+  });
+}
+
+export const LogicalResendPrepareOutcome = Object.freeze({
+  RETRY_SCHEDULED: "RETRY_SCHEDULED",
+  ALREADY_DELIVERED: "ALREADY_DELIVERED",
+  NO_RETRY_TARGETS: "NO_RETRY_TARGETS",
+  NO_DEVICES: "NO_DEVICES",
+  ACTIVE_CLAIMS_ONLY: "ACTIVE_CLAIMS_ONLY",
+});
+
+const RESEND_REVIVAL_STATUSES = new Set([
+  PushDeviceDeliveryStatus.RETRYABLE_FAILED,
+  PushDeviceDeliveryStatus.DEAD_LETTER,
+]);
+
+function deliveryHasActiveClaim(row, now) {
+  return (
+    row.status === PushDeviceDeliveryStatus.PROCESSING
+    && row.claimExpiresAt
+    && row.claimExpiresAt > now
+  );
+}
+
+/**
+ * Re-queue exhausted-but-retryable device rows for an authorized logical resend.
+ * Does not touch SUCCEEDED / PERMANENT_FAILED or active worker claims.
+ */
+export async function prepareDeliveriesForLogicalResend(
+  { tenantId, messageId, customerId, devices: devicesOverride },
+  session,
+) {
+  const now = new Date();
+  let devices = devicesOverride;
+  if (!devices && customerId) {
+    const { resolvePushDevicesForCustomer } = await import("./device-registration.service.js");
+    const { Customer } = await import("../models/index.js");
+    const customer = await Customer.findOne({ _id: customerId, tenantId })
+      .select("+fcmTokens")
+      .session(session ?? null)
+      .lean();
+    devices = await resolvePushDevicesForCustomer({
+      tenantId,
+      customerId,
+      legacyFcmTokens: customer?.fcmTokens,
+    });
+  }
+  const eligibleIds = (devices ?? []).map((d) => deviceRegistrationKey(d));
+  if (devices?.length) {
+    await ensurePushDeliveries({ tenantId, messageId, devices }, session);
+  }
+  if (eligibleIds.length || customerId) {
+    await reconcilePushDeliveriesWithEligibleDevices(
+      { tenantId, messageId, eligibleRegistrationIds: eligibleIds },
+      session,
+    );
+  }
+
+  const rows = await PushDeviceDelivery.find({ tenantId, messageId })
+    .session(session ?? null)
+    .lean();
+  if (!rows.length) {
+    return { outcome: LogicalResendPrepareOutcome.NO_DEVICES, revived: 0, summary: null };
+  }
+  const eligibleSet = new Set(eligibleIds);
+  let revived = 0;
+  let activeClaims = 0;
+  for (const row of rows) {
+    if (deliveryHasActiveClaim(row, now)) {
+      activeClaims += 1;
+      continue;
+    }
+    if (
+      row.status === PushDeviceDeliveryStatus.SUCCEEDED
+      || row.status === PushDeviceDeliveryStatus.PERMANENT_FAILED
+    ) {
+      continue;
+    }
+    if (customerId && !eligibleSet.has(row.deviceRegistrationId)) {
+      continue;
+    }
+    const canRevive =
+      RESEND_REVIVAL_STATUSES.has(row.status)
+      || (row.status === PushDeviceDeliveryStatus.PROCESSING && !deliveryHasActiveClaim(row, now));
+    if (!canRevive) continue;
+    const updated = await PushDeviceDelivery.findOneAndUpdate(
+      {
+        _id: row._id,
+        tenantId,
+        messageId,
+        deviceRegistrationId: row.deviceRegistrationId,
+        status: row.status,
+        ...(row.status === PushDeviceDeliveryStatus.PROCESSING
+          ? { claimExpiresAt: { $lte: now } }
+          : {}),
+      },
+      {
+        $set: { status: PushDeviceDeliveryStatus.QUEUED },
+        $unset: { claimToken: "", claimExpiresAt: "", deadLetteredAt: "" },
+      },
+      { new: true, session: session ?? undefined },
+    ).lean();
+    if (updated) revived += 1;
+  }
+  const summary = await summarizePushDeliveries({ tenantId, messageId }, session);
+  const hasRunnable =
+    summary.queued > 0 || summary.retryableFailed > 0 || revived > 0;
+  if (hasRunnable) {
+    return { outcome: LogicalResendPrepareOutcome.RETRY_SCHEDULED, revived, summary, activeClaims };
+  }
+  if (summary.succeeded > 0) {
+    return { outcome: LogicalResendPrepareOutcome.ALREADY_DELIVERED, revived, summary, activeClaims };
+  }
+  if (activeClaims > 0 && summary.succeeded === 0) {
+    return { outcome: LogicalResendPrepareOutcome.ACTIVE_CLAIMS_ONLY, revived, summary, activeClaims };
+  }
+  if (summary.permanentFailed > 0 || summary.deadLetter > 0) {
+    return { outcome: LogicalResendPrepareOutcome.NO_RETRY_TARGETS, revived, summary, activeClaims };
+  }
+  return { outcome: LogicalResendPrepareOutcome.NO_DEVICES, revived, summary, activeClaims };
 }
 
 export async function reclaimStaleProcessingDeliveries({ tenantId, messageId }) {

@@ -35,8 +35,14 @@ function gitLines(args) {
   }
 }
 
+const EXPORT_DENY_REL = new Set([
+  /** Credential-scan negative fixture — used by export-source-manifest tests only. */
+  "tests/fixtures/app-config.json",
+]);
+
 function allowedRelative(rel) {
   const n = rel.replace(/\\/g, "/");
+  if (EXPORT_DENY_REL.has(n)) return false;
   if (ROOT_ALLOW_FILES.has(n)) return true;
   return ROOT_ALLOW_PREFIXES.some((p) => n.startsWith(p));
 }

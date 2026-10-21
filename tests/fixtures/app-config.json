@@ -1,0 +1,5 @@
+{
+  "type": "service_account",
+  "project_id": "export-scan-negative-fixture",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nSYNTHETIC_EXPORT_FIXTURE_ONLY\n-----END PRIVATE KEY-----\n"
+}

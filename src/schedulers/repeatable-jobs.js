@@ -26,5 +26,7 @@ export const schedulerRepeatableJobs = [
   job(QueueKind.MAINTENANCE, "ecommerce-cod-acceptance-expiry", { every: 60_000 }, "ecommerce-cod-acceptance-expiry"),
   job(QueueKind.MAINTENANCE, "ecommerce-promotion-maintenance", { every: 60_000 }, "ecommerce-promotion-maintenance"),
   job(QueueKind.PAYMENTS, "ecommerce-payment-reconcile", { every: 120_000 }, "ecommerce-payment-reconcile"),
+  job(QueueKind.PAYMENTS, "digital-metals-payment-reconcile", { every: 120_000 }, "digital-metals-payment-reconcile"),
+  job(QueueKind.MAINTENANCE, "digital-metals-outbox-dispatch", { every: 60_000 }, "digital-metals-outbox-dispatch"),
   job(QueueKind.SCHEDULER, "gateway-settlement-daily", { pattern: "35 0 * * *", tz: "Asia/Kolkata" }, "gateway-settlement"),
 ];

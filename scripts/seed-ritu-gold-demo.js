@@ -1,5 +1,5 @@
 /**
- * Ritu Gold and Diamonds — Palakkad client demo (admin portal only).
+ * Ritu Gold and Diamonds — Palakkad client demo (admin + customer portal).
  *
  * Two 18-month gold-weight schemes:
  * 1) Fixed monthly instalment + 100% bonus gold (no MC on redemption — store policy in terms).
@@ -53,11 +53,11 @@ const GOLD_RULES = {
   blockPaymentIfRateNotSet: true,
 };
 
-const ADMIN_AVAILABILITY = {
+const CUSTOMER_APP_AVAILABILITY = {
   allBranches: true,
   branchIds: [],
-  visibleInCustomerApp: false,
-  customerSelfEnrolAllowed: false,
+  visibleInCustomerApp: true,
+  customerSelfEnrolAllowed: true,
 };
 
 function fixed18GoldPlanBody() {
@@ -109,7 +109,7 @@ function fixed18GoldPlanBody() {
       allowedModes: ["GOLD_HANDOVER", "PURCHASE_ADJUSTMENT"],
       redeemAtAnyBranch: true,
     },
-    availability: ADMIN_AVAILABILITY,
+    availability: CUSTOMER_APP_AVAILABILITY,
     termsText:
       "1. Pay the fixed instalment each month for 18 months; each payment buys 22K gold at the day’s rate.\n2. On maturity, Ritu Gold and Diamonds credits bonus gold equal to 100% of your total contributions (same amount as bonus).\n3. Redemption is for gold jewellery/purchase adjustment with **no making charges (MC)** on scheme gold as per store policy.\n4. Missed instalments may affect benefit eligibility.",
     status: SchemePlanStatus.ACTIVE,
@@ -195,7 +195,7 @@ function flexible18GoldPlanBody() {
       allowedModes: ["GOLD_HANDOVER", "PURCHASE_ADJUSTMENT"],
       redeemAtAnyBranch: true,
     },
-    availability: ADMIN_AVAILABILITY,
+    availability: CUSTOMER_APP_AVAILABILITY,
     termsText:
       "1. For 18 months you may contribute any amount within plan limits (multiple payments per month allowed).\n2. A final closure cycle follows; complete it to mature the scheme.\n3. At maturity (from the 19th month onward), Ritu Gold and Diamonds credits **5% bonus gold** on your total savings.\n4. Redemption is with **no making charges (MC)** on scheme gold as per store policy.",
     status: SchemePlanStatus.ACTIVE,
@@ -291,22 +291,22 @@ async function main() {
     settings: {
       requireKycForEnrolment: false,
       oneActiveSchemePerCustomer: false,
-      customerAppMaintenance: true,
+      customerAppMaintenance: false,
     },
     operations: {
       multiSchemePerCustomer: true,
       receiptPrefix: "RG",
-      customerSelfEnrolEnabled: false,
-      customerSelfRegistrationEnabled: false,
-      customerAppWriteEnabled: false,
-      customerAppPaymentsEnabled: false,
+      customerSelfEnrolEnabled: true,
+      customerSelfRegistrationEnabled: true,
+      customerAppWriteEnabled: true,
+      customerAppPaymentsEnabled: true,
       termsAndConditions: DEMO.tenantName + " — scheme terms as per enrolled plan.",
     },
     featureFlags: {
-      customerAppEnabled: false,
-      customerSelfEnrol: false,
+      customerAppEnabled: true,
+      customerSelfEnrol: true,
       staffAppEnabled: false,
-      onlinePayments: false,
+      onlinePayments: true,
       flexibleScheme: true,
       passbookImageOnPayment: false,
     },
@@ -439,7 +439,8 @@ async function main() {
     const enr = row.enrollment ? ` ${row.enrollment}` : "";
     console.log(`  · ${row.customer}${enr} — ${row.story}`);
   }
-  console.log("\nAdmin portal only (customer app & staff app flags off).\n");
+  console.log("\nCustomer app: enabled (OTP login with demo customer mobiles 9847654401–4422).\n");
+  console.log("Customer URL: /customer/ritugold\n");
 
   await disconnectDatabase();
 }

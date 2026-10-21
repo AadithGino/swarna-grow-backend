@@ -1,0 +1,14 @@
+[
+  {
+    "area": "_meta",
+    "ok": true,
+    "detail": "{\"runId\":\"2026-10-19T05-26-47-340Z\",\"frontend\":\"http://localhost:5173\",\"api\":\"http://localhost:4050/api/v1\",\"startedAt\":\"2026-10-19T05:26:47.340Z\"}",
+    "at": "2026-10-19T05:26:47.340Z"
+  },
+  {
+    "area": "procurement-ui-flow",
+    "ok": false,
+    "detail": "\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByText('dmpce_01M59A0YPRND7JFWP8VT9D22SX')\nExpected: visible\nTimeout: 20000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByText('dmpce_01M59A0YPRND7JFWP8VT9D22SX') with timeout 20000ms\u001b[22m\n\u001b[2m  - waiting for getByText('dmpce_01M59A0YPRND7JFWP8VT9D22SX')\u001b[22m\n",
+    "at": "2026-10-19T05:27:14.214Z"
+  }
+]

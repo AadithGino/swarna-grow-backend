@@ -1,0 +1,56 @@
+[
+  {
+    "area": "_meta",
+    "ok": true,
+    "detail": "{\"runId\":\"2026-10-19T05-15-22-481Z\",\"frontend\":\"http://localhost:5173\",\"api\":\"http://localhost:4050/api/v1\",\"startedAt\":\"2026-10-19T05:15:22.482Z\"}",
+    "at": "2026-10-19T05:15:22.482Z"
+  },
+  {
+    "area": "portal-api-connectivity",
+    "ok": true,
+    "detail": "capability HTTP 200",
+    "at": "2026-10-19T05:15:25.435Z"
+  },
+  {
+    "area": "procurement-ui-flow",
+    "ok": false,
+    "detail": "\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('digital-metals-procurement').getByRole('button').filter({ hasText: 'COMMITMENT' }).first()\nExpected: visible\nTimeout: 20000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" getByTestId('digital-metals-procurement').getByRole('button').filter({ hasText: 'COMMITMENT' }).first() with timeout 20000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('digital-metals-procurement').getByRol",
+    "at": "2026-10-19T05:15:52.055Z"
+  },
+  {
+    "area": "deep-link-refresh-hedge",
+    "ok": true,
+    "detail": "hedge testid visible after reload",
+    "at": "2026-10-19T05:16:00.080Z"
+  },
+  {
+    "area": "hedge-invalidation-banner",
+    "ok": true,
+    "detail": "banner cleared after re-close",
+    "at": "2026-10-19T05:16:26.997Z"
+  },
+  {
+    "area": "admin-document-surfaces",
+    "ok": true,
+    "detail": "sells, payouts, redemption lists",
+    "at": "2026-10-19T05:16:32.148Z"
+  },
+  {
+    "area": "permission-denial-procurement",
+    "ok": true,
+    "detail": "procurement hidden for limited staff",
+    "at": "2026-10-19T05:16:33.068Z"
+  },
+  {
+    "area": "customer-statement-document",
+    "ok": false,
+    "detail": "\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m200\u001b[39m\nReceived: \u001b[31m500\u001b[39m",
+    "at": "2026-10-19T05:16:45.842Z"
+  },
+  {
+    "area": "paused-trading-customer-capability",
+    "ok": false,
+    "detail": "page.evaluate: SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied for this document.\n    at UtilityScript.evaluate (<anonymous>:313:16)\n    at UtilityScript.<anonymous> (<anonymous>:1:44)",
+    "at": "2026-10-19T05:16:45.992Z"
+  }
+]

@@ -37,6 +37,13 @@ function uiTypeForMessageType(type) {
     case "SCHEME_GOLD_RATE_UPDATED":
     case "ECOMMERCE_GOLD_RATE_UPDATED":
       return type === "SCHEME_GOLD_RATE_UPDATED" ? "SCHEME" : "ECOMMERCE";
+    case "DIGITAL_METAL_PURCHASE_CREDITED":
+    case "DIGITAL_METAL_PURCHASE_PAYMENT_FAILED":
+    case "DIGITAL_METAL_SELL_EXECUTED":
+    case "DIGITAL_METAL_PAYOUT_UPDATE":
+    case "DIGITAL_METAL_REDEMPTION_UPDATE":
+    case "DIGITAL_METAL_DOCUMENT_READY":
+      return "DIGITAL_METALS";
     default:
       return "GENERAL";
   }
@@ -80,6 +87,14 @@ function titleForRow(row) {
     case "ECOMMERCE_COD_UPDATE":
       if (row.templateParams?.title) return String(row.templateParams.title);
       return "Shop order update";
+    case "DIGITAL_METAL_PURCHASE_CREDITED":
+    case "DIGITAL_METAL_PURCHASE_PAYMENT_FAILED":
+    case "DIGITAL_METAL_SELL_EXECUTED":
+    case "DIGITAL_METAL_PAYOUT_UPDATE":
+    case "DIGITAL_METAL_REDEMPTION_UPDATE":
+    case "DIGITAL_METAL_DOCUMENT_READY":
+      if (row.templateParams?.title) return String(row.templateParams.title);
+      return "Digital metals update";
     case "MANUAL_PUSH":
     case "ECOMMERCE_PRODUCT_PROMOTION":
     case "ECOMMERCE_CATEGORY_PROMOTION":
@@ -146,6 +161,14 @@ function bodyForRow(row, ctx) {
     case "ECOMMERCE_COD_UPDATE":
       if (row.templateParams?.body) return String(row.templateParams.body);
       return "Open the shop order page for details.";
+    case "DIGITAL_METAL_PURCHASE_CREDITED":
+    case "DIGITAL_METAL_PURCHASE_PAYMENT_FAILED":
+    case "DIGITAL_METAL_SELL_EXECUTED":
+    case "DIGITAL_METAL_PAYOUT_UPDATE":
+    case "DIGITAL_METAL_REDEMPTION_UPDATE":
+    case "DIGITAL_METAL_DOCUMENT_READY":
+      if (row.templateParams?.body) return String(row.templateParams.body);
+      return "Open digital metals in the app for details.";
     case "MANUAL_PUSH":
     case "ECOMMERCE_PRODUCT_PROMOTION":
     case "ECOMMERCE_CATEGORY_PROMOTION":
