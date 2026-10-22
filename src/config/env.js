@@ -160,6 +160,9 @@ export function parseEnv(source = process.env) {
     SEED_PLATFORM_MOBILE: z.string().default("+919999999999"),
     SEED_PLATFORM_EMAIL: z.string().email().default("ops@platform.com"),
     SEED_PLATFORM_PASSWORD: z.string().min(4).max(128).default("1234"),
+    GEMINI_API_KEY: z.string().default(""),
+    ASSISTANT_MODEL: z.string().default("gemini-3.5-flash-lite"),
+    ASSISTANT_ENABLED: booleanString,
   }).superRefine((_value, context) => {
     const nodeEnv = source.NODE_ENV ?? "development";
     if (nodeEnv !== "production") return;

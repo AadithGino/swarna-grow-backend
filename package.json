@@ -64,6 +64,7 @@
     "cors": "^2.8.5",
     "dayjs": "^1.11.18",
     "decimal.js": "^10.6.0",
+    "exceljs": "^4.4.0",
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "google-auth-library": "^11.1.0",

@@ -281,6 +281,7 @@ test("live checkout policy rejects missing credentials; mock attempts require pe
       checkoutMode: "LIVE",
       providerOrderId: "mock_x",
       sdkToken: "mock-token-x",
+      
     }),
     false,
   );

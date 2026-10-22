@@ -9,6 +9,7 @@ import { adminOperationsRouter } from "./admin-operations.routes.js";
 import { adminAnalyticsRouter } from "./admin-analytics.routes.js";
 import { adminEcommerceRouter } from "./admin-ecommerce.routes.js";
 import { adminDigitalMetalsRouter } from "./admin-digital-metals.routes.js";
+import { assistantRouter } from "./assistant.routes.js";
 import { staffRouter } from "./staff.routes.js";
 import { appRouter } from "./app.routes.js";
 import { appAuthRouter } from "./app-auth.routes.js";
@@ -19,6 +20,7 @@ export const apiRouter = Router();
 apiRouter.use("/public", publicRouter); apiRouter.use("/auth", authRouter); apiRouter.use("/platform", platformRouter); apiRouter.use("/app/auth", appAuthRouter);
 apiRouter.use("/admin/customers", authenticate, requireSubject("TENANT_USER"), tenantScope, adminCustomerRouter);
 apiRouter.use("/admin", authenticate, requireSubject("TENANT_USER"), tenantScope, adminConfigRouter, adminSchemeRouter, adminOperationsRouter, adminAnalyticsRouter, adminEcommerceRouter, adminDigitalMetalsRouter);
+apiRouter.use("/admin/assistant", authenticate, requireSubject("TENANT_USER"), tenantScope, assistantRouter);
 apiRouter.use(
   "/staff",
   authenticate,

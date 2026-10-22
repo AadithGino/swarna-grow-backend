@@ -1,9 +1,12 @@
+DELETE /admin/assistant/conversations/:id
 DELETE /admin/customers/:customerId/nominee
 DELETE /app/devices/fcm-token
 DELETE /auth/devices/:deviceId
 DELETE /platform/tenants/:tenantId/templates/:messageType
 DELETE /staff/customers/:customerId/nominee
 DELETE /staff/devices/fcm-token
+GET /admin/assistant/conversations
+GET /admin/assistant/conversations/:id/messages
 GET /admin/alerts
 GET /admin/audit-events
 GET /admin/branches
@@ -245,6 +248,7 @@ GET /staff/schemes/:schemeId/passbook
 GET /staff/schemes/:schemeId/payable-range
 PATCH /admin/branches/:branchId
 PATCH /admin/customers/:customerId
+PATCH /admin/assistant/conversations/:id
 PATCH /admin/customers/:customerId/whatsapp-opt
 PATCH /admin/digital-metals/settings
 PATCH /admin/ecommerce/banners/:bannerId
@@ -263,6 +267,8 @@ PATCH /platform/tenants/:tenantId
 PATCH /platform/tenants/:tenantId/subscription/limits
 PATCH /staff/customers/:customerId
 POST /admin/alerts/:alertId/dismiss
+POST /admin/assistant/chat
+POST /admin/assistant/export
 POST /admin/branches
 POST /admin/branches/:branchId/activate
 POST /admin/branches/:branchId/deactivate

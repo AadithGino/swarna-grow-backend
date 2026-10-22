@@ -14,3 +14,4 @@ export * from "./gateway-settlement.models.js";
 export * from "./ecommerce.models.js";
 export * from "./ecommerce-commerce.models.js";
 export * from "./digital-metals.models.js";
+export * from "./assistant.models.js";

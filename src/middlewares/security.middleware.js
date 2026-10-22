@@ -218,3 +218,21 @@ export const tenantResolveRateLimit = rateLimit({
     },
   },
 });
+
+export const assistantChatRateLimit = rateLimit({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  skip: () => !env.RATE_LIMIT_ENABLED,
+  keyGenerator: (req) =>
+    `${req.auth?.tenantId ?? "unknown"}:${req.auth?.id ?? req.ip}:${ipKeyGenerator(req.ip)}`,
+  store: createRateLimitStore("assistant-chat"),
+  message: {
+    success: false,
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many assistant requests. Please wait a moment and try again.",
+    },
+  },
+});

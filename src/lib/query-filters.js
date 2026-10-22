@@ -1,3 +1,5 @@
+import { now as istNow } from "./date.js";
+
 /** Escape a string for safe RegExp use. */
 export const escaped = (value) =>
   String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -145,6 +147,15 @@ export function resolveDatePreset(preset, query = {}) {
   }
   if (p === "LAST_3_MONTHS") {
     return { from: shiftYmd(today, -89), to: today };
+  }
+  if (p === "THIS_YEAR") {
+    const cal = istNow();
+    const from = `${cal.year()}-01-01`;
+    return { from, to: cal.format("YYYY-MM-DD") };
+  }
+  if (p === "LAST_365_DAYS") {
+    const calToday = istNow().format("YYYY-MM-DD");
+    return { from: shiftYmd(calToday, -364), to: calToday };
   }
   return { from: query.from, to: query.to };
 }
