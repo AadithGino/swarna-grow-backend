@@ -12,8 +12,13 @@ import { buildFrozenDestinationSnapshot } from "./digital-metals-bank-destinatio
 import { assertTenantOwnsCustomerScope } from "./digital-metals.service.js";
 import { applyAdminCustomerScopeFilter } from "../lib/digital-metals-admin-scope.js";
 import { enqueuePayoutCustomerNotice } from "../lib/digital-metals-customer-notice.js";
+import {
+  paginateByIdCursor,
+  parseAdminScopedListQuery,
+} from "../lib/digital-metals-customer-order-access.js";
+import { OPEN_PAYOUT_IN_FLIGHT_STATUSES } from "../lib/digital-metals-open-work-statuses.js";
 
-const BLOCKING_PAYOUT_STATUSES = new Set(["PENDING_APPROVAL", "APPROVED", "SUBMITTED", "UNKNOWN"]);
+const BLOCKING_PAYOUT_STATUSES = new Set(OPEN_PAYOUT_IN_FLIGHT_STATUSES);
 /** Counts toward payable cap (failed attempts do not consume liability). */
 const PAYABLE_CAP_STATUSES = new Set([...BLOCKING_PAYOUT_STATUSES, "SETTLED"]);
 
@@ -31,6 +36,17 @@ export function buildPermittedPayoutActions(payout, auth) {
     actions.push("RECORD_SETTLEMENT");
   }
   return actions;
+}
+
+function mapPayableRow(row) {
+  return {
+    id: row._id,
+    customerId: row.customerId,
+    sellOrderId: row.sellOrderId,
+    amountPaise: row.amountPaise,
+    outstandingPaise: row.outstandingPaise,
+    status: row.status,
+  };
 }
 
 function mapPayout(row, extras = {}) {
@@ -110,25 +126,30 @@ async function assertNoBlockingPayout(tenantId, payableId, excludePayoutId = nul
 }
 
 export async function listAdminPayables(req) {
-  const limit = Math.min(Number(req.query.limit) || 25, 100);
+  const { limit, cursor } = parseAdminScopedListQuery(req);
   const filter = { tenantId: req.auth.tenantId };
   if (req.query.status) filter.status = req.query.status;
   await applyAdminCustomerScopeFilter(req, filter, { customerIdQuery: req.query.customerId });
-  const items = await DigitalMetalPayable.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
-  return { items };
+  if (cursor) filter._id = { $lt: cursor };
+  const rows = await DigitalMetalPayable.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
+  const { items, meta } = paginateByIdCursor(rows, limit);
+  return { items: items.map(mapPayableRow), meta };
 }
 
 export async function listAdminPayouts(req) {
-  const limit = Math.min(Number(req.query.limit) || 25, 100);
+  const { limit, cursor } = parseAdminScopedListQuery(req);
   const filter = { tenantId: req.auth.tenantId };
   if (req.query.status) filter.status = req.query.status;
   if (req.query.payableId) filter.payableId = req.query.payableId;
   await applyAdminCustomerScopeFilter(req, filter, { customerIdQuery: req.query.customerId });
-  const items = await DigitalMetalPayout.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
+  if (cursor) filter._id = { $lt: cursor };
+  const rows = await DigitalMetalPayout.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
+  const { items, meta } = paginateByIdCursor(rows, limit);
   return {
     items: items.map((row) =>
       mapPayout(row, { permittedActions: buildPermittedPayoutActions(row, req.auth) }),
     ),
+    meta,
   };
 }
 

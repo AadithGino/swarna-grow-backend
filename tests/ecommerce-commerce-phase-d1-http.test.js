@@ -34,10 +34,11 @@ const app = createApp();
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("commerce phase D1 HTTP", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
 async function enableStore(tenant) {
   await Tenant.updateOne(
@@ -385,4 +386,5 @@ test("customer cannot read another customer order in same tenant", async () => {
     .get(`/api/v1/app/shop/orders/${orderRes.body.data.id}`)
     .set({ authorization: `Bearer ${otherToken}` });
   assert.equal(res.status, 404);
+});
 });

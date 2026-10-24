@@ -47,7 +47,7 @@ function monthWindowFromQuestion(q, todayIst) {
   return calendarMonthsWindow(todayIst, 2);
 }
 
-function buildBestMonthCollectionQuery(todayIst, q) {
+export function buildBestMonthCollectionQuery(todayIst, q) {
   const months =
     /\blast (three|3) month/.test(q) ? 3 : /\blast (two|2) month/.test(q) ? 2 : 3;
   const { from, to } = monthWindowFromQuestion(q, todayIst);
@@ -91,14 +91,50 @@ export function wantsMonthNotBranch(question) {
 }
 
 /** Owner asks for the most recent receipt / who paid / payment details — not a grouped breakdown. */
+/** Rank customers by total paid in a calendar month — not the latest single receipt. */
+export function isTopPayerRankingQuestion(question) {
+  const q = normalizeQuestion(normalizeAssistantQuestion(question));
+  if (!q) return false;
+  const paymentWord = /\b(payment|collection|receipt|paid|pay)\b/.test(q);
+  if (!paymentWord) return false;
+  if (!/\b(most|highest|top|maximum|biggest|largest)\b/.test(q)) return false;
+  if (/\b(last|latest|recent|newest)\b/.test(q) && !/\blast month\b/.test(q)) return false;
+  return /\blast month\b/.test(q) || /\bthis month\b/.test(q) || /\bmonth\b/.test(q);
+}
+
+export function buildTopPayerRankingQuery(question, todayIst) {
+  const q = normalizeQuestion(normalizeAssistantQuestion(question));
+  const period = /\bthis month\b/.test(q) ? "THIS_MONTH" : "LAST_MONTH";
+  return {
+    kind: "query",
+    spec: {
+      entity: "collections",
+      filters: [{ field: "status", op: "eq", value: "SUCCESS" }],
+      period,
+      groupBy: "customerId",
+      aggregate: { fn: "sum", field: "amountPaise" },
+      sort: "desc",
+      topN: 5,
+      ...(period === "THIS_MONTH" && todayIst ? { to: todayIst } : {}),
+    },
+  };
+}
+
 export function isLastPaymentDetailQuestion(question) {
   const q = normalizeQuestion(normalizeAssistantQuestion(question));
   if (!q) return false;
   const paymentWord = /\b(payment|collection|receipt|installment|paid)\b/.test(q);
   if (!paymentWord) return false;
 
+  if (/\blast\s+\d{1,3}\s+days?\b/.test(q)) return false;
+  if (/\b(daily|break[\s-]?down|per day|day by day)\b/.test(q)) return false;
+  if (/\b(how much|total|sum)\b/.test(q) && !/\b(latest|last payment|most recent payment)\b/.test(q)) {
+    return false;
+  }
+
+  if (/\b(most|highest|top|maximum|biggest|rank)\b/.test(q)) return false;
   if (/\b(last|latest|most recent|newest|recent)\b/.test(q)) return true;
-  if (/\bwho (paid|made|collected)\b/.test(q)) return true;
+  if (/\bwho (paid|made|collected)\b/.test(q) && !/\bmost\b/.test(q)) return true;
   if (/\bpayment details\b/.test(q)) return true;
   if (/\bwhich (scheme|customer|branch)\b/.test(q) && /\b(last|latest|who)\b/.test(q)) {
     return true;
@@ -112,29 +148,4 @@ export function isLastPaymentDetailQuestion(question) {
  * @param {{ todayIst?: string }} [context]
  * @returns {AssistantAction}
  */
-export function refineQueryAction(question, action, context = {}) {
-  const effective = routingQuestion(question, context.history);
-  const q = normalizeQuestion(normalizeAssistantQuestion(effective));
-  const todayIst = context.todayIst;
-
-  const monthComparison =
-    isBestMonthCollectionQuestion(effective) ||
-    (wantsMonthNotBranch(effective) && /\b(collect|month)\b/.test(q));
-
-  if (monthComparison && todayIst) {
-    return buildBestMonthCollectionQuery(todayIst, q);
-  }
-
-  if (action?.kind !== "query") return action;
-  if (!isLastPaymentDetailQuestion(question)) return action;
-
-  return {
-    kind: "query",
-    spec: {
-      entity: "collections",
-      filters: [{ field: "status", op: "eq", value: "SUCCESS" }],
-      sort: "desc",
-      limit: 1,
-    },
-  };
-}
+export { refineQueryAction } from "./assistant-plan.js";

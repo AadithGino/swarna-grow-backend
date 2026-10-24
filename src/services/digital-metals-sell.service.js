@@ -19,6 +19,10 @@ import {
   sellSummaryForJournalMetadata,
 } from "../lib/digital-metals-sell-summary.js";
 import {
+  hashDigitalMetalsOrderBody,
+  resolveCustomerBoundIdempotencyReplay,
+} from "../lib/digital-metals-customer-idempotency.js";
+import {
   Customer,
   DigitalMetalBankDestination,
   DigitalMetalPayable,
@@ -244,11 +248,18 @@ export async function createSellOrder(req) {
   if (!idempotencyKey) {
     throw errors.validation([{ field: "x-idempotency-key", message: "Idempotency key is required." }]);
   }
+  const bodyHash = hashDigitalMetalsOrderBody(req.body);
   const existing = await DigitalMetalSellOrder.findOne({
     tenantId: req.auth.tenantId,
     idempotencyKey,
   }).lean();
-  if (existing) return mapSellOrderDto(existing);
+  const replayExisting = resolveCustomerBoundIdempotencyReplay({
+    order: existing,
+    customerId: req.auth.id,
+    body: req.body,
+    bodyHash,
+  });
+  if (replayExisting) return mapSellOrderDto(replayExisting);
 
   const tenant = await loadTenant(req);
   const quote = await DigitalMetalQuote.findOne({
@@ -280,7 +291,9 @@ export async function createSellOrder(req) {
   const reserveKey = `${idempotencyKey}:reserve`;
 
   const orderId = createId("dmso");
-  const order = await withTransaction(async (session) => {
+  let order;
+  try {
+    order = await withTransaction(async (session) => {
     const pendingOrder = {
       _id: orderId,
       tenantId: req.auth.tenantId,
@@ -327,6 +340,7 @@ export async function createSellOrder(req) {
             termsContentHash: req.body.termsContentHashAccepted,
             termsAcceptedAt: new Date(),
             idempotencyKey,
+            creationBodyHash: bodyHash,
           },
         ],
         { session },
@@ -338,7 +352,23 @@ export async function createSellOrder(req) {
       { session },
     );
     return row.toObject();
-  });
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      const dup = await DigitalMetalSellOrder.findOne({
+        tenantId: req.auth.tenantId,
+        idempotencyKey,
+      }).lean();
+      const replayDup = resolveCustomerBoundIdempotencyReplay({
+        order: dup,
+        customerId: req.auth.id,
+        body: req.body,
+        bodyHash,
+      });
+      if (replayDup) return mapSellOrderDto(replayDup);
+    }
+    throw err;
+  }
 
   return mapSellOrderDto(order);
 }

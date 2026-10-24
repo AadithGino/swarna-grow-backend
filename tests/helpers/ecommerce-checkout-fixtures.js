@@ -45,7 +45,7 @@ export function enableEcommercePaymentsTestHarness() {
 }
 
 export function disableEcommercePaymentsTestHarness() {
-  delete process.env.ECOMMERCE_PAYMENTS_TEST_HARNESS;
+  process.env.ECOMMERCE_PAYMENTS_TEST_HARNESS = "false";
 }
 
 const POLICY_PLACEHOLDER =

@@ -8,12 +8,16 @@ import { PlanTier, TenantRole, UserStatus, UserType } from "../src/constants/enu
 import { ROLE_PERMISSIONS } from "../src/constants/permissions.js";
 import {
   DigitalMetalBankDestination,
+  DigitalMetalPayable,
+  DigitalMetalPhysicalOutEvent,
+  DigitalMetalRedemptionChargeRefundCase,
   DigitalMetalRedemptionOrder,
   DigitalMetalSellOrder,
   Session,
   Tenant,
   User,
 } from "../src/models/index.js";
+import { phonePeProvider } from "../src/integrations/phonepe.provider.js";
 import { renderSellAcknowledgementPdf } from "../src/lib/digital-metals-document-pdf.js";
 import {
   formatInrFromPaise,
@@ -267,6 +271,52 @@ test("bank list GET is read-only (pending stays pending)", async () => {
   assert.equal(row.status, "PENDING_VERIFICATION");
 });
 
+test("admin payables list returns cursor pagination meta", async () => {
+  const { tenant, branch, user } = await seedTenantUser({});
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  await enablePlan(tenant._id);
+  for (let i = 0; i < 3; i += 1) {
+    await DigitalMetalPayable.create({
+      _id: createId("dmpaybl"),
+      tenantId: tenant._id,
+      customerId: customer._id,
+      sellOrderId: createId("dmso"),
+      amountPaise: 100_00 + i,
+      outstandingPaise: 100_00 + i,
+      status: "OPEN",
+    });
+  }
+  const ownerToken = `Bearer ${bearerFor(user, ROLE_PERMISSIONS[TenantRole.TENANT_OWNER])}`;
+  const page1 = await request(app)
+    .get("/api/v1/admin/digital-metals/payables")
+    .set("Authorization", ownerToken)
+    .query({ limit: 2 });
+  assert.equal(page1.status, 200);
+  assert.equal(page1.body.data.items.length, 2);
+  assert.equal(page1.body.data.meta.hasMore, true);
+  assert.ok(page1.body.data.meta.nextCursor);
+  const page2 = await request(app)
+    .get("/api/v1/admin/digital-metals/payables")
+    .set("Authorization", ownerToken)
+    .query({ limit: 2, cursor: page1.body.data.meta.nextCursor });
+  assert.equal(page2.status, 200);
+  assert.equal(page2.body.data.items.length, 1);
+  assert.equal(page2.body.data.meta.hasMore, false);
+});
+
+test("unknown checkout mode is rejected; demo and mock modes resolve explicitly", () => {
+  process.env.PROVIDER_MODE = "live";
+  process.env.DIGITAL_METALS_CHECKOUT_MODE = "not-a-mode";
+  assert.throws(
+    () => resolveDigitalMetalsCheckoutMode(),
+    (err) => err.code === "CHECKOUT_MODE_INVALID",
+  );
+  process.env.DIGITAL_METALS_CHECKOUT_MODE = "demo";
+  assert.equal(resolveDigitalMetalsCheckoutMode(), "DIGITAL_METALS_DEMO");
+  process.env.DIGITAL_METALS_CHECKOUT_MODE = "mock";
+  assert.equal(resolveDigitalMetalsCheckoutMode(), "MOCK_PROVIDER");
+});
+
 test("live checkout policy rejects missing credentials; mock attempts require persisted checkoutMode", () => {
   process.env.PROVIDER_MODE = "live";
   process.env.DIGITAL_METALS_CHECKOUT_MODE = "live";
@@ -292,4 +342,236 @@ test("live checkout policy rejects missing credentials; mock attempts require pe
     }),
     true,
   );
+});
+
+function redemptionOrderFields(overrides = {}) {
+  return {
+    quoteId: createId("dmrq"),
+    catalogueItemId: createId("dmrc"),
+    catalogueVersion: 1,
+    reservationId: createId("dmrs"),
+    metal: "GOLD",
+    finenessPpm: 999_000,
+    quantityUg: "2000000",
+    unitCount: 1,
+    chargeTotalPaise: 100_00,
+    snapshot: { packagingPaise: 0, mintingPaise: 100_00, deliveryPaise: 0, taxLines: [] },
+    fulfilmentMode: "DELIVERY",
+    idempotencyKey: randomUUID(),
+    quoteExpiresAt: new Date(Date.now() + 86_400_000),
+    chargePaymentExpiresAt: new Date(Date.now() + 86_400_000),
+    termsAcceptedAt: new Date(),
+    version: 1,
+    ...overrides,
+  };
+}
+
+test("physical-out idempotency replay enforces admin branch scope", async () => {
+  const { tenant, branch, user: manager } = await seedTenantUser({
+    role: TenantRole.BRANCH_MANAGER,
+  });
+  assert.equal(String(manager.branchId), String(branch._id));
+  const branchB = await seedBranch({ tenantId: tenant._id, code: "BRB2", name: "Branch B" });
+  const customerB = await seedCustomer({ tenantId: tenant._id, branchId: branchB._id, mobile: "+919900000088" });
+  await enablePlan(tenant._id);
+  const orderId = createId("dmro");
+  const idem = randomUUID();
+  await DigitalMetalRedemptionOrder.create({
+    _id: orderId,
+    tenantId: tenant._id,
+    customerId: customerB._id,
+    branchId: branchB._id,
+    status: "COMPLETED",
+    completedAt: new Date(),
+    ...redemptionOrderFields(),
+  });
+  await DigitalMetalPhysicalOutEvent.create({
+    _id: createId("dmphy"),
+    tenantId: tenant._id,
+    redemptionOrderId: orderId,
+    customerId: customerB._id,
+    metal: "GOLD",
+    finenessPpm: 999_000,
+    quantityUg: 2_000_000,
+    reservationId: createId("dmrs"),
+    businessDate: "2026-10-01",
+    fulfilmentMode: "DELIVERY",
+    idempotencyKey: idem,
+  });
+  const managerToken = `Bearer ${bearerFor(manager, ROLE_PERMISSIONS[TenantRole.BRANCH_MANAGER])}`;
+  const res = await request(app)
+    .post(`/api/v1/admin/digital-metals/redemption/orders/${orderId}/fulfilment/complete-delivery`)
+    .set("Authorization", managerToken)
+    .set("X-Idempotency-Key", idem)
+    .send({ expectedVersion: 1, approverAttestation: true, evidenceUploadIds: ["u1"] });
+  assert.equal(res.status, 403);
+});
+
+test("additional capture refund resolution keeps charge-paid fulfilment order", async () => {
+  const { tenant, branch, user: owner } = await seedTenantUser({});
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  await enablePlan(tenant._id);
+  const orderId = createId("dmro");
+  const refundId = createId("dmrref");
+  await DigitalMetalRedemptionOrder.create({
+    _id: orderId,
+    tenantId: tenant._id,
+    customerId: customer._id,
+    branchId: branch._id,
+    status: "CHARGE_PAID",
+    paymentExceptionStatus: "ADDITIONAL_CAPTURE",
+    successfulChargeAttemptId: createId("dmrpay"),
+    ...redemptionOrderFields(),
+  });
+  await DigitalMetalRedemptionChargeRefundCase.create({
+    _id: refundId,
+    tenantId: tenant._id,
+    redemptionOrderId: orderId,
+    customerId: customer._id,
+    paymentAttemptId: createId("dmrpay"),
+    merchantOrderId: createId("dmrpay"),
+    amountPaise: 100_00,
+    exceptionType: "ADDITIONAL_CAPTURE",
+    status: "REFUND_INITIATED",
+  });
+  const { confirmRedemptionChargeRefundFromProvider, recordManualRedemptionChargeRefund } = await import(
+    "../src/services/digital-metals-redemption-charge-refund.service.js"
+  );
+  const provider = await confirmRedemptionChargeRefundFromProvider({
+    tenantId: tenant._id,
+    payload: { merchantRefundId: refundId, state: "COMPLETED" },
+  });
+  assert.equal(provider.outcome, "SUCCEEDED");
+  let order = await DigitalMetalRedemptionOrder.findById(orderId).lean();
+  assert.equal(order.status, "CHARGE_PAID");
+  assert.equal(order.paymentExceptionStatus, "REFUNDED");
+
+  const orderId2 = createId("dmro");
+  const refundId2 = createId("dmrref");
+  await DigitalMetalRedemptionOrder.create({
+    _id: orderId2,
+    tenantId: tenant._id,
+    customerId: customer._id,
+    branchId: branch._id,
+    status: "CHARGE_PAID",
+    paymentExceptionStatus: "ADDITIONAL_CAPTURE",
+    successfulChargeAttemptId: createId("dmrpay"),
+    ...redemptionOrderFields({ idempotencyKey: randomUUID() }),
+  });
+  await DigitalMetalRedemptionChargeRefundCase.create({
+    _id: refundId2,
+    tenantId: tenant._id,
+    redemptionOrderId: orderId2,
+    customerId: customer._id,
+    paymentAttemptId: createId("dmrpay"),
+    merchantOrderId: createId("dmrpay"),
+    amountPaise: 100_00,
+    exceptionType: "ADDITIONAL_CAPTURE",
+    status: "ASSIGNED",
+  });
+  const manual = await recordManualRedemptionChargeRefund({
+    auth: { id: owner._id, tenantId: tenant._id, type: "TENANT_USER", role: TenantRole.TENANT_OWNER },
+    params: { refundCaseId: refundId2 },
+    body: { resolutionNote: "NEFT reversal", evidenceUploadIds: ["upl_1"] },
+  });
+  assert.equal(manual.refund.status, "MANUAL_RECORDED");
+  order = await DigitalMetalRedemptionOrder.findById(orderId2).lean();
+  assert.equal(order.status, "CHARGE_PAID");
+  assert.equal(order.paymentExceptionStatus, "REFUNDED");
+});
+
+test("redemption charge refund initiation respects branch scope and ambiguous provider errors", async () => {
+  const { tenant, branch: branchA, user: manager } = await seedTenantUser({
+    role: TenantRole.BRANCH_MANAGER,
+  });
+  const branchB = await seedBranch({ tenantId: tenant._id, code: "BRB3", name: "Branch B" });
+  const customerB = await seedCustomer({ tenantId: tenant._id, branchId: branchB._id, mobile: "+919900000077" });
+  await enablePlan(tenant._id);
+  const orderId = createId("dmro");
+  const refundId = createId("dmrref");
+  await DigitalMetalRedemptionOrder.create({
+    _id: orderId,
+    tenantId: tenant._id,
+    customerId: customerB._id,
+    branchId: branchB._id,
+    status: "REFUND_REVIEW",
+    paymentExceptionStatus: "LATE_SUCCESS",
+    ...redemptionOrderFields(),
+  });
+  await DigitalMetalRedemptionChargeRefundCase.create({
+    _id: refundId,
+    tenantId: tenant._id,
+    redemptionOrderId: orderId,
+    customerId: customerB._id,
+    paymentAttemptId: createId("dmrpay"),
+    merchantOrderId: createId("dmrpay"),
+    amountPaise: 100_00,
+    exceptionType: "LATE_SUCCESS",
+    status: "ASSIGNED",
+  });
+  const { initiateAdminRedemptionChargeRefund } = await import(
+    "../src/services/digital-metals-redemption-charge-refund.service.js"
+  );
+  await assert.rejects(
+    () =>
+      initiateAdminRedemptionChargeRefund({
+        auth: {
+          id: manager._id,
+          tenantId: tenant._id,
+          type: "TENANT_USER",
+          role: TenantRole.BRANCH_MANAGER,
+          branchId: branchA._id,
+        },
+        params: { orderId },
+      }),
+    (err) => err.statusCode === 403,
+  );
+
+  const { tenant: tenant2, branch, user: owner } = await seedTenantUser({});
+  const customer = await seedCustomer({ tenantId: tenant2._id, branchId: branch._id });
+  await enablePlan(tenant2._id);
+  const { configureTenantPhonePe } = await import("./helpers/gateway-http-fixture.js");
+  await configureTenantPhonePe(tenant2._id);
+  const orderId2 = createId("dmro");
+  const refundId2 = createId("dmrref");
+  await DigitalMetalRedemptionOrder.create({
+    _id: orderId2,
+    tenantId: tenant2._id,
+    customerId: customer._id,
+    branchId: branch._id,
+    status: "REFUND_REVIEW",
+    paymentExceptionStatus: "LATE_SUCCESS",
+    ...redemptionOrderFields({ idempotencyKey: randomUUID() }),
+  });
+  await DigitalMetalRedemptionChargeRefundCase.create({
+    _id: refundId2,
+    tenantId: tenant2._id,
+    redemptionOrderId: orderId2,
+    customerId: customer._id,
+    paymentAttemptId: createId("dmrpay"),
+    merchantOrderId: createId("dmrpay"),
+    amountPaise: 100_00,
+    exceptionType: "LATE_SUCCESS",
+    status: "ASSIGNED",
+  });
+  const original = phonePeProvider.initiateRefund.bind(phonePeProvider);
+  phonePeProvider.initiateRefund = async () => {
+    const err = new Error("network timeout");
+    err.code = "ETIMEDOUT";
+    throw err;
+  };
+  try {
+    await assert.rejects(
+      () =>
+        initiateAdminRedemptionChargeRefund({
+          auth: { id: owner._id, tenantId: tenant2._id, type: "TENANT_USER", role: TenantRole.TENANT_OWNER },
+          params: { orderId: orderId2 },
+        }),
+      (err) => err.code === "REFUND_INITIATION_FAILED",
+    );
+    const row = await DigitalMetalRedemptionChargeRefundCase.findById(refundId2).lean();
+    assert.equal(row.status, "REFUND_INITIATED");
+  } finally {
+    phonePeProvider.initiateRefund = original;
+  }
 });

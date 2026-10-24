@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   isBestMonthCollectionQuestion,
   isLastPaymentDetailQuestion,
+  isTopPayerRankingQuestion,
   refineQueryAction,
 } from "../src/services/assistant/refine-query.js";
 import { normalizeAssistantQuestion } from "../src/services/assistant/normalize-question.js";
@@ -63,6 +64,33 @@ test("refineQueryAction merges not branch follow-up with prior user question", (
   assert.equal(action.kind, "query");
   assert.equal(action.spec.timeBucket, "month");
   assert.equal(action.spec.topN, 2);
+});
+
+test("isLastPaymentDetailQuestion excludes ranking questions like who paid most", () => {
+  assert.equal(isLastPaymentDetailQuestion("who paid the most last month"), false);
+  assert.equal(isLastPaymentDetailQuestion("who paid most last month"), false);
+});
+
+test("isTopPayerRankingQuestion detects ranked payer questions", () => {
+  assert.equal(isTopPayerRankingQuestion("Who paid most last month?"), true);
+  assert.equal(isTopPayerRankingQuestion("latest payment amount"), false);
+});
+
+test("refineQueryAction maps who paid most last month to grouped aggregate", () => {
+  const action = refineQueryAction("Who paid most last month?", {
+    kind: "query",
+    spec: {
+      entity: "collections",
+      filters: [{ field: "status", op: "eq", value: "SUCCESS" }],
+      sort: "desc",
+      limit: 1,
+    },
+  });
+  assert.equal(action.spec.groupBy, "customerId");
+  assert.equal(action.spec.period, "LAST_MONTH");
+  assert.equal(action.spec.aggregate?.fn, "sum");
+  assert.equal(action.spec.topN, 5);
+  assert.equal(action.spec.limit, undefined);
 });
 
 test("isLastPaymentDetailQuestion detects last payment phrasing", () => {

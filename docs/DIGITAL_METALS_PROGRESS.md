@@ -168,6 +168,7 @@ Overview uses API-backed queue counts (`digital-metals-workspace-overview.tsx`);
 | Process-level `before`/`after` Mongo lifecycle | `tests/global-test-db-serial.js` |
 | **`--test-isolation=none`** on `npm test` / `test:release` (single shared replset) | `package.json` |
 | **`--test-force-exit`** on `npm test` only (avoids hang after small suites; **not** on `test:release`) | `package.json` |
+| **2026-10-24 harness isolation** — do not `delete` harness in `resetTestDb`; global `afterEach` disable; payment suites in `test.describe` | `tests/helpers/db.js`, `tests/global-test-db-serial.js`, ecommerce phase D/E harness files; see `docs/FINAL_RELEASE_EVIDENCE_2026-10-24.md` |
 | Boot mutex (`testDbBootPromise`) — no parallel `MongoMemoryReplSet.create` | `tests/helpers/db.js` |
 | Portal hub open-orders mock | `customer-digital-metals-portfolio-ui.test.tsx` |
 
@@ -203,3 +204,62 @@ Overview uses API-backed queue counts (`digital-metals-workspace-overview.tsx`);
 | Customer order history | Paginated `buy-orders` / `sell-orders` / `redemption/orders` + `orders/open-summary` | Customer hub open-orders block; `/digital-metals/orders`; admin purchases/sells cursor pagination |
 
 **Validation (focused):** `tests/digital-metals-bank-verification-and-orders.test.js`; backend `npm run check`; portal typecheck + vitest + build. No commit/deploy/live traffic.
+
+## Pre-launch lint gate restoration (2026-10-24)
+
+Restored clean check gates before continuing AI / Digital Metals pre-launch fixes. No commits, deploys, or live traffic.
+
+| Gate | Command | Result |
+|------|---------|--------|
+| Backend syntax + route coverage + ESLint | `npm run check` (swarnagrow-backend) | **Pass** — 892 JS files; **471** applicable contract routes; ESLint **0 errors** |
+| Tenant Admin typecheck | `npm run typecheck` (SwarnaGrow-Tenant-Admin) | **Pass** |
+| Focused regression (changed areas) | `NODE_ENV=test node --import ./tests/global-test-db-serial.js --test tests/assistant-export.test.js tests/assistant-memory.test.js tests/assistant-query-compiler.test.js tests/digital-metals-review-fixes.test.js tests/digital-metals-idempotency.test.js` | **51 / 51 pass** (~36s) |
+
+### Lint fixes applied (underlying behaviour preserved)
+
+| File | Fix |
+|------|-----|
+| `scripts/seed-noble-jewellery-matrix.js` | Customer slice `offset` starts after plan matrices (no dead assignment) |
+| `src/services/assistant/assistant-export.service.js` | CSV prefix via `charCodeAt` + explicit formula chars (no `no-control-regex`) |
+| `src/services/assistant/assistant.service.js` | Cache payload strips turn IDs via object copy (not unused destructuring) |
+| `tests/assistant-export.test.js` | Removed unused `branch` in cursor test |
+| `tests/assistant-memory.test.js` | Removed unused `context` stub arg |
+| `tests/digital-metals-review-fixes.test.js` | Use `branch` + assert manager belongs before cross-branch replay test |
+
+### Not run this pass
+
+| Gate | Status |
+|------|--------|
+| Full `npm run test:release` | **Not run** |
+| Portal Vitest / production build | **Not run** (typecheck only) |
+| Browser / acceptance flows | **Not run** |
+
+Database tests in the focused suite used the repository **global-test-db-serial** harness (MongoMemoryServer). Any future Mongo startup failure during release testing is **blocked verification**, not a passing result.
+
+## Digital Metals financial verification gaps (2026-10-24)
+
+Strengthened existing P1 paths (no rewrites). Added `reconcileRedemptionChargeRefundCase` for **REFUND_INITIATED** recovery via PhonePe poll.
+
+| Area | Status | Evidence |
+|------|--------|----------|
+| Customer-bound idempotency (buy/sell/redemption + buy/charge payment attempts) | **Fixed & verified** | Cross-customer 404/conflict; body hash on replay; dup-key recovery |
+| Auth before replay/refund reads | **Fixed & verified** | Handover replay 403; `getAdminRedemptionOrderChargeRefund` branch scope |
+| Refund concurrency / uncertainty | **Fixed & verified** | In-flight → 0 provider calls; ambiguous timeout stays **REFUND_INITIATED**; reconcile → **SUCCEEDED** |
+| Terminal outcome fencing | **Fixed & verified** | Provider **COMPLETED** cannot overwrite **MANUAL_RECORDED** |
+| Extra-capture refunds | **Fixed & verified** | **CHARGE_PAID** and **DISPATCHED** orders keep status; only `paymentExceptionStatus` → **REFUNDED** |
+| Redemption terms at acceptance | **Fixed (prior)** | Quote version/hash + tax fingerprint in `createRedemptionOrder` — **not** re-tested end-to-end this pass |
+| Checkout configuration | **Fixed & verified** | Unknown mode throws; explicit `live` → **LIVE_REQUIRED**; explicit `demo`/`mock` |
+| Full accounting invariants (FIFO / ledger concurrency) | **Not re-run** | Rely on existing phase 4–8 suites; **blocked** until `test:release` |
+
+**Focused command (21 tests):**
+
+```bash
+NODE_ENV=test node --import ./tests/global-test-db-serial.js --test \
+  tests/digital-metals-financial-gaps.test.js \
+  tests/digital-metals-idempotency.test.js \
+  tests/digital-metals-review-fixes.test.js
+```
+
+**Result:** **21 / 21 pass** (~31s). **`npm run check`:** pass after changes.
+
+**Still open:** redemption terms HTTP regression (wrong hash/version), paused-trading/legacy obligation matrix, full `npm run test:release`, live-stack acceptance flows.

@@ -20,7 +20,11 @@ import * as ecommerce from "../src/services/ecommerce.service.js";
 import { runEcommerceQuoteExpiry } from "../src/services/ecommerce-quote-expiry.service.js";
 import { revalidateQuoteForOrder } from "../src/lib/ecommerce-quote-revalidation.js";
 import { bearerFor, resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
-import { taxReadyCatalogBody, taxReadyFulfilmentBody } from "./helpers/ecommerce-checkout-fixtures.js";
+import {
+  disableEcommercePaymentsTestHarness,
+  taxReadyCatalogBody,
+  taxReadyFulfilmentBody,
+} from "./helpers/ecommerce-checkout-fixtures.js";
 
 const app = createApp();
 const taxReadyTenantIds = new Set();
@@ -29,6 +33,7 @@ test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
 test.beforeEach(async () => {
   await resetTestDb();
+  disableEcommercePaymentsTestHarness();
   taxReadyTenantIds.clear();
 });
 

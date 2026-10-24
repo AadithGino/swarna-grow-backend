@@ -48,19 +48,50 @@ function validationErrorMessage(err) {
   return String(err?.message ?? err ?? "Invalid action");
 }
 
+function isTransientLlmError(err) {
+  if (!(err instanceof AppError)) return false;
+  return (
+    err.code === "ASSISTANT_LLM_TIMEOUT" ||
+    err.code === "ASSISTANT_LLM_ERROR" ||
+    err.status === 502 ||
+    err.status === 503 ||
+    err.status === 504
+  );
+}
+
+const ASSISTANT_INTERPRET_DEADLINE_MS = 45_000;
+
+async function interpretWithGeminiBounded(args, { attempts = 2 } = {}) {
+  const started = Date.now();
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    if (Date.now() - started >= ASSISTANT_INTERPRET_DEADLINE_MS) {
+      throw new AppError("ASSISTANT_LLM_TIMEOUT", "Assistant request timed out.", 504);
+    }
+    try {
+      return await interpretWithGemini(args);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientLlmError(err) || i >= attempts - 1) throw err;
+    }
+  }
+  throw lastErr;
+}
+
 async function interpretAndValidate(args, { allowRetry = true } = {}) {
-  const raw = await interpretWithGemini(args);
+  const raw = await interpretWithGeminiBounded(args);
   try {
     return validateAssistantAction(raw);
   } catch (err) {
     if (!allowRetry) throw err;
     try {
-      const corrected = await interpretWithGemini({
+      const corrected = await interpretWithGeminiBounded({
         ...args,
         correction: { invalid: raw, reason: validationErrorMessage(err) },
       });
       return validateAssistantAction(corrected);
-    } catch {
+    } catch (retryErr) {
+      if (isTransientLlmError(retryErr)) return CLARIFY_TRANSIENT;
       return CLARIFY_REPHRASE;
     }
   }

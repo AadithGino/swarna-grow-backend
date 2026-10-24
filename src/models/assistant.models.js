@@ -14,6 +14,13 @@ const conversationSchema = new mongoose.Schema(
     title: { type: String, default: "New chat" },
     lastMessageAt: { type: Date, default: Date.now },
     messageCount: { type: Number, default: 0 },
+    conversationFocus: {
+      customerId: { type: String, default: undefined },
+      customerName: { type: String, default: undefined },
+      schemeId: { type: String, default: undefined },
+      schemeLabel: { type: String, default: undefined },
+    },
+    lastResolvedPlan: { type: mongoose.Schema.Types.Mixed, default: undefined },
   },
   baseOptions,
 );

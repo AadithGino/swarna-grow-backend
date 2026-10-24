@@ -1,6 +1,8 @@
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
+import { classifyRefundInitiationError } from "../lib/gateway-refund-initiation-classifier.js";
 import { isDigitalMetalRedemptionChargeRefundMerchantId } from "../lib/digital-metals-payment-reference.js";
+import { withTransaction } from "../lib/transaction.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import {
   Customer,
@@ -9,9 +11,43 @@ import {
   Tenant,
 } from "../models/index.js";
 import { assertTenantOwnsCustomerScope } from "./digital-metals.service.js";
-import { applyAdminCustomerScopeFilter } from "../lib/digital-metals-admin-scope.js";
+import {
+  applyAdminCustomerScopeFilter,
+  assertAdminCustomerInScope,
+} from "../lib/digital-metals-admin-scope.js";
+import {
+  paginateByIdCursor,
+  parseAdminScopedListQuery,
+} from "../lib/digital-metals-customer-order-access.js";
+import { OPEN_REDEMPTION_CHARGE_REFUND_STATUSES } from "../lib/digital-metals-open-work-statuses.js";
 
 const TERMINAL = new Set(["SUCCEEDED", "MANUAL_RECORDED"]);
+
+async function resolveRedemptionOrderAfterChargeRefund(tenantId, refundCase) {
+  if (refundCase.exceptionType === "ADDITIONAL_CAPTURE") {
+    await DigitalMetalRedemptionOrder.updateOne(
+      {
+        _id: refundCase.redemptionOrderId,
+        tenantId,
+        paymentExceptionStatus: "ADDITIONAL_CAPTURE",
+      },
+      { $set: { paymentExceptionStatus: "REFUNDED" }, $inc: { version: 1 } },
+    );
+    return;
+  }
+  await DigitalMetalRedemptionOrder.updateOne(
+    {
+      _id: refundCase.redemptionOrderId,
+      tenantId,
+      status: { $in: ["REFUND_REVIEW", "CHARGE_PAID"] },
+      paymentExceptionStatus: { $in: ["LATE_SUCCESS", "DUPLICATE_PAYMENT", null] },
+    },
+    {
+      $set: { status: "CANCELLED", paymentExceptionStatus: "REFUNDED" },
+      $inc: { version: 1 },
+    },
+  );
+}
 
 export async function ensureRedemptionChargeRefundCase(
   session,
@@ -38,15 +74,20 @@ export async function ensureRedemptionChargeRefundCase(
 }
 
 export async function listAdminRedemptionChargeRefunds(req) {
-  const limit = Math.min(Number(req.query.limit) || 25, 100);
+  const { limit, cursor } = parseAdminScopedListQuery(req);
   const filter = { tenantId: req.auth.tenantId };
-  if (req.query.status) filter.status = req.query.status;
+  const statusRaw = req.query.status ? String(req.query.status).trim() : "";
+  if (statusRaw && statusRaw.toUpperCase() !== "ALL") {
+    filter.status = statusRaw.toUpperCase() === "OPEN" ? { $in: [...OPEN_REDEMPTION_CHARGE_REFUND_STATUSES] } : statusRaw;
+  }
   await applyAdminCustomerScopeFilter(req, filter, { customerIdQuery: req.query.customerId });
-  const items = await DigitalMetalRedemptionChargeRefundCase.find(filter)
-    .sort({ updatedAt: -1 })
-    .limit(limit)
+  if (cursor) filter._id = { $lt: cursor };
+  const rows = await DigitalMetalRedemptionChargeRefundCase.find(filter)
+    .sort({ _id: -1 })
+    .limit(limit + 1)
     .lean();
-  return { items };
+  const { items, meta } = paginateByIdCursor(rows, limit);
+  return { items, meta };
 }
 
 export async function getAdminRedemptionOrderChargeRefund(req) {
@@ -72,6 +113,9 @@ export async function initiateAdminRedemptionChargeRefund(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!order) throw errors.notFound("Redemption order");
+  const cust = await Customer.findOne({ _id: order.customerId, tenantId: req.auth.tenantId }).lean();
+  assertTenantOwnsCustomerScope(req, cust);
+
   const refundRow = await DigitalMetalRedemptionChargeRefundCase.findOne({
     tenantId: req.auth.tenantId,
     redemptionOrderId: order._id,
@@ -79,39 +123,87 @@ export async function initiateAdminRedemptionChargeRefund(req) {
   }).lean();
   if (!refundRow) throw errors.notFound("Charge refund case");
   if (TERMINAL.has(refundRow.status)) return { refund: refundRow, initiated: false };
+  if (refundRow.status === "REFUND_INITIATED") {
+    return { refund: refundRow, initiated: false, inFlight: true };
+  }
 
   const merchantRefundId = refundRow._id;
+  let claimed;
+  try {
+    claimed = await withTransaction(async (session) => {
+      const updated = await DigitalMetalRedemptionChargeRefundCase.findOneAndUpdate(
+        {
+          _id: refundRow._id,
+          tenantId: req.auth.tenantId,
+          status: { $in: ["ASSIGNED", "FAILED"] },
+        },
+        {
+          $set: {
+            status: "REFUND_INITIATED",
+            providerRefundId: merchantRefundId,
+          },
+          $inc: { version: 1 },
+        },
+        { session, new: true },
+      );
+      if (!updated) {
+        const current = await DigitalMetalRedemptionChargeRefundCase.findById(refundRow._id)
+          .session(session)
+          .lean();
+        if (current && TERMINAL.has(current.status)) return { kind: "DONE", refund: current };
+        if (current?.status === "REFUND_INITIATED") {
+          return { kind: "IN_FLIGHT", refund: current };
+        }
+        throw errors.conflict("REFUND_STATE_RACE", "Refund case changed elsewhere.");
+      }
+      return { kind: "CALL_PROVIDER", refund: updated.toObject() };
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      const current = await DigitalMetalRedemptionChargeRefundCase.findById(refundRow._id).lean();
+      if (current) return { refund: current, initiated: false, inFlight: true };
+    }
+    throw err;
+  }
+
+  if (claimed.kind === "DONE") return { refund: claimed.refund, initiated: false };
+  if (claimed.kind === "IN_FLIGHT") {
+    return { refund: claimed.refund, initiated: false, inFlight: true };
+  }
+
   const tenant = await Tenant.findById(req.auth.tenantId).select("+integrationSecrets").lean();
   const credentials = resolvePhonePeCredentials(tenant);
-  await DigitalMetalRedemptionChargeRefundCase.updateOne(
-    { _id: refundRow._id, status: "ASSIGNED" },
-    { $set: { status: "REFUND_INITIATED" }, $inc: { version: 1 } },
-  );
   try {
     const provider = await phonePeProvider.initiateRefund({
       merchantRefundId,
-      originalMerchantOrderId: refundRow.merchantOrderId,
-      amountPaise: refundRow.amountPaise,
+      originalMerchantOrderId: claimed.refund.merchantOrderId,
+      amountPaise: claimed.refund.amountPaise,
       credentials,
       tenantId: req.auth.tenantId,
     });
     const updated = await DigitalMetalRedemptionChargeRefundCase.findOneAndUpdate(
-      { _id: refundRow._id },
+      {
+        _id: refundRow._id,
+        tenantId: req.auth.tenantId,
+        status: "REFUND_INITIATED",
+      },
       {
         $set: {
-          status: "REFUND_INITIATED",
           providerRefundId: provider.refundId ?? merchantRefundId,
         },
         $inc: { version: 1 },
       },
       { new: true },
     );
-    return { refund: updated, initiated: true };
+    return { refund: updated ?? claimed.refund, initiated: true };
   } catch (err) {
-    await DigitalMetalRedemptionChargeRefundCase.updateOne(
-      { _id: refundRow._id },
-      { $set: { status: "FAILED" }, $inc: { version: 1 } },
-    );
+    const failureClass = classifyRefundInitiationError(err);
+    if (failureClass === "DEFINITIVE_REJECT") {
+      await DigitalMetalRedemptionChargeRefundCase.updateOne(
+        { _id: refundRow._id, status: "REFUND_INITIATED" },
+        { $set: { status: "FAILED" }, $inc: { version: 1 } },
+      );
+    }
     throw new AppError("REFUND_INITIATION_FAILED", err?.message ?? "Refund failed.", 502);
   }
 }
@@ -130,6 +222,7 @@ export async function recordManualRedemptionChargeRefund(req) {
     tenantId: req.auth.tenantId,
   });
   if (!refundRow) throw errors.notFound("Refund case");
+  await assertAdminCustomerInScope(req, refundRow.customerId);
   if (TERMINAL.has(refundRow.status)) return { refund: refundRow.toObject() };
   if (refundRow.status === "REFUND_INITIATED") {
     throw new AppError(
@@ -166,18 +259,7 @@ export async function recordManualRedemptionChargeRefund(req) {
     }
     throw errors.conflict("REFUND_STATE", "Refund case changed; refresh and retry.");
   }
-  await DigitalMetalRedemptionOrder.updateOne(
-    {
-      _id: updated.redemptionOrderId,
-      tenantId: req.auth.tenantId,
-      status: { $in: ["REFUND_REVIEW", "CHARGE_PAID"] },
-      paymentExceptionStatus: { $in: ["LATE_SUCCESS", "ADDITIONAL_CAPTURE", null] },
-    },
-    {
-      $set: { status: "CANCELLED", paymentExceptionStatus: "REFUNDED" },
-      $inc: { version: 1 },
-    },
-  );
+  await resolveRedemptionOrderAfterChargeRefund(req.auth.tenantId, updated.toObject());
   return { refund: updated.toObject() };
 }
 
@@ -186,21 +268,61 @@ export async function confirmRedemptionChargeRefundFromProvider({ tenantId, payl
   if (!providerRefundId || !isDigitalMetalRedemptionChargeRefundMerchantId(providerRefundId)) {
     return { outcome: "IGNORED" };
   }
-  const refundCase = await DigitalMetalRedemptionChargeRefundCase.findOne({
+  const existing = await DigitalMetalRedemptionChargeRefundCase.findOne({
     _id: providerRefundId,
     tenantId,
-  });
-  if (!refundCase) return { outcome: "NOT_FOUND" };
-  if (TERMINAL.has(refundCase.status)) return { outcome: "ALREADY_TERMINAL" };
+  }).lean();
+  if (!existing) return { outcome: "NOT_FOUND" };
+  if (TERMINAL.has(existing.status)) return { outcome: "ALREADY_TERMINAL" };
+
   const state = String(payload.state ?? payload.code ?? "").toUpperCase();
-  if (state.includes("COMPLETED") || state.includes("SUCCESS")) {
-    refundCase.status = "SUCCEEDED";
-    await refundCase.save();
-    await DigitalMetalRedemptionOrder.updateOne(
-      { _id: refundCase.redemptionOrderId, tenantId, status: "REFUND_REVIEW" },
-      { $set: { status: "CANCELLED", paymentExceptionStatus: "REFUNDED" }, $inc: { version: 1 } },
+  const failed = state.includes("FAIL");
+  const succeeded = state.includes("COMPLET") || state.includes("SUCCESS");
+
+  if (succeeded) {
+    const updated = await DigitalMetalRedemptionChargeRefundCase.findOneAndUpdate(
+      { _id: providerRefundId, tenantId, status: { $nin: [...TERMINAL] } },
+      { $set: { status: "SUCCEEDED" }, $inc: { version: 1 } },
+      { new: true },
     );
+    if (!updated) return { outcome: "ALREADY_TERMINAL" };
+    await resolveRedemptionOrderAfterChargeRefund(tenantId, updated.toObject());
     return { outcome: "SUCCEEDED" };
   }
+  if (failed) {
+    await DigitalMetalRedemptionChargeRefundCase.updateOne(
+      { _id: providerRefundId, tenantId, status: { $nin: [...TERMINAL] } },
+      { $set: { status: "FAILED" }, $inc: { version: 1 } },
+    );
+    return { outcome: "FAILED" };
+  }
   return { outcome: "PENDING" };
+}
+
+/** Poll PhonePe for in-flight redemption charge refunds (recovery after ambiguous initiation). */
+export async function reconcileRedemptionChargeRefundCase({ tenantId, refundCaseId }) {
+  const refundCase = await DigitalMetalRedemptionChargeRefundCase.findOne({
+    _id: refundCaseId,
+    tenantId,
+  }).lean();
+  if (!refundCase) return { outcome: "NOT_FOUND" };
+  if (TERMINAL.has(refundCase.status)) {
+    return { outcome: "ALREADY_TERMINAL", status: refundCase.status };
+  }
+  if (refundCase.status !== "REFUND_INITIATED") {
+    return { outcome: "NOT_RECONCILABLE", status: refundCase.status };
+  }
+  const tenant = await Tenant.findById(tenantId).select("+integrationSecrets").lean();
+  const credentials = resolvePhonePeCredentials(tenant);
+  const providerStatus = await phonePeProvider.getRefundStatus({
+    merchantRefundId: refundCase._id,
+    originalMerchantOrderId: refundCase.merchantOrderId,
+    credentials,
+    tenantId,
+  });
+  const state = String(providerStatus?.state ?? providerStatus?.status ?? "PENDING");
+  return confirmRedemptionChargeRefundFromProvider({
+    tenantId,
+    payload: { merchantRefundId: refundCase._id, state },
+  });
 }

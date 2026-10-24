@@ -33,7 +33,7 @@ function joinedPaymentMatch(scope) {
   return match;
 }
 
-function directPaymentMatch(scope) {
+export function directPaymentMatch(scope) {
   const match = { tenantId: scope.tenantId };
   if (scope.branchId) match.branchId = scope.branchId;
   if (scope.collectedBy) match.collectedBy = scope.collectedBy;
@@ -41,7 +41,7 @@ function directPaymentMatch(scope) {
   return match;
 }
 
-function paymentJoinStages(scope) {
+export function paymentJoinStages(scope) {
   return [
     {
       $lookup: {

@@ -11,6 +11,7 @@ import {
 import { addMonthsClamped, today } from "../src/lib/date.js";
 import { createId } from "../src/lib/ids.js";
 import { LedgerEntry, Payment, Scheme } from "../src/models/index.js";
+import { advanceInstallmentWindowCount } from "../src/lib/fixed-payment-policy.js";
 import { recordPayment } from "../src/services/payment.service.js";
 import { buildSchedulePreview } from "../src/services/schedule.service.js";
 import { enrol, rebuildSchemeProjection } from "../src/services/scheme.service.js";
@@ -79,9 +80,11 @@ async function createFixedScheme(
 async function payInstallments(ctx, scheme, count, { mode = "CASH", amountPaise, backdateFrom, useAdvance = true } = {}) {
   let doc = await Scheme.findById(scheme._id);
   const unit = amountPaise ?? doc.installmentAmountPaise;
+  const paymentRules = doc.planSnapshot?.paymentRules ?? {};
+  const maxChunk = useAdvance ? advanceInstallmentWindowCount(paymentRules) : 1;
   let remaining = count;
   while (remaining > 0) {
-    const chunk = useAdvance && remaining >= 2 ? Math.min(remaining, 2) : 1;
+    const chunk = Math.min(remaining, Math.max(1, maxChunk));
     await recordPayment(
       paymentReq(ctx, doc._id, {
         amountPaise: unit * chunk,
@@ -96,10 +99,16 @@ async function payInstallments(ctx, scheme, count, { mode = "CASH", amountPaise,
     const payments = await Payment.find({ schemeId: scheme._id, status: PaymentStatus.SUCCESS }).sort({
       createdAt: 1,
     });
-    for (let i = 0; i < payments.length; i += 1) {
-      await Payment.updateOne(
-        { _id: payments[i]._id },
-        { $set: { paidAt: dayjs(backdateFrom).add(i, "month").hour(11).toDate() } },
+    if (payments.length) {
+      await Payment.bulkWrite(
+        payments.map((row, i) => ({
+          updateOne: {
+            filter: { _id: row._id },
+            update: {
+              $set: { paidAt: dayjs(backdateFrom).add(i, "month").hour(11).toDate() },
+            },
+          },
+        })),
       );
     }
   }
@@ -309,9 +318,14 @@ export async function seedCollectionPlanMatrix(ctx, { plan, planLabel, branchId,
   const preCloseCust = nextCustomer();
   const lockInMonths = plan.redemptionRules?.lockInMonths ?? n;
   const preStart = addMonthsClamped(today(), -(lockInMonths + 2)).format("YYYY-MM-DD");
-  const prePaid = Math.min(2, n - 1);
+  const prePaid = Math.max(1, Math.min(1, n - 1));
   s = await createFixedScheme(ctx, { customer: preCloseCust, plan, branchId, startDate: preStart, installmentAmountPaise });
   s = await payInstallments(ctx, s, prePaid, { backdateFrom: preStart, amountPaise: installmentAmountPaise });
+  await Scheme.updateOne(
+    { _id: s._id },
+    { $set: { "planSnapshot.redemptionRules.prematurePenalty.value": 5 } },
+  );
+  s = await Scheme.findById(s._id);
   const preRed = await openRedemption(ctx, s._id, ClosureType.PREMATURE_CLOSURE, RedemptionMode.PURCHASE_ADJUSTMENT);
   await transitionRedemption({ ...ctx, params: { redemptionId: preRed._id }, body: {} }, "approve");
   await transitionRedemption({ ...ctx, params: { redemptionId: preRed._id }, body: {} }, "complete");
@@ -500,3 +514,13 @@ export async function seedAiraGoldDemoMatrix(ctx, { swarna, akshaya, tritiya, up
 
   return summary;
 }
+
+export {
+  createFixedScheme,
+  payInstallments,
+  paymentReq,
+  recomputeSchemeStatuses,
+  markMatured,
+  seedMatureFixedGold,
+  openRedemption,
+};

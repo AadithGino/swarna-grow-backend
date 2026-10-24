@@ -45,10 +45,11 @@ test.before(async () => {
 test.after(async () => {
   await stopTestDb();
 });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("ecommerce order cancellation evidence", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
 function staffHeaders(user, key = createId("idem")) {
   return {
@@ -491,4 +492,5 @@ test("different tenants may reuse the same cancellation idempotency key", async 
   assert.ok(ra.status === 200 || ra.status === 201);
   assert.ok(rb.status === 200 || rb.status === 201);
   assert.notEqual(ra.body.data.request.id, rb.body.data.request.id);
+});
 });

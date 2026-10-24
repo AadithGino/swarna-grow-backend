@@ -106,6 +106,21 @@ export const ENTITY_REGISTRY = Object.freeze({
 export function toolCatalogForPrompt() {
   return {
     reportKeys: [...REPORT_KEYS],
+    collectionAnalytics: {
+      domain: "scheme_collections",
+      metrics: [
+        { key: "net_collected", unit: "INR", definition: "Gross receipts minus gateway refunds and manual corrections" },
+        { key: "gross_receipts", unit: "INR", definition: "Successful payment amounts by paidAt" },
+      ],
+      dimensions: ["day", "mode", "branch"],
+      paymentModes: ["CASH", "UPI", "CARD", "BANK_TRANSFER", "ONLINE_GATEWAY"],
+      notes: [
+        "UPI means recorded Payment.mode=UPI (manual UPI), not ONLINE_GATEWAY.",
+        "Use kind collectionDaily with analytics.compareModes for Cash vs UPI comparisons.",
+        "timeBucket day + groupBy mode may be normalized server-side to collectionDaily.",
+      ],
+      operations: ["summary", "trend", "comparison"],
+    },
     entities: Object.fromEntries(
       Object.entries(ENTITY_REGISTRY).map(([entity, def]) => [
         entity,
@@ -130,4 +145,14 @@ export function assertReportKey(reportKey) {
     return { ok: false, reason: `Unknown report: ${reportKey}` };
   }
   return { ok: true };
+}
+
+/** Stat card / chart axis unit for aggregate results (paise fields stay currency for sum/avg/min/max). */
+export function aggregateValueType(entity, field, fn) {
+  const def = ENTITY_REGISTRY[entity]?.fields?.[field];
+  const isMoney = field === "amountPaise" || field.includes("Paise") || def?.type === "number" && field.includes("amount");
+  if (fn === "count" || field === "count") return "count";
+  if (isMoney && (fn === "sum" || fn === "avg" || fn === "min" || fn === "max")) return "currency";
+  if (def?.type === "date") return "date";
+  return "number";
 }

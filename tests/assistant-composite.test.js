@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import { validateAssistantAction } from "../src/validators/assistant.validators.js";
 import {
   bundleFromComposite,
+  bundleFromQuery,
   factsFromComposite,
+  moneyDisplay,
 } from "../src/services/assistant/response-bundle.js";
+import { aggregateValueType } from "../src/services/assistant/schema-registry.js";
 
 test("validateAssistantAction accepts composite with known reports", () => {
   const action = validateAssistantAction({
@@ -16,6 +19,28 @@ test("validateAssistantAction accepts composite with known reports", () => {
   });
   assert.equal(action.kind, "composite");
   assert.equal(action.reports.length, 2);
+});
+
+test("aggregateValueType treats money avg/min/max as currency", () => {
+  assert.equal(aggregateValueType("collections", "amountPaise", "avg"), "currency");
+  assert.equal(aggregateValueType("collections", "amountPaise", "min"), "currency");
+  assert.equal(aggregateValueType("collections", "amountPaise", "max"), "currency");
+  assert.equal(aggregateValueType("collections", "amountPaise", "count"), "count");
+});
+
+test("bundleFromQuery scalar sum uses currency stat card (50000 paise -> display rupees)", () => {
+  const bundle = bundleFromQuery(
+    { rows: [{ total: 50_000, count: 2 }], exportRecommended: false },
+    {
+      entity: "collections",
+      filters: [{ field: "customerId", op: "eq", value: "cust_x" }],
+      aggregate: { fn: "sum", field: "amountPaise" },
+    },
+    { kind: "query", spec: { entity: "collections" } },
+  );
+  assert.equal(bundle.statCards[0].valueType, "currency");
+  assert.equal(bundle.statCards[0].value, 50_000);
+  assert.equal(moneyDisplay(bundle.statCards[0].value).amountDisplay, "₹500");
 });
 
 test("bundleFromComposite is text-only (no stat cards or chart)", () => {

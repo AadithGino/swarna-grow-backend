@@ -102,7 +102,6 @@ export async function resetTestDb() {
   const collections = await mongoose.connection.db.collections();
   await Promise.all(collections.map((collection) => collection.deleteMany({})));
   tenantCodeSeq = 0;
-  delete process.env.ECOMMERCE_PAYMENTS_TEST_HARNESS;
   try {
     const { clearIdempotencyHeartbeatsForTests } = await import(
       "../../src/middlewares/idempotency.middleware.js"

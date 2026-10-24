@@ -37,10 +37,11 @@ const app = createApp();
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("commerce phase D2 HTTP", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
 async function enableStore(tenant) {
   await Tenant.updateOne(
@@ -372,4 +373,5 @@ test("cross-customer payment intent poll returns 404", async () => {
     .get(`/api/v1/app/shop/orders/${orderId}/payment-intents/${attemptId}`)
     .set({ authorization: `Bearer ${tokenB}` });
   assert.equal(res.status, 404);
+});
 });

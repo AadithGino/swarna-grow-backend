@@ -31,12 +31,14 @@ const app = createApp();
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
 
-test("invalid PhonePe webhook auth returns 401 without mutating commerce state", async () => {
+test.describe("commerce phase E (payment harness)", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
+
+  test("invalid PhonePe webhook auth returns 401 without mutating commerce state", async () => {
   const { tenant, user, branch } = await seedTenantUser({});
   const { product } = await seedReady({ tenant, user, branch, app });
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
@@ -307,4 +309,5 @@ test("payment exceptions queue lists stuck and pending refund cases", async () =
   const kinds = new Set((queue.body.data.items ?? []).map((row) => row.kind));
   assert.ok(kinds.has("EXCEPTION_REFUND"));
   assert.ok(kinds.has("INITIATION_UNCERTAIN") || kinds.has("LATE_SUCCESS_REFUND_REQUIRED"));
+});
 });

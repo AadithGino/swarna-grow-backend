@@ -30,6 +30,10 @@ import {
 import { assertTenantOwnsCustomerScope } from "./digital-metals.service.js";
 import { applyAdminBuyOrderBranchFilter } from "../lib/digital-metals-admin-scope.js";
 import { paginateByIdCursor } from "../lib/digital-metals-customer-order-access.js";
+import {
+  hashDigitalMetalsOrderBody,
+  resolveCustomerBoundIdempotencyReplay,
+} from "../lib/digital-metals-customer-idempotency.js";
 import { mapBuyOrderStatusDto } from "./digital-metals-buy-finalize.service.js";
 import { initiateDigitalMetalBuyPaymentAttempt } from "./digital-metals-buy-payment.service.js";
 
@@ -150,6 +154,7 @@ export async function createBuyOrder(req) {
   if (!idempotencyKey) {
     throw errors.validation([{ field: "x-idempotency-key", message: "Idempotency key is required." }]);
   }
+  const bodyHash = hashDigitalMetalsOrderBody(req.body);
   const { quoteId, termsVersionAccepted, termsContentHashAccepted } = req.body;
   const termsAcceptedAt = new Date();
 
@@ -157,12 +162,18 @@ export async function createBuyOrder(req) {
     tenantId: req.auth.tenantId,
     idempotencyKey,
   }).lean();
-  if (existing) {
+  const replayExisting = resolveCustomerBoundIdempotencyReplay({
+    order: existing,
+    customerId: req.auth.id,
+    body: req.body,
+    bodyHash,
+  });
+  if (replayExisting) {
     const attempts = await DigitalMetalBuyPaymentAttempt.find({
       tenantId: req.auth.tenantId,
-      orderId: existing._id,
+      orderId: replayExisting._id,
     }).lean();
-    return mapBuyOrderStatusDto(existing, attempts);
+    return mapBuyOrderStatusDto(replayExisting, attempts);
   }
 
   const quote = await DigitalMetalQuote.findOne({
@@ -254,6 +265,7 @@ export async function createBuyOrder(req) {
               taxProfileFingerprint: quote.taxProfileFingerprint,
               termsAcceptedAt,
               idempotencyKey,
+              creationBodyHash: bodyHash,
               version: 1,
             },
           ],
@@ -265,12 +277,18 @@ export async function createBuyOrder(req) {
   } catch (err) {
     if (err?.code === 11000) {
       const dup = await DigitalMetalBuyOrder.findOne({ tenantId: req.auth.tenantId, idempotencyKey }).lean();
-      if (dup) {
+      const replayDup = resolveCustomerBoundIdempotencyReplay({
+        order: dup,
+        customerId: req.auth.id,
+        body: req.body,
+        bodyHash,
+      });
+      if (replayDup) {
         const attempts = await DigitalMetalBuyPaymentAttempt.find({
           tenantId: req.auth.tenantId,
-          orderId: dup._id,
+          orderId: replayDup._id,
         }).lean();
-        return mapBuyOrderStatusDto(dup, attempts);
+        return mapBuyOrderStatusDto(replayDup, attempts);
       }
     }
     throw err;

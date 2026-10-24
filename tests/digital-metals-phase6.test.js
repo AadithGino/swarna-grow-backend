@@ -148,6 +148,47 @@ test("redeem 2g from 5g wallet reserves exactly 2g", async () => {
   assert.equal(Number(wallet.heldUg) - Number(wallet.reservedUg), G5 - G2);
 });
 
+test("wrong redemption terms hash rejected before wallet reserve", async () => {
+  const { tenant, branch, user } = await seedTenantUser({});
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const token = await customerToken({ tenant, branch, customer });
+  await enablePlan(tenant._id);
+  await makeTenantQuoteReady(app, tenant._id, bearerFor(user));
+  await seedGold5g({ tenant, customer });
+  const item = await seedCatalog2gCoin({ tenant });
+  const quote = await request(app)
+    .post("/api/v1/app/digital-metals/quotes/redemption")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({
+      catalogueItemId: item._id,
+      metal: "GOLD",
+      finenessPpm: 999000,
+      unitCount: 1,
+      fulfilmentMode: "PICKUP",
+      pickupBranchId: branch._id,
+    });
+  assert.equal(quote.status, 201);
+  const order = await request(app)
+    .post("/api/v1/app/digital-metals/redemption/orders")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({
+      quoteId: quote.body.data.quoteId,
+      termsVersionAccepted: quote.body.data.termsVersion,
+      termsContentHashAccepted: "0".repeat(64),
+    });
+  assert.equal(order.status, 422);
+  assert.equal(order.body.error?.code, "TERMS_NOT_ACCEPTED");
+  const wallet = await DigitalMetalWallet.findOne({
+    tenantId: tenant._id,
+    customerId: customer._id,
+    metal: "GOLD",
+    finenessPpm: 999_000,
+  }).lean();
+  assert.equal(Number(wallet.reservedUg), 0);
+});
+
 test("zero-charge redemption skips payment path", async () => {
   const { tenant, branch, user } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });

@@ -35,12 +35,13 @@ test.before(async () => {
 test.after(async () => {
   await stopTestDb();
 });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("ecommerce payment audit HTTP", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
-test("payment idempotency key cannot be reused across different orders", async () => {
+  test("payment idempotency key cannot be reused across different orders", async () => {
   const { tenant, user, branch } = await seedTenantUser({});
   const { product } = await seedReady({ tenant, user, branch, app });
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
@@ -233,4 +234,5 @@ test("GET order exposes active payment attempt for resume", async () => {
   assert.equal(view.status, 200);
   assert.equal(view.body.data.activePaymentAttempt?.id, created.body.data.paymentIntent.id);
   assert.equal(view.body.data.activePaymentAttempt?.idempotencyKey, idem);
+});
 });

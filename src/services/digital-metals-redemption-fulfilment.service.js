@@ -31,6 +31,11 @@ import {
 } from "../models/index.js";
 import { assertTenantOwnsCustomerScope } from "./digital-metals.service.js";
 import { applyAdminCustomerScopeFilter } from "../lib/digital-metals-admin-scope.js";
+import {
+  paginateByIdCursor,
+  parseAdminScopedListQuery,
+} from "../lib/digital-metals-customer-order-access.js";
+import { ADMIN_FULFILMENT_QUEUE_STATUSES } from "../lib/digital-metals-open-work-statuses.js";
 import { commitReservation, releaseReservation } from "./digital-metals-ledger.service.js";
 import { mapAdminCustomerBrief } from "../lib/digital-metals-admin-customer-brief.js";
 import { istBusinessDateFromInstant } from "../lib/digital-metals-business-calendar.js";
@@ -167,23 +172,16 @@ function assertVersion(order, expectedVersion) {
 }
 
 export async function listAdminFulfilmentQueue(req) {
-  const limit = Math.min(Number(req.query.limit) || 25, 100);
+  const { limit, cursor } = parseAdminScopedListQuery(req);
   const filter = {
     tenantId: req.auth.tenantId,
-    status: {
-      $in: [
-        "CHARGE_PAID",
-        "FULFILMENT_ACCEPTED",
-        "PACKING",
-        "DISPATCHED",
-        "PICKUP_READY",
-        "INVESTIGATION",
-      ],
-    },
+    status: { $in: [...ADMIN_FULFILMENT_QUEUE_STATUSES] },
   };
   if (req.query.status) filter.status = req.query.status;
   await applyAdminCustomerScopeFilter(req, filter, { customerIdQuery: req.query.customerId });
-  const items = await DigitalMetalRedemptionOrder.find(filter).sort({ updatedAt: -1 }).limit(limit).lean();
+  if (cursor) filter._id = { $lt: cursor };
+  const rows = await DigitalMetalRedemptionOrder.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
+  const { items, meta } = paginateByIdCursor(rows, limit);
   const customerIds = [...new Set(items.map((o) => o.customerId).filter(Boolean))];
   const customers = customerIds.length
     ? await Customer.find({ tenantId: req.auth.tenantId, _id: { $in: customerIds } }).lean()
@@ -196,6 +194,7 @@ export async function listAdminFulfilmentQueue(req) {
         customer: mapAdminCustomerBrief(customerById.get(o.customerId)),
       }),
     ),
+    meta,
   };
 }
 
@@ -384,6 +383,7 @@ async function replayIfPhysicalOutCommitted(req, orderId) {
     idempotencyKey,
   }).lean();
   if (!existing || existing.redemptionOrderId !== orderId) return null;
+  await loadOrderForAdmin(req, orderId);
   const fresh = await DigitalMetalRedemptionOrder.findById(orderId).lean();
   return mapFulfilmentOrder(fresh, { physicalOutEventId: existing._id, replay: true });
 }

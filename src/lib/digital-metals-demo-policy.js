@@ -10,12 +10,18 @@ import { AppError } from "../lib/app-error.js";
  */
 export function resolveDigitalMetalsCheckoutMode() {
   if (env.NODE_ENV === "production") return "LIVE_REQUIRED";
-  const raw = String(process.env.DIGITAL_METALS_CHECKOUT_MODE ?? "demo").trim().toLowerCase();
+  const explicit = process.env.DIGITAL_METALS_CHECKOUT_MODE?.trim();
+  const raw = String(explicit ?? (env.PROVIDER_MODE === "mock" ? "mock" : "demo")).toLowerCase();
   if (raw === "live") return "LIVE_REQUIRED";
-  if (env.PROVIDER_MODE === "mock" || raw === "mock" || raw === "mock_provider") {
-    return "MOCK_PROVIDER";
-  }
   if (raw === "demo") return "DIGITAL_METALS_DEMO";
+  if (raw === "mock" || raw === "mock_provider") return "MOCK_PROVIDER";
+  if (explicit) {
+    throw new AppError(
+      "CHECKOUT_MODE_INVALID",
+      `Unknown DIGITAL_METALS_CHECKOUT_MODE "${raw}". Use demo, mock, or live.`,
+      422,
+    );
+  }
   return "DIGITAL_METALS_DEMO";
 }
 

@@ -1,3 +1,4 @@
+import { AppError } from "./app-error.js";
 import { phonePeProvider } from "../integrations/phonepe.provider.js";
 import {
   assertPhonePeCredentialsForLiveCheckout,
@@ -52,5 +53,8 @@ export async function initiateDigitalMetalsPhonePeCheckout({
     };
     return { provider, checkoutMode: "MOCK_PROVIDER" };
   }
-  return { provider: demoProviderResult(attempt), checkoutMode: "DIGITAL_METALS_DEMO" };
+  if (policy === "DIGITAL_METALS_DEMO") {
+    return { provider: demoProviderResult(attempt), checkoutMode: "DIGITAL_METALS_DEMO" };
+  }
+  throw new AppError("CHECKOUT_MODE_INVALID", "Unsupported digital metals checkout policy.", 500);
 }

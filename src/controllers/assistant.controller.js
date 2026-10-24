@@ -4,6 +4,7 @@ import { validateAssistantAction } from "../validators/assistant.validators.js";
 import { handleChat } from "../services/assistant/assistant.service.js";
 import {
   exportReportAction,
+  streamCollectionDailyExportToResponse,
   streamQueryExportToResponse,
 } from "../services/assistant/assistant-export.service.js";
 import {
@@ -32,6 +33,10 @@ export async function exportResult(req, res) {
   if (action.kind === "report") {
     const job = await exportReportAction(req, action, format);
     return sendSuccess(res, job, {}, 202);
+  }
+  if (action.kind === "collectionDaily") {
+    await streamCollectionDailyExportToResponse(req, res, action, { fields, format });
+    return;
   }
   throw new AppError(
     "ASSISTANT_EXPORT_UNSUPPORTED",

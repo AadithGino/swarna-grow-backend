@@ -17,14 +17,33 @@ import {
   factsFromBundle,
   factsFromComposite,
 } from "./response-bundle.js";
-import { lastAssistantAction, resolveActionWithHistory } from "./follow-up.js";
+import { resolveActionWithHistory } from "./follow-up.js";
 import { normalizeAssistantQuestion } from "./normalize-question.js";
-import { refineQueryAction } from "./refine-query.js";
+import {
+  ASSISTANT_PLANNER_SCHEMA_VERSION,
+  planFingerprint,
+  validateAndNormalizeAssistantPlan,
+} from "./assistant-plan.js";
 import {
   appendTurn,
   getOrCreateConversation,
+  loadConversationFocus,
+  loadLastResolvedPlan,
   loadRecentContext,
+  saveConversationFocus,
+  saveLastResolvedPlan,
 } from "./assistant-history.service.js";
+import {
+  bundlePayloadFromCollectionDaily,
+  runCollectionDailyAssistant,
+} from "./collection-daily-assistant.service.js";
+import { resolveActionDateBounds } from "./assistant-date-window.js";
+import {
+  applyConversationFocusToAction,
+  deriveConversationFocusFromTurn,
+  focusFingerprint,
+  normalizeConversationFocus,
+} from "./conversation-focus.js";
 
 const CACHE_TTL_SEC = 120;
 
@@ -35,30 +54,94 @@ function normalizeQuestion(text) {
     .replace(/\s+/g, " ");
 }
 
-function historyContextFingerprint(history = []) {
-  const a = lastAssistantAction(history);
-  if (!a) return "";
-  if (a.kind === "composite") {
-    const keys = (a.reports ?? []).map((r) => r.reportKey).join("+");
-    return `c:${keys}`;
+function canonicalFilterObject(filters) {
+  if (!filters || typeof filters !== "object") return {};
+  const out = {};
+  for (const key of Object.keys(filters).sort()) {
+    if (filters[key] !== undefined) out[key] = filters[key];
   }
-  if (a.kind === "report") {
-    const f = a.filters ?? {};
-    return `r:${a.reportKey}:${f.period ?? ""}:${f.from ?? ""}:${f.to ?? ""}`;
-  }
-  if (a.kind === "query") {
-    const s = a.spec ?? {};
-    return `q:${s.entity ?? ""}:${s.period ?? ""}:${s.from ?? ""}:${s.to ?? ""}`;
-  }
-  return String(a.kind ?? "");
+  return out;
 }
 
-export function assistantCacheKey(req, question, history = []) {
+function stableActionFingerprint(action) {
+  if (!action || typeof action !== "object") return "";
+  try {
+    if (action.kind === "report") {
+      return JSON.stringify({
+        kind: "report",
+        reportKey: action.reportKey,
+        filters: canonicalFilterObject(action.filters),
+      });
+    }
+    if (action.kind === "query") {
+      const spec = action.spec ?? {};
+      const filters = [...(spec.filters ?? [])].sort((a, b) =>
+        `${a.field ?? ""}:${a.op ?? ""}:${a.value ?? ""}`.localeCompare(
+          `${b.field ?? ""}:${b.op ?? ""}:${b.value ?? ""}`,
+        ),
+      );
+      return JSON.stringify({
+        kind: "query",
+        spec: {
+          entity: spec.entity,
+          period: spec.period,
+          from: spec.from,
+          to: spec.to,
+          groupBy: spec.groupBy,
+          timeBucket: spec.timeBucket,
+          topN: spec.topN,
+          limit: spec.limit,
+          sort: spec.sort,
+          aggregate: spec.aggregate,
+          filters,
+        },
+      });
+    }
+    if (action.kind === "composite") {
+      return JSON.stringify({
+        kind: "composite",
+        reports: (action.reports ?? []).map((r) => ({
+          reportKey: r.reportKey,
+          filters: canonicalFilterObject(r.filters),
+        })),
+      });
+    }
+    if (action.kind === "collectionDaily") {
+      return JSON.stringify({
+        kind: "collectionDaily",
+        v: ASSISTANT_PLANNER_SCHEMA_VERSION,
+        filters: canonicalFilterObject(action.filters),
+        analytics: action.analytics ?? null,
+      });
+    }
+    return JSON.stringify({ kind: action.kind });
+  } catch {
+    return String(action.kind ?? "");
+  }
+}
+
+export function assistantCacheKey(
+  req,
+  question,
+  _history = [],
+  conversationFocus = null,
+  action = null,
+) {
   const scope = assistantDataScope(req);
   const role = req.auth?.role ?? "";
-  const material = `${normalizeQuestion(question)}|${historyContextFingerprint(history)}`;
+  const bounds = resolveActionDateBounds(action, "");
+  const material = `${normalizeQuestion(question)}|${focusFingerprint(conversationFocus)}|${stableActionFingerprint(action)}|${bounds.from ?? ""}|${bounds.to ?? ""}|${ASSISTANT_PLANNER_SCHEMA_VERSION}`;
   const hash = crypto.createHash("sha256").update(material).digest("hex").slice(0, 24);
   return `assistant:v1:${scope.tenantId}:${scope.branchId ?? "all"}:${role}:${hash}`;
+}
+
+export function cachePayloadFromResponse(response) {
+  const rest = { ...response };
+  delete rest.messageId;
+  delete rest.conversationId;
+  delete rest.cached;
+  delete rest.cacheAgeSeconds;
+  return rest;
 }
 
 async function readCache(key) {
@@ -144,6 +227,14 @@ async function executeAction(req, action) {
     return { bundle: bundleFromComposite(parts, action), compositeParts: parts };
   }
 
+  if (action.kind === "collectionDaily") {
+    const result = await runCollectionDailyAssistant(req, action);
+    return {
+      bundle: { narrative: null, ...bundlePayloadFromCollectionDaily(result, action) },
+      compositeParts: null,
+    };
+  }
+
   if (action.kind === "report") {
     const bundle = await runReportAction(req, action);
     if (!bundle) {
@@ -178,18 +269,18 @@ export async function handleChat(req, { message: rawMessage, conversationId: bod
       ? await loadRecentContext(req, conversationId, 10)
       : [];
 
-  const key = assistantCacheKey(req, message, trimmedHistory);
-  const cached = await readCache(key);
-  if (cached) {
-    return {
-      ...cached,
-      cached: true,
-      conversationId,
-      messageId: cached.messageId,
-    };
-  }
+  const conversationFocus =
+    normalizeConversationFocus(conversation.conversationFocus) ??
+    (conversation.messageCount > 0 ? await loadConversationFocus(req, conversationId) : null);
+  const lastResolvedPlan =
+    conversation.lastResolvedPlan ??
+    (conversation.messageCount > 0 ? await loadLastResolvedPlan(req, conversationId) : null);
 
-  const context = buildContext(req);
+  const context = {
+    ...buildContext(req),
+    conversationFocus: conversationFocus ?? undefined,
+    lastResolvedPlan: lastResolvedPlan ?? undefined,
+  };
   const toolCatalog = toolCatalogForPrompt();
   let action;
   try {
@@ -203,14 +294,70 @@ export async function handleChat(req, { message: rawMessage, conversationId: bod
     if (err instanceof AppError && err.code === "ASSISTANT_DISABLED") throw err;
     action = CLARIFY_TRANSIENT;
   }
-  action = resolveActionWithHistory(message, trimmedHistory, action, context.todayIst);
-  action = refineQueryAction(message, action, {
+  action = resolveActionWithHistory(message, trimmedHistory, action, context.todayIst, {
+    lastResolvedPlan,
+  });
+  action = applyConversationFocusToAction(action, conversationFocus, message);
+  action = validateAndNormalizeAssistantPlan(message, action, {
     todayIst: context.todayIst,
     history: trimmedHistory,
+    conversationFocus,
+    lastResolvedPlan,
   });
+
+  const key = assistantCacheKey(req, message, trimmedHistory, conversationFocus, action);
+  const cachedPayload = await readCache(key);
+  async function finalizeTurn(bundle, actionForTurn, dataAsOfIso) {
+    const { assistantMessageId } = await appendTurn(
+      req,
+      conversationId,
+      messageRaw || message,
+      bundle,
+    );
+    const nextFocus = deriveConversationFocusFromTurn(
+      { action: actionForTurn, bundle },
+      conversationFocus,
+    );
+    if (
+      nextFocus?.customerId !== conversationFocus?.customerId ||
+      nextFocus?.schemeId !== conversationFocus?.schemeId ||
+      nextFocus?.customerName !== conversationFocus?.customerName
+    ) {
+      await saveConversationFocus(req, conversationId, nextFocus);
+    }
+    const resolvedBounds = resolveActionDateBounds(actionForTurn, context.todayIst);
+    await saveLastResolvedPlan(req, conversationId, {
+      action: actionForTurn,
+      bounds: resolvedBounds,
+      plannerVersion: ASSISTANT_PLANNER_SCHEMA_VERSION,
+      fingerprint: planFingerprint(actionForTurn),
+    });
+    return assistantMessageId;
+  }
+
+  if (cachedPayload) {
+    const cachedAtMs = cachedPayload._cachedAt
+      ? Date.parse(String(cachedPayload._cachedAt))
+      : NaN;
+    const hitBundle = cachePayloadFromResponse(cachedPayload);
+    hitBundle.asOf = cachedPayload.asOf ?? hitBundle.asOf;
+    const assistantMessageId = await finalizeTurn(hitBundle, action, cachedPayload.asOf);
+    return {
+      ...hitBundle,
+      cached: true,
+      cacheAgeSeconds: Number.isFinite(cachedAtMs)
+        ? Math.max(0, Math.floor((Date.now() - cachedAtMs) / 1000))
+        : undefined,
+      conversationId,
+      messageId: assistantMessageId,
+    };
+  }
+
+  const dataAsOf = now().toISOString();
   const { bundle, compositeParts } = await executeAction(req, action);
+  bundle.asOf = bundle.asOf ?? dataAsOf;
   const shouldNarrate =
-    (action.kind === "report" || action.kind === "query") &&
+    (action.kind === "report" || action.kind === "query" || action.kind === "collectionDaily") &&
     (bundle.statCards?.length || bundle.table?.rows?.length);
   const shouldNarrateComposite =
     action.kind === "composite" && compositeParts && compositeParts.length > 1;
@@ -227,7 +374,7 @@ export async function handleChat(req, { message: rawMessage, conversationId: bod
     }
   }
 
-  const { assistantMessageId } = await appendTurn(req, conversationId, messageRaw || message, bundle);
+  const assistantMessageId = await finalizeTurn(bundle, action, dataAsOf);
   const response = {
     ...bundle,
     cached: false,
@@ -235,7 +382,11 @@ export async function handleChat(req, { message: rawMessage, conversationId: bod
     messageId: assistantMessageId,
   };
 
-  await writeCache(key, response);
+  await writeCache(key, {
+    ...cachePayloadFromResponse(response),
+    _cachedAt: dataAsOf,
+    asOf: bundle.asOf ?? dataAsOf,
+  });
   await writeAudit({
     req,
     action: "ASSISTANT_CHAT",
@@ -245,6 +396,9 @@ export async function handleChat(req, { message: rawMessage, conversationId: bod
       kind: action.kind,
       reportKey: action.kind === "report" ? action.reportKey : undefined,
       entity: action.kind === "query" ? action.spec?.entity : undefined,
+      plannerVersion: ASSISTANT_PLANNER_SCHEMA_VERSION,
+      resolvedPeriod: resolveActionDateBounds(action, context.todayIst),
+      cacheStatus: response.cached ? "hit" : "miss",
       questionLength: message.length,
     },
   }).catch(() => {});

@@ -162,6 +162,7 @@ export function parseEnv(source = process.env) {
     SEED_PLATFORM_PASSWORD: z.string().min(4).max(128).default("1234"),
     GEMINI_API_KEY: z.string().default(""),
     ASSISTANT_MODEL: z.string().default("gemini-3.5-flash-lite"),
+    ASSISTANT_LLM_TIMEOUT_MS: boundedInt(3_000, 120_000, 20_000),
     ASSISTANT_ENABLED: booleanString,
   }).superRefine((_value, context) => {
     const nodeEnv = source.NODE_ENV ?? "development";

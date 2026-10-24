@@ -238,12 +238,20 @@ adminDigitalMetalsRouter.get(
 
 adminDigitalMetalsRouter.get(
   "/digital-metals/payables",
-  ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminListPayables)),
+  ...guarded(
+    Permission.DIGITAL_METALS_READ,
+    validate({ query: digitalMetalsAdminScopedOrderListQuery }),
+    asyncHandler(controller.adminListPayables),
+  ),
 );
 
 adminDigitalMetalsRouter.get(
   "/digital-metals/payouts",
-  ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminListPayouts)),
+  ...guarded(
+    Permission.DIGITAL_METALS_READ,
+    validate({ query: digitalMetalsAdminScopedOrderListQuery }),
+    asyncHandler(controller.adminListPayouts),
+  ),
 );
 
 adminDigitalMetalsRouter.get(
@@ -372,7 +380,11 @@ adminDigitalMetalsRouter.get(
 
 adminDigitalMetalsRouter.get(
   "/digital-metals/redemption/fulfilment/queue",
-  ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminListRedemptionFulfilmentQueue)),
+  ...guarded(
+    Permission.DIGITAL_METALS_READ,
+    validate({ query: digitalMetalsAdminScopedOrderListQuery }),
+    asyncHandler(controller.adminListRedemptionFulfilmentQueue),
+  ),
 );
 
 adminDigitalMetalsRouter.post(
@@ -497,7 +509,11 @@ adminDigitalMetalsRouter.post(
 
 adminDigitalMetalsRouter.get(
   "/digital-metals/redemption/charge-refunds",
-  ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminListRedemptionChargeRefunds)),
+  ...guarded(
+    Permission.DIGITAL_METALS_READ,
+    validate({ query: digitalMetalsAdminScopedOrderListQuery }),
+    asyncHandler(controller.adminListRedemptionChargeRefunds),
+  ),
 );
 
 adminDigitalMetalsRouter.get(

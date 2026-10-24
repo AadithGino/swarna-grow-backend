@@ -3,6 +3,7 @@
  * interleave across sibling tests (Node runs top-level tests in parallel by default).
  */
 import { after, afterEach, before, beforeEach } from "node:test";
+import { disableEcommercePaymentsTestHarness } from "./helpers/ecommerce-checkout-fixtures.js";
 import { startTestDb, stopTestDb } from "./helpers/db.js";
 
 const hookOpts = { scope: "global" };
@@ -18,6 +19,7 @@ beforeEach(async () => {
 }, hookOpts);
 
 afterEach(() => {
+  disableEcommercePaymentsTestHarness();
   releaseTurn();
 }, hookOpts);
 

@@ -9,6 +9,7 @@ import { makeTenantQuoteReady } from "./digital-metals-live-ready.js";
 import { createId } from "../../src/lib/ids.js";
 import { withTransaction } from "../../src/lib/transaction.js";
 import { creditWalletForTest } from "../../src/services/digital-metals-ledger.service.js";
+import { seedCustomerDeliveryAddress } from "./digital-metals-redemption-delivery-fixture.js";
 
 const G2 = 2 * UG_PER_G;
 
@@ -74,6 +75,10 @@ export async function seedDeliveryOrderReadyToDispatch({ tenant, branch, user, c
     active: true,
   });
   const token = await customerToken({ tenant, branch, customer });
+  const deliveryAddressId = await seedCustomerDeliveryAddress({
+    tenantId: tenant._id,
+    customerId: customer._id,
+  });
   const quote = await request(app)
     .post("/api/v1/app/digital-metals/quotes/redemption")
     .set("Authorization", `Bearer ${token}`)
@@ -84,7 +89,7 @@ export async function seedDeliveryOrderReadyToDispatch({ tenant, branch, user, c
       finenessPpm: 999000,
       unitCount: 1,
       fulfilmentMode: "DELIVERY",
-      deliveryAddressId: createId("addr"),
+      deliveryAddressId,
     });
   assert.ok(quote.status >= 200 && quote.status < 300, `quote failed: ${quote.status} ${JSON.stringify(quote.body)}`);
   const orderId = (

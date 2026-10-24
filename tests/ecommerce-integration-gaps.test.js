@@ -22,12 +22,13 @@ const app = createApp();
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("ecommerce integration gaps", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
-test("admin customer ecommerce orders require scope and paginate", async () => {
+  test("admin customer ecommerce orders require scope and paginate", async () => {
   const { tenant, user, branch } = await seedTenantUser({});
   const token = bearerFor(user, [
     ...(ROLE_PERMISSIONS[user.role] ?? []),
@@ -159,4 +160,5 @@ test("grievance rejects forged order relatedEntity", async () => {
       relatedEntity: { type: "ORDER", id: orderId },
     });
   assert.equal(ok.status, 201);
+});
 });

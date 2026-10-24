@@ -129,7 +129,13 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
         idempotencyKey,
       }).session(session);
       if (existingByKey) {
-        if (existingByKey.orderId !== orderId || existingByKey.customerId !== req.auth.id) {
+        if (
+          String(existingByKey.orderId) !== String(orderId)
+          || String(existingByKey.customerId) !== String(req.auth.id)
+        ) {
+          throw errors.notFound("Order");
+        }
+        if (existingByKey.creationBodyHash && existingByKey.creationBodyHash !== bodyHash) {
           throw errors.conflict("IDEMPOTENCY_KEY_REUSED", "Idempotency key reused with different payload.");
         }
         const order = await DigitalMetalBuyOrder.findOne({
@@ -211,9 +217,19 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
         tenantId: req.auth.tenantId,
         idempotencyKey,
       }).lean();
-      if (row && row.orderId === orderId) {
+      if (
+        row
+        && String(row.orderId) === String(orderId)
+        && String(row.customerId) === String(req.auth.id)
+        && (!row.creationBodyHash || row.creationBodyHash === bodyHash)
+      ) {
         const order = await DigitalMetalBuyOrder.findById(orderId).lean();
+        if (!order || String(order.customerId) !== String(req.auth.id)) {
+          throw errors.notFound("Order");
+        }
         reserved = { kind: "REPLAY", attempt: row, order };
+      } else if (row) {
+        throw errors.notFound("Order");
       } else throw err;
     } else throw err;
   }

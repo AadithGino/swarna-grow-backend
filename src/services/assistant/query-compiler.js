@@ -27,10 +27,49 @@ const LABEL_LOOKUPS = {
   planId: { from: "schemeplans", labelField: "name" },
 };
 
-function scopeMatch(scope) {
+function authScopeMatch(scope, entity) {
   const match = { tenantId: scope.tenantId };
-  if (scope.branchId) match.branchId = scope.branchId;
+  if (scope.branchId) {
+    if (entity === "branches") {
+      match._id = scope.branchId;
+    } else {
+      match.branchId = scope.branchId;
+    }
+  }
   return match;
+}
+
+function branchSelectorValues(filter) {
+  if (filter.field !== "branchId") return null;
+  if (filter.op === "eq") return [filter.value];
+  if (filter.op === "in") {
+    return Array.isArray(filter.value) ? filter.value : [filter.value];
+  }
+  return null;
+}
+
+function assertAuthorizedBranchFilter(scope, filter) {
+  if (!scope.branchId) return;
+  const values = branchSelectorValues(filter);
+  if (!values?.length) return;
+  const allowed = String(scope.branchId);
+  for (const value of values) {
+    if (String(value) !== allowed) {
+      throw new AppError(
+        "ASSISTANT_SCOPE",
+        "Branch filter exceeds authorized scope.",
+        403,
+      );
+    }
+  }
+}
+
+function composeMatch(authMatch, filterClauses, periodMatch) {
+  const parts = [authMatch, ...filterClauses];
+  if (periodMatch && Object.keys(periodMatch).length) {
+    parts.push(periodMatch);
+  }
+  return parts.length === 1 ? parts[0] : { $and: parts };
 }
 
 export function toIstBoundary(value, end = false) {
@@ -141,15 +180,20 @@ export function compileQuerySpec(spec, scope, options = {}) {
   }
 
   const pipeline = [];
-  const match = { ...scopeMatch(scope) };
+  const authMatch = authScopeMatch(scope, entity);
   if (entity === "staff") {
-    match.type = UserType.TENANT_USER;
+    authMatch.type = UserType.TENANT_USER;
   }
+  const filterClauses = [];
   for (const filter of spec.filters ?? []) {
-    Object.assign(match, compileFilterClause(entity, filter));
+    if (entity !== "branches") {
+      assertAuthorizedBranchFilter(scope, filter);
+    }
+    filterClauses.push(compileFilterClause(entity, filter));
   }
-  applyQueryPeriodMatch(match, entity, spec, entityDef);
-  pipeline.push({ $match: match });
+  const periodMatch = {};
+  applyQueryPeriodMatch(periodMatch, entity, spec, entityDef);
+  pipeline.push({ $match: composeMatch(authMatch, filterClauses, periodMatch) });
 
   const limit = Math.min(
     spec.limit ?? spec.topN ?? rowCap,
@@ -159,11 +203,16 @@ export function compileQuerySpec(spec, scope, options = {}) {
 
   if (spec.groupBy || spec.timeBucket || spec.aggregate) {
     const dateField = entity === "collections" ? "paidAt" : (entityDef.defaultSort ?? "createdAt");
-    const groupId = spec.timeBucket
-      ? { bucket: timeBucketExpression(dateField, spec.timeBucket) }
-      : spec.groupBy
-        ? { key: `$${spec.groupBy}` }
-        : { key: null };
+    const groupId = {};
+    if (spec.timeBucket) {
+      groupId.bucket = timeBucketExpression(dateField, spec.timeBucket);
+    }
+    if (spec.groupBy) {
+      groupId.key = `$${spec.groupBy}`;
+    }
+    if (!Object.keys(groupId).length) {
+      groupId.key = null;
+    }
     const groupStage = { _id: groupId, count: { $sum: 1 } };
     const aggFn = spec.aggregate?.fn ?? "count";
     const aggField = spec.aggregate?.field ?? "amountPaise";
@@ -172,12 +221,18 @@ export function compileQuerySpec(spec, scope, options = {}) {
     if (aggFn === "min") groupStage.total = { $min: `$${aggField}` };
     if (aggFn === "max") groupStage.total = { $max: `$${aggField}` };
     pipeline.push({ $group: groupStage });
-    const measureSort = spec.aggregate ? { total: sortDir, count: sortDir } : { count: sortDir };
-    pipeline.push({ $sort: measureSort });
-    if (spec.topN) pipeline.push({ $limit: spec.topN });
-    else pipeline.push({ $limit: limit + 1 });
+    const isTimeSeries = Boolean(spec.timeBucket);
+    if (isTimeSeries) {
+      pipeline.push({ $sort: { "_id.bucket": 1 } });
+      pipeline.push({ $limit: rowCap + 1 });
+    } else {
+      const measureSort = spec.aggregate ? { total: sortDir, count: sortDir } : { count: sortDir };
+      pipeline.push({ $sort: measureSort });
+      if (spec.topN) pipeline.push({ $limit: spec.topN });
+      else pipeline.push({ $limit: limit + 1 });
+    }
     pipeline.push(...labelLookupStages(spec.groupBy));
-    return { Model, pipeline, mode: "aggregate", limit };
+    return { Model, pipeline, mode: "aggregate", limit, exportMode, timeSeries: isTimeSeries };
   }
 
   const sortField = entityDef.defaultSort ?? "createdAt";
@@ -227,7 +282,7 @@ export function compileQuerySpec(spec, scope, options = {}) {
         },
       },
     );
-    return { Model, pipeline, mode: "aggregate", limit, enrichPaymentSequence: limit === 1 };
+    return { Model, pipeline, mode: "aggregate", limit, exportMode, enrichPaymentSequence: limit === 1 };
   }
 
   pipeline.push({
@@ -246,7 +301,7 @@ export function compileQuerySpec(spec, scope, options = {}) {
       createdAt: 1,
     },
   });
-  return { Model, pipeline, mode: "aggregate", limit };
+  return { Model, pipeline, mode: "aggregate", limit, exportMode };
 }
 
 async function attachPaymentSequence(rows, scope) {
@@ -263,10 +318,12 @@ async function attachPaymentSequence(rows, scope) {
   return rows;
 }
 
-export async function runCompiledQuery(compiled, scope = null) {
+export async function runCompiledQuery(compiled, scope = null, options = {}) {
+  const exportMode = Boolean(options.export ?? compiled.exportMode);
+  const maxTimeMS = exportMode ? ASSISTANT_EXPORT_MAX_TIME_MS : ASSISTANT_MAX_TIME_MS;
   const cursor = compiled.Model.aggregate(compiled.pipeline).option({
-    maxTimeMS: ASSISTANT_MAX_TIME_MS,
-    allowDiskUse: false,
+    maxTimeMS,
+    allowDiskUse: exportMode,
   });
   let rows = await cursor;
   const exportRecommended = rows.length > compiled.limit;

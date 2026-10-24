@@ -30,12 +30,13 @@ const app = createApp();
 
 test.before(async () => { await startTestDb(); });
 test.after(async () => { await stopTestDb(); });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("commerce phase D2 hardening HTTP", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
-test("second payment intent with different idempotency key is rejected", async () => {
+  test("second payment intent with different idempotency key is rejected", async () => {
   const { tenant, user, branch } = await seedTenantUser({});
   const { product } = await seedReady({ tenant, user, branch, app });
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
@@ -122,4 +123,5 @@ test("payment intent blocked when harness disabled after order exists", async ()
     .send({ redirectUrl: "https://example.com/return" });
   assert.equal(pay.status, 422);
   assert.equal(pay.body.error?.code, "PAYMENT_NOT_AVAILABLE");
+});
 });

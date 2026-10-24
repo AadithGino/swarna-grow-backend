@@ -17,6 +17,10 @@ import {
 import { attachSubscriptionCatalogPlan } from "../lib/subscription-plan-for-tenant.js";
 import { DEFAULT_DIGITAL_METAL_RATE_MAX_AGE_SECONDS } from "../models/digital-metals.models.js";
 import {
+  hashDigitalMetalsOrderBody,
+  resolveCustomerBoundIdempotencyReplay,
+} from "../lib/digital-metals-customer-idempotency.js";
+import {
   Branch,
   Customer,
   DigitalMetalQuote,
@@ -338,17 +342,25 @@ export async function createCustomerRedemptionQuote(req) {
 }
 
 export async function createRedemptionOrder(req) {
-  assertNewRedemptionAllowed(await loadTenant(req));
+  const tenantAtStart = await loadTenant(req);
+  assertNewRedemptionAllowed(tenantAtStart);
   await assertCustomerCanPlaceRedemption(req.auth.tenantId, req.auth.id);
   const idempotencyKey = String(req.headers["x-idempotency-key"] ?? "").trim();
   if (!idempotencyKey) {
     throw errors.validation([{ field: "x-idempotency-key", message: "Idempotency key is required." }]);
   }
+  const bodyHash = hashDigitalMetalsOrderBody(req.body);
   const existing = await DigitalMetalRedemptionOrder.findOne({
     tenantId: req.auth.tenantId,
     idempotencyKey,
   }).lean();
-  if (existing) return mapRedemptionOrder(existing);
+  const replayExisting = resolveCustomerBoundIdempotencyReplay({
+    order: existing,
+    customerId: req.auth.id,
+    body: req.body,
+    bodyHash,
+  });
+  if (replayExisting) return mapRedemptionOrder(replayExisting);
 
   const quote = await DigitalMetalQuote.findOne({
     _id: req.body.quoteId,
@@ -362,6 +374,27 @@ export async function createRedemptionOrder(req) {
   if (new Date(quote.expiresAt).getTime() < Date.now()) {
     throw new AppError("QUOTE_EXPIRED", "Redemption quote has expired.", 409);
   }
+  const { termsVersionAccepted, termsContentHashAccepted } = req.body;
+  const settingsRows = await Promise.all(
+    DEFAULT_DIGITAL_METAL_ASSETS.map((a) => latestSettings(req.auth.tenantId, a.metal, a.finenessPpm)),
+  );
+  const taxFingerprint = computeTaxProfileFingerprint(settingsRows);
+  if (taxFingerprint !== quote.taxProfileFingerprint) {
+    throw new AppError("TAX_CONFIG_INCOMPLETE", "Tax approval no longer matches this quote.", 422);
+  }
+  const publication = quote.termsVersion
+    ? await DigitalMetalTermsPublication.findOne({
+        tenantId: req.auth.tenantId,
+        termsVersion: quote.termsVersion,
+      }).lean()
+    : null;
+  assertTenantTaxAndTerms(tenantAtStart, { taxFingerprint, termsPublication: publication });
+  if (
+    String(termsVersionAccepted) !== String(quote.termsVersion)
+    || String(termsContentHashAccepted) !== String(quote.termsContentHash)
+  ) {
+    throw new AppError("TERMS_NOT_ACCEPTED", "Customer must accept the published terms snapshot.", 422);
+  }
   const snap = quote.snapshot ?? {};
   const quantityUg = Number(snap.quantityUg);
   const chargeTotalPaise = Number(snap.totalChargePaise ?? 0);
@@ -370,7 +403,9 @@ export async function createRedemptionOrder(req) {
   const settings = await latestSettings(req.auth.tenantId, quote.metal, quote.finenessPpm);
   const paymentWindowMs = (settings.quoteTtlSeconds ?? 900) * 1000;
 
-  const order = await withTransaction(async (session) => {
+  let order;
+  try {
+    order = await withTransaction(async (session) => {
     await assertCustomerCanPlaceRedemptionInSession(session, req.auth.tenantId, req.auth.id);
     const reserveKey = `${idempotencyKey}:reserve`;
     const reserved = await reserveWalletQuantity(session, {
@@ -415,6 +450,7 @@ export async function createRedemptionOrder(req) {
             termsAcceptedAt: new Date(),
             chargePaidAt: chargeTotalPaise === 0 ? new Date() : null,
             idempotencyKey,
+            creationBodyHash: bodyHash,
           },
         ],
         { session },
@@ -436,7 +472,23 @@ export async function createRedemptionOrder(req) {
       });
     }
     return row.toObject();
-  });
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      const dup = await DigitalMetalRedemptionOrder.findOne({
+        tenantId: req.auth.tenantId,
+        idempotencyKey,
+      }).lean();
+      const replayDup = resolveCustomerBoundIdempotencyReplay({
+        order: dup,
+        customerId: req.auth.id,
+        body: req.body,
+        bodyHash,
+      });
+      if (replayDup) return mapRedemptionOrder(replayDup);
+    }
+    throw err;
+  }
 
   return mapRedemptionOrder(order, { zeroCharge: order.chargeTotalPaise === 0 });
 }

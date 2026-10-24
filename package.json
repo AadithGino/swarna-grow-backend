@@ -39,6 +39,7 @@
     "ecommerce:payment-test-ui": "node scripts/run-ecommerce-payment-test-ui.js",
     "ecommerce:payment-test-ui:smoke": "node scripts/run-ecommerce-payment-test-ui.js --smoke",
     "seed:ritu-gold": "node --env-file=.env scripts/seed-ritu-gold-demo.js",
+    "seed:noble-jewellery": "node --env-file=.env scripts/seed-noble-jewellery.js",
     "patch:ritu-gold-customer-app": "node --env-file=.env scripts/patch-ritu-gold-customer-app.js",
     "seed:coverage": "node --env-file=.env scripts/seed-platform-coverage.js",
     "seed:collection-agent": "node --env-file=.env scripts/seed-collection-agent.js",

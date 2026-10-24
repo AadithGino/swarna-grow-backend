@@ -1,5 +1,6 @@
 import { moneyRef } from "../../lib/money.js";
 import { exportableFieldsForQuery } from "./assistant-export.service.js";
+import { aggregateValueType } from "./schema-registry.js";
 
 function scalarValue(item) {
   if (item == null) return 0;
@@ -200,6 +201,30 @@ export function bundleFromQuery({ rows, exportRecommended }, spec, action) {
         valueType: "count",
       });
     }
+  } else if (
+    !spec.groupBy &&
+    !spec.timeBucket &&
+    spec.aggregate &&
+    rows.length === 1 &&
+    rows[0].total != null
+  ) {
+    const fn = spec.aggregate.fn ?? "sum";
+    const field = spec.aggregate.field ?? "amountPaise";
+    const valueType = aggregateValueType(entity, field, fn);
+    const label =
+      fn === "sum"
+        ? "Total collected"
+        : fn === "avg"
+          ? "Average"
+          : fn === "min"
+            ? "Minimum"
+            : fn === "max"
+              ? "Maximum"
+              : "Result";
+    statCards.push({ label, value: Math.round(Number(rows[0].total)), valueType });
+    if (rows[0].count != null) {
+      statCards.push({ label: "Payments", value: rows[0].count, valueType: "count" });
+    }
   } else if (!spec.groupBy && !spec.timeBucket && rows.length === 1 && rows[0].count != null) {
     statCards.push({ label: "Count", value: rows[0].count, valueType: "count" });
   } else if (rows.length) {
@@ -224,7 +249,11 @@ export function bundleFromQuery({ rows, exportRecommended }, spec, action) {
     chart = {
       type: spec.timeBucket ? "line" : "bar",
       title: spec.timeBucket ? "Trend" : "Breakdown",
-      yAxisType: spec.aggregate?.fn === "sum" ? "currency" : "count",
+      yAxisType: aggregateValueType(
+        entity,
+        spec.aggregate?.field ?? "amountPaise",
+        spec.aggregate?.fn ?? "count",
+      ),
       series: [{ name: spec.aggregate?.fn ?? "count", data: points }],
     };
     vizHint = spec.timeBucket ? "time-line" : "branch-bar";
@@ -365,10 +394,12 @@ export function factsFromBundle(bundle) {
         : pt.y,
   }));
   return {
-    period: bundle.summaryText,
+    period: bundle.appliedFilters?.dateRange ?? bundle.summaryText,
+    appliedFilters: bundle.appliedFilters ?? null,
     statCards: (bundle.statCards ?? []).map((c) => ({
       label: c.label,
       display: displayStatValue(c),
+      metricKey: c.metricKey,
     })),
     chart: bundle.chart
       ? { type: bundle.chart.type, title: bundle.chart.title, points: chartPoints }

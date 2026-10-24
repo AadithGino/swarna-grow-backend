@@ -23,12 +23,13 @@ test.before(async () => {
 test.after(async () => {
   await stopTestDb();
 });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("ecommerce payment test harness HTTP", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
-test("test-harness complete-payment returns 404 when harness disabled", async () => {
+  test("test-harness complete-payment returns 404 when harness disabled", async () => {
   disableEcommercePaymentsTestHarness();
   const { tenant, user, branch } = await seedTenantUser({});
   const { product } = await seedReady({ tenant, user, branch, app });
@@ -110,4 +111,5 @@ test("test-harness unavailable on PAYMENT_EXPIRED order", async () => {
     .send({ outcome: "COMPLETED" });
   assert.equal(res.status, 422);
   assert.equal(res.body.error?.code, "ORDER_NOT_PAYABLE");
+});
 });

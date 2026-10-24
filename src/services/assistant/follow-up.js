@@ -1,8 +1,23 @@
+import { parseRelativeDateWindow } from "./assistant-date-window.js";
+import {
+  analyticsFromAction,
+  parseCompareModesFromQuestion,
+  wantsModeComparison,
+  wantsOverallTotalsOnly,
+  wantsDayWiseGrain,
+} from "./collection-analytics-plan.js";
+import {
+  isCollectionDailyBreakdownQuestion,
+  resolveCollectionAnalyticsAction,
+} from "./assistant-plan.js";
+
 /** @typedef {import("../../validators/assistant.validators.js").assistantActionSchema extends infer T ? T : never} AssistantAction */
 
 /** Report titles from baseEnvelope → reportKey (summaryText prefix before ·). */
 const REPORT_TITLE_TO_KEY = Object.freeze({
   "collection report": "COLLECTION",
+  "daily collection": "COLLECTION",
+  "daily collection comparison": "COLLECTION",
   "enrolment report": "ENROLMENT",
   "branch performance comparison": "BRANCH_PERFORMANCE",
   "outstanding & ageing": "OUTSTANDING",
@@ -25,37 +40,9 @@ function normalizeFollowUpQuestion(question) {
     .trim();
 }
 
-function shiftYmd(ymdStr, days) {
-  const [y, m, d] = ymdStr.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + days));
-  return dt.toISOString().slice(0, 10);
-}
-
-/**
- * @returns {{ period?: string, from?: string, to?: string } | null}
- */
+/** @returns {{ period?: string, from?: string, to?: string } | null} */
 export function parseTimeframeFromText(text, todayIst) {
-  const raw = String(text ?? "").trim();
-  const t = raw.toLowerCase();
-  if (!t || !todayIst) return null;
-
-  if (/\blast\s+365\s+days?\b/.test(t) || /\bpast\s+365\s+days?\b/.test(t)) {
-    return { period: "LAST_365_DAYS" };
-  }
-  if (/\bthis\s+month\b/.test(t)) return { period: "THIS_MONTH" };
-  if (/\blast\s+month\b/.test(t)) return { period: "LAST_MONTH" };
-  if (/\bthis\s+week\b/.test(t)) return { period: "THIS_WEEK" };
-  if (/\bthis\s+year\b/.test(t)) return { period: "THIS_YEAR" };
-
-  const rolling = t.match(/(?:^|\b)(?:in\s+)?(?:the\s+)?(?:last|past)\s+(\d{1,3})\s+days?\b/);
-  if (rolling) {
-    const n = Number(rolling[1]);
-    if (n >= 1 && n <= 366) {
-      if (n === 365) return { period: "LAST_365_DAYS" };
-      return { from: shiftYmd(todayIst, -(n - 1)), to: todayIst };
-    }
-  }
-  return null;
+  return parseRelativeDateWindow(text, todayIst);
 }
 
 /** Short messages that only adjust the date window of the prior question. */
@@ -78,6 +65,16 @@ export function isTimeframeFollowUp(question) {
   return false;
 }
 
+function isCollectionPlanFollowUp(question) {
+  return (
+    wantsModeComparison(question) ||
+    wantsOverallTotalsOnly(question) ||
+    wantsDayWiseGrain(question) ||
+    parseCompareModesFromQuestion(question)?.length ||
+    /\bwhat about\b/.test(normalizeFollowUpQuestion(question))
+  );
+}
+
 /**
  * @param {string | undefined} summary
  * @returns {AssistantAction | null}
@@ -91,6 +88,9 @@ export function inferActionFromSummary(summary) {
     const reportKey = REPORT_TITLE_TO_KEY[titlePart];
     if (reportKey) {
       return { kind: "report", reportKey, filters: {} };
+    }
+    if (titlePart.startsWith("daily collection")) {
+      return { kind: "collectionDaily", filters: {} };
     }
   }
 
@@ -112,7 +112,9 @@ export function lastAssistantAction(history = []) {
     const row = history[i];
     if (row?.role !== "assistant") continue;
     const kind = row.action?.kind;
-    if (kind === "report" || kind === "query" || kind === "composite") return row.action;
+    if (kind === "report" || kind === "query" || kind === "composite" || kind === "collectionDaily") {
+      return row.action;
+    }
     const inferred = inferActionFromSummary(row.summary);
     if (inferred) return inferred;
   }
@@ -152,6 +154,19 @@ function applyTimeframeToAction(action, tf) {
     }
     return { ...action, spec };
   }
+  if (action.kind === "collectionDaily") {
+    const filters = { ...(action.filters ?? {}) };
+    if (tf.period) {
+      filters.period = tf.period;
+      delete filters.from;
+      delete filters.to;
+    } else if (tf.from && tf.to) {
+      delete filters.period;
+      filters.from = tf.from;
+      filters.to = tf.to;
+    }
+    return { ...action, filters };
+  }
   return action;
 }
 
@@ -162,13 +177,28 @@ function applyTimeframeToAction(action, tf) {
  * @param {object[]} history
  * @param {AssistantAction} action
  * @param {string} todayIst
+ * @param {{ lastResolvedPlan?: object }} [options]
  * @returns {AssistantAction}
  */
-export function resolveActionWithHistory(question, history, action, todayIst) {
-  const prev = lastAssistantAction(history);
+export function resolveActionWithHistory(question, history, action, todayIst, options = {}) {
+  const prev = lastAssistantAction(history) ?? options.lastResolvedPlan?.action ?? null;
   if (!prev) return action;
 
   const tf = parseTimeframeFromText(question, todayIst);
+  const lastPlan = options.lastResolvedPlan?.action ?? prev;
+
+  if (
+    (prev?.kind === "collectionDaily" || analyticsFromAction(lastPlan)) &&
+    (isCollectionPlanFollowUp(question) || isCollectionDailyBreakdownQuestion(question) || tf)
+  ) {
+    const base = tf ? applyTimeframeToAction(prev, tf) : prev;
+    return resolveCollectionAnalyticsAction(question, action?.kind === "clarify" ? base : action ?? base, {
+      todayIst,
+      history,
+      lastResolvedPlan: options.lastResolvedPlan ?? { action: prev },
+    });
+  }
+
   if (!tf) return action;
 
   if (isTimeframeFollowUp(question)) {
@@ -181,3 +211,8 @@ export function resolveActionWithHistory(question, history, action, todayIst) {
 
   return action;
 }
+
+export {
+  applyConversationFocusToAction,
+  deriveConversationFocusFromTurn,
+} from "./conversation-focus.js";

@@ -28,6 +28,12 @@ export function parseCustomerOrderListQuery(req) {
   return { limit, cursor, status };
 }
 
+export function parseAdminScopedListQuery(req, { defaultLimit = 25, maxLimit = 100 } = {}) {
+  const limit = Math.min(Math.max(Number(req.query.limit) || defaultLimit, 1), maxLimit);
+  const cursor = req.query.cursor ? String(req.query.cursor).trim() : null;
+  return { limit, cursor };
+}
+
 export function paginateByIdCursor(rows, limit) {
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;

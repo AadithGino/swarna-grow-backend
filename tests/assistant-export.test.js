@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { PaymentStatus } from "../src/constants/enums.js";
+import { PaymentStatus, TenantRole } from "../src/constants/enums.js";
+import { AppError } from "../src/lib/app-error.js";
 import { Customer, Payment } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import {
@@ -12,6 +13,7 @@ import {
 import {
   bearerFor,
   resetTestDb,
+  seedBranch,
   seedTenantUser,
   startTestDb,
   stopTestDb,
@@ -27,6 +29,28 @@ test.after(async () => {
 });
 test.beforeEach(async () => {
   await resetTestDb();
+});
+
+test("exportQuery rejects branch filter outside authenticated branch scope", async () => {
+  const { tenant, branch, user } = await seedTenantUser({ role: TenantRole.BRANCH_MANAGER });
+  const otherBranch = await seedBranch({ tenantId: tenant._id, code: "EXPBR", name: "Export Other" });
+  const spec = {
+    entity: "collections",
+    filters: [{ field: "branchId", op: "eq", value: otherBranch._id }],
+  };
+
+  await assert.rejects(
+    () =>
+      exportQuery(
+        {
+          auth: { id: user._id, tenantId: tenant._id, role: user.role },
+          scope: { tenantId: tenant._id, branchId: branch._id },
+        },
+        spec,
+        { fields: ["receiptNumber"], format: "CSV" },
+      ),
+    (err) => err instanceof AppError && err.code === "ASSISTANT_SCOPE",
+  );
 });
 
 test("exportableFieldsForQuery rejects unknown fields at export time", async () => {
@@ -119,7 +143,7 @@ test("exportQuery streams CSV for tenant-scoped collections", async () => {
 });
 
 test("export uses aggregate cursor without loading all rows at once", async () => {
-  const { tenant, branch, user } = await seedTenantUser({});
+  const { tenant, user } = await seedTenantUser({});
   let cursorFactoryCalled = false;
   const originalAggregate = Payment.aggregate.bind(Payment);
   Payment.aggregate = function patchedAggregate(pipeline) {
@@ -148,6 +172,53 @@ test("export uses aggregate cursor without loading all rows at once", async () =
   } finally {
     Payment.aggregate = originalAggregate;
   }
+});
+
+test("POST /admin/assistant/export CSV prefixes formula-like receipt values", async () => {
+  const { tenant, branch, user } = await seedTenantUser({});
+  const customerId = createId("customer");
+  await Customer.create({
+    _id: customerId,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    name: "Formula Customer",
+    mobile: "9000000099",
+    customerNumber: "C-FORM",
+    status: "ACTIVE",
+  });
+  await Payment.create({
+    _id: createId("payment"),
+    tenantId: tenant._id,
+    branchId: branch._id,
+    customerId,
+    schemeId: createId("scheme"),
+    receiptNumber: "=1+1",
+    amountPaise: 1_000,
+    status: PaymentStatus.SUCCESS,
+    mode: "CASH",
+    paidAt: new Date(),
+    collectedBy: user._id,
+    source: "STAFF_APP",
+  });
+
+  const res = await request(app)
+    .post("/api/v1/admin/assistant/export")
+    .set("Authorization", `Bearer ${bearerFor(user)}`)
+    .send({
+      action: {
+        kind: "query",
+        spec: {
+          entity: "collections",
+          filters: [{ field: "status", op: "eq", value: "SUCCESS" }],
+        },
+      },
+      fields: ["receiptNumber"],
+      format: "CSV",
+    });
+
+  assert.equal(res.status, 200);
+  assert.match(String(res.text), /'=1\+1|=1\+1/);
+  assert.doesNotMatch(String(res.text), /^receiptNumber\n=1\+1/m);
 });
 
 test("POST /admin/assistant/export returns CSV attachment for query action", async () => {

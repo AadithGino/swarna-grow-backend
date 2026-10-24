@@ -5,6 +5,7 @@ const SYSTEM_PROMPT = `You are SwarnaGrow Sidekick — an interpret-only router 
 You NEVER compute numbers, query databases, or invent statistics.
 Return exactly ONE JSON object matching one of these shapes:
 - {"kind":"report","reportKey":"<REPORT_KEY>","filters":{"period":"TODAY|THIS_WEEK|THIS_MONTH|LAST_MONTH|LAST_3_MONTHS|NEXT_7_DAYS|THIS_YEAR|LAST_365_DAYS|CUSTOM","from":"YYYY-MM-DD?","to":"YYYY-MM-DD?","branchId":"?","planId":"?"}}
+- {"kind":"collectionDaily","filters":{"from":"YYYY-MM-DD","to":"YYYY-MM-DD","branchId":"?","planId":"?"},"analytics":{"metric":"net_collected|gross_receipts","timeGrain":"day|week|month","dimensions":["day","mode"],"compareModes":["CASH","UPI"],"operation":"trend|comparison"}}
 - {"kind":"composite","reports":[{"reportKey":"<REPORT_KEY>","filters":{...}}, ...]}  (2–3 reports; text-only answer in chat)
 - {"kind":"query","spec":{"entity":"<entity>","period":"TODAY|THIS_WEEK|THIS_MONTH|LAST_MONTH|LAST_3_MONTHS|THIS_YEAR|LAST_365_DAYS?","from":"YYYY-MM-DD?","to":"YYYY-MM-DD?","filters":[...],"groupBy":"?","aggregate":{"fn":"count|sum|avg|min|max","field":"?"},"timeBucket":"day|week|month","topN":number,"sort":"asc|desc","limit":number}}
 - {"kind":"clarify","question":"short follow-up for the owner"}
@@ -25,6 +26,12 @@ LAST / LATEST PAYMENT (who paid, payment details, which scheme, receipt):
 - entity "collections", filters status SUCCESS, sort "desc", limit 1 — NO groupBy, NO aggregate.
 - Example: {"kind":"query","spec":{"entity":"collections","filters":[{"field":"status","op":"eq","value":"SUCCESS"}],"sort":"desc","limit":1}}
 
+CUSTOMER / SCHEME CONTEXT (conversationFocus in payload):
+- When conversationFocus.customerId is set, short follow-ups using he/she/they/him/her or "that customer" refer to THAT customer — not the tenant-wide latest payment or a different person.
+- "Is he part of any scheme?" -> entity schemes, filter customerId eq conversationFocus.customerId.
+- "How much did he pay?" -> entity collections, filter customerId eq conversationFocus.customerId and status SUCCESS, aggregate sum amountPaise (or list that customer's payments) — NOT sort desc limit 1 globally.
+- After identifying a single customer (e.g. latest created account), the backend stores focus; honor it until the owner clearly switches to someone else.
+
 CONTEXT & FOLLOW-UPS:
 - You receive recent conversation history (prior user questions and your last action JSON). If the new message only changes the time range, branch, or a filter of the PREVIOUS question, reuse the previous action's reportKey/entity and apply the change. Examples:
   * "in last 365 days?" after enrolments -> ENROLMENT + LAST_365_DAYS
@@ -33,8 +40,12 @@ CONTEXT & FOLLOW-UPS:
 
 DATES — resolve, do NOT clarify, using todayIst from the payload:
 - Presets when they fit: TODAY, THIS_WEEK, THIS_MONTH, LAST_MONTH, LAST_3_MONTHS, NEXT_7_DAYS, THIS_YEAR, LAST_365_DAYS.
+- Do NOT use LAST_3_MONTHS for "last 30 days" — use explicit from/to (inclusive calendar days ending todayIst).
+- Daily collection breakdown -> {"kind":"collectionDaily","filters":{"from":"YYYY-MM-DD","to":"YYYY-MM-DD"}} OR query collections with timeBucket day (server normalizes to collectionDaily).
+- Cash vs UPI comparison: compareModes ["CASH","UPI"] — UPI is Payment.mode UPI only, NOT ONLINE_GATEWAY. Do not substitute gateway payments for UPI unless the owner asked for online/gateway.
 - Otherwise compute explicit from/to (YYYY-MM-DD) from todayIst:
   * "last 365 days" -> period LAST_365_DAYS or from = todayIst minus 365 days, to = todayIst
+  * "last 30 days" on 2026-10-24 -> from 2026-09-25, to 2026-10-24
   * "last N days/weeks/months" -> window ending todayIst
   * "this year" or bare year "2026" -> from YYYY-01-01, to min(YYYY-12-31, todayIst)
   * "Jan to Oct 2026" / "from 2026 janu to october" -> from 2026-01-01, to 2026-10-31 (fix typos like janu)
@@ -67,12 +78,33 @@ If the owner asks to export or download Excel/CSV, say the full list is availabl
 You are given the owner's question and the ALREADY-COMPUTED results (stat cards, sample rows, chart points).
 Write 2-3 short, plain sentences describing what the data shows and the single most useful takeaway.
 If sampleRows include receipt, customer, scheme, collectedBy, or paymentSequence, name them explicitly (who paid, which plan, receipt number, which installment count, who collected).
-Use ONLY the numbers given. Never invent or recompute figures. Quote currency exactly as the provided display strings (already in rupees). No markdown, no headings, no bullet points. Be concrete and warm, not generic.`;
+Use ONLY the numbers given. Never invent or recompute figures. Quote currency exactly as the provided display strings (already in rupees).
+If appliedFilters.compareModes is present, describe the Cash/UPI (or listed mode) comparison explicitly — do not call it a single total series.
+No markdown, no headings, no bullet points. Be concrete and warm, not generic.`;
 
 const NARRATE_COMPOSITE_PROMPT = `You are SwarnaGrow Sidekick answering a multi-part analytics question for a jewellery shop owner.
 You receive several sections (each from a different report), each with stat cards and optional sample rows.
 Write one cohesive plain-language answer in 4-6 short sentences: cover each topic the owner asked about, in order, using ONLY the numbers provided.
 No markdown, no bullet lists, no headings. Quote currency exactly as given. Be concrete and warm.`;
+
+const DEFAULT_LLM_TIMEOUT_MS = 20_000;
+
+function assistantLlmTimeoutMs() {
+  const raw = Number(env.ASSISTANT_LLM_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 3_000 ? raw : DEFAULT_LLM_TIMEOUT_MS;
+}
+
+async function geminiFetch(url, init) {
+  const timeoutMs = assistantLlmTimeoutMs();
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      throw new AppError("ASSISTANT_LLM_TIMEOUT", "Assistant request timed out.", 504);
+    }
+    throw err;
+  }
+}
 
 /** @type {null | ((args: Record<string, unknown>) => Promise<unknown>)} */
 let testGeminiInterpretHook = null;
@@ -108,6 +140,8 @@ export async function interpretWithGemini({
     todayIst: context.todayIst,
     role: context.role,
     hasBranchScope: Boolean(context.branchId),
+    conversationFocus: context.conversationFocus ?? null,
+    lastResolvedPlan: context.lastResolvedPlan ?? null,
     catalog: toolCatalog,
     history: (history ?? []).slice(-10),
     question,
@@ -128,7 +162,7 @@ export async function interpretWithGemini({
     },
   };
 
-  const res = await fetch(url, {
+  const res = await geminiFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -179,7 +213,7 @@ export async function narrateWithGemini({ question, facts }) {
       responseMimeType: "text/plain",
     },
   };
-  const res = await fetch(url, {
+  const res = await geminiFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

@@ -10,6 +10,10 @@ import {
   ENTITY_REGISTRY,
 } from "./schema-registry.js";
 import { assistantDataScope, compileQuerySpec } from "./query-compiler.js";
+import {
+  bundlePayloadFromCollectionDaily,
+  runCollectionDailyAssistant,
+} from "./collection-daily-assistant.service.js";
 
 const AGGREGATE_EXPORT_FIELDS = ["label", "count", "total", "key"];
 
@@ -50,8 +54,21 @@ function assertExportFields(entity, spec, fields) {
   }
 }
 
+function isSpreadsheetControlOrLeadingSpace(char) {
+  if (char == null || char === "") return false;
+  const code = char.charCodeAt(0);
+  return code <= 0x1f || /\s/u.test(char);
+}
+
+function needsSpreadsheetFormulaPrefix(s) {
+  const first = s[0];
+  return first === "=" || first === "+" || first === "-" || first === "@";
+}
+
 function csvEscape(val) {
-  const s = val == null ? "" : String(val);
+  let s = val == null ? "" : String(val);
+  if (isSpreadsheetControlOrLeadingSpace(s[0])) s = `'${s}`;
+  if (needsSpreadsheetFormulaPrefix(s)) s = `'${s}`;
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -187,6 +204,62 @@ export async function streamQueryExportToResponse(req, res, spec, { fields, form
     return;
   }
   await writeCsvExport(res, prepared.cursor, fields, spec, prepared.entityDef);
+}
+
+const COLLECTION_DAILY_EXPORT_FIELDS = [
+  "date",
+  "paymentCount",
+  "grossReceipts",
+  "gatewayRefundOutflow",
+  "manualCorrectionOutflow",
+  "netCollected",
+];
+
+export async function streamCollectionDailyExportToResponse(req, res, action, { fields, format = "CSV" }) {
+  const result = await runCollectionDailyAssistant(req, action);
+  const bundle = bundlePayloadFromCollectionDaily(result, action);
+  const allowed = new Set((bundle.exportable?.fields ?? COLLECTION_DAILY_EXPORT_FIELDS).map(String));
+  const selected = fields?.length ? fields : [...allowed];
+  for (const field of selected) {
+    if (!allowed.has(field)) {
+      throw new AppError("ASSISTANT_EXPORT_FIELD", `Unknown export field: ${field}`, 422, {
+        allowed: [...allowed],
+      });
+    }
+  }
+  const rows = (bundle.table?.rows ?? []).map((row) => {
+    const out = {};
+    for (const key of selected) {
+      const val = row[key];
+      if (val && typeof val === "object" && val.amountDisplay) out[key] = val.amountDisplay;
+      else out[key] = val ?? "";
+    }
+    return out;
+  });
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="sidekick-collection-daily-${Date.now()}.${format === "XLSX" ? "xlsx" : "csv"}"`,
+  );
+  if (format === "XLSX") {
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res });
+    const sheet = workbook.addWorksheet("Daily collection");
+    sheet.addRow(selected).commit();
+    for (const row of rows) {
+      sheet.addRow(selected.map((f) => row[f])).commit();
+    }
+    await workbook.commit();
+    return;
+  }
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.write(`${selected.map(csvEscape).join(",")}\n`);
+  for (const row of rows) {
+    res.write(`${selected.map((f) => csvEscape(row[f])).join(",")}\n`);
+  }
+  res.end();
 }
 
 export async function exportReportAction(req, action, format = "CSV") {

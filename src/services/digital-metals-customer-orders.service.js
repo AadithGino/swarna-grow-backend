@@ -12,6 +12,11 @@ import {
   paginateByIdCursor,
   parseCustomerOrderListQuery,
 } from "../lib/digital-metals-customer-order-access.js";
+import {
+  CUSTOMER_OPEN_BUY_ORDER_STATUSES,
+  CUSTOMER_OPEN_REDEMPTION_ORDER_STATUSES,
+  CUSTOMER_OPEN_SELL_ORDER_STATUSES,
+} from "../lib/digital-metals-open-work-statuses.js";
 
 function baseCustomerFilter(req) {
   return { tenantId: req.auth.tenantId, customerId: req.auth.id };
@@ -76,23 +81,13 @@ export async function listCustomerRedemptionOrders(req) {
 export async function listCustomerOpenOrdersSummary(req) {
   await assertCustomerDigitalMetalsOrderHistoryAccess(req);
   const base = baseCustomerFilter(req);
-  const openBuyStatuses = ["QUOTE_ACCEPTED", "PAYMENT_PENDING", "PAYMENT_FAILED"];
-  const openSellStatuses = ["PENDING_APPROVAL", "PAYABLE_OPEN"];
-  const openRedeemStatuses = [
-    "QUOTE_ACCEPTED",
-    "CHARGE_PAYMENT_PENDING",
-    "CHARGE_PAYMENT_FAILED",
-    "CHARGE_PAID",
-    "FULFILMENT_ACCEPTED",
-    "PACKING",
-    "DISPATCHED",
-    "PICKUP_READY",
-    "INVESTIGATION",
-  ];
   const [buyCount, sellCount, redeemCount] = await Promise.all([
-    DigitalMetalBuyOrder.countDocuments({ ...base, status: { $in: openBuyStatuses } }),
-    DigitalMetalSellOrder.countDocuments({ ...base, status: { $in: openSellStatuses } }),
-    DigitalMetalRedemptionOrder.countDocuments({ ...base, status: { $in: openRedeemStatuses } }),
+    DigitalMetalBuyOrder.countDocuments({ ...base, status: { $in: [...CUSTOMER_OPEN_BUY_ORDER_STATUSES] } }),
+    DigitalMetalSellOrder.countDocuments({ ...base, status: { $in: [...CUSTOMER_OPEN_SELL_ORDER_STATUSES] } }),
+    DigitalMetalRedemptionOrder.countDocuments({
+      ...base,
+      status: { $in: [...CUSTOMER_OPEN_REDEMPTION_ORDER_STATUSES] },
+    }),
   ]);
   return {
     openBuyCount: buyCount,

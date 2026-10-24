@@ -92,6 +92,12 @@ export async function initiateRedemptionChargePayment(req) {
       idempotencyKey,
     }).session(session);
     if (existing) {
+      if (
+        String(existing.customerId) !== String(req.auth.id)
+        || String(existing.orderId) !== String(orderId)
+      ) {
+        throw errors.notFound("Order");
+      }
       const order = await DigitalMetalRedemptionOrder.findById(existing.orderId).session(session).lean();
       return { replay: true, attempt: existing.toObject(), order };
     }

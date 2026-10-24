@@ -5,6 +5,7 @@ import {
   AssistantMessage,
   AssistantRole,
 } from "../../models/assistant.models.js";
+import { normalizeConversationFocus } from "./conversation-focus.js";
 
 function historyScope(req) {
   return {
@@ -74,6 +75,41 @@ export async function listMessages(req, conversationId, { cursor, limit } = {}) 
     limit,
     sort: "createdAt:desc",
   });
+}
+
+export async function loadConversationFocus(req, conversationId) {
+  const conv = await getOwnedConversation(req, conversationId);
+  return normalizeConversationFocus(conv.conversationFocus);
+}
+
+export async function loadLastResolvedPlan(req, conversationId) {
+  const conv = await getOwnedConversation(req, conversationId);
+  const plan = conv.lastResolvedPlan;
+  return plan && typeof plan === "object" ? plan : null;
+}
+
+export async function saveLastResolvedPlan(req, conversationId, plan) {
+  const scope = historyScope(req);
+  const next = plan && typeof plan === "object" ? plan : null;
+  const update = next
+    ? { $set: { lastResolvedPlan: next } }
+    : { $unset: { lastResolvedPlan: "" } };
+  await AssistantConversation.updateOne(
+    { _id: conversationId, tenantId: scope.tenantId, userId: scope.userId },
+    update,
+  );
+  return next;
+}
+
+export async function saveConversationFocus(req, conversationId, focus) {
+  const scope = historyScope(req);
+  const next = normalizeConversationFocus(focus);
+  const update = next ? { $set: { conversationFocus: next } } : { $unset: { conversationFocus: "" } };
+  await AssistantConversation.updateOne(
+    { _id: conversationId, tenantId: scope.tenantId, userId: scope.userId },
+    update,
+  );
+  return next;
 }
 
 export async function loadRecentContext(req, conversationId, n = 10) {

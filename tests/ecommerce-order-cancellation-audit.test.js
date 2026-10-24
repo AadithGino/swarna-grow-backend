@@ -37,10 +37,11 @@ test.before(async () => {
 test.after(async () => {
   await stopTestDb();
 });
-test.beforeEach(async () => {
-  await resetTestDb();
-  enableEcommercePaymentsTestHarness();
-});
+test.describe("ecommerce order cancellation audit", () => {
+  test.beforeEach(async () => {
+    await resetTestDb();
+    enableEcommercePaymentsTestHarness();
+  });
 
 function staffHeaders(user, permissions = ROLE_PERMISSIONS[TenantRole.TENANT_ADMIN]) {
   return {
@@ -236,4 +237,5 @@ test("cancellation idempotency key cannot replay across orders", async () => {
   assert.equal(second.status, 409);
   assert.equal(second.body.error?.code, "IDEMPOTENCY_KEY_REUSED");
   assert.equal(await EcommerceOrderCancellationRequest.countDocuments({ idempotencyKey: key }), 1);
+});
 });

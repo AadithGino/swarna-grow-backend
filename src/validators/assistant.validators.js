@@ -75,9 +75,28 @@ const actionCompositeSchema = z.object({
   reports: z.array(compositeReportItemSchema).min(2).max(3),
 });
 
+const collectionAnalyticsSchema = z
+  .object({
+    operation: z.enum(["summary", "trend", "comparison", "ranking", "latest"]).optional(),
+    metric: z.enum(["net_collected", "gross_receipts"]).optional(),
+    timeGrain: z.enum(["day", "week", "month"]).optional(),
+    dimensions: z.array(z.enum(["day", "mode", "branch", "customer", "scheme"])).optional(),
+    compareModes: z.array(z.string()).optional().nullable(),
+    sort: z.enum(["chronological", "measure_desc"]).optional(),
+  })
+  .optional();
+
+const actionCollectionDailySchema = z.object({
+  kind: z.literal("collectionDaily"),
+  filters: reportFiltersSchema,
+  analytics: collectionAnalyticsSchema,
+  plannerVersion: z.string().optional(),
+});
+
 export const assistantActionSchema = z.discriminatedUnion("kind", [
   actionReportSchema,
   actionQuerySchema,
+  actionCollectionDailySchema,
   actionCompositeSchema,
   actionClarifySchema,
   actionUnsupportedSchema,
@@ -141,6 +160,9 @@ export function validateAssistantAction(raw) {
         throw new AppError("ASSISTANT_INVALID_REPORT", keyCheck.reason, 422);
       }
     }
+    return parsed;
+  }
+  if (parsed.kind === "collectionDaily") {
     return parsed;
   }
   if (parsed.kind === "query") {

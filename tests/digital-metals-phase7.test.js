@@ -27,6 +27,7 @@ import { signAccessToken } from "../src/services/token.service.js";
 import { Session } from "../src/models/index.js";
 import { withTransaction } from "../src/lib/transaction.js";
 import { creditWalletForTest } from "../src/services/digital-metals-ledger.service.js";
+import { seedCustomerDeliveryAddress } from "./helpers/digital-metals-redemption-delivery-fixture.js";
 
 const app = createApp();
 const G2 = 2 * UG_PER_G;
@@ -228,6 +229,10 @@ test("dispatch preserves reservation until delivery completion", async () => {
     active: true,
   });
   const token = await customerToken({ tenant, branch, customer });
+  const deliveryAddressId = await seedCustomerDeliveryAddress({
+    tenantId: tenant._id,
+    customerId: customer._id,
+  });
   const quote = await request(app)
     .post("/api/v1/app/digital-metals/quotes/redemption")
     .set("Authorization", `Bearer ${token}`)
@@ -238,7 +243,7 @@ test("dispatch preserves reservation until delivery completion", async () => {
       finenessPpm: 999000,
       unitCount: 1,
       fulfilmentMode: "DELIVERY",
-      deliveryAddressId: createId("addr"),
+      deliveryAddressId,
     });
   const order = await request(app)
     .post("/api/v1/app/digital-metals/redemption/orders")
