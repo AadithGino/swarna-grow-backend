@@ -161,9 +161,21 @@ export function parseEnv(source = process.env) {
     SEED_PLATFORM_EMAIL: z.string().email().default("ops@platform.com"),
     SEED_PLATFORM_PASSWORD: z.string().min(4).max(128).default("1234"),
     GEMINI_API_KEY: z.string().default(""),
-    ASSISTANT_MODEL: z.string().default("gemini-3.5-flash-lite"),
+    ASSISTANT_MODEL: z.string().default("gemini-2.5-flash-lite"),
     ASSISTANT_LLM_TIMEOUT_MS: boundedInt(3_000, 120_000, 20_000),
     ASSISTANT_ENABLED: booleanString,
+    /** "agent" = tool-calling Sidekick (default); "router" = legacy single-shot interpreter. */
+    ASSISTANT_ENGINE: z.enum(["agent", "router"]).default("agent"),
+    /** Max model rounds per question (tool rounds + final answer). */
+    ASSISTANT_MAX_STEPS: boundedInt(2, 8, 5),
+    /** Questions per tenant per IST day; 0 = unlimited. */
+    ASSISTANT_DAILY_QUESTION_LIMIT: boundedInt(0, 100_000, 300),
+    /** Optional sampling temperature override (blank = model default; 2.x models use 0.2). */
+    ASSISTANT_TEMPERATURE: z.string().default(""),
+    /** Optional USD per 1M tokens overrides for cost tracking (blank = built-in table). */
+    ASSISTANT_PRICE_INPUT_PER_M: z.string().default(""),
+    ASSISTANT_PRICE_OUTPUT_PER_M: z.string().default(""),
+    ASSISTANT_PRICE_CACHED_PER_M: z.string().default(""),
   }).superRefine((_value, context) => {
     const nodeEnv = source.NODE_ENV ?? "development";
     if (nodeEnv !== "production") return;

@@ -16,6 +16,11 @@ export function setAssistInterpretForTests(fn) {
   testInterpretOverride = fn;
 }
 
+/** True while a legacy-router test hook is installed (routes chat to the router engine). */
+export function assistInterpretTestOverrideActive() {
+  return Boolean(testInterpretOverride);
+}
+
 export function clearAssistInterpretForTests() {
   testInterpretOverride = null;
   testNarrateOverride = null;

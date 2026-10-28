@@ -2,9 +2,9 @@
 
 **Base URL:** `{API_BASE}/api/v1`  
 **Auth:** Customer JWT — `Authorization: Bearer <accessToken>`  
-**Verified backend commit:** `b84f3b327fc75c31a3ba33c8e586debb1eee7921` (`ecommerce` branch)
+**Verified backend commit:** `b1a03cd` (`ecommerce` branch)
 
-Companion docs: [ECOMMERCE_API_CONTRACT.md](./ECOMMERCE_API_CONTRACT.md) (admin + edge cases), [FLUTTER_CUSTOMER_API_GUIDE.md](./FLUTTER_CUSTOMER_API_GUIDE.md) (full customer app), [ECOMMERCE_PROMOTION_FCM.md](./ECOMMERCE_PROMOTION_FCM.md) (admin pushes + gold-rate campaigns).
+Companion docs: [FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md](./FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md) (**full shop + Digital Gold flows for Flutter**), [ECOMMERCE_API_CONTRACT.md](./ECOMMERCE_API_CONTRACT.md) (admin + edge cases), [FLUTTER_CUSTOMER_API_GUIDE.md](./FLUTTER_CUSTOMER_API_GUIDE.md) (schemes, auth, FCM), [ECOMMERCE_PROMOTION_FCM.md](./ECOMMERCE_PROMOTION_FCM.md) (admin pushes + gold-rate campaigns).
 
 ---
 

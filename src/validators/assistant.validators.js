@@ -106,9 +106,15 @@ export const assistantRenameBody = z.object({
   title: z.string().trim().min(1).max(120),
 });
 
+/** Agent query_data answers export by re-running the same spec (validated again server-side). */
+export const assistantDataQueryActionSchema = z.object({
+  kind: z.literal("dataQuery"),
+  spec: z.record(z.any()),
+});
+
 export const assistantExportBody = z
   .object({
-    action: assistantActionSchema,
+    action: z.union([assistantDataQueryActionSchema, assistantActionSchema]),
     fields: z.array(z.string().min(1)).default([]),
     format: z.enum(["CSV", "XLSX"]).default("CSV"),
   })

@@ -25,6 +25,16 @@ assistantRouter.post(
 );
 
 assistantRouter.post(
+  "/chat/stream",
+  assistantChatRateLimit,
+  ...guarded(
+    Permission.REPORT_READ,
+    validate({ body: assistantChatBody }),
+    asyncHandler(controller.chatStream),
+  ),
+);
+
+assistantRouter.post(
   "/export",
   ...guarded(
     Permission.REPORT_EXPORT,

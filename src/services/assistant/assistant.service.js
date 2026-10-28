@@ -2,7 +2,12 @@ import crypto from "node:crypto";
 import { getRedis, redisReady } from "../../config/redis.js";
 import { now } from "../../lib/date.js";
 import { AppError } from "../../lib/app-error.js";
-import { CLARIFY_TRANSIENT, interpret, narrate } from "../../integrations/llm/provider.js";
+import {
+  CLARIFY_TRANSIENT,
+  assistInterpretTestOverrideActive,
+  interpret,
+  narrate,
+} from "../../integrations/llm/provider.js";
 import { buildAdminReport } from "../report-builders/index.js";
 import { assertReportRange } from "../report-builders/report-envelope.js";
 import { writeAudit } from "../audit.service.js";
@@ -44,6 +49,8 @@ import {
   focusFingerprint,
   normalizeConversationFocus,
 } from "./conversation-focus.js";
+import { env } from "../../config/env.js";
+import { handleAgentChat } from "./agent/agent-chat.service.js";
 
 const CACHE_TTL_SEC = 120;
 
@@ -255,7 +262,22 @@ async function executeAction(req, action) {
   return { bundle: bundleFromQuery(result, action.spec, action), compositeParts: null };
 }
 
-export async function handleChat(req, { message: rawMessage, conversationId: bodyConversationId } = {}) {
+/**
+ * Sidekick entry point. The agent engine (tool-calling, open-ended questions) is the default;
+ * ASSISTANT_ENGINE=router keeps the legacy single-shot interpreter below for rollback.
+ */
+export async function handleChat(req, { message, conversationId, onEvent } = {}) {
+  if (env.ASSISTANT_ENGINE !== "router" && !assistInterpretTestOverrideActive()) {
+    return handleAgentChat(req, {
+      message: message ?? req.body?.message,
+      conversationId: conversationId ?? req.body?.conversationId ?? null,
+      onEvent,
+    });
+  }
+  return handleRouterChat(req, { message, conversationId });
+}
+
+async function handleRouterChat(req, { message: rawMessage, conversationId: bodyConversationId } = {}) {
   const messageRaw = String(rawMessage ?? req.body?.message ?? "").trim();
   const message = normalizeAssistantQuestion(messageRaw);
   const conversation = await getOrCreateConversation(
@@ -307,7 +329,7 @@ export async function handleChat(req, { message: rawMessage, conversationId: bod
 
   const key = assistantCacheKey(req, message, trimmedHistory, conversationFocus, action);
   const cachedPayload = await readCache(key);
-  async function finalizeTurn(bundle, actionForTurn, dataAsOfIso) {
+  async function finalizeTurn(bundle, actionForTurn, _dataAsOfIso) {
     const { assistantMessageId } = await appendTurn(
       req,
       conversationId,

@@ -65,7 +65,7 @@ function needsSpreadsheetFormulaPrefix(s) {
   return first === "=" || first === "+" || first === "-" || first === "@";
 }
 
-function csvEscape(val) {
+export function csvEscape(val) {
   let s = val == null ? "" : String(val);
   if (isSpreadsheetControlOrLeadingSpace(s[0])) s = `'${s}`;
   if (needsSpreadsheetFormulaPrefix(s)) s = `'${s}`;

@@ -1,7 +1,7 @@
 # SwarnaGrow Customer API Guide for Flutter
 
 **Backend source of truth:** `https://github.com/AadithGino/swarna-grow-backend.git` (branch `ecommerce`)  
-**Verified commit:** `b84f3b327fc75c31a3ba33c8e586debb1eee7921`  
+**Verified commit:** `b1a03cd`  
 **API prefix:** `/api/v1`  
 **Audience:** Flutter customer application developers  
 
@@ -19,7 +19,7 @@ This guide was derived from the current route registrations, Zod validators, DTO
 | **Gold rates** | Scheme `/app/gold-rate/*` unchanged for 22K scheme math; shop uses separate ecommerce purity rates inside product pricing (server-computed). |
 | **Deep links** | Route map must handle `/shop`, `/shop/order/{id}`, `/shop/products/{slug}`, `/gold-rate/current`, plus existing `/payments`, `/schemes`. |
 
-**Related backend docs:** [`docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md`](docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md) (**full shop module + example payloads**), `docs/ECOMMERCE_API_CONTRACT.md`, `docs/FCM_CUSTOMER_APP_INTEGRATION.md`, `docs/ECOMMERCE_PROMOTION_FCM.md`.
+**Related backend docs:** [`docs/FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md`](docs/FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md) (**ecommerce + Digital Gold end-to-end flows**), [`docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md`](docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md) (**shop payloads**), `docs/DIGITAL_METALS_API_CONTRACT.md`, `docs/ECOMMERCE_API_CONTRACT.md`, `docs/FCM_CUSTOMER_APP_INTEGRATION.md`, `docs/ECOMMERCE_PROMOTION_FCM.md`, `docs/DEPLOY_VERCEL_AND_WORKERS.md`.
 
 ## 1. Transport conventions
 
@@ -1419,4 +1419,4 @@ Drive UI availability from `tenantCapabilities`, `tenant` capability fields, and
 - Treat additive response fields as compatible and unknown fields as ignorable.
 - Never send undocumented fields; several request DTOs are strict and return `400 VALIDATION_FAILED`.
 
-This document describes the customer-facing backend at commit **`b84f3b327fc75c31a3ba33c8e586debb1eee7921`** (`ecommerce` branch). If backend HEAD changes, regenerate/review the guide against `docs/contract-routes.lock`, validators, DTOs, and services before handing it to the Flutter team.
+This document describes the customer-facing backend at commit **`b1a03cd`** (`ecommerce` branch). If backend HEAD changes, regenerate/review the guide against `docs/contract-routes.lock`, validators, DTOs, and services before handing it to the Flutter team.

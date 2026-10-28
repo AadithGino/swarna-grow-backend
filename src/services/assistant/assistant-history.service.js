@@ -22,7 +22,9 @@ function shapeHistoryRow(row) {
   return {
     role: "assistant",
     summary: bundle.summaryText,
+    narrative: bundle.narrative ?? null,
     action: bundle.action,
+    memory: Array.isArray(bundle.memory) ? bundle.memory : undefined,
   };
 }
 
@@ -209,10 +211,11 @@ export function messageToClient(row) {
       createdAt: row.createdAt,
     };
   }
+  const { memory: _memory, usage: _usage, ...bundle } = row.bundle ?? {};
   return {
     id: row._id,
     role: "assistant",
-    bundle: row.bundle ?? {},
+    bundle,
     createdAt: row.createdAt,
   };
 }

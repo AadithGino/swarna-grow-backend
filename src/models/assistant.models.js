@@ -41,5 +41,25 @@ const messageSchema = new mongoose.Schema(
 messageSchema.index({ conversationId: 1, createdAt: -1, _id: -1 });
 messageSchema.index({ tenantId: 1, userId: 1 });
 
+/** Per-tenant, per-IST-day Sidekick usage: question count (daily cap) and LLM token cost. */
+const usageDailySchema = new mongoose.Schema(
+  {
+    _id: stringId("aud"),
+    tenantId: tenantField,
+    day: { type: String, required: true },
+    questions: { type: Number, default: 0 },
+    llmCalls: { type: Number, default: 0 },
+    promptTokens: { type: Number, default: 0 },
+    cachedTokens: { type: Number, default: 0 },
+    outputTokens: { type: Number, default: 0 },
+    costMicroUsd: { type: Number, default: 0 },
+    toolCalls: { type: Number, default: 0 },
+    model: String,
+  },
+  baseOptions,
+);
+usageDailySchema.index({ tenantId: 1, day: 1 }, { unique: true });
+
 export const AssistantConversation = mongoose.model("AssistantConversation", conversationSchema);
+export const AssistantUsageDaily = mongoose.model("AssistantUsageDaily", usageDailySchema);
 export const AssistantMessage = mongoose.model("AssistantMessage", messageSchema);
