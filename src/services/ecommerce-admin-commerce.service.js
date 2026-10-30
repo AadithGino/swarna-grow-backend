@@ -78,12 +78,15 @@ export async function listAdminInventory(req) {
   const filter = { tenantId: req.auth.tenantId };
   if (req.query.productId) filter._id = req.query.productId;
   if (req.query.q) {
-    filter.name = { $regex: String(req.query.q).trim(), $options: "i" };
+    // Contains-match on the name; escape so "18K (gold)" etc. is literal text.
+    const text = String(req.query.q).trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    filter.name = { $regex: text, $options: "i" };
   }
-  const products = await EcommerceProduct.find(filter)
-    .sort({ updatedAt: -1 })
-    .limit(Math.min(Number(req.query.limit) || 50, 100))
-    .lean();
+  const limit = Math.min(Number(req.query.limit) || 50, 100);
+  const [products, totalProducts] = await Promise.all([
+    EcommerceProduct.find(filter).sort({ updatedAt: -1 }).limit(limit).lean(),
+    EcommerceProduct.countDocuments(filter),
+  ]);
   const productIds = products.map((p) => p._id);
   const inventories = productIds.length
     ? await EcommerceInventory.find({
@@ -99,7 +102,8 @@ export async function listAdminInventory(req) {
       mapInventoryRow(product, invByProduct.get(product._id), availability),
     );
   }
-  return { items };
+  /** totalProducts > items.length means the list (and any counts built from it) is partial. */
+  return { items, totalProducts, truncated: totalProducts > items.length };
 }
 
 export async function getAdminInventoryProduct(req) {

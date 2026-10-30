@@ -590,3 +590,39 @@ export const platformDigitalMetalsOperationsSummary = async (req, res) => {
   const svc = await import("../services/digital-metals-operations-visibility.service.js");
   return sendSuccess(res, await svc.getPlatformDigitalMetalsOperationsSummary(req));
 };
+
+/* Counter trades (staff-assisted buy / sell for a customer). */
+export const adminCounterBuyQuote = async (req, res) => {
+  const svc = await import("../services/digital-metals-assisted.service.js");
+  return sendSuccess(res, await svc.createAssistedBuyQuote(req), {}, 201);
+};
+
+export const adminCounterBuy = async (req, res) => {
+  const svc = await import("../services/digital-metals-assisted.service.js");
+  return sendSuccess(res, await svc.placeAssistedBuy(req), {}, 201);
+};
+
+export const adminCounterSellQuote = async (req, res) => {
+  const svc = await import("../services/digital-metals-assisted.service.js");
+  return sendSuccess(res, await svc.createAssistedSellQuote(req), {}, 201);
+};
+
+export const adminCounterSell = async (req, res) => {
+  const svc = await import("../services/digital-metals-assisted.service.js");
+  return sendSuccess(res, await svc.placeAssistedSell(req), {}, 201);
+};
+
+export const adminSellCashPayout = async (req, res) => {
+  const svc = await import("../services/digital-metals-assisted.service.js");
+  return sendSuccess(res, await svc.recordSellCashPayout(req));
+};
+
+export const adminCustomerSummary = async (req, res) => {
+  const svc = await import("../services/digital-metals-summary.service.js");
+  return sendSuccess(res, await svc.getAdminCustomerDigitalMetalsSummary(req));
+};
+
+export const adminDashboardSummary = async (req, res) => {
+  const svc = await import("../services/digital-metals-summary.service.js");
+  return sendSuccess(res, await svc.getAdminDigitalMetalsDashboardSummary(req));
+};

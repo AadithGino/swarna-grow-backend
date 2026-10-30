@@ -38,6 +38,7 @@ import {
   rupeesDisplay,
 } from "./format.js";
 import { searchHelp } from "./help-articles.js";
+import { GUIDE_IDS, getGuide, guideForClient } from "./guides.js";
 
 const FILTER_OPS = ["eq", "ne", "in", "nin", "gt", "gte", "lt", "lte", "between", "contains", "startsWith", "exists"];
 
@@ -138,7 +139,7 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: "find_customer",
-    description: "Find customers by name, mobile number (full or last digits), customer number or passbook number. Use before customer_overview or customer-specific filters.",
+    description: "Find customers by name, mobile number (full or last digits), customer number or passbook number. Use to list matches or to get customerId for query_data filters. For one customer's full picture call customer_overview directly with the name.",
     parameters: {
       type: "object",
       properties: {
@@ -150,14 +151,16 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: "customer_overview",
-    description: "Everything about one customer: profile, every scheme enrolment with paid/overdue instalments and amount paid, recent payments, Digi Gold holdings and store orders.",
+    description:
+      "Everything about one customer: profile, every scheme enrolment with paid/overdue instalments and amount paid, recent payments, Digi Gold holdings and store orders. Pass customerId if you have it; otherwise pass customer (name, mobile or customer number) and it finds them itself — if several match it returns the list so you can ask which one.",
     parameters: {
       type: "object",
       properties: {
         customerId: { type: "string" },
+        customer: { type: "string", description: "Name, mobile (or last digits) or customer number, when customerId is unknown." },
         purpose: purposeProp,
       },
-      required: ["customerId", "purpose"],
+      required: ["purpose"],
     },
   },
   {
@@ -167,6 +170,19 @@ export const TOOL_DECLARATIONS = [
       type: "object",
       properties: { query: { type: "string" }, purpose: purposeProp },
       required: ["query"],
+    },
+  },
+  {
+    name: "start_walkthrough",
+    description:
+      'Attach an on-screen walkthrough to your answer: the owner gets a "Show me step by step" button that opens the right page and highlights every click. There is a guide for almost every admin task (customers, KYC, schemes and plan builder, enrolments, payments, dues, redemption, cash, gold rates, online store, COD, Digi Gold, reminders, reports, support, staff, branches, settings). Use it whenever the owner asks how to do something, says they forgot how, or asks you to do it for them. guideId names the task (e.g. add-customer, record-payment, cod-orders, dm-sell-approve).',
+    parameters: {
+      type: "object",
+      properties: {
+        guideId: { type: "string", enum: [...GUIDE_IDS] },
+        purpose: purposeProp,
+      },
+      required: ["guideId"],
     },
   },
   {
@@ -539,9 +555,48 @@ async function execFindCustomer(args, ctx) {
   };
 }
 
+/** Resolve "Ramesh" / "98470" / "CUS-1048" to a single customer id, or null when ambiguous. */
+async function resolveCustomerRef(ref, ctx) {
+  const q = String(ref ?? "").trim().slice(0, 80);
+  if (q.length < 2) return { id: null, count: 0 };
+  const digits = q.replace(/\D/g, "");
+  const or = [
+    { name: { $regex: escaped(q), $options: "i" } },
+    { customerNumber: { $regex: `^${escaped(q)}`, $options: "i" } },
+    { passbookNumber: { $regex: `^${escaped(q)}`, $options: "i" } },
+  ];
+  if (digits.length >= 4) or.push({ mobile: { $regex: `${escaped(digits)}$` } });
+  const rows = await Customer.find({ ...customerScope(ctx.scope), $or: or }, { name: 1, mobile: 1, customerNumber: 1 })
+    .limit(8)
+    .lean()
+    .maxTimeMS(10_000);
+  if (rows.length === 1) return { id: rows[0]._id, count: 1 };
+  const lower = q.toLowerCase();
+  const exact = rows.filter(
+    (c) =>
+      String(c.name ?? "").toLowerCase() === lower ||
+      String(c.customerNumber ?? "").toLowerCase() === lower ||
+      (digits.length >= 10 && String(c.mobile ?? "").endsWith(digits)),
+  );
+  if (exact.length === 1) return { id: exact[0]._id, count: rows.length };
+  return { id: null, count: rows.length };
+}
+
 async function execCustomerOverview(args, ctx) {
-  const customerId = String(args?.customerId ?? "").trim();
-  if (!customerId) throw new QuerySpecError("customerId is required.", "Call find_customer first.");
+  let customerId = String(args?.customerId ?? "").trim();
+  if (!customerId && args?.customer) {
+    const resolved = await resolveCustomerRef(args.customer, ctx);
+    if (!resolved.id) {
+      if (resolved.count === 0) {
+        throw new QuerySpecError(`No customer matches “${String(args.customer).slice(0, 40)}”.`, "Check the spelling or try their mobile number.");
+      }
+      // Several matches: hand back the list so the model can ask which one.
+      const listed = await execFindCustomer({ query: args.customer, purpose: args.purpose }, ctx);
+      return { ...listed, forModel: { ...listed.forModel, needsChoice: true, hint: "Several customers match — ask the owner which one (needsClarification with their names as followUps)." } };
+    }
+    customerId = resolved.id;
+  }
+  if (!customerId) throw new QuerySpecError("customerId or customer is required.", "Pass the customer's name, mobile or customer number as customer.");
   const customer = await Customer.findOne(
     { ...customerScope(ctx.scope), _id: customerId },
     { name: 1, mobile: 1, customerNumber: 1, passbookNumber: 1, status: 1, branchId: 1, createdAt: 1, "kyc.status": 1, passwordSetAt: 1 },
@@ -735,6 +790,25 @@ async function execHelp(args, ctx) {
   };
 }
 
+async function execWalkthrough(args, ctx) {
+  const guide = getGuide(args?.guideId);
+  if (!guide) {
+    return { error: { message: `Unknown guideId. Use one of: ${GUIDE_IDS.join(", ")}.` } };
+  }
+  const id = ctx.nextId();
+  ctx.results.set(id, { id, tool: "start_walkthrough", kind: "guide", title: guide.title, guide: guideForClient(guide) });
+  return {
+    resultId: id,
+    forModel: {
+      resultId: id,
+      guide: guide.title,
+      steps: guide.steps,
+      note: "The owner will see a 'Show me step by step' button under your answer. In final_answer, give these steps briefly as '- ' bullets in their language and mention the button.",
+    },
+    detail: guide.title,
+  };
+}
+
 const EXECUTORS = {
   query_data: execQueryData,
   run_report: execRunReport,
@@ -742,6 +816,7 @@ const EXECUTORS = {
   find_customer: execFindCustomer,
   customer_overview: execCustomerOverview,
   help_articles: execHelp,
+  start_walkthrough: execWalkthrough,
 };
 
 export const DEFAULT_STEP_LABELS = {
@@ -751,6 +826,7 @@ export const DEFAULT_STEP_LABELS = {
   find_customer: "Looking up the customer",
   customer_overview: "Pulling the customer's full picture",
   help_articles: "Checking the help guide",
+  start_walkthrough: "Preparing a step-by-step guide",
 };
 
 /**

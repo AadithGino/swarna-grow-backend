@@ -447,3 +447,37 @@ export const digitalMetalsDocumentRequestBody = z
       });
     }
   });
+
+/* Counter trades placed by staff for a customer (admin / branch manager). */
+const counterPaymentMode = z.enum(["CASH", "UPI", "CARD"]);
+
+export const digitalMetalsCounterBuyBody = z
+  .object({
+    quoteId: z.string().trim().min(1).max(80),
+    paymentMode: counterPaymentMode,
+    paymentReference: z.string().trim().max(120).optional(),
+    note: z.string().trim().max(500).optional(),
+    customerConsent: z.literal(true),
+  })
+  .strict();
+
+export const digitalMetalsCounterSellBody = z
+  .object({
+    quoteId: z.string().trim().min(1).max(80),
+    payoutMethod: z.enum(["BANK", "CASH"]),
+    bankDestinationId: z.string().trim().min(1).max(80).optional(),
+    note: z.string().trim().max(500).optional(),
+    customerConsent: z.literal(true),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (body.payoutMethod === "BANK" && !body.bankDestinationId) {
+      ctx.addIssue({ code: "custom", path: ["bankDestinationId"], message: "Choose the customer's verified bank account." });
+    }
+  });
+
+export const digitalMetalsSellCashPayoutBody = z
+  .object({
+    receiptNote: z.string().trim().max(500).optional(),
+  })
+  .strict();

@@ -171,6 +171,12 @@ alertSchema.index(
   },
 );
 const cashAdjustmentSchema = new mongoose.Schema({ _id: stringId("cad"), tenantId: tenantField, branchId: branchField, staffId: { type: String, required: true, index: true }, direction: enumField(CashAdjustmentDirection, { required: true }), amountPaise: integerField({ required: true, min: 1 }), reason: { type: String, required: true }, createdBy: String }, baseOptions);
+/** Counter trades (Digi Gold buy/sell, store orders) link back to their source so each posts once. */
+cashAdjustmentSchema.add({ sourceType: { type: String, default: null }, sourceId: { type: String, default: null } });
+cashAdjustmentSchema.index(
+  { tenantId: 1, sourceType: 1, sourceId: 1 },
+  { unique: true, partialFilterExpression: { sourceId: { $type: "string" } } },
+);
 cashAdjustmentSchema.plugin(immutablePlugin);
 
 /** Serializes concurrent cash handovers/adjustments per staff custody position. */

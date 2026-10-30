@@ -52,6 +52,7 @@ import {
   collectionPeriodBaseMatch,
 } from "../lib/collection-period-aggregation.js";
 import { paymentFinancialHistoryStatusFilter } from "../lib/payment-net-aggregation.js";
+import { istTodayYmd, workboardSchemeFilter } from "../lib/dues-workboard.js";
 
 export { collectionSummary };
 
@@ -71,10 +72,10 @@ export async function navBadges(req) {
   monthStart.setHours(0, 0, 0, 0);
   const [dues, cashHandovers, openRedemptions, failedMessages] =
     await Promise.all([
+      // Same rows as the Dues workboard "All" view (open enrollments only).
       Scheme.countDocuments({
         ...scope,
-        paymentPattern: "FIXED",
-        "installments.status": { $in: ["DUE", "PARTIALLY_PAID"] },
+        ...workboardSchemeFilter("dues", { kind: "ALL", today: istTodayYmd() }),
       }),
       CashHandover.countDocuments({ ...scope, status: "PENDING" }),
       Redemption.countDocuments({
@@ -108,10 +109,10 @@ export async function dashboard(req) {
   const periodRange = resolveQueryDateRange(req.query);
   const todayYmd = today();
   const todayRange = { from: todayYmd, to: todayYmd };
-  const todayCollection = await aggregateCollectionPeriod(
-    collectionPeriodBaseMatch(scope),
-    todayRange,
-  );
+  const [todayCollection, periodCollection] = await Promise.all([
+    aggregateCollectionPeriod(collectionPeriodBaseMatch(scope), todayRange),
+    aggregateCollectionPeriod(collectionPeriodBaseMatch(scope), periodRange),
+  ]);
   const [
     activeCustomers,
     openSchemes,
@@ -126,7 +127,13 @@ export async function dashboard(req) {
     Customer.countDocuments({ ...scope, status: "ACTIVE" }),
     Scheme.countDocuments({ ...scope, status: { $in: OPEN_ENROLLMENT_STATUSES } }),
     Scheme.countDocuments({ ...scope, status: { $in: ACTIVE_AND_LOCKED_STATUSES } }),
-    Scheme.countDocuments({ ...scope, "installments.status": "OVERDUE" }), Scheme.countDocuments({ ...scope, status: "MATURED" }), CashHandover.countDocuments({ ...scope, status: "PENDING" }),
+    // Matches the Dues → Overdue workboard (open, non-defaulted enrollments past grace).
+    Scheme.countDocuments({
+      ...scope,
+      ...workboardSchemeFilter("overdues", { today: todayYmd }),
+    }),
+    Scheme.countDocuments({ ...scope, status: "MATURED" }),
+    CashHandover.countDocuments({ ...scope, status: "PENDING" }),
     (await import("../models/index.js")).Grievance.countDocuments({ ...scope, status: { $in: ["OPEN", "IN_PROGRESS"] } }),
     Redemption.countDocuments({ ...scope, status: { $in: OPEN_REDEMPTION_STATUSES } }),
     redemptionPeriodSummary(scope, periodRange),
@@ -138,6 +145,14 @@ export async function dashboard(req) {
       refundOutflowPaise: todayCollection.refundOutflowPaise,
       count: todayCollection.count,
       byMode: todayCollection.byMode,
+    },
+    /** Net collection for the selected period (same rules as the Collections page). */
+    periodCollection: {
+      amountPaise: periodCollection.amountPaise,
+      grossAmountPaise: periodCollection.grossAmountPaise,
+      refundOutflowPaise: periodCollection.refundOutflowPaise,
+      count: periodCollection.count,
+      byMode: periodCollection.byMode,
     },
     customers: { active: activeCustomers },
     schemes: {
@@ -157,8 +172,14 @@ export async function dashboard(req) {
       branchId: scope.branchId ?? null,
     },
     period: {
-      key: period,
-      label: periodLabels[period] ?? "This month",
+      key: req.query.from && req.query.to && !periodLabels[period] ? "CUSTOM" : period,
+      label:
+        periodLabels[period] ??
+        (periodRange.from && periodRange.to
+          ? periodRange.from === periodRange.to
+            ? periodRange.from
+            : `${periodRange.from} to ${periodRange.to}`
+          : "This month"),
       from: periodRange.from ?? req.query.from,
       to: periodRange.to ?? req.query.to,
     },

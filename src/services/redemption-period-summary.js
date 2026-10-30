@@ -9,7 +9,8 @@ function cashOutExpr() {
       "$cashOutPaise",
       {
         $cond: [
-          { $eq: ["$mode", "GOLD_HANDOVER"] },
+          // Gold handover and purchase adjustment pay no cash (legacy rows lack cashOutPaise).
+          { $in: ["$mode", ["GOLD_HANDOVER", "PURCHASE_ADJUSTMENT"]] },
           0,
           { $ifNull: ["$settlementPaise", 0] },
         ],
@@ -82,6 +83,7 @@ export async function redemptionPeriodSummary(scope, query = {}) {
           benefitPaise: { $sum: includedBenefitPaiseAggregationExpr() },
           cashOutPaise: { $sum: cashOutExpr() },
           handoverValuePaise: { $sum: handoverValueExpr() },
+          purchaseAdjustmentPaise: { $sum: purchaseAdjustmentSettlementExpr() },
         },
       },
     ]),
@@ -141,8 +143,12 @@ export async function redemptionPeriodSummary(scope, query = {}) {
     }
   }
 
+  // "Handed out" = cash paid + gold handed over. Shop-purchase credits are
+  // reported separately (purchaseAdjustmentSettlementPaise) — see tests.
   const totalHandedOutPaise =
     cashSettlementPaise + goldHandoverValuePaise;
+  const closureSettled = (row) =>
+    (row.cashOutPaise ?? 0) + (row.handoverValuePaise ?? 0);
 
   return {
     count: t.count,
@@ -157,15 +163,15 @@ export async function redemptionPeriodSummary(scope, query = {}) {
     purchaseAdjustmentSettlementPaise: t.purchaseAdjustmentSettlementPaise ?? 0,
     maturityRedemptions: {
       count: maturity.count,
-      settlementPaise:
-        (maturity.cashOutPaise ?? 0) + (maturity.handoverValuePaise ?? 0),
+      settlementPaise: closureSettled(maturity),
+      purchaseAdjustmentPaise: maturity.purchaseAdjustmentPaise ?? 0,
       benefitPaise: maturity.benefitPaise,
       penaltyPaise: maturity.penaltyPaise,
     },
     prematureClosures: {
       count: premature.count,
-      settlementPaise:
-        (premature.cashOutPaise ?? 0) + (premature.handoverValuePaise ?? 0),
+      settlementPaise: closureSettled(premature),
+      purchaseAdjustmentPaise: premature.purchaseAdjustmentPaise ?? 0,
       benefitPaise: premature.benefitPaise,
       penaltyPaise: premature.penaltyPaise,
     },

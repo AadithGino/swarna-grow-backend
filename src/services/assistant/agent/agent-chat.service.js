@@ -10,6 +10,9 @@ import { writeAudit } from "../../audit.service.js";
 import { appendTurn, getOrCreateConversation, loadRecentContext } from "../assistant-history.service.js";
 import { assistantDataScope } from "../query-compiler.js";
 import { assertAgentAvailable, runAgentTurn } from "./agent.service.js";
+import { instantReply } from "./instant-replies.js";
+import { guideForClient, guideInstantReply, matchGuideIntent } from "./guides.js";
+import { buildAgentBundle } from "./answer-bundle.js";
 import { geminiAgentTestHookActive } from "../../../integrations/llm/gemini-agent.js";
 import { recordUsage, reserveDailyQuestion } from "./usage.js";
 import { AssistantUsageDaily } from "../../../models/assistant.models.js";
@@ -86,6 +89,24 @@ export async function handleAgentChat(req, { message: rawMessage, conversationId
   const scope = assistantDataScope(req);
   const conversation = await getOrCreateConversation(req, bodyConversationId ?? null);
   const conversationId = conversation._id;
+
+  // Small talk ("hi", "thanks", "ok") never needs data: answer locally, no model call,
+  // no daily question used.
+  // Clear "how do I add a customer?" questions get the walkthrough instantly as well.
+  const guideMatch = matchGuideIntent(message);
+  const instant = guideMatch
+    ? { ...guideInstantReply(guideMatch), guide: guideForClient(guideMatch) }
+    : instantReply(message, { firstName: String(req.auth?.name ?? req.user?.name ?? "").split(" ")[0] || null });
+  if (instant) {
+    const bundle = {
+      ...buildAgentBundle({ final: instant, results: new Map(), steps: [], calls: [], usage: null, model: "instant", fallbackText: "" }),
+      instant: true,
+      asOf: now().toISOString(),
+    };
+    const { assistantMessageId } = await appendTurn(req, conversationId, message, bundle);
+    return { ...clientView(bundle), cached: false, conversationId, messageId: assistantMessageId };
+  }
+
   const history = conversation.messageCount > 0 ? await loadRecentContext(req, conversationId, 8) : [];
 
   // Only the opening question of a chat is cacheable — follow-ups depend on context.

@@ -176,7 +176,7 @@ function renderBlock(spec, result) {
 
 /** When the model asked for no visuals, pick sensible ones from the most relevant result. */
 function defaultBlockSpecs(results) {
-  const list = [...results.values()].filter((r) => r.kind !== "help");
+  const list = [...results.values()].filter((r) => r.kind !== "help" && r.kind !== "guide");
   const last = list[list.length - 1];
   if (!last) return [];
   const id = last.id;
@@ -272,7 +272,8 @@ export function buildAgentBundle({ final, results, steps, calls, usage, model, f
   const firstStats = blocks.find((b) => b.type === "stats");
   const firstChart = blocks.find((b) => b.type === "chart");
   const firstTable = blocks.find((b) => b.type === "table");
-  const firstResult = [...results.values()][0];
+  const firstResult = [...results.values()].find((r) => r.kind !== "guide") ?? [...results.values()][0];
+  const guide = [...results.values()].reverse().find((r) => r.kind === "guide")?.guide ?? final?.guide ?? null;
   const summaryText =
     String(final?.title ?? "").trim().slice(0, 80) || firstResult?.title || "Sidekick";
 
@@ -288,6 +289,7 @@ export function buildAgentBundle({ final, results, steps, calls, usage, model, f
     steps,
     followUps: sanitizeFollowUps(final?.followUps),
     needsClarification: Boolean(final?.needsClarification),
+    ...(guide ? { guide } : {}),
     appliedFilters: appliedFiltersFrom(results),
     ...(firstTable?.action ? { action: firstTable.action } : {}),
     ...(firstTable?.exportable ? { exportable: firstTable.exportable } : {}),

@@ -10,6 +10,8 @@ import {
   EcommerceOrder,
   EcommerceOrderCancellationRequest,
   EcommerceOrderReturnRequest,
+  EcommercePaymentAttempt,
+  EcommercePaymentExceptionRefund,
 } from "../models/index.js";
 import { computeEcommerceCollections } from "./ecommerce-workspace-collections.js";
 
@@ -41,6 +43,44 @@ export async function countOrdersPlaced(tenantId, from, to) {
     tenantId,
     ...istDateRangeMatch("createdAt", from, to),
   });
+}
+
+/**
+ * Open items on the Payment exceptions page: refunds not yet finished, stuck /
+ * uncertain gateway attempts, and exception orders without a completed refund.
+ * (Orders keep paymentExceptionStatus after the refund succeeds, so counting that
+ * field alone kept resolved cases on the dashboard forever.)
+ */
+export async function countOpenEcommercePaymentExceptions(tenantId) {
+  const OPEN_REFUND = [
+    EcommercePaymentExceptionRefundStatus.ASSIGNED,
+    EcommercePaymentExceptionRefundStatus.INITIATED,
+    EcommercePaymentExceptionRefundStatus.PROVIDER_PENDING,
+    EcommercePaymentExceptionRefundStatus.FAILED,
+  ];
+  const [openRefundOrderIds, exceptionOrderIds, finishedOrderIds, stuck, uncertain] =
+    await Promise.all([
+      EcommercePaymentExceptionRefund.distinct("orderId", {
+        tenantId,
+        status: { $in: OPEN_REFUND },
+      }),
+      EcommerceOrder.distinct("_id", {
+        tenantId,
+        paymentExceptionStatus: { $ne: null },
+      }),
+      EcommercePaymentExceptionRefund.distinct("orderId", {
+        tenantId,
+        status: { $in: REFUND_OUTFLOW_STATUSES },
+      }),
+      EcommercePaymentAttempt.countDocuments({ tenantId, operationalStatus: "STUCK_RECONCILE" }),
+      EcommercePaymentAttempt.countDocuments({ tenantId, operationalStatus: "INITIATION_UNCERTAIN" }),
+    ]);
+  const finished = new Set(finishedOrderIds.map(String));
+  const open = new Set(openRefundOrderIds.map(String));
+  for (const id of exceptionOrderIds) {
+    if (!finished.has(String(id))) open.add(String(id));
+  }
+  return open.size + stuck + uncertain;
 }
 
 export async function aggregateWorkspaceSummary(tenantId, from, to) {
@@ -108,10 +148,7 @@ export async function aggregateWorkspaceSummary(tenantId, from, to) {
         ],
       },
     }),
-    EcommerceOrder.countDocuments({
-      ...tenantScope,
-      paymentExceptionStatus: { $ne: null },
-    }),
+    countOpenEcommercePaymentExceptions(tenantId),
     computeEcommerceCollections(tenantId, from, to),
   ]);
 

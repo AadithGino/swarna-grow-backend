@@ -187,7 +187,12 @@ async function assertProductQuotable(product, tenantId, session) {
   }
 }
 
-export async function createCustomerQuote(req) {
+/**
+ * @param {object} req  customer-bound request (req.auth.id = customer)
+ * @param {{ lines?: Array<{ productId: string, quantity: number }>, assistedByUserId?: string }} [opts]
+ *   staff counter orders pass lines directly instead of reading the customer's cart
+ */
+export async function createCustomerQuote(req, opts = {}) {
   assertEcommerceOperational(req.tenant);
   const capability = await loadCheckoutCapability(req.auth.tenantId, req.tenant);
   const idempotencyKey = String(req.headers["x-idempotency-key"] ?? "").trim();
@@ -270,11 +275,14 @@ export async function createCustomerQuote(req) {
       const codPincodeSnapshot =
         paymentMethod === EcommercePaymentMethod.COD ? codEvaluation.codPincode ?? null : null;
 
-      const cart = await EcommerceCart.findOne({
-        tenantId: req.auth.tenantId,
-        customerId: req.auth.id,
-      }).session(session);
-      const cartLines = cart?.lines ?? [];
+      const cartLines = Array.isArray(opts.lines)
+        ? opts.lines
+        : ((
+            await EcommerceCart.findOne({
+              tenantId: req.auth.tenantId,
+              customerId: req.auth.id,
+            }).session(session)
+          )?.lines ?? []);
       if (!cartLines.length) {
         throw errors.validation([{ field: "cart", message: "Cart is empty." }]);
       }
@@ -478,6 +486,7 @@ export async function createCustomerQuote(req) {
               expiresAt,
               idempotencyKey,
               creationBodyHash: bodyHash,
+              ...(opts.assistedByUserId ? { assistedByUserId: opts.assistedByUserId } : {}),
             },
           ],
           { session },

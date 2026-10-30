@@ -27,6 +27,7 @@ export function buildDigitalMetalSellSummary(order, bankDestination = null) {
     rateVersionId: rateSnapshot.rateVersionId ?? null,
     confirmedAt: order.confirmedAt ? new Date(order.confirmedAt).toISOString() : null,
     executedAt: order.executedAt ? new Date(order.executedAt).toISOString() : null,
+    payoutMethod: order.payoutMethod ?? "BANK",
     bankDestination: bank,
   };
 }

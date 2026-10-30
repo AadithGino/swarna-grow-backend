@@ -113,7 +113,7 @@ const digitalMetalQuoteSchema = new mongoose.Schema(
     customerId: { type: String, default: null, index: true },
     quoteSource: {
       type: String,
-      enum: ["ADMIN_PREVIEW", "CUSTOMER"],
+      enum: ["ADMIN_PREVIEW", "CUSTOMER", "ASSISTED"],
       default: "ADMIN_PREVIEW",
     },
     taxProfileFingerprint: { type: String, default: "" },
@@ -278,6 +278,22 @@ export const DigitalMetalReservation = mongoose.model(
   digitalMetalReservationSchema,
 );
 
+/** Set when staff placed the trade for the customer at the counter (admin / branch manager). */
+const assistedTradeSchema = new mongoose.Schema(
+  {
+    channel: { type: String, enum: ["COUNTER"], default: "COUNTER" },
+    byUserId: { type: String, required: true },
+    byRole: { type: String, default: null },
+    branchId: { type: String, default: null },
+    paymentMode: { type: String, enum: ["CASH", "UPI", "CARD", null], default: null },
+    paymentReference: { type: String, default: "", trim: true, maxlength: 120 },
+    note: { type: String, default: "", trim: true, maxlength: 500 },
+    cashAdjustmentId: { type: String, default: null },
+    recordedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
 const digitalMetalBuyOrderSchema = new mongoose.Schema(
   {
     _id: stringId("dmbo"),
@@ -321,6 +337,7 @@ const digitalMetalBuyOrderSchema = new mongoose.Schema(
     paymentExceptionPayload: mongoose.Schema.Types.Mixed,
     idempotencyKey: { type: String, required: true, trim: true },
     creationBodyHash: { type: String, default: null, trim: true, maxlength: 64 },
+    assisted: { type: assistedTradeSchema, default: null },
     version: versionField,
   },
   baseOptions,
@@ -345,7 +362,7 @@ const digitalMetalBuyPaymentAttemptSchema = new mongoose.Schema(
     provider: { type: String, default: "PHONEPE" },
     checkoutMode: {
       type: String,
-      enum: ["LIVE", "MOCK_PROVIDER", "DIGITAL_METALS_DEMO", null],
+      enum: ["LIVE", "MOCK_PROVIDER", "DIGITAL_METALS_DEMO", "COUNTER", null],
       default: null,
     },
     merchantOrderId: { type: String, required: true },
@@ -556,6 +573,9 @@ const digitalMetalSellOrderSchema = new mongoose.Schema(
     quoteId: { type: String, required: true },
     reservationId: { type: String, required: true },
     bankDestinationId: { type: String, default: null },
+    /** BANK (default, maker-checker bank payout) or CASH (paid over the counter by staff). */
+    payoutMethod: { type: String, enum: ["BANK", "CASH"], default: "BANK" },
+    assisted: { type: assistedTradeSchema, default: null },
     status: {
       type: String,
       enum: [
@@ -605,6 +625,20 @@ const digitalMetalPayableSchema = new mongoose.Schema(
     outstandingPaise: integerField({ required: true, min: 0 }),
     status: { type: String, enum: ["OPEN", "SETTLED"], default: "OPEN" },
     settledAt: { type: Date, default: null },
+    settlementMethod: { type: String, enum: ["BANK", "CASH", null], default: null },
+    cashPayout: {
+      type: new mongoose.Schema(
+        {
+          paidByUserId: { type: String, required: true },
+          branchId: { type: String, default: null },
+          paidAt: { type: Date, required: true },
+          receiptNote: { type: String, default: "", trim: true, maxlength: 500 },
+          cashAdjustmentId: { type: String, default: null },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
     version: versionField,
   },
   baseOptions,

@@ -20,9 +20,10 @@ const ROOT_ALLOW_FILES = new Set([
   "README.md",
   "Dockerfile",
   "docker-compose.yml",
+  "vercel.json",
 ]);
 
-const ROOT_ALLOW_PREFIXES = ["src/", "scripts/", "tests/", "docs/"];
+const ROOT_ALLOW_PREFIXES = ["src/", "scripts/", "tests/", "docs/", "api/"];
 
 function gitLines(args) {
   try {

@@ -14,7 +14,7 @@ import { generateAgentTurn } from "../../../integrations/llm/gemini-agent.js";
 import { assistantDataScope } from "../query-compiler.js";
 import { semanticLayerForPrompt } from "./semantic-layer.js";
 import { DATA_TOOL_NAMES, DEFAULT_STEP_LABELS, TOOL_DECLARATIONS, executeTool } from "./tools.js";
-import { buildTurnContext, contextBlock } from "./turn-context.js";
+import { buildTurnContext, contextBlock, dateWindows } from "./turn-context.js";
 import { checkAnswerNumbers, collectNumbers } from "./number-guard.js";
 import { buildAgentBundle } from "./answer-bundle.js";
 import { addUsage, costUsd, emptyUsage } from "./usage.js";
@@ -26,18 +26,19 @@ export const AGENT_SYSTEM_PROMPT = `You are Sidekick, the AI business analyst in
 HOW YOU WORK
 - You act only by calling functions. Always finish with final_answer.
 - Questions about the shop's own business (collections, payments, customers, schemes, dues, staff, branches, Digi Gold, store orders…): get the facts with data tools first. Never guess or invent figures, names or dates.
-- Questions that need no shop data (gold/jewellery knowledge, business advice, drafting a message, greetings): answer directly with final_answer. For "how do I … in Swarna Grow" use help_articles.
+- Questions that need no shop data (gold/jewellery knowledge, business advice, drafting a message, greetings): answer directly with final_answer.
+- "How do I … / where is … / I forgot how to … / do it for me" about using Swarna Grow: if start_walkthrough has a matching guide (there is one for almost every admin task), call it — the owner gets an on-screen walkthrough. Otherwise use help_articles.
 - Understand any wording or language — English, Hinglish, Hindi, Malayalam, Tamil, typos, short forms. Reply in the language and script the user wrote in; keep names, numbers and ₹ amounts exactly as tools gave them.
 - <context> has today's date and ready dateWindows. Copy those dates instead of calculating (e.g. "last 30 days" → dateWindows.last30Days). If a totals question names no period, use thisMonth and say so. "Last / latest / when was" questions: no date range, sort by date desc, limit 1.
-- Resolve branch and plan names with <context>.branches / <context>.plans and pass their ids. For a customer named in the question, call find_customer first. If several match, ask which one (final_answer with needsClarification and the names as followUps).
+- Resolve branch and plan names with <context>.branches / <context>.plans and pass their ids. For a customer named in the question, call customer_overview with customer set to the name (or find_customer when you only need their id for a query_data filter). If several match, ask which one (final_answer with needsClarification and the names as followUps).
 - Follow-ups ("and last month?", "only UPI", "is he in any scheme?") continue the previous turns: reuse the same entity, filters and ids and change only what the user changed.
-- Prefer one well-built query over many. Call independent tools together in one round. If a tool returns an error, fix the call using its hint or try another tool.
+- Be quick: answer in as few rounds as possible. Prefer one well-built query over many, and call independent tools together in the same round. If a tool returns an error, fix the call using its hint or try another tool.
 
 CHOOSING TOOLS
 - Period collection totals, by branch or payment mode, net of refunds → run_report COLLECTION (same as the Reports screen). Day-by-day collections or comparing modes (Cash vs UPI) → collection_trend.
 - Lists, rankings, "who / which / when / last", counts with conditions, anything custom → query_data.
 - Standard reports for dues & ageing (OUTSTANDING), overdue customers (DEFAULTER), enrolments, staff, branch, scheme, customer performance, maturity, gold liability (GOLD_ACCRUAL), cash handover, store sales → run_report.
-- One customer's full picture → find_customer then customer_overview.
+- One customer's full picture → customer_overview with customer set to the name/mobile (it finds them itself; no find_customer first).
 
 query_data RULES
 - Entities and fields come only from DATA below. Related fields use dots: customer.name, scheme.planName, branch.name, collectedBy.name.
@@ -60,18 +61,78 @@ final_answer RULES
 - blocks reference resultIds: "stats" for headline totals, "chart" for trends and comparisons (line for time, bar for categories, donut for share of ≤ 6 parts), "table" for lists. One record → a table with that row. Skip blocks for pure text answers.
 - followUps: 2–3 short next questions the owner would likely ask, in their language.
 - title: ≤ 7 words naming what the answer covers.
-- You cannot change data (record payments, send reminders, edit records). Say so kindly and point to the right screen (help_articles).
+- You cannot change data (record payments, add customers, send reminders, edit records). Say so kindly and offer the walkthrough (start_walkthrough) or point to the right screen (help_articles).
 
 DATA (entities for query_data)
 ${semanticLayerForPrompt()}`;
 
 const TOOLS = [{ functionDeclarations: TOOL_DECLARATIONS }];
 
-function generationConfig(model) {
+/** Branches, plans and gold rate change rarely — reuse them for a minute per tenant/branch. */
+const CONTEXT_TTL_MS = 60_000;
+const contextCache = new Map();
+async function cachedTurnContext(req, scope) {
+  const key = `${scope.tenantId}:${scope.branchId ?? "all"}:${req.auth?.role ?? ""}`;
+  const hit = contextCache.get(key);
+  if (hit && Date.now() - hit.at < CONTEXT_TTL_MS && hit.day === dateWindows().today) return { ...hit.value, windows: dateWindows() };
+  const value = await buildTurnContext(req, scope);
+  if (contextCache.size > 500) contextCache.clear();
+  contextCache.set(key, { at: Date.now(), day: value.windows.today, value });
+  return value;
+}
+
+export function clearTurnContextCache() {
+  contextCache.clear();
+}
+
+/**
+ * Thinking adds latency on every round. Sidekick's job is lookup + summarise, so it runs at
+ * the lowest level each model allows: Flash-Lite already defaults to "minimal"; Flash and Pro
+ * default higher, so we ask for the minimum explicitly. ASSISTANT_THINKING_LEVEL overrides
+ * ("off" sends nothing and uses the model default).
+ */
+export function thinkingConfigFor(model) {
+  const override = String(env.ASSISTANT_THINKING_LEVEL ?? "").trim().toLowerCase();
+  if (override === "off") return null;
+  if (/^gemini-2\./.test(model)) {
+    if (override) return null;
+    // 2.5 Flash / Flash-Lite: a zero budget turns thinking off.
+    return /pro/.test(model) ? null : { thinkingBudget: 0 };
+  }
+  if (override) return { thinkingLevel: override };
+  if (/flash-lite/.test(model)) return null; // already "minimal" by default
+  if (/^gemini-3\.[78]-flash/.test(model) || /pro/.test(model)) return { thinkingLevel: "low" };
+  if (/flash/.test(model)) return { thinkingLevel: "minimal" };
+  return null;
+}
+
+function generationConfig(model, { withThinking = true } = {}) {
   const raw = String(env.ASSISTANT_TEMPERATURE ?? "").trim();
   const t = raw === "" ? null : Number(raw);
   const temperature = Number.isFinite(t) ? t : /^gemini-2\./.test(model) ? 0.2 : undefined;
-  return { ...(temperature !== undefined ? { temperature } : {}), maxOutputTokens: 2048 };
+  const thinkingConfig = withThinking ? thinkingConfigFor(model) : null;
+  return {
+    ...(temperature !== undefined ? { temperature } : {}),
+    maxOutputTokens: 2048,
+    ...(thinkingConfig ? { thinkingConfig } : {}),
+  };
+}
+
+/** One model round; if the API rejects our thinking setting, retry once without it. */
+let thinkingRejected = false;
+async function modelRound(model, request) {
+  const withThinking = !thinkingRejected;
+  try {
+    return await generateAgentTurn({ ...request, generationConfig: generationConfig(model, { withThinking }) });
+  } catch (err) {
+    const detail = `${err?.message ?? ""} ${err?.details?.detail ?? ""}`;
+    if (withThinking && thinkingConfigFor(model) && err?.details?.status === 400 && /thinking/i.test(detail)) {
+      thinkingRejected = true;
+      logger.warn({ model }, "assistant: model rejected thinkingConfig; continuing with the model default");
+      return generateAgentTurn({ ...request, generationConfig: generationConfig(model, { withThinking: false }) });
+    }
+    throw err;
+  }
 }
 
 function historyToContents(history = []) {
@@ -128,10 +189,13 @@ export async function runAgentTurn({ req, message, history = [], onEvent }) {
       /* streaming is best-effort */
     }
   };
-  const model = env.ASSISTANT_MODEL || "gemini-2.5-flash-lite";
+  const model = env.ASSISTANT_MODEL || "gemini-3.5-flash-lite";
   const maxSteps = Number(env.ASSISTANT_MAX_STEPS) || 5;
   const scope = assistantDataScope(req);
-  const ctxData = await buildTurnContext(req, scope);
+  const turnStarted = Date.now();
+  const timings = { contextMs: 0, llmMs: [], toolMs: 0, totalMs: 0 };
+  const ctxData = await cachedTurnContext(req, scope);
+  timings.contextMs = Date.now() - turnStarted;
   const shopName = req.tenant?.displayName || req.tenant?.name || undefined;
 
   const contents = [
@@ -160,7 +224,9 @@ export async function runAgentTurn({ req, message, history = [], onEvent }) {
 
   for (let round = 0; round < maxSteps; round += 1) {
     const lastRound = round === maxSteps - 1;
-    const response = await generateAgentTurn({
+    if (round > 0) emit({ type: "step", id: `write${round}`, label: "Writing the answer", status: "running" });
+    const llmStarted = Date.now();
+    const response = await modelRound(model, {
       model,
       systemInstruction: AGENT_SYSTEM_PROMPT,
       tools: TOOLS,
@@ -170,8 +236,9 @@ export async function runAgentTurn({ req, message, history = [], onEvent }) {
           : { mode: "ANY" },
       },
       contents,
-      generationConfig: generationConfig(model),
     });
+    timings.llmMs.push(Date.now() - llmStarted);
+    if (round > 0) emit({ type: "step", id: `write${round}`, label: "Writing the answer", status: "done" });
     addUsage(usage, response.usage);
     if (round === 0) emit({ type: "step", id: "think", label: "Understanding your question", status: "done" });
 
@@ -224,14 +291,25 @@ export async function runAgentTurn({ req, message, history = [], onEvent }) {
       break;
     }
 
-    // Execute data/help tools for this round (final_answer mixed with data calls is ignored this round).
-    const responseParts = [];
-    for (const call of dataCalls) {
-      const stepId = `s${steps.length + 1}`;
+    // Execute this round's data/help tools in parallel (final_answer mixed with data calls is
+    // ignored this round). Results are reported back in the order the model asked for them.
+    const toolsStarted = Date.now();
+    const planned = dataCalls.map((call, i) => {
+      const stepId = `s${steps.length + i + 1}`;
       const label = String(call.args?.purpose ?? "").trim().slice(0, 90) || DEFAULT_STEP_LABELS[call.name] || "Working on it";
       emit({ type: "step", id: stepId, label, status: "running", tool: call.name });
-      const started = Date.now();
-      const out = await executeTool(call.name, call.args, toolCtx);
+      return { call, stepId, label };
+    });
+    const outcomes = await Promise.all(
+      planned.map(async (p) => {
+        const started = Date.now();
+        const out = await executeTool(p.call.name, p.call.args, toolCtx);
+        return { ...p, out, ms: Date.now() - started };
+      }),
+    );
+    timings.toolMs += Date.now() - toolsStarted;
+    const responseParts = [];
+    for (const { call, stepId, label, out, ms } of outcomes) {
       const payload = out.error ? { error: out.error } : out.forModel;
       toolPayloads.push(payload);
       const step = {
@@ -240,7 +318,7 @@ export async function runAgentTurn({ req, message, history = [], onEvent }) {
         label,
         status: out.error ? "error" : "done",
         detail: out.error ? out.error.message : out.detail,
-        ms: Date.now() - started,
+        ms,
       };
       steps.push(step);
       calls.push({ name: call.name, args: call.args, resultId: out.resultId, forModel: out.forModel, error: out.error });
@@ -273,7 +351,12 @@ export async function runAgentTurn({ req, message, history = [], onEvent }) {
 
   emit({ type: "step", id: "compose", label: "Preparing the answer", status: "done" });
 
-  const usageOut = { ...usage, costUsd: costUsd(usage, model) };
+  timings.totalMs = Date.now() - turnStarted;
+  logger.info(
+    { tenantId: scope.tenantId, model, rounds: timings.llmMs.length, ...timings, toolCalls: calls.length },
+    "assistant turn timing",
+  );
+  const usageOut = { ...usage, costUsd: costUsd(usage, model), timings };
   const bundle = buildAgentBundle({ final, results, steps, calls, usage: usageOut, model, fallbackText });
   return {
     bundle,

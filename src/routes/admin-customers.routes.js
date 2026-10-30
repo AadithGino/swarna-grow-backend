@@ -23,6 +23,10 @@ import { errors } from "../lib/app-error.js";
 import * as audit from "../services/audit.service.js";
 import * as ecommerceController from "../controllers/ecommerce.controller.js";
 import { cursorQuery } from "../validators/common.validators.js";
+import { ecommerceCounterOrderBody, ecommerceCounterQuoteBody } from "../validators/ecommerce.validators.js";
+import { sendSuccess } from "../lib/response.js";
+import * as counterOrders from "../services/ecommerce-assisted-order.service.js";
+import { getAdminCustomerEcommerceSummary } from "../services/ecommerce-admin-customer-orders.service.js";
 
 export const adminCustomerRouter = Router();
 adminCustomerRouter.get(
@@ -76,11 +80,44 @@ adminCustomerRouter.get(
   ...guarded(Permission.ECOMMERCE_READ, asyncHandler(ecommerceController.getCustomerEcommerceOrdersMeta)),
 );
 adminCustomerRouter.get(
+  "/:customerId/ecommerce/summary",
+  ...guarded(
+    Permission.ECOMMERCE_READ,
+    asyncHandler(async (req, res) => sendSuccess(res, await getAdminCustomerEcommerceSummary(req))),
+  ),
+);
+adminCustomerRouter.get(
   "/:customerId/ecommerce/orders",
   ...guarded(
     Permission.ECOMMERCE_READ,
     validate({ query: cursorQuery }),
     asyncHandler(ecommerceController.listCustomerEcommerceOrders),
+  ),
+);
+/* Store orders placed at the counter by staff (paid in store). */
+adminCustomerRouter.get(
+  "/:customerId/ecommerce/counter/options",
+  ...guarded(
+    Permission.ECOMMERCE_ASSISTED_ORDER,
+    asyncHandler(async (req, res) => sendSuccess(res, await counterOrders.getAssistedOrderOptions(req))),
+  ),
+);
+adminCustomerRouter.post(
+  "/:customerId/ecommerce/counter/quote",
+  ...guarded(
+    Permission.ECOMMERCE_ASSISTED_ORDER,
+    validate({ body: ecommerceCounterQuoteBody }),
+    idempotent,
+    asyncHandler(async (req, res) => sendSuccess(res, await counterOrders.createAssistedOrderQuote(req), {}, 201)),
+  ),
+);
+adminCustomerRouter.post(
+  "/:customerId/ecommerce/counter/orders",
+  ...guarded(
+    Permission.ECOMMERCE_ASSISTED_ORDER,
+    validate({ body: ecommerceCounterOrderBody }),
+    idempotent,
+    asyncHandler(async (req, res) => sendSuccess(res, await counterOrders.placeAssistedOrder(req), {}, 201)),
   ),
 );
 adminCustomerRouter.patch(

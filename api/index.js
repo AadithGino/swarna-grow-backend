@@ -7,20 +7,24 @@ import { connectDatabase } from "../src/config/database.js";
 import { connectRedis } from "../src/config/redis.js";
 import { assertOtpProviderReady } from "../src/integrations/otp.provider.js";
 
-let app;
-let bootPromise;
+const g = globalThis;
 
 async function boot() {
   assertOtpProviderReady();
-  await connectDatabase();
-  await connectRedis().catch(() => false);
-  app = createApp();
-  return app;
+  // Parallelize Mongo + Redis so a slow Redis cannot serialize cold start.
+  await Promise.all([connectDatabase(), connectRedis().catch(() => false)]);
+  return createApp();
 }
 
 function getApp() {
-  if (!bootPromise) bootPromise = boot();
-  return bootPromise;
+  // Persist across warm invocations in the same Vercel isolate.
+  if (!g.__swarnaBootPromise) {
+    g.__swarnaBootPromise = boot().catch((err) => {
+      g.__swarnaBootPromise = undefined;
+      throw err;
+    });
+  }
+  return g.__swarnaBootPromise;
 }
 
 export default async function handler(req, res) {

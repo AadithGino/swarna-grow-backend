@@ -13,6 +13,8 @@ export const Permission = Object.freeze({
   ECOMMERCE_PAYMENT_OPERATE: "ecommerce.payment.operate",
   ECOMMERCE_REFUND_OPERATE: "ecommerce.refund.operate",
   ECOMMERCE_FULFILMENT_OPERATE: "ecommerce.fulfilment.operate",
+  /** Place a store order for a customer at the counter (paid in store). */
+  ECOMMERCE_ASSISTED_ORDER: "ecommerce.assisted.order",
   DIGITAL_METALS_READ: "digital-metals.read",
   DIGITAL_METALS_SETTINGS_WRITE: "digital-metals.settings.write",
   DIGITAL_METALS_RATES_WRITE: "digital-metals.rates.write",
@@ -25,6 +27,8 @@ export const Permission = Object.freeze({
   DIGITAL_METALS_REPORT_READ: "digital-metals.report.read",
   DIGITAL_METALS_ADJUSTMENT_WRITE: "digital-metals.adjustment.write",
   DIGITAL_METALS_RISK_MANAGE: "digital-metals.risk.manage",
+  /** Buy or sell Digi Gold for a customer at the counter; also pay cash for counter sells. */
+  DIGITAL_METALS_ASSISTED_TRADE: "digital-metals.assisted.trade",
   SETTINGS_READ: "settings.read", SETTINGS_WRITE: "settings.write",
   GRIEVANCE_READ: "grievance.read", GRIEVANCE_REPLY: "grievance.reply", GRIEVANCE_ASSIGN: "grievance.assign", GRIEVANCE_RESOLVE: "grievance.resolve",
   AUDIT_READ: "audit.read",

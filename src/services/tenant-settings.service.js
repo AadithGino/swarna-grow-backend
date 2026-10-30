@@ -268,7 +268,11 @@ async function countTenantUsage(tenantId) {
         tenantId,
         status: { $in: [SchemePlanStatus.ACTIVE, SchemePlanStatus.INACTIVE] },
       }),
-      Message.countDocuments({ tenantId, createdAt: { $gte: monthStart } }),
+      Message.countDocuments({
+        tenantId,
+        channel: "WHATSAPP",
+        createdAt: { $gte: monthStart },
+      }),
     ]);
   return {
     activeCustomers,

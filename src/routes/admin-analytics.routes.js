@@ -74,7 +74,16 @@ adminAnalyticsRouter.get("/maturities", ...guarded(Permission.REPORT_READ, async
 adminAnalyticsRouter.get("/maturities/calendar", ...guarded(Permission.REPORT_READ, asyncHandler(controller.maturityCalendar)));
 adminAnalyticsRouter.get("/flexible-locks", ...guarded(Permission.REPORT_READ, asyncHandler(controller.dueList("flexible-locks"))));
 adminAnalyticsRouter.get("/nav-badges", ...guarded(Permission.REPORT_READ, asyncHandler(controller.navBadges)));
-adminAnalyticsRouter.get("/dues/count", ...guarded(Permission.REPORT_READ, asyncHandler(async (req, res) => sendSuccess(res, { count: await (await import("../models/index.js")).Scheme.countDocuments({ ...req.scope, paymentPattern: "FIXED", "installments.status": { $in: ["DUE", "PARTIALLY_PAID"] } }) }))));
+adminAnalyticsRouter.get("/dues/count", ...guarded(Permission.REPORT_READ, asyncHandler(async (req, res) => {
+  const { Scheme } = await import("../models/index.js");
+  const { effectiveScope } = await import("../lib/query-filters.js");
+  const { istTodayYmd, workboardSchemeFilter } = await import("../lib/dues-workboard.js");
+  const count = await Scheme.countDocuments({
+    ...effectiveScope(req),
+    ...workboardSchemeFilter("dues", { kind: "ALL", today: istTodayYmd() }),
+  });
+  return sendSuccess(res, { count });
+})));
 adminAnalyticsRouter.post(
   "/dues/bulk-send-links",
   ...guarded(

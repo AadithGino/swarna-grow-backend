@@ -28,6 +28,11 @@ import {
   digitalMetalsBankVerificationQueueQuery,
   digitalMetalsBankDestinationVerifyBody,
   digitalMetalsBankDestinationDisableBody,
+  digitalMetalsCustomerBuyQuoteBody,
+  digitalMetalsCustomerSellQuoteBody,
+  digitalMetalsCounterBuyBody,
+  digitalMetalsCounterSellBody,
+  digitalMetalsSellCashPayoutBody,
 } from "../validators/digital-metals.validators.js";
 import * as controller from "../controllers/digital-metals.controller.js";
 
@@ -126,6 +131,16 @@ adminDigitalMetalsRouter.post(
 );
 
 adminDigitalMetalsRouter.get(
+  "/digital-metals/dashboard-summary",
+  ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminDashboardSummary)),
+);
+
+adminDigitalMetalsRouter.get(
+  "/digital-metals/customers/:customerId/summary",
+  ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminCustomerSummary)),
+);
+
+adminDigitalMetalsRouter.get(
   "/digital-metals/customers/:customerId/wallets",
   ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminCustomerWallets)),
 );
@@ -200,6 +215,57 @@ adminDigitalMetalsRouter.post(
 adminDigitalMetalsRouter.post(
   "/digital-metals/sell-orders/:orderId/cancel",
   ...guarded(Permission.DIGITAL_METALS_SELL_APPROVE, idempotent, asyncHandler(controller.adminCancelSellOrder)),
+);
+
+/* Counter trades: staff buy / sell Digi Gold for a customer in the shop. */
+adminDigitalMetalsRouter.post(
+  "/digital-metals/customers/:customerId/counter/buy-quote",
+  ...guarded(
+    Permission.DIGITAL_METALS_ASSISTED_TRADE,
+    validate({ body: digitalMetalsCustomerBuyQuoteBody }),
+    idempotent,
+    asyncHandler(controller.adminCounterBuyQuote),
+  ),
+);
+
+adminDigitalMetalsRouter.post(
+  "/digital-metals/customers/:customerId/counter/buy",
+  ...guarded(
+    Permission.DIGITAL_METALS_ASSISTED_TRADE,
+    validate({ body: digitalMetalsCounterBuyBody }),
+    idempotent,
+    asyncHandler(controller.adminCounterBuy),
+  ),
+);
+
+adminDigitalMetalsRouter.post(
+  "/digital-metals/customers/:customerId/counter/sell-quote",
+  ...guarded(
+    Permission.DIGITAL_METALS_ASSISTED_TRADE,
+    validate({ body: digitalMetalsCustomerSellQuoteBody }),
+    idempotent,
+    asyncHandler(controller.adminCounterSellQuote),
+  ),
+);
+
+adminDigitalMetalsRouter.post(
+  "/digital-metals/customers/:customerId/counter/sell",
+  ...guarded(
+    Permission.DIGITAL_METALS_ASSISTED_TRADE,
+    validate({ body: digitalMetalsCounterSellBody }),
+    idempotent,
+    asyncHandler(controller.adminCounterSell),
+  ),
+);
+
+adminDigitalMetalsRouter.post(
+  "/digital-metals/sell-orders/:orderId/cash-payout",
+  ...guarded(
+    Permission.DIGITAL_METALS_ASSISTED_TRADE,
+    validate({ body: digitalMetalsSellCashPayoutBody }),
+    idempotent,
+    asyncHandler(controller.adminSellCashPayout),
+  ),
 );
 
 adminDigitalMetalsRouter.get(

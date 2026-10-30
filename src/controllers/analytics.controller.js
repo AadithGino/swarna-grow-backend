@@ -6,7 +6,6 @@ import { errors } from "../lib/app-error.js";
 import * as reporting from "../services/reporting.service.js";
 import { paginate } from "../lib/pagination.js";
 import {
-  calendarDateMatch,
   effectiveScope,
   maturityListFilter,
   resolveDatePreset,
@@ -15,7 +14,9 @@ import {
 import {
   duesBoardSummary,
   pickWorkboardInstallment,
+  workboardDates,
 } from "../services/admin-summary.service.js";
+import { istTodayYmd, workboardSchemeFilter } from "../lib/dues-workboard.js";
 import { monthKey } from "../lib/date.js";
 import dayjs from "dayjs";
 
@@ -49,45 +50,24 @@ export const auditEvents = async (req, res) =>
 export const navBadges = async (req, res) =>
   sendSuccess(res, await reporting.navBadges(req));
 
-function dueBaseFilter(kind, query = {}) {
-  const installmentKind = query.kind;
+function dueBaseFilter(kind, query = {}, dates = {}, today = istTodayYmd()) {
   if (kind === "maturities") return maturityListFilter(query);
-  if (kind === "defaulters")
-    return { status: "DEFAULTED", paymentPattern: "FIXED" };
   if (kind === "flexible-locks")
     return { status: "LOCKED", paymentPattern: "FLEXIBLE" };
-  if (kind === "overdues") {
-    return {
-      paymentPattern: "FIXED",
-      "installments.status":
-        installmentKind && installmentKind !== "ALL"
-          ? installmentKind
-          : "OVERDUE",
-    };
-  }
-  // dues board
-  const statusFilter =
-    installmentKind === "OVERDUE" ||
-    installmentKind === "DEFAULTED" ||
-    installmentKind === "GRACE" ||
-    installmentKind === "DUE"
-      ? installmentKind === "GRACE"
-        ? { $in: ["DUE", "PARTIALLY_PAID"] }
-        : installmentKind === "DUE"
-          ? { $in: ["DUE", "PARTIALLY_PAID"] }
-          : installmentKind
-      : { $in: ["DUE", "PARTIALLY_PAID", "OVERDUE"] };
-  return { paymentPattern: "FIXED", "installments.status": statusFilter };
+  // dues / overdues / defaulters share one classification (see lib/dues-workboard.js)
+  return workboardSchemeFilter(kind, { kind: query.kind, dates, today });
 }
 
-export const dueList = (kind) => async (req, res) => {
-  const dates = resolveDatePreset(req.query.preset, req.query);
-  const filter = dueBaseFilter(kind, req.query);
-  const scope = effectiveScope(req);
+const WORKBOARD_KINDS = new Set(["dues", "overdues", "defaulters"]);
 
-  if ((kind === "dues" || kind === "overdues") && (dates.from || dates.to)) {
-    Object.assign(filter, calendarDateMatch("installments.dueDate", dates));
-  }
+export const dueList = (kind) => async (req, res) => {
+  const today = istTodayYmd();
+  const isWorkboard = WORKBOARD_KINDS.has(kind);
+  const dates = isWorkboard
+    ? workboardDates(kind, req.query)
+    : resolveDatePreset(req.query.preset, req.query);
+  const filter = dueBaseFilter(kind, req.query, dates, today);
+  const scope = effectiveScope(req);
 
   const pattern = searchRegex(req.query.q);
   if (pattern) {
@@ -123,7 +103,7 @@ export const dueList = (kind) => async (req, res) => {
       summary: await maturityBoardSummary(req),
     };
   }
-  if (kind === "dues" || kind === "overdues") {
+  if (isWorkboard) {
     result.meta = {
       ...result.meta,
       summary: await duesBoardSummary(req, kind),
@@ -191,12 +171,13 @@ export const dueList = (kind) => async (req, res) => {
           totalPaid: { amountPaise: amountPaidPaise },
         },
       };
-      if (kind === "dues" || kind === "overdues") {
+      if (isWorkboard) {
         const next = pickWorkboardInstallment(
-          installments,
+          scheme,
           kind,
           dates,
           req.query,
+          today,
         );
         const targetCycle =
           scheme.paymentPattern === "FLEXIBLE" &&
@@ -216,6 +197,11 @@ export const dueList = (kind) => async (req, res) => {
                   (next.amountPaise ?? 0) - (next.paidPaise ?? 0),
                 ),
                 status: next.status,
+                /** DUE | GRACE | OVERDUE | DEFAULTED — what the workboard shows. */
+                state: next.effectiveState,
+                /** All visible unpaid instalments of this enrollment (arrears). */
+                openInstalments: next.visibleCount,
+                openRemainingPaise: next.visibleRemainingPaise,
                 graceEndsAt: next.graceEndsAt,
                 paymentPattern: scheme.paymentPattern,
                 flexiblePhase: scheme.flexiblePhase,
@@ -226,7 +212,7 @@ export const dueList = (kind) => async (req, res) => {
       }
       return base;
     });
-    if (kind === "dues" || kind === "overdues") {
+    if (isWorkboard) {
       result.data = result.data.filter((row) => row.duePreview != null);
     }
   }

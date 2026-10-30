@@ -178,6 +178,15 @@ function mapAdminOrder(row, capability, refundRow) {
     stockReleasedAt: row.stockReleasedAt ?? null,
     paidAt: row.paidAt ?? null,
     successfulPaymentAttemptId: row.successfulPaymentAttemptId ?? null,
+    channel: row.assisted?.byUserId ? "COUNTER" : "ONLINE",
+    assisted: row.assisted?.byUserId
+      ? {
+          byUserId: row.assisted.byUserId,
+          paymentMode: row.assisted.paymentMode ?? null,
+          paymentReference: row.assisted.paymentReference ?? "",
+          recordedAt: row.assisted.recordedAt ?? null,
+        }
+      : null,
   };
 }
 
@@ -210,7 +219,12 @@ async function loadExistingOrderByIdempotency(req, bodyHash, capability) {
   return { order: mapCustomerOrder(row, capability), created: false };
 }
 
-export async function createCustomerOrder(req) {
+/**
+ * @param {object} req  customer-bound request
+ * @param {{ assisted?: object }} [opts]  staff counter order: payment is taken in store, so the
+ *   online-gateway requirement is skipped and the order records who placed it
+ */
+export async function createCustomerOrder(req, opts = {}) {
   assertEcommerceOperational(req.tenant);
   const { fulfilmentRow, taxSettings, capability: baseCapability } = await loadCheckoutContext(
     req.auth.tenantId,
@@ -278,7 +292,11 @@ export async function createCustomerOrder(req) {
         codOrderAllowed: codEvaluation.eligible,
         codBlockers: codEvaluation.blockers,
       };
-      assertCustomerOrderCreationAllowed(capability, paymentMethod);
+      if (opts.assisted) {
+        if (!capability.checkoutTaxReady) assertCustomerOrderCreationAllowed(capability, paymentMethod);
+      } else {
+        assertCustomerOrderCreationAllowed(capability, paymentMethod);
+      }
 
       if (quote.status === EcommerceQuoteStatus.ACTIVE && new Date(quote.expiresAt) <= new Date()) {
         await expireActiveQuoteRow(quote._id, req.auth.tenantId, session);
@@ -388,6 +406,7 @@ export async function createCustomerOrder(req) {
               creationBodyHash: bodyHash,
               expiresAt: orderExpiresAt,
               storePolicySnapshot: snapshotStorePolicyForOrder(fulfilmentSettingsObj),
+              ...(opts.assisted ? { assisted: opts.assisted } : {}),
             },
           ],
           { session },
@@ -401,9 +420,10 @@ export async function createCustomerOrder(req) {
             tenantId: req.auth.tenantId,
             orderId: order._id,
             type: isCod ? EcommerceOrderEventType.COD_ORDER_PLACED : EcommerceOrderEventType.ORDER_CREATED,
-            actorType: "CUSTOMER",
-            actorId: req.auth.id,
+            actorType: opts.assisted ? "STAFF" : "CUSTOMER",
+            actorId: opts.assisted?.byUserId ?? req.auth.id,
             payload: {
+              ...(opts.assisted ? { channel: "COUNTER", placedForCustomerId: req.auth.id } : {}),
               quoteId: quote._id,
               paymentMethod,
               paymentExpiresAt: isCod ? null : orderExpiresAt.toISOString(),

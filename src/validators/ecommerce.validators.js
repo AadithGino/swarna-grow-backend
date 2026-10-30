@@ -570,3 +570,41 @@ export const ecommerceReportKeyParam = z.object({
       ]),
     ),
 });
+
+/* Store orders placed by staff for a customer at the counter. */
+export const ecommerceCounterQuoteBody = z
+  .object({
+    lines: z
+      .array(
+        z
+          .object({
+            productId: z.string().trim().min(1).max(80),
+            quantity: z.number().int().min(1).max(99),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(50),
+    fulfilmentMode: z.enum(["BRANCH_PICKUP", "DELIVERY"]),
+    pickupBranchId: z.string().trim().min(1).max(80).optional(),
+    addressId: z.string().trim().min(1).max(80).optional(),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (body.fulfilmentMode === "BRANCH_PICKUP" && !body.pickupBranchId) {
+      ctx.addIssue({ code: "custom", path: ["pickupBranchId"], message: "Choose the pickup branch." });
+    }
+    if (body.fulfilmentMode === "DELIVERY" && !body.addressId) {
+      ctx.addIssue({ code: "custom", path: ["addressId"], message: "Choose a delivery address." });
+    }
+  });
+
+export const ecommerceCounterOrderBody = z
+  .object({
+    quoteId: z.string().trim().min(1).max(80),
+    paymentMode: z.enum(["CASH", "UPI", "CARD"]),
+    paymentReference: z.string().trim().max(120).optional(),
+    note: z.string().trim().max(500).optional(),
+    customerConsent: z.literal(true),
+  })
+  .strict();

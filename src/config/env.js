@@ -161,7 +161,7 @@ export function parseEnv(source = process.env) {
     SEED_PLATFORM_EMAIL: z.string().email().default("ops@platform.com"),
     SEED_PLATFORM_PASSWORD: z.string().min(4).max(128).default("1234"),
     GEMINI_API_KEY: z.string().default(""),
-    ASSISTANT_MODEL: z.string().default("gemini-2.5-flash-lite"),
+    ASSISTANT_MODEL: z.string().default("gemini-3.5-flash-lite"),
     ASSISTANT_LLM_TIMEOUT_MS: boundedInt(3_000, 120_000, 20_000),
     ASSISTANT_ENABLED: booleanString,
     /** "agent" = tool-calling Sidekick (default); "router" = legacy single-shot interpreter. */
@@ -172,6 +172,8 @@ export function parseEnv(source = process.env) {
     ASSISTANT_DAILY_QUESTION_LIMIT: boundedInt(0, 100_000, 300),
     /** Optional sampling temperature override (blank = model default; 2.x models use 0.2). */
     ASSISTANT_TEMPERATURE: z.string().default(""),
+    // "minimal" | "low" | "medium" | "high" | "off" (model default). Empty = fastest level per model.
+    ASSISTANT_THINKING_LEVEL: z.string().default(""),
     /** Optional USD per 1M tokens overrides for cost tracking (blank = built-in table). */
     ASSISTANT_PRICE_INPUT_PER_M: z.string().default(""),
     ASSISTANT_PRICE_OUTPUT_PER_M: z.string().default(""),

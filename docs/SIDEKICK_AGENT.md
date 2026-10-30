@@ -34,16 +34,36 @@ UI blocks (stats / chart / table) ◄── server-side results by resultId
 ```
 ASSISTANT_ENABLED=true
 GEMINI_API_KEY=...
-ASSISTANT_MODEL=gemini-2.5-flash-lite
+ASSISTANT_MODEL=gemini-3.5-flash-lite
 ASSISTANT_ENGINE=agent              # router = old fixed-intent engine (instant rollback)
 ASSISTANT_MAX_STEPS=5               # model rounds per question
 ASSISTANT_DAILY_QUESTION_LIMIT=300  # per tenant per IST day, 0 = unlimited
-# Optional: ASSISTANT_TEMPERATURE, ASSISTANT_PRICE_INPUT_PER_M / _OUTPUT_PER_M / _CACHED_PER_M
+# Optional: ASSISTANT_TEMPERATURE, ASSISTANT_THINKING_LEVEL, ASSISTANT_PRICE_INPUT_PER_M / _OUTPUT_PER_M / _CACHED_PER_M
 ```
 
 Run `npm run db:sync-indexes` once (new `AssistantUsageDaily` collection).
 If the API sits behind nginx, `X-Accel-Buffering: no` is already sent on the stream; make sure
 proxy buffering/timeouts allow a ~30 s response.
+
+## Speed
+
+Almost all of a Sidekick answer's time is spent waiting on the model, one round per step
+(server-side work is ~50–120 ms). What keeps it quick:
+
+- **Small talk never reaches the model.** "hi", "thanks", "ok", "who are you" are answered
+  locally by `instant-replies.js` in milliseconds and don't count toward the daily cap.
+- **Fewer rounds.** `customer_overview` accepts a name/mobile directly, so "Ramesh's schemes"
+  is one data round instead of find → overview → answer.
+- **Parallel tools.** Tools the model asks for in the same round run concurrently.
+- **Minimal thinking.** Flash-Lite already defaults to "minimal"; for Flash/Pro models we ask for
+  the lowest level (`ASSISTANT_THINKING_LEVEL` overrides, `off` = model default).
+- **Cached turn context.** Branches, plans and gold rate are reused for 60 s per tenant.
+- Every turn logs `assistant turn timing` with `contextMs`, `llmMs` per round, `toolMs`, `totalMs`.
+
+Hosting matters as much as code: run the API in the **same region as MongoDB** (e.g. Vercel
+`regions: ["bom1"]` for an Atlas cluster in Mumbai). Each request makes several database
+round-trips, and a US↔India hop adds ~250 ms to every one of them. Keep Redis configured so
+repeated opening questions are served from the 2-minute answer cache.
 
 ## Cost tracking
 

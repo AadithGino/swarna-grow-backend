@@ -133,7 +133,7 @@ export async function interpretWithGemini({
       correction,
     });
   }
-  const model = env.ASSISTANT_MODEL || "gemini-2.5-flash-lite";
+  const model = env.ASSISTANT_MODEL || "gemini-3.5-flash-lite";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
 
   const userPayload = {
@@ -201,7 +201,7 @@ export async function interpretWithGemini({
  * @param {{ question: string, facts: Record<string, unknown> }} args
  */
 export async function narrateWithGemini({ question, facts }) {
-  const model = env.ASSISTANT_MODEL || "gemini-2.5-flash-lite";
+  const model = env.ASSISTANT_MODEL || "gemini-3.5-flash-lite";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
   const systemText = facts?.composite ? NARRATE_COMPOSITE_PROMPT : NARRATE_SYSTEM_PROMPT;
   const body = {

@@ -37,6 +37,15 @@ export function mapBuyOrderStatusDto(order, attempts = []) {
     creditJournalId: order.creditJournalId ?? null,
     invoiceStatus: order.invoiceStatus ?? "PENDING",
     paymentExceptionStatus: order.paymentExceptionStatus ?? null,
+    channel: order.assisted ? "COUNTER" : "ONLINE",
+    assisted: order.assisted
+      ? {
+          byUserId: order.assisted.byUserId ?? null,
+          paymentMode: order.assisted.paymentMode ?? null,
+          paymentReference: order.assisted.paymentReference ?? "",
+          recordedAt: order.assisted.recordedAt ?? null,
+        }
+      : null,
     snapshot: order.snapshot ?? null,
     purchaseSummary: buildDigitalMetalPurchaseSummary(order, successful),
     paymentAttempts: attempts.map((a) => ({

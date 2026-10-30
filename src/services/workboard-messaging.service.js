@@ -33,22 +33,16 @@ async function queueWorkboardReminder(req, scheme, boardKind) {
   }
 
   const today = istTodayYmd();
-  const board = boardKind === "overdues" ? "overdues" : "dues";
-  const inst = pickWorkboardInstallment(
-    scheme.installments ?? [],
-    board,
-    {},
-    {},
-  );
+  // Pick from every open state, then decide the template from the instalment's state.
+  const inst = pickWorkboardInstallment(scheme, "dues", {}, {}, today);
   if (!inst) {
     return { skipped: { schemeId: scheme._id, reason: "NO_OPEN_INSTALLMENT" } };
   }
 
-  const type =
-    board === "overdues" || inst.status === "OVERDUE"
-      ? "PAYMENT_OVERDUE"
-      : "PAYMENT_DUE";
-  if (boardKind === "overdues" && type !== "PAYMENT_OVERDUE") {
+  const late =
+    inst.effectiveState === "OVERDUE" || inst.effectiveState === "DEFAULTED";
+  const type = late ? "PAYMENT_OVERDUE" : "PAYMENT_DUE";
+  if (boardKind === "overdues" && !late) {
     return { skipped: { schemeId: scheme._id, reason: "NO_OPEN_INSTALLMENT" } };
   }
 

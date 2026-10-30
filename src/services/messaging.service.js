@@ -12,7 +12,7 @@ import { paginate } from "../lib/pagination.js";
 import { withTransaction } from "../lib/transaction.js";
 import { writeAudit } from "./audit.service.js";
 import { errors } from "../lib/app-error.js";
-import dayjs from "dayjs";
+import { now as istNow } from "../lib/date.js";
 import { env } from "../config/env.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import { moneyRef } from "../lib/money.js";
@@ -140,7 +140,9 @@ function chartBlocksFromMessages(req, messages) {
 
 export async function getMessagingSummaryForAdmin(req) {
   const summary = await aggregateMessageSummary(req);
-  const monthStart = dayjs().startOf("month").toDate();
+  // WhatsApp plan quota is tenant-wide and resets on the 1st (IST) — count it
+  // the same way the plan meter and the WhatsApp usage report do.
+  const monthStart = istNow().startOf("month").toDate();
   const tenant = await Tenant.findById(req.auth.tenantId)
     .select("subscription")
     .lean();
@@ -148,7 +150,8 @@ export async function getMessagingSummaryForAdmin(req) {
     tenant?.subscription?.limits?.whatsappMessages ?? 0,
   );
   const quotaMatch = {
-    ...(await messageBranchScope(req)),
+    tenantId: req.auth.tenantId,
+    channel: "WHATSAPP",
     createdAt: { $gte: monthStart },
   };
   const quotaUsed = await Message.countDocuments(quotaMatch);
@@ -166,7 +169,7 @@ export async function getMessagingSummaryForAdmin(req) {
     quotaUsed,
     quotaUsedPercent,
     quotaRemaining: Math.max(0, quotaLimit - quotaUsed),
-    resetsOn: dayjs().add(1, "month").startOf("month").format("YYYY-MM-DD"),
+    resetsOn: istNow().add(1, "month").startOf("month").format("YYYY-MM-DD"),
     periodLabel: req.query.from && req.query.to
       ? `${req.query.from} – ${req.query.to}`
       : "Selected period",
@@ -183,7 +186,7 @@ export async function queueMessage(req, payload) {
     const channel = payload.channel ?? "WHATSAPP";
     const limit = Number(tenant?.subscription?.limits?.whatsappMessages ?? 0);
     if (channel === "WHATSAPP" && limit > 0) {
-      const period = dayjs().format("YYYY-MM");
+      const period = istNow().format("YYYY-MM");
       const counterId = `whatsapp:${req.auth.tenantId}:${period}`;
       const claimed = await Counter.findOneAndUpdate(
         { _id: counterId },

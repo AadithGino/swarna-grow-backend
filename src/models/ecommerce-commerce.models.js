@@ -134,6 +134,8 @@ const quoteSchema = new mongoose.Schema(
     idempotencyKey: { type: String, trim: true, maxlength: 80 },
     creationBodyHash: { type: String, trim: true, maxlength: 64 },
     orderId: String,
+    /** Staff member who priced this quote at the counter (staff-placed orders only). */
+    assistedByUserId: String,
     version: versionField,
   },
   baseOptions,
@@ -267,6 +269,18 @@ const orderSchema = new mongoose.Schema(
       pickupVerifiedAt: Date,
     },
     activeCancellationRequestId: String,
+    /** Set when staff placed this order for the customer and took payment at the counter. */
+    assisted: {
+      channel: { type: String, trim: true, maxlength: 16 },
+      byUserId: String,
+      byRole: { type: String, trim: true, maxlength: 32 },
+      branchId: String,
+      paymentMode: { type: String, enum: ["CASH", "UPI", "CARD"] },
+      paymentReference: { type: String, trim: true, maxlength: 120 },
+      note: { type: String, trim: true, maxlength: 500 },
+      cashAdjustmentId: String,
+      recordedAt: Date,
+    },
     deliveryTracking: { type: orderDeliveryTrackingSchema, default: () => ({}) },
     storePolicySnapshot: { type: orderStorePolicySnapshotSchema, default: () => ({}) },
     version: versionField,

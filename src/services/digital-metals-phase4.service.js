@@ -52,7 +52,11 @@ function assertNewBuyAllowed(tenant) {
   }
 }
 
-async function buildCustomerBuyQuote(req) {
+/**
+ * @param {object} req  customer-bound request (req.auth.id = customer)
+ * @param {{ quoteSource?: "CUSTOMER" | "ASSISTED", createdBySubject?: string }} [opts]
+ */
+export async function buildCustomerBuyQuote(req, opts = {}) {
   assertNewBuyAllowed(await loadTenant(req));
   const tenant = await loadTenant(req);
   const { metal, finenessPpm } = req.body;
@@ -116,7 +120,7 @@ async function buildCustomerBuyQuote(req) {
     _id: createId("dmq"),
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
-    quoteSource: "CUSTOMER",
+    quoteSource: opts.quoteSource ?? "CUSTOMER",
     side: "BUY",
     metal,
     finenessPpm,
@@ -129,7 +133,7 @@ async function buildCustomerBuyQuote(req) {
     termsContentHash,
     taxProfileFingerprint: taxFingerprint,
     calculationVersion: CALCULATION_VERSION,
-    createdBySubject: req.auth.id,
+    createdBySubject: opts.createdBySubject ?? req.auth.id,
   });
 
   return {
@@ -147,7 +151,11 @@ export async function createCustomerBuyQuote(req) {
   return buildCustomerBuyQuote(req);
 }
 
-export async function createBuyOrder(req) {
+/**
+ * @param {object} req  customer-bound request
+ * @param {{ assisted?: object }} [opts]  counter trade metadata; only ASSISTED quotes are accepted then
+ */
+export async function createBuyOrder(req, opts = {}) {
   const tenant = await loadTenant(req);
   assertNewBuyAllowed(tenant);
   const idempotencyKey = String(req.headers["x-idempotency-key"] ?? "").trim();
@@ -181,8 +189,15 @@ export async function createBuyOrder(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!quote) throw errors.notFound("Quote");
-  if (quote.quoteSource !== "CUSTOMER") {
-    throw new AppError("QUOTE_NOT_EXECUTABLE", "Admin preview quotes cannot be used for purchase.", 422);
+  const expectedSource = opts.assisted ? "ASSISTED" : "CUSTOMER";
+  if (quote.quoteSource !== expectedSource) {
+    throw new AppError(
+      "QUOTE_NOT_EXECUTABLE",
+      quote.quoteSource === "ADMIN_PREVIEW"
+        ? "Admin preview quotes cannot be used for purchase."
+        : "This quote was made for a different checkout.",
+      422,
+    );
   }
   if (String(quote.customerId) !== String(req.auth.id)) {
     throw errors.forbidden("This quote belongs to another customer.");
@@ -266,6 +281,7 @@ export async function createBuyOrder(req) {
               termsAcceptedAt,
               idempotencyKey,
               creationBodyHash: bodyHash,
+              ...(opts.assisted ? { assisted: opts.assisted } : {}),
               version: 1,
             },
           ],

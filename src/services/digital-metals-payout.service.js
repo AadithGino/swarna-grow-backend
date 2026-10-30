@@ -190,6 +190,13 @@ export async function createPayoutInstruction(req) {
   await assertNoBlockingPayout(req.auth.tenantId, payable._id);
 
   const sellOrder = await DigitalMetalSellOrder.findById(payable.sellOrderId).lean();
+  if (sellOrder?.payoutMethod === "CASH") {
+    throw new AppError(
+      "CASH_PAYOUT_ORDER",
+      "This sell is paid in cash at the counter. Use Pay cash on the sell order instead.",
+      409,
+    );
+  }
   if (!sellOrder?.bankDestinationId) {
     throw new AppError("DESTINATION_MISSING", "Sell order has no bank destination.", 409);
   }
@@ -537,10 +544,14 @@ export async function getCustomerPayoutStatusForSellOrder(req) {
       };
     }
   }
+  const payoutMethod = order.payoutMethod ?? "BANK";
   return {
     orderId: order._id,
     saleExecuted: order.status === "PAYABLE_OPEN",
-    bankPayoutSettled: payable?.status === "SETTLED",
+    payoutMethod,
+    bankPayoutSettled: payoutMethod === "BANK" && payable?.status === "SETTLED",
+    cashPaid: payoutMethod === "CASH" && payable?.status === "SETTLED",
+    cashPaidAt: payable?.cashPayout?.paidAt ?? null,
     payoutDestinationMasked: bankMask
       ? {
           accountLast4: bankMask.accountLast4,

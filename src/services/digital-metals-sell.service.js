@@ -92,6 +92,7 @@ function mapPayableBrief(payable) {
     amountPaise: payable.amountPaise,
     outstandingPaise: payable.outstandingPaise,
     settledAt: payable.settledAt ?? null,
+    settlementMethod: payable.settlementMethod ?? null,
   };
 }
 
@@ -144,6 +145,14 @@ export function mapSellOrderDto(order, extras = {}) {
     executedAt: order.executedAt ?? null,
     payableId: order.payableId ?? null,
     bankDestinationId: order.bankDestinationId ?? null,
+    payoutMethod: order.payoutMethod ?? "BANK",
+    assisted: order.assisted
+      ? {
+          channel: order.assisted.channel ?? "COUNTER",
+          byUserId: order.assisted.byUserId ?? null,
+          recordedAt: order.assisted.recordedAt ?? null,
+        }
+      : null,
     snapshot: order.snapshot ?? null,
     createdAt: order.createdAt ?? null,
     updatedAt: order.updatedAt ?? null,
@@ -153,7 +162,11 @@ export function mapSellOrderDto(order, extras = {}) {
   };
 }
 
-export async function createCustomerSellQuote(req) {
+/**
+ * @param {object} req  customer-bound request
+ * @param {{ quoteSource?: "CUSTOMER" | "ASSISTED", createdBySubject?: string }} [opts]
+ */
+export async function createCustomerSellQuote(req, opts = {}) {
   assertNewSellAllowed(await loadTenant(req));
   await assertCustomerCanPlaceSell(req.auth.tenantId, req.auth.id);
   const tenant = await loadTenant(req);
@@ -215,7 +228,7 @@ export async function createCustomerSellQuote(req) {
     _id: createId("dmq"),
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
-    quoteSource: "CUSTOMER",
+    quoteSource: opts.quoteSource ?? "CUSTOMER",
     side: "SELL",
     metal,
     finenessPpm,
@@ -228,7 +241,7 @@ export async function createCustomerSellQuote(req) {
     calculationVersion: CALCULATION_VERSION,
     taxProfileFingerprint: taxFingerprint,
     termsContentHash,
-    createdBySubject: req.auth.id,
+    createdBySubject: opts.createdBySubject ?? req.auth.id,
   });
 
   return {
@@ -241,7 +254,11 @@ export async function createCustomerSellQuote(req) {
   };
 }
 
-export async function createSellOrder(req) {
+/**
+ * @param {object} req  customer-bound request
+ * @param {{ assisted?: object, payoutMethod?: "BANK" | "CASH" }} [opts]  counter sells use ASSISTED quotes
+ */
+export async function createSellOrder(req, opts = {}) {
   assertNewSellAllowed(await loadTenant(req));
   await assertCustomerCanPlaceSell(req.auth.tenantId, req.auth.id);
   const idempotencyKey = String(req.headers["x-idempotency-key"] ?? "").trim();
@@ -266,7 +283,7 @@ export async function createSellOrder(req) {
     _id: req.body.quoteId,
     tenantId: req.auth.tenantId,
     side: "SELL",
-    quoteSource: "CUSTOMER",
+    quoteSource: opts.assisted ? "ASSISTED" : "CUSTOMER",
     customerId: req.auth.id,
   }).lean();
   if (!quote) throw errors.notFound("Quote");
@@ -341,6 +358,9 @@ export async function createSellOrder(req) {
             termsAcceptedAt: new Date(),
             idempotencyKey,
             creationBodyHash: bodyHash,
+            ...(opts.assisted
+              ? { assisted: opts.assisted, payoutMethod: opts.payoutMethod ?? "BANK" }
+              : {}),
           },
         ],
         { session },
@@ -543,19 +563,25 @@ export async function listAdminSellOrders(req) {
   const { items, meta } = paginateByIdCursor(rows, limit);
   const customerIds = [...new Set(items.map((o) => o.customerId).filter(Boolean))];
   const bankIds = [...new Set(items.map((o) => o.bankDestinationId).filter(Boolean))];
-  const [customers, bankRows] = await Promise.all([
+  const payableIds = [...new Set(items.map((o) => o.payableId).filter(Boolean))];
+  const [customers, bankRows, payableRows] = await Promise.all([
     customerIds.length
       ? Customer.find({ tenantId: req.auth.tenantId, _id: { $in: customerIds } }).lean()
       : [],
     bankIds.length
       ? DigitalMetalBankDestination.find({ tenantId: req.auth.tenantId, _id: { $in: bankIds } }).lean()
       : [],
+    payableIds.length
+      ? DigitalMetalPayable.find({ tenantId: req.auth.tenantId, _id: { $in: payableIds } }).lean()
+      : [],
   ]);
   const customerById = new Map(customers.map((c) => [c._id, c]));
   const bankById = new Map(bankRows.map((b) => [b._id, b]));
+  const payableById = new Map(payableRows.map((p) => [p._id, p]));
   return {
     items: items.map((o) =>
       mapSellOrderDto(o, {
+        payable: o.payableId ? mapPayableBrief(payableById.get(o.payableId)) : null,
         customer: mapAdminCustomerBrief(customerById.get(o.customerId)),
         bankDestination: o.bankDestinationId
           ? mapBankDestinationBrief(bankById.get(o.bankDestinationId))

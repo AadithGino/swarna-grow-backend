@@ -126,6 +126,53 @@ async function refundMapForOrders(tenantId, orderIds) {
   return new Map(refunds.map((r) => [r.orderId, r]));
 }
 
+const OPEN_ORDER_STATUSES = [
+  "COD_PENDING_ACCEPTANCE",
+  "PAID",
+  "PROCESSING",
+  "READY_FOR_PICKUP",
+  "SHIPPED",
+];
+
+/** Store totals for the customer detail overview cards (counter orders included). */
+export async function getAdminCustomerEcommerceSummary(req) {
+  const customerId = await assertCustomerInScope(req);
+  const tenantId = req.auth.tenantId;
+  const [totals, openOrders, counterAgg, lastOrder, itemsAgg] = await Promise.all([
+    aggregateCustomerEcommerceSummary(tenantId, customerId),
+    EcommerceOrder.countDocuments({ tenantId, customerId, status: { $in: OPEN_ORDER_STATUSES } }),
+    EcommerceOrder.aggregate([
+      { $match: { tenantId, customerId, "assisted.byUserId": { $type: "string" }, paidAt: { $ne: null } } },
+      { $group: { _id: null, count: { $sum: 1 }, amountPaise: { $sum: "$totalPaise" } } },
+    ]),
+    EcommerceOrder.findOne({ tenantId, customerId })
+      .sort({ createdAt: -1 })
+      .select("_id orderNumber status totalPaise createdAt")
+      .lean(),
+    EcommerceOrder.aggregate([
+      { $match: { tenantId, customerId, paidAt: { $ne: null } } },
+      { $unwind: "$lines" },
+      { $group: { _id: null, units: { $sum: "$lines.quantity" } } },
+    ]),
+  ]);
+  return {
+    customerId,
+    ...totals,
+    openOrders,
+    itemsBought: itemsAgg[0]?.units ?? 0,
+    counterOrders: { count: counterAgg[0]?.count ?? 0, amountPaise: counterAgg[0]?.amountPaise ?? 0 },
+    lastOrder: lastOrder
+      ? {
+          id: lastOrder._id,
+          orderNumber: lastOrder.orderNumber,
+          status: lastOrder.status,
+          totalPaise: lastOrder.totalPaise ?? 0,
+          createdAt: lastOrder.createdAt ?? null,
+        }
+      : null,
+  };
+}
+
 export async function getAdminCustomerEcommerceOrdersMeta(req) {
   const customerId = await assertCustomerInScope(req);
   const hasHistory = await customerHasEcommerceOrderHistory(req.auth.tenantId, customerId);

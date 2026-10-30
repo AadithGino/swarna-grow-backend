@@ -13,7 +13,8 @@ import {
 import { clearAssistInterpretForTests } from "../src/integrations/llm/provider.js";
 import { compileDataQuery, debugPipeline, previousWindow, runDataQuery } from "../src/services/assistant/agent/query-data.js";
 import { checkAnswerNumbers, collectNumbers } from "../src/services/assistant/agent/number-guard.js";
-import { AGENT_SYSTEM_PROMPT } from "../src/services/assistant/agent/agent.service.js";
+import { AGENT_SYSTEM_PROMPT, thinkingConfigFor } from "../src/services/assistant/agent/agent.service.js";
+import { instantReply } from "../src/services/assistant/agent/instant-replies.js";
 import {
   bearerFor,
   resetTestDb,
@@ -523,7 +524,7 @@ test("daily question cap returns a friendly 429", { timeout: 60_000 }, async () 
   const res = await request(app)
     .post("/api/v1/admin/assistant/chat")
     .set("Authorization", `Bearer ${bearerFor(user)}`)
-    .send({ message: "hello" });
+    .send({ message: "total collection this week?" });
   assert.equal(res.status, 429);
   assert.equal(res.body.error.code, "ASSISTANT_DAILY_LIMIT");
 });
@@ -609,4 +610,119 @@ test("report + trend tools: COLLECTION report, Cash-vs-UPI trend, single-mode tr
   const modeChart = bundle.blocks[2].chart;
   assert.deepEqual(modeChart.series.map((s) => s.name).sort(), ["Cash", "UPI"]);
   assert.equal(bundle.blocks[3].action.kind, "report");
+});
+
+test("small talk is answered instantly without calling the model or using the daily cap", { timeout: 60_000 }, async () => {
+  const { tenant, user } = await seedTenantUser({});
+  let modelCalls = 0;
+  scripted([
+    () => {
+      modelCalls += 1;
+      return call("final_answer", { answer: "should not be used" });
+    },
+  ]);
+  for (const message of ["hi", "Thanks!", "ok", "who are you?"]) {
+    const res = await request(app)
+      .post("/api/v1/admin/assistant/chat")
+      .set("Authorization", `Bearer ${bearerFor(user)}`)
+      .send({ message });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(res.body.data.narrative.length > 5);
+    assert.equal(res.body.data.steps.length, 0);
+  }
+  assert.equal(modelCalls, 0);
+  const usage = await AssistantUsageDaily.findOne({ tenantId: tenant._id }).lean();
+  assert.ok(!usage || !usage.questions, "small talk does not count toward the daily cap");
+});
+
+test("instant replies only match pure small talk", () => {
+  assert.ok(instantReply("Hello"));
+  assert.ok(instantReply("good morning sidekick"));
+  assert.equal(instantReply("hi what was today's collection"), null);
+  assert.equal(instantReply("thanks, now show dues for 30 days"), null);
+  assert.equal(instantReply("ok 5"), null);
+});
+
+test("customer_overview finds a customer by name in one round", { timeout: 60_000 }, async () => {
+  const { tenant, branch, user } = await seedTenantUser({});
+  const p = await plan(tenant, "Swarna 11");
+  const c = await seedCustomer({ tenantId: tenant._id, branchId: branch._id, name: "Lakshmi Menon", mobile: "+919845099999" });
+  await scheme({ tenant, branch, customer: c, planDoc: p, overdue: 0, paid: 2 });
+  let rounds = 0;
+  scripted([
+    () => {
+      rounds += 1;
+      return call("customer_overview", { customer: "lakshmi", purpose: "Lakshmi's picture" });
+    },
+    (req) => {
+      rounds += 1;
+      const r = lastResponses(req)[0].response;
+      assert.equal(r.enrolments[0].plan, "Swarna 11");
+      return call("final_answer", { answer: "Lakshmi is in Swarna 11.", blocks: [{ type: "stats", resultId: r.resultId }] });
+    },
+  ]);
+  const res = await request(app)
+    .post("/api/v1/admin/assistant/chat")
+    .set("Authorization", `Bearer ${bearerFor(user)}`)
+    .send({ message: "lakshmi details" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(rounds, 2);
+  assert.match(res.body.data.narrative, /Swarna 11/);
+});
+
+test("customer_overview with an ambiguous name returns the matches to choose from", { timeout: 60_000 }, async () => {
+  const { tenant, branch, user } = await seedTenantUser({});
+  await seedCustomer({ tenantId: tenant._id, branchId: branch._id, name: "Anu Joseph", mobile: "+919845011111" });
+  await seedCustomer({ tenantId: tenant._id, branchId: branch._id, name: "Anu Thomas", mobile: "+919845022222" });
+  scripted([
+    () => call("customer_overview", { customer: "anu", purpose: "Anu" }),
+    (req) => {
+      const r = lastResponses(req)[0].response;
+      assert.equal(r.needsChoice, true);
+      assert.equal(r.matches, 2);
+      return call("final_answer", { answer: "Which Anu do you mean?", needsClarification: true, followUps: ["Anu Joseph", "Anu Thomas"] });
+    },
+  ]);
+  const res = await request(app)
+    .post("/api/v1/admin/assistant/chat")
+    .set("Authorization", `Bearer ${bearerFor(user)}`)
+    .send({ message: "anu details" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.data.needsClarification, true);
+});
+
+test("tools asked for in the same round run in parallel and keep their order", { timeout: 60_000 }, async () => {
+  const { tenant, branch, user } = await seedTenantUser({});
+  const c = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  await pay({ tenant, branch, customer: c, amount: 500, mode: "CASH", paidAt: new Date(), user });
+  scripted([
+    () => ({
+      content: {
+        role: "model",
+        parts: [
+          { functionCall: { name: "query_data", args: { entity: "payments", metrics: [{ fn: "sum", field: "amount" }], purpose: "first" } } },
+          { functionCall: { name: "query_data", args: { entity: "customers", metrics: [{ fn: "count" }], purpose: "second" } } },
+        ],
+      },
+    }),
+    (req) => {
+      const rs = lastResponses(req);
+      assert.equal(rs.length, 2);
+      assert.equal(rs[0].name, "query_data");
+      return call("final_answer", { answer: "Done." });
+    },
+  ]);
+  const res = await request(app)
+    .post("/api/v1/admin/assistant/chat")
+    .set("Authorization", `Bearer ${bearerFor(user)}`)
+    .send({ message: "payments and customers" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual(res.body.data.steps.map((s) => s.label), ["first", "second"]);
+});
+
+test("thinking is kept to the minimum each model allows", () => {
+  assert.equal(thinkingConfigFor("gemini-3.5-flash-lite"), null);
+  assert.deepEqual(thinkingConfigFor("gemini-3.5-flash"), { thinkingLevel: "minimal" });
+  assert.deepEqual(thinkingConfigFor("gemini-3.8-flash"), { thinkingLevel: "low" });
+  assert.deepEqual(thinkingConfigFor("gemini-2.5-flash-lite"), { thinkingBudget: 0 });
 });

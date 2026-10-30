@@ -7,6 +7,14 @@
     "api/index.js": {
       "maxDuration": 60,
       "memory": 1024
+    },
+    "api/cron/keep-warm.js": {
+      "maxDuration": 30,
+      "memory": 512
+    },
+    "api/cron/queue-tick.js": {
+      "maxDuration": 60,
+      "memory": 1024
     }
   },
   "rewrites": [
