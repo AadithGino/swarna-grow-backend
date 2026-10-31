@@ -377,32 +377,38 @@ const documentTypeEnum = z.enum([
   "METAL_STATEMENT",
 ]);
 
+/** Empty / null cursor from clients → omit (first page). */
+const optionalListCursor = z.preprocess(
+  (value) => (value === "" || value === null || value === undefined ? undefined : value),
+  z.string().trim().min(4).max(80).optional(),
+);
+
 export const digitalMetalsAdminScopedOrderListQuery = z
   .object({
     limit: z.coerce.number().int().min(1).max(100).optional(),
-    cursor: z.string().trim().min(4).max(80).optional(),
+    cursor: optionalListCursor,
     status: z.string().trim().max(64).optional(),
     customerId: z.string().trim().min(1).optional(),
     q: z.string().trim().max(80).optional(),
   })
-  .strict();
+  .passthrough();
 
 export const digitalMetalsCustomerOrderListQuery = z
   .object({
     limit: z.coerce.number().int().min(1).max(50).optional(),
-    cursor: z.string().trim().min(4).max(80).optional(),
+    cursor: optionalListCursor,
     status: z.string().trim().max(64).optional(),
   })
-  .strict();
+  .passthrough();
 
 export const digitalMetalsBankVerificationQueueQuery = z
   .object({
     limit: z.coerce.number().int().min(1).max(100).optional(),
-    cursor: z.string().trim().min(4).max(80).optional(),
+    cursor: optionalListCursor,
     status: z.enum(["PENDING_VERIFICATION", "ACTIVE", "DISABLED", "ALL"]).optional(),
     customerId: z.string().trim().min(1).optional(),
   })
-  .strict();
+  .passthrough();
 
 export const digitalMetalsBankDestinationVerifyBody = z
   .object({

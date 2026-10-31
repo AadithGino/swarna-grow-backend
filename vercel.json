@@ -19,9 +19,9 @@
   },
   "rewrites": [
     { "source": "/health", "destination": "/api" },
-    { "source": "/health/:path*", "destination": "/api" },
-    { "source": "/mock-storage/:path*", "destination": "/api" },
-    { "source": "/api/v1/:path*", "destination": "/api" },
+    { "source": "/health/(.*)", "destination": "/api" },
+    { "source": "/mock-storage/(.*)", "destination": "/api" },
+    { "source": "/api/v1/(.*)", "destination": "/api" },
     { "source": "/api/v1", "destination": "/api" }
   ]
 }
