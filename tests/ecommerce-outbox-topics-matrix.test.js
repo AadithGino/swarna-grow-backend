@@ -1,24 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  JobStatus,
-  MessageType,
-  EcommerceOrderStatus,
-  EcommercePaymentAttemptStatus,
-  EcommercePaymentExceptionRefundStatus,
-  EcommerceOrderRefundSource,
-} from "../src/constants/enums.js";
+import { JobStatus, EcommerceOrderStatus, EcommercePaymentAttemptStatus, EcommercePaymentExceptionRefundStatus, EcommerceOrderRefundSource } from "../src/constants/enums.js";
 import { ECOMMERCE_OUTBOX_TOPICS } from "../src/lib/ecommerce-commerce-outbox.js";
 import { processEcommerceOutboxEvent } from "../src/lib/ecommerce-outbox-processor.js";
 import { processOutbox } from "../src/workers/processors.js";
-import {
-  OutboxEvent,
-  Message,
-  EcommerceOrder,
-  EcommercePaymentAttempt,
-  EcommercePaymentExceptionRefund,
-  Customer,
-} from "../src/models/index.js";
+import { OutboxEvent, Message, EcommerceOrder, EcommercePaymentAttempt, EcommercePaymentExceptionRefund } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import { resetTestDb, seedCustomer, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
@@ -178,24 +164,6 @@ for (const [label, topic, setup, expectOutcome] of [
     assert.ok(expectOutcome.includes(direct.outcome) || direct.outcome === "ALREADY_NOTIFIED");
   });
 }
-
-test("whatsapp opt-out still allows in-app message row when push queues", async () => {
-  const { tenant, branch } = await seedTenantUser({});
-  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
-  await Customer.updateOne({ _id: customer._id }, { $set: { whatsappOptedOutAt: new Date() } });
-  const { orderId, paymentAttemptId } = await seedPaidOrder({ tenant, branch, customer });
-  const result = await processEcommerceOutboxEvent({
-    _id: createId("outbox"),
-    tenantId: tenant._id,
-    topic: ECOMMERCE_OUTBOX_TOPICS.PAYMENT_SUCCEEDED,
-    key: orderId,
-    payload: { orderId, paymentAttemptId },
-  });
-  assert.ok(["QUEUED", "NO_DELIVERY_CHANNEL"].includes(result.outcome));
-  if (result.outcome === "QUEUED") {
-    assert.ok(await Message.exists({ tenantId: tenant._id, type: MessageType.ECOMMERCE_ORDER_CONFIRMED }));
-  }
-});
 
 test("duplicate outbox event id does not duplicate payment succeeded notification", async () => {
   const { tenant, branch } = await seedTenantUser({});

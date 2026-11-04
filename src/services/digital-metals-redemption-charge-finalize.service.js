@@ -1,3 +1,4 @@
+import { validatePhonePeCompletedIdentifiers } from "../lib/phonepe-completed-identifiers.js";
 import { withTransaction } from "../lib/transaction.js";
 import { isDigitalMetalRedemptionChargeMerchantOrderId } from "../lib/digital-metals-payment-reference.js";
 import {
@@ -30,7 +31,7 @@ export async function finalizeDigitalMetalRedemptionChargeSuccess({
   merchantOrderId,
   transactionId,
   amountPaise,
-  currency: _currency = "INR",
+  currency = "INR",
   providerPayload,
   source = "WEBHOOK",
 }) {
@@ -42,6 +43,7 @@ export async function finalizeDigitalMetalRedemptionChargeSuccess({
   if (attempt.status === "SUCCEEDED") {
     return { outcome: "ALREADY_SUCCESS", orderId: attempt.orderId };
   }
+  if (String(currency).toUpperCase() !== "INR") return { outcome: "CURRENCY_MISMATCH", orderId: attempt.orderId };
   if (Number(attempt.amountPaise) !== Number(amountPaise)) {
     return { outcome: "AMOUNT_MISMATCH", orderId: attempt.orderId };
   }
@@ -64,7 +66,9 @@ export async function finalizeDigitalMetalRedemptionChargeSuccess({
     }).session(session);
     if (!order) return { outcome: "ORDER_NOT_FOUND" };
 
-    if (order.status === "CHARGE_PAID") {
+    const currentAttempt = await DigitalMetalRedemptionPaymentAttempt.findById(attempt._id).session(session).lean();
+    if (currentAttempt?.status === "SUCCEEDED") return { outcome: "ALREADY_SUCCESS", orderId: order._id };
+    if (order.successfulChargeAttemptId || ["CHARGE_PAID", "FULFILMENT_ACCEPTED", "PACKING", "DISPATCHED", "PICKUP_READY", "INVESTIGATION", "COMPLETED"].includes(order.status)) {
       if (order.successfulChargeAttemptId === attempt._id) {
         await DigitalMetalRedemptionPaymentAttempt.updateOne(
           { _id: attempt._id, status: { $ne: "SUCCEEDED" } },
@@ -199,22 +203,26 @@ export async function finalizeDigitalMetalRedemptionChargeSuccess({
   });
 }
 
-export async function processDigitalMetalRedemptionChargePhonePeWebhook({ tenantId, payload }) {
-  const reference =
-    payload?.merchantOrderId ?? payload?.data?.merchantOrderId ?? payload?.merchantTransactionId ?? null;
-  if (!reference || !isDigitalMetalRedemptionChargeMerchantOrderId(reference)) {
-    return { outcome: "IGNORED" };
+export async function processDigitalMetalRedemptionChargePhonePeWebhook({ tenantId, normalized, payload }) {
+  const reference = normalized?.reference ?? payload?.originalMerchantOrderId ?? payload?.merchantOrderId ?? payload?.data?.merchantOrderId;
+  if (!reference || !isDigitalMetalRedemptionChargeMerchantOrderId(reference)) return { outcome: "IGNORED" };
+  const body = normalized?.payload ?? payload;
+  const completed = normalized?.completed ?? ["COMPLETED", "SUCCESS"].includes(String(body?.state ?? body?.code ?? "").toUpperCase());
+  if (!completed) {
+    if (normalized?.failed) {
+      await DigitalMetalRedemptionPaymentAttempt.updateOne(
+        { tenantId, merchantOrderId: reference, status: { $in: ["PENDING", "INITIATED"] } },
+        { $set: { status: "FAILED", failureReason: normalized.type } },
+      );
+    }
+    return { outcome: "NOT_COMPLETED" };
   }
-  const state = String(payload?.state ?? payload?.code ?? "").toUpperCase();
-  const completed = state.includes("COMPLETED") || state.includes("SUCCESS");
-  if (!completed) return { outcome: "NOT_COMPLETED" };
-  const amountPaise = Number(payload?.amount ?? payload?.data?.amount ?? 0);
-  return finalizeDigitalMetalRedemptionChargeSuccess({
-    tenantId,
-    merchantOrderId: reference,
-    transactionId: payload?.transactionId ?? payload?.data?.transactionId ?? reference,
-    amountPaise,
-    providerPayload: payload,
-    source: "WEBHOOK",
-  });
+  const verified = validatePhonePeCompletedIdentifiers({ merchantOrderId: reference, normalized: {
+    transactionId: normalized?.transactionId ?? body?.transactionId ?? body?.data?.transactionId,
+    amount: body?.amount ?? normalized?.amount ?? body?.data?.amount,
+  } });
+  if (!verified.ok) return { outcome: "REJECTED", code: verified.code };
+  return finalizeDigitalMetalRedemptionChargeSuccess({ tenantId, merchantOrderId: reference,
+    transactionId: verified.transactionId, amountPaise: verified.amountPaise,
+    currency: body?.currency ?? "INR", providerPayload: body, source: "WEBHOOK" });
 }

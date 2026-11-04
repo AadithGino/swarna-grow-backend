@@ -113,6 +113,17 @@ export const requirePermission =
       : next(errors.forbidden());
   };
 
+/** Any one of the listed permissions (or `*`) is sufficient. */
+export const requireAnyPermission =
+  (...required) =>
+  (req, _res, next) => {
+    const permissions = req.auth?.permissions ?? [];
+    if (permissions.includes("*") || required.some((permission) => permissions.includes(permission))) {
+      return next();
+    }
+    return next(errors.forbidden());
+  };
+
 export function tenantScope(req, _res, next) {
   if (!req.auth?.tenantId) throw errors.forbidden();
   const actingBranch = req.headers["x-acting-branch-id"];

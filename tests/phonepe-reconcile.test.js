@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { env } from "../src/config/env.js";
 import { PaymentIntentStatus, PaymentMode, PaymentStatus } from "../src/constants/enums.js";
-import { reconcileGatewayPayment } from "../src/services/phonepe-reconcile.service.js";
+import {
+  reconcileGatewayPayment,
+  resolveMerchantOrderIdForPayment,
+} from "../src/services/phonepe-reconcile.service.js";
 import { Customer, Payment, PaymentIntent, Scheme } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import {
@@ -103,6 +106,82 @@ test("reconcile completes pending payment without webhook", async () => {
   assert.equal(afterPayment.status, PaymentStatus.SUCCESS);
   const afterIntent = await PaymentIntent.findById(intentId).lean();
   assert.equal(afterIntent.status, PaymentIntentStatus.SUCCEEDED);
+});
+
+test("resolveMerchantOrderId prefers payment link id from receipt over instalment intent id", async () => {
+  const { tenant, branch, customer, scheme } = await seedGatewayFixture();
+  const linkId = createId("paymentLink");
+  const intentId = createId("paymentIntent");
+  const paymentId = createId("payment");
+  await Payment.create({
+    _id: paymentId,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    schemeId: scheme._id,
+    customerId: customer._id,
+    receiptNumber: `PENDING-${linkId}`,
+    amountPaise: 50_000,
+    mode: PaymentMode.ONLINE_GATEWAY,
+    status: PaymentStatus.PENDING,
+    source: "CUSTOMER_APP",
+    paidAt: new Date(),
+  });
+  await PaymentIntent.create({
+    _id: intentId,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    schemeId: scheme._id,
+    customerId: customer._id,
+    amountPaise: 50_000,
+    fixedFromInstallment: 1,
+    fixedThroughInstallment: 1,
+    positionVersion: 1,
+    status: PaymentIntentStatus.PENDING,
+    paymentId,
+    version: 1,
+  });
+  const payment = await Payment.findById(paymentId).lean();
+  assert.equal(await resolveMerchantOrderIdForPayment(payment), linkId);
+});
+
+test("fixed public pay reconcile uses link merchant order id", async () => {
+  assert.equal(env.PROVIDER_MODE, "mock", "reconcile integration tests require PROVIDER_MODE=mock");
+  const { tenant, branch, customer, scheme } = await seedGatewayFixture();
+  const linkId = createId("paymentLink");
+  const intentId = createId("paymentIntent");
+  armMockOrderStatusTemplate(linkId, "__mock_completed__");
+  const paymentId = createId("payment");
+  await Payment.create({
+    _id: paymentId,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    schemeId: scheme._id,
+    customerId: customer._id,
+    receiptNumber: `PENDING-${linkId}`,
+    amountPaise: 50_000,
+    mode: PaymentMode.ONLINE_GATEWAY,
+    status: PaymentStatus.PENDING,
+    source: "CUSTOMER_APP",
+    paidAt: new Date(Date.now() - 3600_000),
+  });
+  await PaymentIntent.create({
+    _id: intentId,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    schemeId: scheme._id,
+    customerId: customer._id,
+    amountPaise: 50_000,
+    fixedFromInstallment: 1,
+    fixedThroughInstallment: 1,
+    positionVersion: 1,
+    status: PaymentIntentStatus.PENDING,
+    paymentId,
+    version: 1,
+  });
+  const payment = await Payment.findById(paymentId).lean();
+  const result = await reconcileGatewayPayment(payment);
+  assert.equal(result.outcome, "COMPLETED");
+  assert.equal((await Payment.findById(paymentId).lean()).status, PaymentStatus.SUCCESS);
 });
 
 test("reconcile applies terminal failure from provider status", async () => {

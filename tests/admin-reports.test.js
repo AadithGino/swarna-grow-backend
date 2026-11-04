@@ -36,7 +36,6 @@ import { buildReminderDeliveryReport } from "../src/services/report-builders/rem
 import { buildSchemePerformanceReport } from "../src/services/report-builders/scheme-performance.report.js";
 import { buildSchemeRegisterReport } from "../src/services/report-builders/scheme-register.report.js";
 import { buildStaffPerformanceReport } from "../src/services/report-builders/staff-performance.report.js";
-import { buildWhatsappUsageReport } from "../src/services/report-builders/whatsapp-usage.report.js";
 import {
   ClosureType,
   LedgerEntryType,
@@ -870,7 +869,6 @@ const UI_REPORT_KEYS = [
   "STAFF_PERFORMANCE",
   "CASH_HANDOVER",
   "REMINDER_DELIVERY",
-  "WHATSAPP_USAGE",
   "SCHEME_REGISTER",
   "DEFAULTER",
   "BRANCH_PERFORMANCE",
@@ -1317,54 +1315,6 @@ test("reminder delivery report computes delivery rate from message stats", async
   assert.equal(dueRow?.deliveryRate, 50);
   const delivered = result.summary.find((row) => row.key === "DELIVERED");
   assert.equal(delivered?.value, 2);
-});
-
-test("whatsapp usage report buckets messages by category", async () => {
-  const { tenant, branch, user } = await seedTenantUser({
-    role: TenantRole.TENANT_OWNER,
-  });
-  await Message.create([
-    {
-      _id: createId("msg"),
-      tenantId: tenant._id,
-      branchId: branch._id,
-      type: MessageType.OTP,
-      channel: MessageChannel.WHATSAPP,
-      status: MessageStatus.DELIVERED,
-      createdAt: new Date("2026-09-02T10:00:00+05:30"),
-    },
-    {
-      _id: createId("msg"),
-      tenantId: tenant._id,
-      branchId: branch._id,
-      type: MessageType.SCHEME_JOINED,
-      channel: MessageChannel.WHATSAPP,
-      status: MessageStatus.DELIVERED,
-      createdAt: new Date("2026-09-02T11:00:00+05:30"),
-    },
-    {
-      _id: createId("msg"),
-      tenantId: tenant._id,
-      branchId: branch._id,
-      type: MessageType.PAYMENT_SUCCESS,
-      channel: MessageChannel.WHATSAPP,
-      status: MessageStatus.DELIVERED,
-      createdAt: new Date("2026-09-03T10:00:00+05:30"),
-    },
-  ]);
-
-  const result = await buildWhatsappUsageReport(
-    reportReq(user, tenant, {
-      period: "CUSTOM",
-      from: "2026-09-01",
-      to: "2026-09-05",
-    }),
-  );
-
-  const totalMessages = result.summary.find((row) => row.key === "CONVERSATIONS");
-  assert.equal(totalMessages?.value, 3);
-  const categoryTotal = result.rows.reduce((sum, row) => sum + row.total, 0);
-  assert.equal(categoryTotal, 3);
 });
 
 test("cash handover report lists staff across branches when branchId=ALL", async () => {

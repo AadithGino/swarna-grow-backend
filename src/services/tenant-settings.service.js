@@ -14,7 +14,6 @@ import {
   Branch,
   Customer,
   Invoice,
-  Message,
   SchemePlan,
   SubscriptionPlan,
   SubscriptionUpgradeRequest,
@@ -254,32 +253,24 @@ export async function getSettingsOperationsForAdmin(req) {
 }
 
 async function countTenantUsage(tenantId) {
-  const monthStart = now().startOf("month").toDate();
-  const [activeCustomers, branches, staffSeats, schemePlans, whatsappMessages] =
-    await Promise.all([
-      Customer.countDocuments({ tenantId, status: CustomerStatus.ACTIVE }),
-      Branch.countDocuments({ tenantId, active: { $ne: false } }),
-      User.countDocuments({
-        tenantId,
-        type: UserType.TENANT_USER,
-        status: UserStatus.ACTIVE,
-      }),
-      SchemePlan.countDocuments({
-        tenantId,
-        status: { $in: [SchemePlanStatus.ACTIVE, SchemePlanStatus.INACTIVE] },
-      }),
-      Message.countDocuments({
-        tenantId,
-        channel: "WHATSAPP",
-        createdAt: { $gte: monthStart },
-      }),
-    ]);
+  const [activeCustomers, branches, staffSeats, schemePlans] = await Promise.all([
+    Customer.countDocuments({ tenantId, status: CustomerStatus.ACTIVE }),
+    Branch.countDocuments({ tenantId, active: { $ne: false } }),
+    User.countDocuments({
+      tenantId,
+      type: UserType.TENANT_USER,
+      status: UserStatus.ACTIVE,
+    }),
+    SchemePlan.countDocuments({
+      tenantId,
+      status: { $in: [SchemePlanStatus.ACTIVE, SchemePlanStatus.INACTIVE] },
+    }),
+  ]);
   return {
     activeCustomers,
     branches,
     staffSeats,
     schemePlans,
-    whatsappMessages,
   };
 }
 
@@ -346,10 +337,6 @@ export async function getSubscriptionForAdmin(req) {
       branches: usageMeter(usageCounts.branches, limits.branches),
       staffSeats: usageMeter(usageCounts.staffSeats, limits.staff),
       schemePlans: usageMeter(usageCounts.schemePlans, limits.schemePlans),
-      whatsappMessages: {
-        ...usageMeter(usageCounts.whatsappMessages, limits.whatsappMessages),
-        resetsOn: now().add(1, "month").startOf("month").format("YYYY-MM-DD"),
-      },
     },
     features: resolvePlanFeatureBooleans(tenant),
     ecommerce: await presentEcommerceAccessStateForTenant(tenant),
@@ -460,11 +447,6 @@ function buildPlanIncludes(tier, limits = {}) {
   if (limits.staff != null) {
     lines.push(`${Number(limits.staff)} staff seats`);
   }
-  if (limits.whatsappMessages != null) {
-    lines.push(
-      `${Number(limits.whatsappMessages).toLocaleString("en-IN")} WhatsApp messages`,
-    );
-  }
   if (features.flexibleScheme) lines.push("Flexible schemes");
   if (features.multiBranch && Number(limits.branches ?? 0) > 1) {
     lines.push("Multi-showroom");
@@ -536,9 +518,6 @@ export async function getAvailablePlansForAdmin(req) {
       if ((limits.branches ?? 0) > (currentPlan.limits.branches ?? 0)) {
         gains.push(`${limits.branches} showrooms`);
       }
-      if ((limits.whatsappMessages ?? 0) > (currentPlan.limits.whatsappMessages ?? 0)) {
-        gains.push(`${limits.whatsappMessages?.toLocaleString("en-IN")} WhatsApp messages`);
-      }
       if (plan.tier === PlanTier.PRO) {
         gains.push("Custom branded app");
       }
@@ -565,7 +544,6 @@ export async function getAvailablePlansForAdmin(req) {
         activeCustomers: limits.activeCustomers,
         branches: limits.branches,
         staffSeats: limits.staff,
-        whatsappMessagesPerMonth: limits.whatsappMessages,
       },
       includes: buildPlanIncludes(plan.tier, limits),
       gains,

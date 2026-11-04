@@ -131,8 +131,13 @@ async function sellThroughConfirm({ tenant, user, customer, token, quantityUg = 
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
     .send({ bankDestinationId: dest._id });
-  assert.equal(confirm.status, 200);
-  return { order: order.body.data, dest, adminToken: bearerFor(user), user };
+  assert.equal(confirm.status, 200, JSON.stringify(confirm.body?.error ?? {}));
+  return {
+    order: { ...order.body.data, ...confirm.body.data, version: confirm.body.data.version },
+    dest,
+    adminToken: bearerFor(user),
+    user,
+  };
 }
 
 test("risk hold blocks sell quote", async () => {
@@ -159,18 +164,12 @@ test("risk hold blocks sell quote", async () => {
   assert.equal(res.body.error?.code, "DIGITAL_METALS_RISK_HOLD");
 });
 
-test("sell execution creates payable; payout maker cannot approve", async () => {
+test("sell execution creates payable; same authorized operator may approve payout", async () => {
   const { tenant, branch, user } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const token = await customerToken({ tenant, branch, customer });
   const { order, adminToken, user: maker } = await sellThroughConfirm({ tenant, user, customer, token });
-  const approve = await request(app)
-    .post(`/api/v1/admin/digital-metals/sell-orders/${order.id}/approve`)
-    .set("Authorization", `Bearer ${adminToken}`)
-    .set("X-Idempotency-Key", randomUUID())
-    .send({});
-  assert.equal(approve.status, 200);
-  assert.equal(approve.body.data.status, "PAYABLE_OPEN");
+  assert.equal(order.status, "PAYABLE_OPEN");
   const payable = await DigitalMetalPayable.findOne({ sellOrderId: order.id }).lean();
   assert.ok(payable?.outstandingPaise > 0);
   const payoutCreate = await request(app)
@@ -185,8 +184,8 @@ test("sell execution creates payable; payout maker cannot approve", async () => 
     .set("Authorization", `Bearer ${adminToken}`)
     .set("X-Idempotency-Key", randomUUID())
     .send({});
-  assert.equal(selfApprove.status, 403);
-  assert.equal(selfApprove.body.error?.code, "APPROVAL_DENIED");
+  assert.equal(selfApprove.status, 200);
+  assert.equal(selfApprove.body.data.payout.status, "APPROVED");
   assert.ok(maker._id);
 });
 
@@ -195,11 +194,7 @@ test("unknown payout blocks duplicate disbursement", async () => {
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const token = await customerToken({ tenant, branch, customer });
   const { order, adminToken } = await sellThroughConfirm({ tenant, user, customer, token });
-  await request(app)
-    .post(`/api/v1/admin/digital-metals/sell-orders/${order.id}/approve`)
-    .set("Authorization", `Bearer ${adminToken}`)
-    .set("X-Idempotency-Key", randomUUID())
-    .send({});
+  assert.equal(order.status, "PAYABLE_OPEN");
   const payable = await DigitalMetalPayable.findOne({ sellOrderId: order.id }).lean();
   const { user: approver } = await seedTenantUser({
     tenantId: tenant._id,
@@ -285,21 +280,44 @@ test("cross-tenant bank destination access returns 404", async () => {
   assert.ok(leak.status === 404 || leak.status === 409);
 });
 
-test("approval expiry releases reservation", async () => {
+test("legacy pending approval expires and releases reservation", async () => {
   const { tenant, branch, user } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const token = await customerToken({ tenant, branch, customer });
-  const { order } = await sellThroughConfirm({ tenant, user, customer, token });
+  await enablePlan(tenant._id);
+  await makeTenantQuoteReady(app, tenant._id, bearerFor(user));
+  await seedWalletGold({ tenant, customer });
+  const quote = await request(app)
+    .post("/api/v1/app/digital-metals/quotes/sell")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({ metal: "GOLD", finenessPpm: 999000, quantityUg: UG_PER_G });
+  const orderRes = await request(app)
+    .post("/api/v1/app/digital-metals/sell-orders")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({
+      quoteId: quote.body.data.quoteId,
+      termsVersionAccepted: quote.body.data.termsVersion,
+      termsContentHashAccepted: quote.body.data.termsContentHash,
+    });
+  assert.equal(orderRes.status, 201);
   await DigitalMetalSellOrder.updateOne(
-    { _id: order.id },
-    { $set: { approvalExpiresAt: new Date(Date.now() - 60_000) } },
+    { _id: orderRes.body.data.id },
+    {
+      $set: {
+        status: "PENDING_APPROVAL",
+        confirmedAt: new Date(),
+        approvalExpiresAt: new Date(Date.now() - 60_000),
+      },
+    },
   );
   const approve = await request(app)
-    .post(`/api/v1/admin/digital-metals/sell-orders/${order.id}/approve`)
+    .post(`/api/v1/admin/digital-metals/sell-orders/${orderRes.body.data.id}/approve`)
     .set("Authorization", `Bearer ${bearerFor(user)}`)
     .set("X-Idempotency-Key", randomUUID())
     .send({});
   assert.equal(approve.status, 409);
-  const fresh = await DigitalMetalSellOrder.findById(order.id).lean();
+  const fresh = await DigitalMetalSellOrder.findById(orderRes.body.data.id).lean();
   assert.equal(fresh.status, "EXPIRED");
 });

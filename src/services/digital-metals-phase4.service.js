@@ -320,11 +320,14 @@ export async function getCustomerBuyOrder(req) {
     customerId: req.auth.id,
   }).lean();
   if (!order) throw errors.notFound("Order");
-  const attempts = await DigitalMetalBuyPaymentAttempt.find({
+  const { refreshDigitalMetalBuyOrderFromPhonePe } = await import(
+    "./digital-metals-payment-reconcile.service.js"
+  );
+  const refreshed = await refreshDigitalMetalBuyOrderFromPhonePe({
     tenantId: req.auth.tenantId,
-    orderId: order._id,
-  }).lean();
-  return mapBuyOrderStatusDto(order, attempts);
+    order,
+  });
+  return mapBuyOrderStatusDto(refreshed.order, refreshed.attempts);
 }
 
 export async function createBuyOrderPaymentIntent(req) {

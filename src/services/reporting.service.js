@@ -70,7 +70,15 @@ export async function navBadges(req) {
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
-  const [dues, cashHandovers, openRedemptions, failedMessages] =
+  const { countPaymentsNeedingAttention } = await import("./payments-needing-attention.service.js");
+  const perms = req.auth?.permissions ?? [];
+  const canCountPayments =
+    !perms.length
+    || perms.includes("*")
+    || perms.includes("ecommerce.read")
+    || perms.includes("digital-metals.read");
+
+  const [dues, cashHandovers, openRedemptions, failedMessages, paymentsNeedingAttention] =
     await Promise.all([
       // Same rows as the Dues workboard "All" view (open enrollments only).
       Scheme.countDocuments({
@@ -87,8 +95,9 @@ export async function navBadges(req) {
         status: "FAILED",
         createdAt: { $gte: monthStart },
       }),
+      canCountPayments ? countPaymentsNeedingAttention(req) : Promise.resolve(0),
     ]);
-  return { dues, cashHandovers, openRedemptions, failedMessages };
+  return { dues, cashHandovers, openRedemptions, failedMessages, paymentsNeedingAttention };
 }
 
 async function scopeDisplayLabel(scope) {

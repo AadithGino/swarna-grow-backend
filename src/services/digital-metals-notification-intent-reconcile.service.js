@@ -1,4 +1,5 @@
 import { DIGITAL_METAL_OUTBOX_TOPICS, enqueueDigitalMetalOutboxEvent } from "../lib/digital-metals-outbox.js";
+import { withTransaction } from "../lib/transaction.js";
 import {
   DigitalMetalBuyOrder,
   DigitalMetalDocumentArtifact,
@@ -130,16 +131,20 @@ async function repairBuyCreditedBatch({ at, limit }) {
       }
       continue;
     }
-    await enqueueDigitalMetalOutboxEvent({
-      tenantId: order.tenantId,
-      topic: DIGITAL_METAL_OUTBOX_TOPICS.PURCHASE_CREDITED,
-      key,
-      payload: { orderId: order._id, customerId: order.customerId, repair: true },
+    await withTransaction(async (session) => {
+      await enqueueDigitalMetalOutboxEvent({
+        tenantId: order.tenantId,
+        topic: DIGITAL_METAL_OUTBOX_TOPICS.PURCHASE_CREDITED,
+        key,
+        payload: { orderId: order._id, customerId: order.customerId, repair: true },
+        session,
+      });
+      await DigitalMetalBuyOrder.updateOne(
+        { _id: order._id, tenantId: order.tenantId },
+        { $set: { purchaseCreditedNoticeEnqueuedAt: new Date() } },
+        { session },
+      );
     });
-    await DigitalMetalBuyOrder.updateOne(
-      { _id: order._id, tenantId: order.tenantId },
-      { $set: { purchaseCreditedNoticeEnqueuedAt: new Date() } },
-    );
     enqueued += 1;
   }
   await advanceCursor(streamId, batch.at(-1), "creditedAt");
@@ -172,21 +177,25 @@ async function repairSellExecutedBatch({ at, limit }) {
       }
       continue;
     }
-    await enqueueDigitalMetalOutboxEvent({
-      tenantId: order.tenantId,
-      topic: DIGITAL_METAL_OUTBOX_TOPICS.SELL_EXECUTED,
-      key: order._id,
-      payload: {
-        orderId: order._id,
-        customerId: order.customerId,
-        eventAt: order.executedAt?.toISOString?.(),
-        repair: true,
-      },
+    await withTransaction(async (session) => {
+      await enqueueDigitalMetalOutboxEvent({
+        tenantId: order.tenantId,
+        topic: DIGITAL_METAL_OUTBOX_TOPICS.SELL_EXECUTED,
+        key: order._id,
+        payload: {
+          orderId: order._id,
+          customerId: order.customerId,
+          eventAt: order.executedAt?.toISOString?.(),
+          repair: true,
+        },
+        session,
+      });
+      await DigitalMetalSellOrder.updateOne(
+        { _id: order._id, tenantId: order.tenantId },
+        { $set: { sellExecutedNoticeEnqueuedAt: new Date() } },
+        { session },
+      );
     });
-    await DigitalMetalSellOrder.updateOne(
-      { _id: order._id, tenantId: order.tenantId },
-      { $set: { sellExecutedNoticeEnqueuedAt: new Date() } },
-    );
     enqueued += 1;
   }
   await advanceCursor(streamId, batch.at(-1), "executedAt");
@@ -248,22 +257,26 @@ async function repairRedemptionChargePaidBatch({ at, limit }) {
       }
       continue;
     }
-    await enqueueDigitalMetalOutboxEvent({
-      tenantId: order.tenantId,
-      topic: DIGITAL_METAL_OUTBOX_TOPICS.REDEMPTION_CUSTOMER_NOTICE,
-      key,
-      payload: {
-        orderId: order._id,
-        customerId: order.customerId,
-        transition: "CHARGE_PAID",
-        eventAt: order.chargePaidAt?.toISOString?.() ?? new Date().toISOString(),
-        repair: true,
-      },
+    await withTransaction(async (session) => {
+      await enqueueDigitalMetalOutboxEvent({
+        tenantId: order.tenantId,
+        topic: DIGITAL_METAL_OUTBOX_TOPICS.REDEMPTION_CUSTOMER_NOTICE,
+        key,
+        payload: {
+          orderId: order._id,
+          customerId: order.customerId,
+          transition: "CHARGE_PAID",
+          eventAt: order.chargePaidAt?.toISOString?.() ?? new Date().toISOString(),
+          repair: true,
+        },
+        session,
+      });
+      await DigitalMetalRedemptionOrder.updateOne(
+        { _id: order._id, tenantId: order.tenantId },
+        { $set: { chargePaidCustomerNoticeEnqueuedAt: new Date() } },
+        { session },
+      );
     });
-    await DigitalMetalRedemptionOrder.updateOne(
-      { _id: order._id, tenantId: order.tenantId },
-      { $set: { chargePaidCustomerNoticeEnqueuedAt: new Date() } },
-    );
     enqueued += 1;
   }
   await advanceCursor(streamId, batch.at(-1), "chargePaidAt");
@@ -295,17 +308,20 @@ async function repairPayoutNoticeBatch({ at, limit }) {
     if (await outboxIntentExists(payout.tenantId, DIGITAL_METAL_OUTBOX_TOPICS.PAYOUT_CUSTOMER_NOTICE, key)) {
       continue;
     }
-    await enqueueDigitalMetalOutboxEvent({
-      tenantId: payout.tenantId,
-      topic: DIGITAL_METAL_OUTBOX_TOPICS.PAYOUT_CUSTOMER_NOTICE,
-      key,
-      payload: {
-        payoutId: payout._id,
-        customerId: payout.customerId,
-        transition,
-        eventAt: (payout.settledAt ?? payout.updatedAt ?? new Date()).toISOString?.(),
-        repair: true,
-      },
+    await withTransaction(async (session) => {
+      await enqueueDigitalMetalOutboxEvent({
+        tenantId: payout.tenantId,
+        topic: DIGITAL_METAL_OUTBOX_TOPICS.PAYOUT_CUSTOMER_NOTICE,
+        key,
+        payload: {
+          payoutId: payout._id,
+          customerId: payout.customerId,
+          transition,
+          eventAt: (payout.settledAt ?? payout.updatedAt ?? new Date()).toISOString?.(),
+          repair: true,
+        },
+        session,
+      });
     });
     enqueued += 1;
   }

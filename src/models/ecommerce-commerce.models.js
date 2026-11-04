@@ -220,6 +220,8 @@ const orderSchema = new mongoose.Schema(
     stockReleasedAt: Date,
     stockConsumedAt: Date,
     stockConsumptionEvidence: { type: [orderStockConsumptionEvidenceSchema], default: [] },
+    returnStockRestockedAt: Date,
+    returnStockRestockedRequestId: String,
     stockRestockedAt: Date,
     stockExceptionRecordedAt: Date,
     stockRestockIdempotencyKey: { type: String, trim: true, maxlength: 80 },
@@ -265,8 +267,24 @@ const orderSchema = new mongoose.Schema(
       recordedByUserId: String,
       deliveryProofReference: { type: String, trim: true, maxlength: 160 },
       pickupCodeHash: { type: String, trim: true, maxlength: 128 },
+      pickupCodeSealed: { type: String, trim: true, maxlength: 512 },
       pickupCodeExpiresAt: Date,
       pickupVerifiedAt: Date,
+      pickupCodeFailedAttempts: { type: Number, default: 0, min: 0 },
+      customerPickupAcknowledgedAt: Date,
+      customerPickupAcknowledgedByCustomerId: String,
+    },
+    staffHandoverChallenge: {
+      orderId: { type: String, trim: true, maxlength: 80 },
+      customerId: { type: String, trim: true, maxlength: 80 },
+      branchId: { type: String, trim: true, maxlength: 80 },
+      purpose: { type: String, trim: true, maxlength: 64 },
+      challengeHash: { type: String, trim: true, maxlength: 128 },
+      challengeSealed: { type: String, trim: true, maxlength: 512 },
+      expiresAt: Date,
+      consumedAt: Date,
+      handoverConfirmedByStaffUserId: String,
+      staffHandoverConfirmedAt: Date,
     },
     activeCancellationRequestId: String,
     /** Set when staff placed this order for the customer and took payment at the counter. */
@@ -442,7 +460,7 @@ const paymentExceptionRefundSchema = new mongoose.Schema(
   },
   baseOptions,
 );
-paymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1 }, { unique: true });
+paymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1, paymentAttemptId: 1 }, { unique: true });
 paymentExceptionRefundSchema.index(
   { tenantId: 1, providerRefundId: 1 },
   {
@@ -653,6 +671,7 @@ const orderReturnRequestSchema = new mongoose.Schema(
     onlineRefundId: String,
     manualRefundRecordedAt: Date,
     manualRefundProof: {
+      refundCaseId: String,
       amountPaise: Number,
       recipient: String,
       method: String,

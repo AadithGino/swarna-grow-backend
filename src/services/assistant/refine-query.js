@@ -8,26 +8,10 @@ function normalizeQuestion(text) {
     .replace(/\s+/g, " ");
 }
 
-function lastUserText(history = []) {
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    if (history[i]?.role === "user") return String(history[i].text ?? "");
-  }
-  return "";
-}
+
 
 /** Short corrections like "not branch" reuse the prior user question for routing. */
-function routingQuestion(question, history = []) {
-  const trimmed = String(question ?? "").trim();
-  if (!trimmed || !history?.length) return trimmed;
-  const q = normalizeQuestion(normalizeAssistantQuestion(trimmed));
-  const isShort =
-    q.length <= 80 &&
-    (wantsMonthNotBranch(trimmed) ||
-      /\b(by month|monthly|not showroom)\b/.test(q));
-  if (!isShort) return trimmed;
-  const prev = lastUserText(history).trim();
-  return prev ? `${prev} ${trimmed}` : trimmed;
-}
+
 
 function calendarMonthsWindow(todayIst, monthCount) {
   const parts = String(todayIst ?? "").split("-").map(Number);

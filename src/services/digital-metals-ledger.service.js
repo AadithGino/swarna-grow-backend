@@ -16,6 +16,38 @@ import {
 } from "../models/index.js";
 import { assertTenantOwnsCustomerScope } from "./digital-metals.service.js";
 
+export const LOT_ACCOUNTING_FIFO_CLAIM = "FIFO_LOT_CLAIM";
+export const LOT_ACCOUNTING_LEGACY_WALLET_RESERVE = "LEGACY_WALLET_RESERVE";
+
+function assertWalletCounter(field, next, reservationId) {
+  if (!Number.isSafeInteger(next) || next < 0) {
+    throw new AppError(
+      "WALLET_ACCOUNTING_UNDERFLOW",
+      `Wallet ${field} would underflow during reservation ${reservationId}.`,
+      409,
+    );
+  }
+}
+
+/** Read-only: reservations that cannot be released/committed safely without review. */
+export function reservationAccountingIsAmbiguous(reservation) {
+  return Boolean(reservation && ![LOT_ACCOUNTING_FIFO_CLAIM, LOT_ACCOUNTING_LEGACY_WALLET_RESERVE].includes(reservation.lotAccountingMode));
+}
+
+function resolveLotAccountingMode(reservation) {
+  if (reservation.lotAccountingMode === LOT_ACCOUNTING_LEGACY_WALLET_RESERVE) {
+    return LOT_ACCOUNTING_LEGACY_WALLET_RESERVE;
+  }
+  if (reservation.lotAccountingMode === LOT_ACCOUNTING_FIFO_CLAIM) {
+    return LOT_ACCOUNTING_FIFO_CLAIM;
+  }
+  throw new AppError(
+    "RESERVATION_ACCOUNTING_AMBIGUOUS",
+    "Reservation accounting convention is not established for this record.",
+    409,
+  );
+}
+
 export function availableUg(wallet) {
   const held = wallet?.heldUg ?? 0;
   const reserved = wallet?.reservedUg ?? 0;
@@ -76,6 +108,45 @@ async function appendJournal(session, wallet, entry) {
 function assertQuantityBounds(quantityUg) {
   if (!Number.isSafeInteger(quantityUg) || quantityUg <= 0 || quantityUg > MAX_QUANTITY_UG) {
     throw new AppError("INVALID_QUANTITY", "Quantity is out of allowed bounds.", 422);
+  }
+}
+
+async function claimLotAllocations(session, lotAllocations) {
+  const claimed = [];
+  for (const alloc of lotAllocations) {
+    const res = await DigitalMetalLot.updateOne(
+      { _id: alloc.lotId, remainingUg: { $gte: alloc.quantityUg } },
+      { $inc: { remainingUg: -alloc.quantityUg } },
+      { session },
+    );
+    if (res.modifiedCount !== 1) {
+      for (const prior of claimed) {
+        await DigitalMetalLot.updateOne(
+          { _id: prior.lotId },
+          { $inc: { remainingUg: prior.quantityUg } },
+          { session },
+        );
+      }
+      throw new AppError(
+        "LOT_ALLOCATION_CONFLICT",
+        "Eligible lot quantity changed during reservation.",
+        409,
+      );
+    }
+    claimed.push(alloc);
+  }
+}
+
+async function restoreLotAllocations(session, lotAllocations) {
+  for (const alloc of lotAllocations ?? []) {
+    const res = await DigitalMetalLot.updateOne(
+      { _id: alloc.lotId },
+      { $inc: { remainingUg: alloc.quantityUg } },
+      { session },
+    );
+    if (res.modifiedCount !== 1) {
+      throw new AppError("LOT_RESTORE_FAILED", "Failed to restore lot quantity on reservation release.", 409);
+    }
   }
 }
 
@@ -220,6 +291,16 @@ export async function reserveWalletQuantity(session, params) {
   if (!updated) {
     throw new AppError("INSUFFICIENT_AVAILABLE_UG", "Insufficient available metal quantity.", 409);
   }
+  try {
+    await claimLotAllocations(session, lotAllocations);
+  } catch (error) {
+    await DigitalMetalWallet.updateOne(
+      { _id: wallet._id },
+      { $inc: { reservedUg: -quantityUg } },
+      { session },
+    );
+    throw error;
+  }
   wallet.reservedUg = updated.reservedUg;
   await appendJournal(session, wallet, {
     entryType: "RESERVE",
@@ -244,6 +325,7 @@ export async function reserveWalletQuantity(session, params) {
           status: "ACTIVE",
           quantityUg,
           lotAllocations,
+          lotAccountingMode: LOT_ACCOUNTING_FIFO_CLAIM,
           idempotencyKey,
         },
       ],
@@ -262,8 +344,14 @@ export async function releaseReservation(session, tenantId, idempotencyKey, rele
   }
   const wallet = await DigitalMetalWallet.findById(reservation.walletId).session(session);
   if (!wallet) throw errors.notFound("Wallet");
-  wallet.reservedUg = Math.max(0, (wallet.reservedUg ?? 0) - reservation.quantityUg);
+  const accountingMode = resolveLotAccountingMode(reservation);
+  const nextReserved = (wallet.reservedUg ?? 0) - reservation.quantityUg;
+  assertWalletCounter("reservedUg", nextReserved, reservation._id);
+  wallet.reservedUg = nextReserved;
   await wallet.save({ session });
+  if (accountingMode === LOT_ACCOUNTING_FIFO_CLAIM) {
+    await restoreLotAllocations(session, reservation.lotAllocations);
+  }
   reservation.status = "RELEASED";
   await reservation.save({ session });
   await appendJournal(session, wallet, {
@@ -286,17 +374,22 @@ export async function commitReservation(session, tenantId, idempotencyKey, commi
   }
   const wallet = await DigitalMetalWallet.findById(reservation.walletId).session(session);
   if (!wallet) throw errors.notFound("Wallet");
-  const qty = reservation.quantityUg;
-  wallet.reservedUg = Math.max(0, (wallet.reservedUg ?? 0) - qty);
-  wallet.heldUg = Math.max(0, (wallet.heldUg ?? 0) - qty);
-  await wallet.save({ session });
-  for (const alloc of reservation.lotAllocations ?? []) {
-    await DigitalMetalLot.updateOne(
-      { _id: alloc.lotId, remainingUg: { $gte: alloc.quantityUg } },
-      { $inc: { remainingUg: -alloc.quantityUg } },
-      { session },
-    );
+  const mode = resolveLotAccountingMode(reservation);
+  if (mode === LOT_ACCOUNTING_LEGACY_WALLET_RESERVE) {
+    const allocations = reservation.lotAllocations ?? [];
+    if (!allocations.length || allocations.reduce((sum, row) => sum + row.quantityUg, 0) !== reservation.quantityUg) {
+      throw new AppError("RESERVATION_ACCOUNTING_AMBIGUOUS", "Legacy allocation requires reviewed reconciliation.", 409);
+    }
+    await claimLotAllocations(session, allocations);
   }
+  const qty = reservation.quantityUg;
+  const nextReserved = (wallet.reservedUg ?? 0) - qty;
+  const nextHeld = (wallet.heldUg ?? 0) - qty;
+  assertWalletCounter("reservedUg", nextReserved, reservation._id);
+  assertWalletCounter("heldUg", nextHeld, reservation._id);
+  wallet.reservedUg = nextReserved;
+  wallet.heldUg = nextHeld;
+  await wallet.save({ session });
   reservation.status = "COMMITTED";
   await reservation.save({ session });
   await appendJournal(session, wallet, {

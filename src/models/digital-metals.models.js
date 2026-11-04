@@ -226,6 +226,12 @@ const digitalMetalReservationSchema = new mongoose.Schema(
         quantityUg: integerField({ min: 1 }),
       },
     ],
+    /** FIFO lot claim vs legacy wallet-only reserve; required on new writers. */
+    lotAccountingMode: {
+      type: String,
+      enum: ["FIFO_LOT_CLAIM", "LEGACY_WALLET_RESERVE"],
+      default: null,
+    },
     idempotencyKey: { type: String, required: true, trim: true },
   },
   baseOptions,
@@ -380,6 +386,8 @@ const digitalMetalBuyPaymentAttemptSchema = new mongoose.Schema(
     gatewayReconcileLeaseOwner: { type: String, default: null },
     gatewayReconcileLeaseExpiresAt: { type: Date, default: null },
     gatewayReconcileAttempts: { type: Number, default: 0 },
+    gatewayLastReconcileAt: { type: Date, default: null },
+    gatewayLastReconcileOutcome: { type: String, default: null },
     version: versionField,
   },
   baseOptions,
@@ -451,7 +459,7 @@ const digitalMetalPaymentExceptionRefundSchema = new mongoose.Schema(
   },
   baseOptions,
 );
-digitalMetalPaymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1 }, { unique: true });
+digitalMetalPaymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1, paymentAttemptId: 1 }, { unique: true });
 digitalMetalPaymentExceptionRefundSchema.index({ tenantId: 1, providerRefundId: 1 }, { sparse: true });
 
 export const DigitalMetalBuyOrder = mongoose.model(
@@ -705,6 +713,10 @@ const digitalMetalPayoutSchema = new mongoose.Schema(
   baseOptions,
 );
 digitalMetalPayoutSchema.index({ tenantId: 1, idempotencyKey: 1 }, { unique: true });
+digitalMetalPayoutSchema.index({ tenantId: 1, payableId: 1 }, {
+  unique: true,
+  partialFilterExpression: { status: { $in: ["PENDING_APPROVAL", "APPROVED", "SUBMITTED", "UNKNOWN"] } },
+});
 digitalMetalPayoutSchema.index({ tenantId: 1, payableId: 1, status: 1 });
 
 const digitalMetalCustomerRiskHoldSchema = new mongoose.Schema(
@@ -860,6 +872,7 @@ const digitalMetalRedemptionOrderSchema = new mongoose.Schema(
 digitalMetalRedemptionOrderSchema.index({ tenantId: 1, customerId: 1, createdAt: -1 });
 digitalMetalRedemptionOrderSchema.index({ tenantId: 1, status: 1, updatedAt: -1 });
 digitalMetalRedemptionOrderSchema.index({ tenantId: 1, idempotencyKey: 1 }, { unique: true });
+digitalMetalRedemptionOrderSchema.index({ tenantId: 1, quoteId: 1 }, { unique: true });
 
 const digitalMetalRedemptionPaymentAttemptSchema = new mongoose.Schema(
   {

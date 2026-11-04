@@ -325,14 +325,7 @@ export function toCollectionDailyAction(action, todayIst) {
   };
 }
 
-function modelDailyQuerySpec(action) {
-  const spec = action?.spec;
-  if (action?.kind !== "query" || !spec) return false;
-  if (spec.entity !== "collections") return false;
-  if (spec.timeBucket === "day" && spec.aggregate?.fn === "sum") return true;
-  if (spec.timeBucket === "day" && !spec.limit) return true;
-  return false;
-}
+
 
 function replaceIncorrectRollingPreset(question, action, todayIst) {
   const window = parseRelativeDateWindow(question, todayIst);

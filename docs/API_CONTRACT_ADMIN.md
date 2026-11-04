@@ -3302,6 +3302,12 @@ null
 }
 ```
 
+#### `GET /api/v1/admin/payments/needing-attention`
+- **Auth:** Bearer TENANT_USER with `ecommerce.read` and/or `digital-metals.read`
+- **Query:** `limit?` (max 100)
+- **Idempotent:** yes (read)
+- **Response (200):** merged queue items with `domain`, `kind`, `reasonLabel`, `nextActionLabel`, `amountPaise`, `customer`, `transactionHref`, optional `refundObligation` (per-domain refund case), plus `domainsIncluded`.
+
 #### `GET /api/v1/admin/dashboard/summary`
 - **Auth:** Bearer TENANT_USER
 - **Query:** cursor?, limit?, sort?, q? (+ filters)
@@ -4482,3 +4488,53 @@ null
   }
 }
 ```
+
+## Digital-metal overview and counter trades — October 30 contract completion
+
+All paths below are relative to `/api/v1`. Requests require a live tenant-user
+session. Customer resources are checked against the acting user's branch scope.
+`X-Idempotency-Key` is required on every POST listed below. Money is integer paise;
+metal quantity is integer micrograms (`quantityUg`), with purity in `finenessPpm`.
+
+| Method and path | Permission | Request and result |
+| --- | --- | --- |
+| `GET /admin/digital-metals/dashboard-summary` | `digital-metals.read` | Branch-scoped wallet, liability, trade and open-work overview. |
+| `GET /admin/digital-metals/customers/:customerId/summary` | `digital-metals.read` | Scoped customer's holdings, trades and outstanding work. |
+| `POST /admin/digital-metals/customers/:customerId/counter/buy-quote` | `digital-metals.assisted.trade` | `metal`, `finenessPpm`, `inputMode` (`BUDGET_INR` or `QUANTITY_UG`) and the corresponding `budgetPaise` or `quantityUg`; returns an immutable assisted quote (201). |
+| `POST /admin/digital-metals/customers/:customerId/counter/buy` | `digital-metals.assisted.trade` | `quoteId`, `paymentMode` (`CASH`, `UPI`, `CARD`), optional `paymentReference`/`note`, and `customerConsent: true`; records the counter purchase (201). |
+| `POST /admin/digital-metals/customers/:customerId/counter/sell-quote` | `digital-metals.assisted.trade` | `metal`, `finenessPpm`, `quantityUg`; returns an assisted sale quote (201). |
+| `POST /admin/digital-metals/customers/:customerId/counter/sell` | `digital-metals.assisted.trade` | `quoteId`, `payoutMethod` (`BANK` or `CASH`), optional `note`, and `customerConsent: true`; `bankDestinationId` is required for bank payout. Returns the sale (201). |
+| `POST /admin/digital-metals/sell-orders/:orderId/accept` | `digital-metals.sell.approve` | `expectedVersion` optional; atomically debits reserved metal and opens the INR payable (`PAYABLE_OPEN`). Alias of legacy approve. |
+| `POST /admin/digital-metals/sell-orders/:orderId/approve` | `digital-metals.sell.approve` | Legacy path; same behaviour as `accept`. |
+| `POST /admin/digital-metals/sell-orders/:orderId/record-payment` | `digital-metals.payout.record` | `expectedVersion`, `amountPaise`, `settlementDate`, `bankReference`, `evidenceUploadIds`, `staffAttestation: true`; records an externally completed bank transfer (partial amounts allowed). Separate idempotency key from accept. Sell detail includes `paymentDisplayState` (`UNPAID`, `PARTIALLY_PAID`, `PAID`, `PAYMENT_BEING_CHECKED`) and `permittedActions`. |
+| `POST /admin/digital-metals/sell-orders/:orderId/cash-payout` | `digital-metals.assisted.trade` | Optional `receiptNote`; records the authorized counter cash payout. |
+
+The endpoint DTOs retain the standard success/error envelope. Quote acceptance
+must respect customer binding, quote source, expiry, immutable terms and rates,
+wallet holding rules and idempotency. Permission does not grant cross-branch
+access to a customer resource.
+
+### Capture-specific exception refunds
+
+Ecommerce and digital-metal buy refund cases are unique by tenant, order and
+payment attempt. Every extra captured attempt has its own immutable obligation;
+fulfilment status does not erase an additional capture.
+
+The existing order refund GET returns the backward-compatible `refund` plus a
+`refunds` array. `refund` selects the earliest outstanding case, or the latest
+closed case when none remain. The initiate endpoint accepts `refundId` in its
+body. Ecommerce manual recording also accepts `refundId`. When an order has
+multiple cases, a mutation without a specific case fails with
+`REFUND_CASE_REQUIRED` (409); a case from another order/tenant is not found.
+Legacy single-case clients continue to work. Completing an extra-capture refund
+preserves the original paid/credited order; an exception is cleared only after
+all relevant capture obligations are closed.
+
+### Financial concurrency and deployment prerequisites
+
+One redemption order per tenant/quote and one active payout instruction per
+payable are database constraints. Payout creation uses a transaction and a shared
+payable write; settlement rejects amounts exceeding the remaining payable.
+Run `scripts/migrate-financial-invariants.js` according to
+`docs/PRODUCTION_REMEDIATION_2026-10-30.md` before starting the new API or workers.
+Production startup fails closed when the required index migration is incomplete.

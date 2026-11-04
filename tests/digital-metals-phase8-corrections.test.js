@@ -181,7 +181,9 @@ test("earlier credited buy retained across gap days without snapshots (mocked Mo
     .set("Authorization", `Bearer ${approverToken}`);
   assert.equal(live.status, 200);
   const line = live.body.data.lines.find((l) => l.metal === "GOLD");
-  assert.equal(line.movements.completedBuyUg, String(G1));
+  assert.equal(line.openingMetalOwedUg, String(G1));
+  assert.equal(line.closingMetalOwedUg, String(G1));
+  assert.equal(line.movements.completedBuyUg, "0");
 });
 
 test("concurrent receipt approvals cannot exceed commitment (replica-set Mongo)", async () => {

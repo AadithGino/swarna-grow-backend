@@ -329,7 +329,7 @@ test("unknown refund provider outcome stays pending and blocks duplicate initiat
   const { initiateAdminDigitalMetalBuyOrderRefund, confirmDigitalMetalPaymentExceptionRefundFromProvider } =
     await import("../src/services/digital-metals-payment-exception.service.js");
   const inFlight = await initiateAdminDigitalMetalBuyOrderRefund({
-    auth: { id: createId("user"), tenantId: tenant._id },
+    auth: { id: createId("user"), tenantId: tenant._id, type: "TENANT_USER", role: "TENANT_OWNER" },
     params: { orderId },
   });
   assert.equal(inFlight.inFlight, true);

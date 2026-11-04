@@ -5,11 +5,7 @@ import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { cursorQuery, exportBody } from "../validators/common.validators.js";
-import {
-  bulkMessagingSchemeIdsBody,
-  reportExportAliasBody,
-  reportExportAliasParam,
-} from "../validators/admin-mutation.validators.js";
+import { reportExportAliasBody, reportExportAliasParam } from "../validators/admin-mutation.validators.js";
 import { sendSuccess } from "../lib/response.js";
 import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
@@ -84,34 +80,6 @@ adminAnalyticsRouter.get("/dues/count", ...guarded(Permission.REPORT_READ, async
   });
   return sendSuccess(res, { count });
 })));
-adminAnalyticsRouter.post(
-  "/dues/bulk-send-links",
-  ...guarded(
-    Permission.MESSAGE_SEND,
-    validate({ body: bulkMessagingSchemeIdsBody }),
-    idempotent,
-    asyncHandler(async (req, res) => {
-      const data = await (
-        await import("../services/workboard-messaging.service.js")
-      ).bulkSendDueLinks(req);
-      return sendSuccess(res, data, {}, 202);
-    }),
-  ),
-);
-adminAnalyticsRouter.post(
-  "/overdues/bulk-send-reminders",
-  ...guarded(
-    Permission.MESSAGE_SEND,
-    validate({ body: bulkMessagingSchemeIdsBody }),
-    idempotent,
-    asyncHandler(async (req, res) => {
-      const data = await (
-        await import("../services/workboard-messaging.service.js")
-      ).bulkSendOverdueReminders(req);
-      return sendSuccess(res, data, {}, 202);
-    }),
-  ),
-);
 adminAnalyticsRouter.post("/exports", ...guarded(Permission.REPORT_EXPORT, validate({ body: exportBody }), idempotent, asyncHandler(controller.createExport)));
 adminAnalyticsRouter.get("/exports", ...guarded(Permission.REPORT_EXPORT, asyncHandler(async (req, res) => sendSuccess(res, await reporting.listExports(req)))));
 adminAnalyticsRouter.get("/exports/:exportId/file", ...guarded(Permission.REPORT_EXPORT, asyncHandler(controller.downloadExportFile)));

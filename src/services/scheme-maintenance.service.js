@@ -1,3 +1,5 @@
+import { withTransaction } from "../lib/transaction.js";
+import { queueCustomerNotification } from "./customer-notification.service.js";
 import { AuditEntityType, SchemeStatus } from "../constants/enums.js";
 import { env } from "../config/env.js";
 import { isFlexibleLockDueAfterFreePhase } from "../lib/calendar-cycle.js";
@@ -36,86 +38,43 @@ export async function runMaturityTransitionBatch({ today, cursor = null }) {
     .sort({ _id: 1 })
     .limit(limit)
     .select(
-      "_id tenantId branchId customerId enrollmentNumber maturityDate status paymentPattern planSnapshot installments cycles version",
+      "_id tenantId branchId customerId enrollmentNumber maturityDate status paymentPattern planSnapshot installments cycles version positionVersion",
     )
     .lean();
 
   let processed = 0;
   let notifications = 0;
   for (const scheme of rows) {
-    const transition = assessNormalMaturityTransitionEligibility(scheme, today);
-    if (!transition.eligible) {
-      if (
-        transition.calendarEligible &&
-        !transition.paymentEligible &&
-        [SchemeStatus.ACTIVE, SchemeStatus.LOCKED].includes(scheme.status)
-      ) {
-        const defaulted = await Scheme.findOneAndUpdate(
-          {
-            _id: scheme._id,
-            status: scheme.status,
-            maturityDate: scheme.maturityDate,
-          },
-          { $set: { status: SchemeStatus.DEFAULTED }, $inc: { version: 1 } },
-          { new: true },
-        );
-        if (defaulted) {
-          await writeAudit({
-            req: {
-              auth: { id: "scheduler", tenantId: scheme.tenantId, type: "SYSTEM" },
-              headers: {},
-              ip: "scheduler",
-            },
-            action: "SCHEME_DEFAULTED",
-            entityType: AuditEntityType.SCHEME,
-            entityId: scheme._id,
-            before: scheme,
-            after: defaulted.toObject(),
-            actorType: "SYSTEM",
+    const result = await withTransaction(async (session) => {
+      const transition = assessNormalMaturityTransitionEligibility(scheme, today);
+      const filter = { _id: scheme._id, tenantId: scheme.tenantId, status: scheme.status, maturityDate: scheme.maturityDate, version: scheme.version, ...(scheme.positionVersion != null ? { positionVersion: scheme.positionVersion } : {}) };
+      if (!transition.eligible) {
+        if (transition.calendarEligible && !transition.paymentEligible && [SchemeStatus.ACTIVE, SchemeStatus.LOCKED].includes(scheme.status)) {
+          const defaulted = await Scheme.findOneAndUpdate(filter,
+            { $set: { status: SchemeStatus.DEFAULTED }, $inc: { version: 1 } }, { new: true, session });
+          if (defaulted) await writeAudit({
+            req: { auth: { id: "scheduler", tenantId: scheme.tenantId, type: "SYSTEM" }, headers: {}, ip: "scheduler" },
+            action: "SCHEME_DEFAULTED", entityType: AuditEntityType.SCHEME, entityId: scheme._id,
+            before: scheme, after: defaulted.toObject(), actorType: "SYSTEM", session,
           });
         }
+        return { processed: 0, notifications: 0 };
       }
-      continue;
-    }
-    const updated = await Scheme.findOneAndUpdate(
-      {
-        _id: scheme._id,
-        status: scheme.status,
-        maturityDate: scheme.maturityDate,
-      },
-      { $set: { status: SchemeStatus.MATURED }, $inc: { version: 1 } },
-      { new: true },
-    );
-    if (!updated) continue;
-    processed += 1;
-    const exists = await Message.exists({
-      tenantId: scheme.tenantId,
-      schemeId: scheme._id,
-      type: "SCHEME_MATURED",
-      "templateParams.event": "MATURITY_DAY",
+      const updated = await Scheme.findOneAndUpdate(filter,
+        { $set: { status: SchemeStatus.MATURED }, $inc: { version: 1 } }, { new: true, session });
+      if (!updated) return { processed: 0, notifications: 0 };
+      const exists = await Message.exists({ tenantId: scheme.tenantId, schemeId: scheme._id, type: "SCHEME_MATURED", "templateParams.event": "MATURITY_DAY" }).session(session);
+      if (exists) return { processed: 1, notifications: 0 };
+      const customer = await Customer.findOne({ _id: scheme.customerId, tenantId: scheme.tenantId }).select("mobile").session(session).lean();
+      if (!customer) return { processed: 1, notifications: 0 };
+      const notice = await queueCustomerNotification({
+        tenantId: scheme.tenantId, branchId: scheme.branchId, customerId: scheme.customerId, schemeId: scheme._id, type: "SCHEME_MATURED",
+        templateParams: { mobile: customer.mobile, enrollmentNumber: scheme.enrollmentNumber, event: "MATURITY_DAY" },
+      }, { session });
+      return { processed: 1, notifications: notice.queued.length };
     });
-    if (exists) continue;
-    const customer = await Customer.findOne({
-      _id: scheme.customerId,
-      tenantId: scheme.tenantId,
-    })
-      .select("mobile")
-      .lean();
-    if (!customer) continue;
-    const { queueCustomerNotification } = await import("./customer-notification.service.js");
-    await queueCustomerNotification({
-      tenantId: scheme.tenantId,
-      branchId: scheme.branchId,
-      customerId: scheme.customerId,
-      schemeId: scheme._id,
-      type: "SCHEME_MATURED",
-      templateParams: {
-        mobile: customer.mobile,
-        enrollmentNumber: scheme.enrollmentNumber,
-        event: "MATURITY_DAY",
-      },
-    });
-    notifications += 1;
+    processed += result.processed;
+    notifications += result.notifications;
   }
   recordBatch(processed);
   return {
@@ -250,7 +209,7 @@ export async function runDefaultingBatch({ cursor = null, limit: limitOverride =
   const schemes = await Scheme.find(query)
     .sort({ _id: 1 })
     .limit(limit)
-    .select("_id tenantId branchId planSnapshot installments version status")
+    .select("_id tenantId branchId planSnapshot installments version positionVersion status")
     .lean();
 
   let processed = 0;
@@ -268,7 +227,7 @@ export async function runDefaultingBatch({ cursor = null, limit: limitOverride =
       continue;
     }
     const updated = await Scheme.findOneAndUpdate(
-      { _id: scheme._id, status: SchemeStatus.ACTIVE },
+      { _id: scheme._id, tenantId: scheme.tenantId, status: SchemeStatus.ACTIVE, version: scheme.version, ...(scheme.positionVersion != null ? { positionVersion: scheme.positionVersion } : {}) },
       { $set: { status: SchemeStatus.DEFAULTED }, $inc: { version: 1 } },
       { new: true },
     );

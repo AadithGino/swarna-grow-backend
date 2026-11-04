@@ -7,13 +7,11 @@ import {
   UserStatus,
   UserType,
 } from "../../src/constants/enums.js";
-import { REQUIRED_TEMPLATE_TYPES } from "../../src/constants/template-registry.js";
 import { createId } from "../../src/lib/ids.js";
 import {
   Invoice,
   Session,
   SubscriptionPlan,
-  TemplateDefinition,
   User,
   WebhookEvent,
 } from "../../src/models/index.js";
@@ -94,21 +92,10 @@ export async function seedTenantGoLiveReady(tenantId) {
     { _id: tenantId },
     {
       $set: {
-        "integrationSecrets.whatsapp.verifiedAt": new Date(),
         "integrationSecrets.phonepe.verifiedAt": new Date(),
       },
     },
   );
-  for (const messageType of REQUIRED_TEMPLATE_TYPES) {
-    await TemplateDefinition.create({
-      _id: createId("tpl"),
-      tenantId,
-      messageType,
-      body: `Body for ${messageType}`,
-      active: true,
-      version: 1,
-    });
-  }
 }
 
 export async function platformRequest(app, token, method, path, { body, idempotencyKey = `idem-${createId("idem")}` } = {}) {
@@ -157,7 +144,6 @@ export const planCreateBody = (tier = PlanTier.PRO) => ({
     branches: 5,
     staff: 10,
     schemePlans: 20,
-    whatsappMessages: 1000,
   },
 });
 

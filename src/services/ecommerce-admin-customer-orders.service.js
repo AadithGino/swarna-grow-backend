@@ -4,7 +4,7 @@ import {
   EcommercePaymentExceptionRefundStatus,
   EcommercePaymentMethod,
 } from "../constants/enums.js";
-import { Customer, EcommerceOrder, EcommercePaymentExceptionRefund } from "../models/index.js";
+import { Customer, EcommerceOrder, EcommercePaymentExceptionRefund, EcommerceOrderReturnRequest, EcommerceOrderCancellationRequest } from "../models/index.js";
 import { errors } from "../lib/app-error.js";
 import { paginate } from "../lib/pagination.js";
 import { mapAdminCustomerOrderListRow } from "../lib/ecommerce-admin-customer-order-row.js";
@@ -91,7 +91,23 @@ async function aggregateCustomerEcommerceSummary(tenantId, customerId) {
   const onlineCollectedPaise = onlineAgg[0]?.amountPaise ?? 0;
   const codCourierConfirmedPaise = codConfirmedAgg[0]?.amountPaise ?? 0;
   const codBankRemittanceReconciledPaise = codBankAgg[0]?.amountPaise ?? 0;
-  const refundOutflowPaise = refundAgg[0]?.refundOutflowPaise ?? 0;
+  // Linked new manual returns are already counted by their shared refund case.
+  // Legacy unlinked proofs remain real additional outflows and must be included.
+  const manualTotal = async (model, match, field) => {
+    const rows = await model.aggregate([
+      { $match: { tenantId, ...match } },
+      { $lookup: { from: EcommerceOrder.collection.name, localField: "orderId", foreignField: "_id", as: "order" } },
+      { $unwind: "$order" },
+      { $match: { "order.tenantId": tenantId, "order.customerId": customerId } },
+      { $group: { _id: null, amountPaise: { $sum: field } } },
+    ]);
+    return Number(rows[0]?.amountPaise ?? 0);
+  };
+  const [manualReturns, manualCancellations] = await Promise.all([
+    manualTotal(EcommerceOrderReturnRequest, { manualRefundRecordedAt: { $ne: null }, "manualRefundProof.refundCaseId": null }, "$manualRefundProof.amountPaise"),
+    manualTotal(EcommerceOrderCancellationRequest, { "codManualRefund.recordedAt": { $ne: null } }, "$codManualRefund.amountPaise"),
+  ]);
+  const refundOutflowPaise = Number(refundAgg[0]?.refundOutflowPaise ?? 0) + manualReturns + manualCancellations;
   const grossCollectedPaise = onlineCollectedPaise + codBankRemittanceReconciledPaise;
   return {
     orderCount,

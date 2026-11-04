@@ -10,7 +10,7 @@ import {
 } from "../models/index.js";
 import { buildFrozenDestinationSnapshot } from "./digital-metals-bank-destination.service.js";
 import { assertTenantOwnsCustomerScope } from "./digital-metals.service.js";
-import { applyAdminCustomerScopeFilter } from "../lib/digital-metals-admin-scope.js";
+import { applyAdminCustomerScopeFilter, assertAdminCustomerInScope } from "../lib/digital-metals-admin-scope.js";
 import { enqueuePayoutCustomerNotice } from "../lib/digital-metals-customer-notice.js";
 import {
   paginateByIdCursor,
@@ -22,18 +22,17 @@ const BLOCKING_PAYOUT_STATUSES = new Set(OPEN_PAYOUT_IN_FLIGHT_STATUSES);
 /** Counts toward payable cap (failed attempts do not consume liability). */
 const PAYABLE_CAP_STATUSES = new Set([...BLOCKING_PAYOUT_STATUSES, "SETTLED"]);
 
-export function buildPermittedPayoutActions(payout, auth) {
+/** Legacy payout detail actions — route guards enforce permissions; no maker/checker split. */
+export function buildPermittedPayoutActions(payout) {
   const actions = [];
-  if (!payout || !auth?.id) return actions;
-  const uid = auth.id;
-  if (payout.status === "PENDING_APPROVAL" && payout.makerUserId !== uid) actions.push("APPROVE");
-  if (payout.status === "APPROVED" && payout.makerUserId === uid) actions.push("SUBMIT");
-  if (["SUBMITTED", "UNKNOWN"].includes(payout.status) && payout.makerUserId === uid) {
-    actions.push("RECORD_FAILURE", "MARK_UNKNOWN");
+  if (!payout) return actions;
+  if (payout.status === "PENDING_APPROVAL") actions.push("APPROVE");
+  if (payout.status === "APPROVED") actions.push("SUBMIT", "RECORD_SETTLEMENT");
+  if (payout.status === "SUBMITTED") {
+    actions.push("RECORD_SETTLEMENT", "RECORD_FAILURE", "MARK_UNKNOWN");
   }
-  if (payout.status === "UNKNOWN" && payout.makerUserId !== uid) actions.push("RESOLVE_UNKNOWN");
-  if (["SUBMITTED", "UNKNOWN", "APPROVED"].includes(payout.status) && payout.makerUserId !== uid) {
-    actions.push("RECORD_SETTLEMENT");
+  if (payout.status === "UNKNOWN") {
+    actions.push("RESOLVE_UNKNOWN", "RECORD_SETTLEMENT");
   }
   return actions;
 }
@@ -86,15 +85,15 @@ function appendStatusHistory(doc, status, actorUserId, note = "") {
   });
 }
 
-async function sumCommittedPayoutPaise(tenantId, payableId, excludePayoutId = null) {
+async function sumCommittedPayoutPaise(tenantId, payableId, excludePayoutId = null, session = null) {
   const filter = { tenantId, payableId, status: { $in: [...PAYABLE_CAP_STATUSES] } };
   if (excludePayoutId) filter._id = { $ne: excludePayoutId };
-  const rows = await DigitalMetalPayout.find(filter).select("amountPaise status").lean();
+  const rows = await DigitalMetalPayout.find(filter).select("amountPaise status").session(session).lean();
   return rows.reduce((sum, r) => sum + Number(r.amountPaise), 0);
 }
 
-async function assertPayoutAmountWithinPayableCap(tenantId, payable, amountPaise, excludePayoutId = null) {
-  const committed = await sumCommittedPayoutPaise(tenantId, payable._id, excludePayoutId);
+async function assertPayoutAmountWithinPayableCap(tenantId, payable, amountPaise, excludePayoutId = null, session = null) {
+  const committed = await sumCommittedPayoutPaise(tenantId, payable._id, excludePayoutId, session);
   if (committed + amountPaise > payable.amountPaise) {
     throw new AppError(
       "OVERPAYMENT_PREVENTED",
@@ -105,16 +104,16 @@ async function assertPayoutAmountWithinPayableCap(tenantId, payable, amountPaise
   }
 }
 
-async function loadPayable(tenantId, payableId) {
-  const payable = await DigitalMetalPayable.findOne({ _id: payableId, tenantId }).lean();
+async function loadPayable(tenantId, payableId, session = null) {
+  const payable = await DigitalMetalPayable.findOne({ _id: payableId, tenantId }).session(session).lean();
   if (!payable) throw errors.notFound("Payable");
   return payable;
 }
 
-async function assertNoBlockingPayout(tenantId, payableId, excludePayoutId = null) {
+async function assertNoBlockingPayout(tenantId, payableId, excludePayoutId = null, session = null) {
   const filter = { tenantId, payableId, status: { $in: [...BLOCKING_PAYOUT_STATUSES] } };
   if (excludePayoutId) filter._id = { $ne: excludePayoutId };
-  const blocking = await DigitalMetalPayout.findOne(filter).lean();
+  const blocking = await DigitalMetalPayout.findOne(filter).session(session).lean();
   if (blocking) {
     throw new AppError(
       "PAYOUT_IN_FLIGHT",
@@ -146,9 +145,7 @@ export async function listAdminPayouts(req) {
   const rows = await DigitalMetalPayout.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
   const { items, meta } = paginateByIdCursor(rows, limit);
   return {
-    items: items.map((row) =>
-      mapPayout(row, { permittedActions: buildPermittedPayoutActions(row, req.auth) }),
-    ),
+    items: items.map((row) => mapPayout(row, { permittedActions: buildPermittedPayoutActions(row) })),
     meta,
   };
 }
@@ -159,13 +156,14 @@ export async function getAdminPayout(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!payout) throw errors.notFound("Payout");
+  await assertAdminCustomerInScope(req, payout.customerId);
   const payable = await DigitalMetalPayable.findById(payout.payableId).lean();
   const cust = payable
     ? await Customer.findOne({ _id: payable.customerId, tenantId: req.auth.tenantId }).lean()
     : null;
   if (cust) assertTenantOwnsCustomerScope(req, cust);
   return {
-    payout: mapPayout(payout, { permittedActions: buildPermittedPayoutActions(payout, req.auth) }),
+    payout: mapPayout(payout, { permittedActions: buildPermittedPayoutActions(payout) }),
     payable,
   };
 }
@@ -175,19 +173,27 @@ export async function createPayoutInstruction(req) {
   if (!idempotencyKey) {
     throw errors.validation([{ field: "x-idempotency-key", message: "Idempotency key is required." }]);
   }
+  return withTransaction(async (session) => {
   const existing = await DigitalMetalPayout.findOne({
     tenantId: req.auth.tenantId,
     idempotencyKey,
-  }).lean();
-  if (existing) return { payout: mapPayout(existing), replay: true };
+  }).session(session).lean();
+  if (existing) {
+    await assertAdminCustomerInScope(req, existing.customerId);
+    if (String(existing.payableId) !== String(req.body.payableId)
+      || (req.body.amountPaise != null && Number(req.body.amountPaise) !== existing.amountPaise)) {
+      throw errors.conflict("IDEMPOTENCY_KEY_REUSED", "Payout key reused with a different obligation or amount.");
+    }
+    return { payout: mapPayout(existing), replay: true };
+  }
 
-  const payable = await loadPayable(req.auth.tenantId, req.body.payableId);
+  const payable = await loadPayable(req.auth.tenantId, req.body.payableId, session);
   if (payable.status !== "OPEN" || payable.outstandingPaise <= 0) {
     throw new AppError("PAYABLE_NOT_OPEN", "Payable is not outstanding.", 409);
   }
   const cust = await Customer.findOne({ _id: payable.customerId, tenantId: req.auth.tenantId }).lean();
   assertTenantOwnsCustomerScope(req, cust);
-  await assertNoBlockingPayout(req.auth.tenantId, payable._id);
+  await assertNoBlockingPayout(req.auth.tenantId, payable._id, null, session);
 
   const sellOrder = await DigitalMetalSellOrder.findById(payable.sellOrderId).lean();
   if (sellOrder?.payoutMethod === "CASH") {
@@ -211,7 +217,7 @@ export async function createPayoutInstruction(req) {
   if (amountPaise <= 0 || amountPaise > payable.outstandingPaise) {
     throw errors.validation([{ field: "amountPaise", message: "Invalid payout amount." }]);
   }
-  await assertPayoutAmountWithinPayableCap(req.auth.tenantId, payable, amountPaise);
+  await assertPayoutAmountWithinPayableCap(req.auth.tenantId, payable, amountPaise, null, session);
 
   const payoutDoc = {
     _id: createId("dmpos"),
@@ -228,47 +234,45 @@ export async function createPayoutInstruction(req) {
     statusHistory: [],
   };
   appendStatusHistory(payoutDoc, "PENDING_APPROVAL", req.auth.id, "Instruction created");
-  const payout = await DigitalMetalPayout.create(payoutDoc);
+  // A common payable write fences concurrent creators and settlement against this snapshot.
+  await DigitalMetalPayable.updateOne({ _id: payable._id, tenantId: req.auth.tenantId }, { $inc: { version: 1 } }, { session });
+  const [payout] = await DigitalMetalPayout.create([payoutDoc], { session });
   return { payout: mapPayout(payout.toObject()), replay: false };
+  });
 }
 
 export async function approvePayout(req) {
+  return withTransaction(async (session) => {
   const payout = await DigitalMetalPayout.findOne({
     _id: req.params.payoutId,
     tenantId: req.auth.tenantId,
-  });
+  }).session(session);
   if (!payout) throw errors.notFound("Payout");
+  await assertAdminCustomerInScope(req, payout.customerId);
   if (payout.status === "APPROVED") return { payout: mapPayout(payout.toObject()) };
   if (payout.status !== "PENDING_APPROVAL") {
     throw new AppError("INVALID_STATE", "Payout is not pending approval.", 409);
-  }
-  if (payout.makerUserId === req.auth.id) {
-    throw new AppError("APPROVAL_DENIED", "Maker cannot approve the same payout instruction.", 403);
   }
   payout.status = "APPROVED";
   payout.approverUserId = req.auth.id;
   payout.approvedAt = new Date();
   appendStatusHistory(payout, "APPROVED", req.auth.id);
-  await payout.save();
+  await payout.save({ session });
   return { payout: mapPayout(payout.toObject()) };
+  });
 }
 
 export async function submitPayout(req) {
+  return withTransaction(async (session) => {
   const payout = await DigitalMetalPayout.findOne({
     _id: req.params.payoutId,
     tenantId: req.auth.tenantId,
-  });
+  }).session(session);
   if (!payout) throw errors.notFound("Payout");
+  await assertAdminCustomerInScope(req, payout.customerId);
   if (payout.status === "SUBMITTED") return { payout: mapPayout(payout.toObject()) };
   if (payout.status !== "APPROVED") {
     throw new AppError("INVALID_STATE", "Payout must be approved before bank submission.", 409);
-  }
-  if (payout.makerUserId !== req.auth.id) {
-    throw new AppError(
-      "FORBIDDEN",
-      "Only the payout instruction maker may record bank submission.",
-      403,
-    );
   }
   const liveDestination = await DigitalMetalBankDestination.findOne({
     _id: payout.destinationSnapshot?.destinationId,
@@ -291,8 +295,9 @@ export async function submitPayout(req) {
     throw errors.validation([{ field: "bankReference", message: "Bank reference is required for submission." }]);
   }
   appendStatusHistory(payout, "SUBMITTED", req.auth.id, payout.bankReference);
-  await payout.save();
+  await payout.save({ session });
   return { payout: mapPayout(payout.toObject()) };
+  });
 }
 
 export async function recordPayoutFailure(req) {
@@ -301,6 +306,7 @@ export async function recordPayoutFailure(req) {
     tenantId: req.auth.tenantId,
   });
   if (!payout) throw errors.notFound("Payout");
+  await assertAdminCustomerInScope(req, payout.customerId);
   if (["FAILED", "SETTLED"].includes(payout.status)) {
     return { payout: mapPayout(payout.toObject()) };
   }
@@ -344,6 +350,7 @@ export async function markPayoutUnknown(req) {
     tenantId: req.auth.tenantId,
   });
   if (!payout) throw errors.notFound("Payout");
+  await assertAdminCustomerInScope(req, payout.customerId);
   if (payout.status === "UNKNOWN") return { payout: mapPayout(payout.toObject()) };
   if (payout.status !== "SUBMITTED") {
     throw new AppError("INVALID_STATE", "Only submitted payouts can be marked unknown.", 409);
@@ -377,11 +384,9 @@ export async function resolveUnknownPayout(req) {
     tenantId: req.auth.tenantId,
   });
   if (!payout) throw errors.notFound("Payout");
+  await assertAdminCustomerInScope(req, payout.customerId);
   if (payout.status !== "UNKNOWN") {
     throw new AppError("INVALID_STATE", "Only unknown payouts can be resolved.", 409);
-  }
-  if (payout.makerUserId === req.auth.id) {
-    throw new AppError("APPROVAL_DENIED", "Maker cannot resolve unknown payout outcome.", 403);
   }
   const outcome = String(req.body.outcome ?? "").toUpperCase();
   const evidence = (req.body.evidenceUploadIds ?? []).map(String);
@@ -451,14 +456,12 @@ export async function recordPayoutSettlement(req) {
     tenantId: req.auth.tenantId,
   });
   if (!payout) throw errors.notFound("Payout");
+  await assertAdminCustomerInScope(req, payout.customerId);
   if (payout.settlementIdempotencyKey === settlementKey || payout.status === "SETTLED") {
     return { payout: mapPayout(payout.toObject()), idempotent: true };
   }
   if (!["SUBMITTED", "UNKNOWN", "APPROVED"].includes(payout.status)) {
     throw new AppError("INVALID_STATE", "Payout cannot be settled from current state.", 409);
-  }
-  if (payout.makerUserId === req.auth.id) {
-    throw new AppError("APPROVAL_DENIED", "Maker cannot attest settlement.", 403);
   }
   const settlementDate = String(req.body.settlementDate ?? "").trim();
   const bankReference = String(req.body.bankReference ?? payout.bankReference ?? "").trim();
@@ -504,7 +507,10 @@ export async function recordPayoutSettlement(req) {
       tenantId: locked.tenantId,
     }).session(session);
     if (!payable) throw errors.notFound("Payable");
-    const newOutstanding = Math.max(0, payable.outstandingPaise - locked.amountPaise);
+    if (payable.status !== "OPEN" || payable.outstandingPaise < locked.amountPaise) {
+      throw new AppError("OVERPAYMENT_PREVENTED", "Settlement exceeds the remaining payable.", 409);
+    }
+    const newOutstanding = payable.outstandingPaise - locked.amountPaise;
     payable.outstandingPaise = newOutstanding;
     if (newOutstanding === 0) {
       payable.status = "SETTLED";
@@ -515,6 +521,140 @@ export async function recordPayoutSettlement(req) {
   });
 
   return { payout: mapPayout(result), idempotent: false };
+}
+
+/** Record bank payment against a sell order (creates a settled payout; external transfer is assumed done). */
+export async function recordSellOrderBankPayment(req) {
+  const idempotencyKey = String(req.headers["x-idempotency-key"] ?? "").trim();
+  if (!idempotencyKey) {
+    throw errors.validation([{ field: "x-idempotency-key", message: "Idempotency key is required." }]);
+  }
+  if (req.body.staffAttestation !== true) {
+    throw errors.validation([
+      { field: "staffAttestation", message: "Confirm that payment was transferred externally." },
+    ]);
+  }
+
+  const order = await DigitalMetalSellOrder.findOne({
+    _id: req.params.orderId,
+    tenantId: req.auth.tenantId,
+  }).lean();
+  if (!order) throw errors.notFound("Sell order");
+  await assertAdminCustomerInScope(req, order.customerId);
+  if (order.status !== "PAYABLE_OPEN" || !order.payableId) {
+    throw new AppError("INVALID_STATE", "Accept the sale before recording payment.", 409);
+  }
+  if (order.payoutMethod === "CASH") {
+    throw new AppError("CASH_PAYOUT_ORDER", "Use counter cash payout for this sale.", 409);
+  }
+  if (req.body.expectedVersion != null && Number(req.body.expectedVersion) !== Number(order.version ?? 0)) {
+    throw errors.conflict("VERSION_CONFLICT", "Sell order changed; refresh and retry.");
+  }
+
+  const replay = await DigitalMetalPayout.findOne({ tenantId: req.auth.tenantId, idempotencyKey }).lean();
+  if (replay) {
+    await assertAdminCustomerInScope(req, replay.customerId);
+    return { payout: mapPayout(replay), sellOrderId: order._id, replay: true };
+  }
+
+  const amountPaise = Number(req.body.amountPaise);
+  const settlementDate = String(req.body.settlementDate ?? "").trim();
+  const bankReference = String(req.body.bankReference ?? "").trim();
+  const evidence = (req.body.evidenceUploadIds ?? []).map(String);
+  if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
+    throw errors.validation([{ field: "amountPaise", message: "Invalid amount." }]);
+  }
+  if (!settlementDate || !bankReference || evidence.length === 0) {
+    throw errors.validation([
+      { field: "settlement", message: "Settlement date, bank reference and evidence uploads are required." },
+    ]);
+  }
+
+  const result = await withTransaction(async (session) => {
+    const lockedOrder = await DigitalMetalSellOrder.findOne({
+      _id: order._id,
+      tenantId: order.tenantId,
+      status: "PAYABLE_OPEN",
+    }).session(session);
+    if (!lockedOrder) throw errors.conflict("STATE_RACE", "Sell order is not awaiting payment.");
+
+    const payable = await DigitalMetalPayable.findOne({
+      _id: lockedOrder.payableId,
+      tenantId: req.auth.tenantId,
+    }).session(session);
+    if (!payable) throw errors.notFound("Payable");
+    if (payable.status !== "OPEN" || payable.outstandingPaise <= 0) {
+      throw new AppError("PAYABLE_NOT_OPEN", "Amount owed is already cleared.", 409);
+    }
+    if (amountPaise > payable.outstandingPaise) {
+      throw errors.validation([{ field: "amountPaise", message: "Exceeds outstanding amount owed." }]);
+    }
+    await assertNoBlockingPayout(req.auth.tenantId, payable._id, null, session);
+    await assertPayoutAmountWithinPayableCap(req.auth.tenantId, payable.toObject(), amountPaise, null, session);
+
+    const destination = await DigitalMetalBankDestination.findOne({
+      _id: lockedOrder.bankDestinationId,
+      tenantId: req.auth.tenantId,
+      customerId: payable.customerId,
+    })
+      .session(session)
+      .lean();
+    if (!destination) throw errors.notFound("Bank destination");
+
+    const now = new Date();
+    const payoutDoc = {
+      _id: createId("dmpos"),
+      tenantId: req.auth.tenantId,
+      payableId: payable._id,
+      sellOrderId: payable.sellOrderId,
+      customerId: payable.customerId,
+      amountPaise,
+      status: "SETTLED",
+      destinationSnapshot: buildFrozenDestinationSnapshot(destination),
+      makerUserId: req.auth.id,
+      idempotencyKey,
+      bankReference: bankReference.slice(0, 128),
+      settlementDate,
+      settlementEvidenceUploadIds: evidence.slice(0, 10),
+      settlementVerification: "STAFF_ATTESTED",
+      settledByUserId: req.auth.id,
+      settledAt: now,
+      settlementIdempotencyKey: idempotencyKey,
+      submittedAt: now,
+      submittedByUserId: req.auth.id,
+      statusHistory: [
+        {
+          at: now,
+          status: "SETTLED",
+          actorUserId: req.auth.id,
+          note: "Payment recorded from sell screen",
+        },
+      ],
+    };
+    const [payout] = await DigitalMetalPayout.create([payoutDoc], { session });
+
+    const newOutstanding = payable.outstandingPaise - amountPaise;
+    payable.outstandingPaise = newOutstanding;
+    if (newOutstanding === 0) {
+      payable.status = "SETTLED";
+      payable.settledAt = now;
+    }
+    await payable.save({ session });
+
+    lockedOrder.version = (lockedOrder.version ?? 1) + 1;
+    await lockedOrder.save({ session });
+
+    await enqueuePayoutCustomerNotice(session, {
+      tenantId: payout.tenantId,
+      payoutId: payout._id,
+      customerId: payout.customerId,
+      transition: "SETTLED",
+      eventAt: now,
+    });
+    return payout.toObject();
+  });
+
+  return { payout: mapPayout(result), sellOrderId: order._id, replay: false };
 }
 
 export async function getCustomerPayoutStatusForSellOrder(req) {

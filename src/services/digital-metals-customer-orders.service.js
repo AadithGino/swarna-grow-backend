@@ -3,6 +3,8 @@ import {
   DigitalMetalBuyPaymentAttempt,
   DigitalMetalRedemptionOrder,
   DigitalMetalSellOrder,
+  DigitalMetalPayable,
+  DigitalMetalPayout,
 } from "../models/index.js";
 import { mapBuyOrderStatusDto } from "./digital-metals-buy-finalize.service.js";
 import { mapSellOrderDto } from "./digital-metals-sell.service.js";
@@ -58,8 +60,20 @@ export async function listCustomerSellOrders(req) {
   if (cursor) filter._id = { $lt: cursor };
   const rows = await DigitalMetalSellOrder.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
   const { items, meta } = paginateByIdCursor(rows, limit);
+  const ids = items.map(order => order.payableId).filter(Boolean);
+  const [payables, payouts] = ids.length ? await Promise.all([
+    DigitalMetalPayable.find({ tenantId: req.auth.tenantId, customerId: req.auth.id, _id: { $in: ids } }).lean(),
+    DigitalMetalPayout.find({ tenantId: req.auth.tenantId, payableId: { $in: ids } }).select("_id payableId status").lean(),
+  ]) : [[], []];
+  const byId = new Map(payables.map(row => [String(row._id), row]));
   return {
-    items: items.map((o) => mapSellOrderDto(o)),
+    items: items.map(order => {
+      const payable = byId.get(String(order.payableId));
+      return mapSellOrderDto(order, {
+        payable: payable ? { id: payable._id, status: payable.status, amountPaise: payable.amountPaise, outstandingPaise: payable.outstandingPaise, settledAt: payable.settledAt ?? null } : null,
+        payouts: payouts.filter(row => String(row.payableId) === String(order.payableId)),
+      });
+    }),
     meta,
   };
 }

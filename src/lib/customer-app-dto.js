@@ -11,6 +11,8 @@ import {
 import { isKycMandatoryForEnrolment } from "./kyc-policy.js";
 import { isOneActiveSchemePerCustomerEnforced } from "./tenant-enrolment-policy.js";
 import { resolveIncludedBenefitPaise } from "./redemption-benefit-accounting.js";
+import { phonePeSdkWebGatewayUrl } from "./phonepe-gateway-url.js";
+import { env } from "../config/env.js";
 
 export function withId(doc) {
   if (!doc || typeof doc !== "object") return doc;
@@ -61,6 +63,8 @@ export function tenantBrandingDto(tenant) {
     accentColor: accent,
     foregroundColor: branding.foregroundColor ?? "#FFFFFF",
     contrastColor: branding.contrastColor ?? primary,
+    otpLength: tenant.integrationSecrets?.messageCentral?.verifiedAt ? Number(tenant.integrationSecrets.messageCentral.otpLength ?? 6) : 6,
+    authCountryCode: "91",
     supportNumber: tenant.supportNumber ?? tenant.mobile ?? null,
     city: tenant.city ?? branding.city ?? null,
     ...tenantPortalCapabilitiesDto(tenant),
@@ -111,7 +115,6 @@ export function customerProfileDto(customer, tenant, branch) {
     branch: branch
       ? { id: branch._id, code: branch.code, name: branch.name }
       : null,
-    whatsappOptIn: !customer.whatsappOptedOutAt,
     memberSince: customer.createdAt,
     profileComplete: isCustomerProfileComplete(customer),
     profileCompleteness: profileCompleteness(customer),
@@ -282,9 +285,12 @@ export function enrichPayableRange(quote, scheme) {
     minPayable: moneyRef(quote.minPayablePaise ?? 0),
     maxPayable: moneyRef(remainingPaise),
     suggested: moneyRef(
-      quote.suggestedPaise ??
-        (quote.model === "FIXED" ? quote.minPayablePaise : null) ??
+      Math.min(
+        quote.suggestedPaise ??
+          (quote.model === "FIXED" ? quote.minPayablePaise : null) ??
+          remainingPaise,
         remainingPaise,
+      ),
     ),
     cycleCap: cycleCapPaise != null ? moneyRef(cycleCapPaise) : null,
     paidThisCycle: paidThisCyclePaise != null ? moneyRef(paidThisCyclePaise) : null,
@@ -403,9 +409,10 @@ export function derivePaymentUiState(link, payment) {
 }
 
 export function paymentLinkDto(link, token) {
+  const linkId = link._id ?? link.id;
   return {
-    id: link._id,
-    paymentLinkId: link._id,
+    id: linkId,
+    paymentLinkId: linkId,
     token: token ?? undefined,
     gatewayUrl: link.url ?? (token ? `/pay/${token}` : undefined),
     amount: moneyRef(link.amountPaise ?? 0),
@@ -415,9 +422,47 @@ export function paymentLinkDto(link, token) {
   };
 }
 
+/** PhonePe SDK checkout payload for fixed-scheme app clients (Flutter). */
+export function paymentLinkSdkCheckoutDto(linkRow, linkToken, extras = {}) {
+  const linkId = linkRow._id ?? linkRow.id ?? linkRow.paymentLinkId;
+  const sdkToken = extras.sdkToken ?? extras.token ?? null;
+  const gatewayUrl =
+    extras.gatewayUrl
+    ?? (sdkToken ? phonePeSdkWebGatewayUrl(sdkToken, env.PHONEPE_ENV) : null)
+    ?? (linkRow.url ?? (linkToken ? `/pay/${linkToken}` : undefined));
+  return {
+    checkoutKind: "SDK_ORDER",
+    provider: "PHONEPE",
+    id: linkId,
+    paymentLinkId: linkId,
+    schemeId: linkRow.schemeId ?? extras.schemeId ?? null,
+    token: sdkToken,
+    sdkToken,
+    merchantOrderId: extras.merchantOrderId ?? linkId,
+    providerOrderId: extras.providerOrderId ?? null,
+    paymentId: extras.paymentId ?? linkRow.paymentId ?? null,
+    amount: moneyRef(linkRow.amountPaise ?? 0),
+    status: linkRow.status ?? "CREATED",
+    expiresAt: linkRow.expiresAt ?? null,
+    statusPollUrl: linkId ? `/app/payments/${linkId}/status` : null,
+    retryAfterSeconds: extras.retryAfterSeconds ?? 3,
+    linkToken: linkToken ?? undefined,
+    gatewayUrl,
+    paymentUrl: gatewayUrl,
+  };
+}
+
 export function paymentIntentAppDto(intent, extras = {}) {
   const positionVersion = intent.positionVersion ?? extras.positionVersion ?? 0;
+  const sdkToken = extras.token ?? extras.sdkToken ?? null;
+  const hostedUrl = extras.redirectUrl ?? extras.paymentUrl ?? null;
+  const sdkGatewayUrl =
+    extras.gatewayUrl ?? (sdkToken ? phonePeSdkWebGatewayUrl(sdkToken, env.PHONEPE_ENV) : null);
+  const checkoutKind = hostedUrl ? "HOSTED_REDIRECT" : sdkToken ? "SDK_ORDER" : null;
+  const paymentUrl = hostedUrl ?? sdkGatewayUrl;
   return {
+    checkoutKind,
+    provider: checkoutKind ? "PHONEPE" : null,
     id: intent._id,
     intentId: intent._id,
     schemeId: intent.schemeId,
@@ -426,7 +471,11 @@ export function paymentIntentAppDto(intent, extras = {}) {
     status: intent.status,
     positionVersion,
     expiresAt: intent.reservationExpiresAt ?? extras.expiresAt ?? null,
-    paymentUrl: extras.redirectUrl ?? extras.paymentUrl ?? null,
+    paymentUrl,
+    gatewayUrl: paymentUrl ?? undefined,
+    token: sdkToken,
+    sdkToken,
+    merchantOrderId: extras.merchantOrderId ?? intent._id,
     statusPollUrl: `/app/payment-intents/${intent._id}`,
     paymentId: intent.paymentId ?? extras.paymentId ?? null,
     providerOrderId: intent.providerOrderId ?? extras.providerOrderId ?? null,

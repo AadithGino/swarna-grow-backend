@@ -54,6 +54,10 @@ import {
 } from "../lib/customer-financial-totals.js";
 import { buildCustomerGoldValuation } from "../lib/customer-gold-valuation.js";
 import {
+  buildRecentActivityForHome,
+  listCustomerActivityPaginated,
+} from "../lib/customer-home-recent-activity.js";
+import {
   isPositiveNetContributionPayment,
   netAmountPaiseFromDoc,
   netCollectionStatusFilter,
@@ -65,7 +69,7 @@ import {
 export async function resolveTenants(query) {
   if (query.deepLinkToken) {
     const tenant = await Tenant.findOne({ "branding.deepLinkToken": String(query.deepLinkToken) })
-      .select("_id code name branding status supportNumber mobile city settings operations")
+      .select("_id code name branding status supportNumber mobile city settings operations integrationSecrets.messageCentral.otpLength integrationSecrets.messageCentral.verifiedAt")
       .lean();
     if (!tenant) throw errors.notFound("Jewellery");
     return {
@@ -78,7 +82,7 @@ export async function resolveTenants(query) {
     const tenant = await Tenant.findOne({
       code: String(query.tenantCode).trim().toUpperCase(),
     })
-      .select("_id code name branding status supportNumber mobile city settings operations")
+      .select("_id code name branding status supportNumber mobile city settings operations integrationSecrets.messageCentral.otpLength integrationSecrets.messageCentral.verifiedAt")
       .lean();
     if (!tenant) throw errors.notFound("Jewellery");
     return {
@@ -95,7 +99,7 @@ export async function resolveTenants(query) {
     const tenantIds = [...new Set(customers.map((c) => c.tenantId))];
     if (!tenantIds.length) throw errors.notFound("Jewellery");
     const tenants = await Tenant.find({ _id: { $in: tenantIds } })
-      .select("_id code name branding status supportNumber mobile city settings operations")
+      .select("_id code name branding status supportNumber mobile city settings operations integrationSecrets.messageCentral.otpLength integrationSecrets.messageCentral.verifiedAt")
       .lean();
     return {
       resolvedBy: "MOBILE",
@@ -211,7 +215,10 @@ export async function buildHome(auth, tenant, query = {}) {
     passbookNumber,
     activeSchemes.slice(0, 6),
   );
-  const recentPayments = await recentPaymentsForHome(auth, 8);
+  const [recentPayments, recentActivity] = await Promise.all([
+    recentPaymentsForHome(auth, 8),
+    buildRecentActivityForHome(auth, 8),
+  ]);
   return {
     tenant: tenantBrandingDto(tenant),
     customer: {
@@ -249,6 +256,7 @@ export async function buildHome(auth, tenant, query = {}) {
     actionCard,
     activeSchemes: activeSchemeCards,
     recentPayments,
+    recentActivity,
     pastSchemesPreview: pastSchemes.map((s) => ({
       id: s._id,
       schemeNumber: s.enrollmentNumber,
@@ -437,7 +445,7 @@ async function paymentBlockForScheme(scheme) {
 export async function getSchemeDetailForApp(req) {
   const raw = await schemes.getScheme(req);
   let payableRange;
-  if (["ACTIVE", "LOCKED", "DEFAULTED"].includes(raw.status)) {
+  if (["PENDING_PAYMENT", "ACTIVE", "LOCKED", "DEFAULTED"].includes(raw.status)) {
     try {
       const payReq = {
         ...req,
@@ -497,6 +505,33 @@ export async function listSchemesForApp(req) {
   return result;
 }
 
+async function refreshFixedSchemeGatewayPoll(link, payment, { pollSource = "CUSTOMER_SCHEME_PAY_POLL" } = {}) {
+  if (!link?.schemeId || !payment?._id) return payment;
+  if (payment.status !== "PENDING" || payment.mode !== "ONLINE_GATEWAY") return payment;
+  try {
+    const { reconcileGatewayPayment } = await import("./phonepe-reconcile.service.js");
+    const result = await reconcileGatewayPayment(payment, {
+      source: pollSource,
+      leaseWorkerLabel: "customer-poll",
+    });
+    if (result?.outcome === "LEASE_BUSY") {
+      await reconcileGatewayPayment(payment, { source: pollSource });
+    }
+  } catch {
+    /* best-effort */
+  }
+  let refreshed = await Payment.findById(payment._id).lean();
+  if (refreshed?.status === "PENDING") {
+    const { detachStalePendingFixedHoldsAfterReconcile } =
+      await import("../lib/fixed-payment-reservation.js");
+    await detachStalePendingFixedHoldsAfterReconcile(link.tenantId, link.schemeId, {
+      graceMs: 0,
+    });
+    refreshed = await Payment.findById(payment._id).lean();
+  }
+  return refreshed ?? payment;
+}
+
 export async function publicPayStatus(linkToken) {
   let link = await getPublicLink(linkToken, false);
   let payment = link.paymentId ? await Payment.findById(link.paymentId).lean() : null;
@@ -506,6 +541,9 @@ export async function publicPayStatus(linkToken) {
     tenantId: link.tenantId,
     link,
     payment,
+  });
+  payment = await refreshFixedSchemeGatewayPoll(link, payment, {
+    pollSource: "PUBLIC_PAY_LINK_STATUS",
   });
   if (payment?.status === "SUCCESS") {
     link = (await PaymentLink.findById(link._id).lean()) ?? link;
@@ -529,18 +567,37 @@ export async function publicPayStatus(linkToken) {
 }
 
 export async function authenticatedLinkStatus(auth, linkId) {
-  const link = await PaymentLink.findOne({
+  let link = await PaymentLink.findOne({
     _id: linkId,
     tenantId: auth.tenantId,
     customerId: auth.id,
   }).lean();
   if (!link) throw errors.notFound("Payment link");
-  const payment = link.paymentId ? await Payment.findById(link.paymentId).lean() : null;
+  let payment = link.paymentId ? await Payment.findById(link.paymentId).lean() : null;
+  payment = await (
+    await import("./payment.service.js")
+  ).maybeCompleteMockGatewayPayment({
+    tenantId: link.tenantId,
+    link,
+    payment,
+  });
+  payment = await refreshFixedSchemeGatewayPoll(link, payment);
+  if (payment?.status === "SUCCESS") {
+    link = (await PaymentLink.findById(link._id).lean()) ?? link;
+  }
   const scheme =
     payment?.status === "SUCCESS"
       ? await Scheme.findById(link.schemeId).lean()
       : null;
   return paymentPollStatusDto({ link, payment, scheme });
+}
+
+export async function listActivityForApp(req) {
+  const { items, meta } = await listCustomerActivityPaginated(req.auth, {
+    cursor: req.query?.cursor,
+    limit: req.query?.limit,
+  });
+  return { data: items, meta };
 }
 
 export async function listPaymentsForApp(req) {

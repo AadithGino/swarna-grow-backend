@@ -15,6 +15,7 @@ import {
   resolveMockRefundInit,
   resolveMockRefundStatus,
 } from "../lib/phonepe-provider-test-hooks.js";
+import { phonePeSdkWebGatewayUrl } from "../lib/phonepe-gateway-url.js";
 
 const CLIENT_CACHE_MAX = 64;
 /** @type {Map<string, StandardCheckoutClient>} */
@@ -272,9 +273,11 @@ export const phonePeProvider = {
       .redirectUrl(redirectUrl)
       .build();
     const response = await client.createSdkOrder(request);
+    const phonePeEnvironment = credentials?.environment ?? env.PHONEPE_ENV;
     return {
       providerOrderId: response.orderId,
       token: response.token,
+      gatewayUrl: phonePeSdkWebGatewayUrl(response.token, phonePeEnvironment),
       status: response.state,
       expireAt: response.expireAt,
     };

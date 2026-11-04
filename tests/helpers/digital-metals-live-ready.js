@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { seedPlatformAdminToken } from "./platform-mutation-happy-paths.js";
+import { resetCalendarDateOverrideForTests } from "../../src/lib/date.js";
 
 const ASSETS = [
   { metal: "GOLD", finenessPpm: 999_000 },
@@ -65,6 +66,7 @@ export async function publishGoldRate(app, adminToken, overrides = {}) {
 }
 
 export async function makeTenantQuoteReady(app, tenantId, adminToken) {
+  resetCalendarDateOverrideForTests();
   await publishDefaultAssetSettings(app, adminToken);
   await platformApproveTaxAndTerms(app, tenantId);
   await publishGoldRate(app, adminToken);

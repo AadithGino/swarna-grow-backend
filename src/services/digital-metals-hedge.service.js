@@ -2,70 +2,167 @@ import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { escapeCsvCell } from "../lib/csv-formula-escape.js";
-import { istBusinessDayBounds } from "../lib/digital-metals-business-calendar.js";
+import {
+  istBusinessDayBounds,
+  listIstBusinessDatesEnding,
+} from "../lib/digital-metals-business-calendar.js";
 import { stringifyUg } from "../lib/digital-metals-hedge-perimeter.js";
 import {
-  buildHedgeAssetLine,
-  enumerateTenantAssets,
+  buildDailyHedgeBookIndexLine,
+  buildDailyHedgeBookLine,
+  enumerateDailyBookAssets,
+} from "../lib/digital-metals-daily-hedge-book.js";
+import {
   invalidateDownstreamHedgeSnapshots,
   listOutstandingInvalidatedHedgeSnapshots,
-  tenantHasInvalidatedHedgeSnapshots,
 } from "../lib/digital-metals-hedge-aggregation.js";
 import { today } from "../lib/date.js";
 import { DigitalMetalHedgeIncludedSource, DigitalMetalHedgeSnapshot } from "../models/index.js";
 
 function mapLineForDto(line) {
   const n = line._numeric;
+  const closing = n.closingMetalOwedUg;
   return {
     metal: line.metal,
     finenessPpm: line.finenessPpm,
-    coverageIncomplete: line.coverageIncomplete,
-    openingObligationUg: stringifyUg(n.openingObligationUg),
-    closingObligationUg: stringifyUg(n.closingObligationUg),
-    openingHedgePositionUg: stringifyUg(n.openingHedgePositionUg),
-    closingHedgePositionUg: stringifyUg(n.closingHedgePositionUg),
-    uncoveredUg: stringifyUg(n.uncoveredUg),
-    openCommitmentsUg: stringifyUg(n.openCommitmentsUg),
-    reservedInTransitUg: stringifyUg(n.reservedInTransitUg),
-    outstandingPayablesPaise: n.outstandingPayablesPaise,
-    walletHeldUg: stringifyUg(n.walletHeldUg),
-    walletReservedUg: stringifyUg(n.walletReservedUg),
-    walletReconcileDeltaUg: stringifyUg(n.walletReconcileDeltaUg),
+    openingMetalOwedUg: stringifyUg(n.openingMetalOwedUg),
+    closingMetalOwedUg: stringifyUg(closing),
+    openingObligationUg: stringifyUg(n.openingMetalOwedUg),
+    closingObligationUg: stringifyUg(closing),
+    ledgerHeldUg: stringifyUg(n.ledgerHeldUg),
+    ledgerReservedUg: stringifyUg(n.ledgerReservedUg),
+    ledgerReconcileDeltaUg: stringifyUg(n.ledgerReconcileDeltaUg),
+    walletProjectionDriftUg: stringifyUg(n.walletProjectionDriftUg),
+    walletProjectionDriftApplicable: n.walletProjectionDriftApplicable !== false,
+    walletStoredHeldUg: stringifyUg(n.walletStoredHeldUg),
+    unclassifiedJournalUg: stringifyUg(n.unclassifiedJournalUg ?? 0),
+    walletHeldUg: stringifyUg(n.ledgerHeldUg),
+    walletReservedUg: stringifyUg(n.ledgerReservedUg),
+    walletReconcileDeltaUg: stringifyUg(n.ledgerReconcileDeltaUg),
     movements: {
-      completedBuyUg: stringifyUg(n.completedBuyUg),
+      creditedBuyUg: stringifyUg(n.creditedBuyUg),
       executedSellUg: stringifyUg(n.executedSellUg),
       physicalHandoverUg: stringifyUg(n.physicalHandoverUg),
-      procurementReceiptUg: stringifyUg(n.procurementReceiptUg),
-      supplierDisposalUg: stringifyUg(n.supplierDisposalUg),
+      correctionUg: stringifyUg(n.correctionUg),
+      unclassifiedJournalUg: stringifyUg(n.unclassifiedJournalUg ?? 0),
+      completedBuyUg: stringifyUg(n.creditedBuyUg),
     },
-    sourceBreakdown: line.sourceBreakdown,
-    _numeric: n,
+    sourceBreakdown: line.movements?.sourceBreakdown ?? [],
+    _numeric: {
+      ...n,
+      openingObligationUg: n.openingMetalOwedUg,
+      closingObligationUg: n.closingMetalOwedUg,
+      openingHedgePositionUg: n.openingMetalOwedUg,
+      closingHedgePositionUg: n.closingMetalOwedUg,
+      uncoveredUg: 0,
+      openCommitmentsUg: 0,
+      reservedInTransitUg: 0,
+      outstandingPayablesPaise: 0,
+      completedBuyUg: n.creditedBuyUg,
+      procurementReceiptUg: 0,
+      supplierDisposalUg: 0,
+      walletHeldUg: n.ledgerHeldUg,
+      walletReservedUg: n.ledgerReservedUg,
+      walletReconcileDeltaUg: n.ledgerReconcileDeltaUg,
+    },
   };
 }
 
-export async function getLiveHedgeReport(req, options = {}) {
-  const session = options.session ?? null;
+async function getLiveHedgeReportInSession(req, session) {
   const tenantId = req.auth.tenantId;
   const businessDate = req.query.businessDate ?? today();
   const { end: cutoffEnd } = istBusinessDayBounds(businessDate);
   const cutoff = req.query.asOf ? new Date(req.query.asOf) : cutoffEnd;
 
-  const assets = await enumerateTenantAssets(tenantId, session);
+  const assets = await enumerateDailyBookAssets(tenantId, session);
   const lines = [];
   for (const { metal, finenessPpm } of assets) {
-    const raw = await buildHedgeAssetLine(tenantId, metal, finenessPpm, businessDate, cutoff, session);
-    lines.push(mapLineForDto(raw));
+    const raw = await buildDailyHedgeBookLine(tenantId, metal, finenessPpm, businessDate, cutoff, session);
+    lines.push(mapLineForDto({ ...raw, movements: raw.movements }));
   }
-  const recomputationRequired = Boolean(await tenantHasInvalidatedHedgeSnapshots(tenantId, session));
+  const outstandingInvalidated = await listOutstandingInvalidatedHedgeSnapshots(tenantId, session);
   return {
-    reportType: "LIVE",
+    reportType: "DAILY_HEDGE_BOOK",
     businessDate,
     cutoffAt: cutoff.toISOString(),
-    recomputationRequired,
-    invalidationNotice: recomputationRequired
-      ? "One or more later day-end snapshots were invalidated by a revision. Re-close affected business days before relying on hedge totals."
-      : null,
+    computedAt: new Date().toISOString(),
+    recomputationRequired: outstandingInvalidated.length > 0,
     lines,
+  };
+}
+
+export async function getLiveHedgeReport(req, options = {}) {
+  const session = options.session ?? null;
+  if (session) return getLiveHedgeReportInSession(req, session);
+  return withTransaction((txnSession) => getLiveHedgeReportInSession(req, txnSession));
+}
+
+const INDEX_METALS = [
+  { metal: "GOLD", finenessPpm: 999_000 },
+  { metal: "SILVER", finenessPpm: 999_000 },
+];
+
+function summarizeLineForIndex(raw) {
+  const n = raw._numeric;
+  const dayNetUg =
+    n.creditedBuyUg - n.executedSellUg - n.physicalHandoverUg + n.correctionUg;
+  return {
+    metal: raw.metal,
+    finenessPpm: raw.finenessPpm,
+    openingMetalOwedUg: stringifyUg(n.openingMetalOwedUg),
+    closingMetalOwedUg: stringifyUg(n.closingMetalOwedUg),
+    dayNetChangeUg: stringifyUg(dayNetUg),
+    creditedBuyUg: stringifyUg(n.creditedBuyUg),
+    executedSellUg: stringifyUg(n.executedSellUg),
+    physicalHandoverUg: stringifyUg(n.physicalHandoverUg),
+    ledgerMatchesBook: n.ledgerReconcileDeltaUg === 0,
+  };
+}
+
+export async function listDailyHedgeBookIndex(req) {
+  const tenantId = req.auth.tenantId;
+  const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 14);
+  const endDate = req.query.endDate ?? today();
+  const businessDatesNewestFirst = listIstBusinessDatesEnding(endDate, days);
+  const chronological = [...businessDatesNewestFirst].reverse();
+  const todayDate = today();
+
+  /** Carry closing balance forward so we only hit the ledger once per metal (oldest day). */
+  const openingUg = { GOLD: undefined, SILVER: undefined };
+  const built = [];
+  for (const businessDate of chronological) {
+    const metals = {};
+    for (const { metal, finenessPpm } of INDEX_METALS) {
+      const raw = await buildDailyHedgeBookIndexLine(
+        tenantId,
+        metal,
+        finenessPpm,
+        businessDate,
+        openingUg[metal],
+        null,
+        { verifyLedger: businessDate === todayDate },
+      );
+      metals[metal] = summarizeLineForIndex(raw);
+      openingUg[metal] = raw._numeric.closingMetalOwedUg;
+    }
+    built.push({ businessDate, metals });
+  }
+  const items = built.reverse();
+
+  const todayRow = items.find((r) => r.businessDate === todayDate) ?? items[0];
+  return {
+    reportType: "DAILY_HEDGE_INDEX",
+    endDate,
+    days: items.length,
+    computedAt: new Date().toISOString(),
+    currentBalances: todayRow
+      ? {
+          businessDate: todayRow.businessDate,
+          goldClosingUg: todayRow.metals.GOLD?.closingMetalOwedUg ?? "0",
+          silverClosingUg: todayRow.metals.SILVER?.closingMetalOwedUg ?? "0",
+        }
+      : null,
+    items,
   };
 }
 

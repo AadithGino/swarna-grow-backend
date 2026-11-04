@@ -1,4 +1,17 @@
-import { PaymentIntentStatus, PaymentPattern } from "../constants/enums.js";
+import {
+  PaymentIntentStatus,
+  PaymentMode,
+  PaymentPattern,
+  PaymentStatus,
+} from "../constants/enums.js";
+import {
+  PhonePeOrderStatusKind,
+  normalizePhonePeOrderStatus,
+} from "./phonepe-order-status.js";
+import {
+  phonePeProvider,
+  resolvePhonePeCredentials,
+} from "../integrations/phonepe.provider.js";
 import { AppError } from "./app-error.js";
 import { errors } from "./app-error.js";
 import {
@@ -6,10 +19,17 @@ import {
   isFixedPaymentAmountAllowed,
   previewFixedAllocation,
 } from "./fixed-payment-policy.js";
-import { PaymentIntent, Scheme } from "../models/index.js";
+import { Payment, PaymentIntent, Scheme, Tenant } from "../models/index.js";
 import { createId } from "./ids.js";
 
 export const FIXED_RESERVATION_TTL_MS = 30 * 60_000;
+/** While a customer is still on PhonePe, keep the instalment hold briefly. */
+export const FIXED_GATEWAY_CHECKOUT_GRACE_MS = 45_000;
+
+function merchantOrderIdForGatewayPayment(payment, intent) {
+  const match = payment?.receiptNumber?.match(/^PENDING-(.+)$/);
+  return match?.[1] ?? intent?._id ?? payment?._id;
+}
 
 /** True when the intent holds a Phase 4 fixed installment reservation (not legacy gateway checkout). */
 export function isFixedReservationIntent(intent) {
@@ -19,6 +39,240 @@ export function isFixedReservationIntent(intent) {
 
 export function fixedReservationExpiryDate(from = new Date()) {
   return new Date(from.getTime() + FIXED_RESERVATION_TTL_MS);
+}
+
+/** One active online checkout per fixed scheme — supersede stale holds when the customer retries. */
+export async function expireCompetingFixedReservations(tenantId, schemeId, session = null) {
+  const pending = await PaymentIntent.find({
+    tenantId,
+    schemeId,
+    status: PaymentIntentStatus.PENDING,
+    fixedFromInstallment: { $gte: 1 },
+  })
+    .select("_id paymentId")
+    .session(session ?? null)
+    .lean();
+  if (!pending.length) return 0;
+  let released = 0;
+  for (const intent of pending) {
+    const updated = await PaymentIntent.updateOne(
+      { _id: intent._id, tenantId, status: PaymentIntentStatus.PENDING },
+      { $set: { status: PaymentIntentStatus.EXPIRED }, $inc: { version: 1 } },
+    ).session(session ?? null);
+    if (updated.modifiedCount) released += 1;
+    if (!intent.paymentId) continue;
+    await Payment.updateOne(
+      { _id: intent.paymentId, tenantId, status: PaymentStatus.PENDING },
+      {
+        $set: {
+          status: PaymentStatus.FAILED,
+          providerPayload: { cancellationReason: "SUPERSEDED_BY_NEW_CHECKOUT" },
+        },
+      },
+      { session: session ?? null },
+    );
+  }
+  return released;
+}
+
+/** Release fixed holds that never received a gateway payment row (broken / abandoned initiate). */
+export async function detachOrphanFixedReservations(tenantId, schemeId, session = null) {
+  const intents = await PaymentIntent.find({
+    tenantId,
+    schemeId,
+    status: PaymentIntentStatus.PENDING,
+    fixedFromInstallment: { $gte: 1 },
+    $or: [{ paymentId: null }, { paymentId: { $exists: false } }],
+  })
+    .select("_id")
+    .session(session ?? null)
+    .lean();
+  if (!intents.length) return 0;
+  let released = 0;
+  for (const intent of intents) {
+    const updated = await PaymentIntent.updateOne(
+      { _id: intent._id, tenantId, status: PaymentIntentStatus.PENDING },
+      { $set: { status: PaymentIntentStatus.EXPIRED }, $inc: { version: 1 } },
+    ).session(session ?? null);
+    if (updated.modifiedCount) released += 1;
+  }
+  return released;
+}
+
+/** Fail long-stuck PENDING gateway rows so instalment capacity returns after a bad checkout. */
+export async function detachAbandonedFixedGatewayAttempts(
+  tenantId,
+  schemeId,
+  { maxPendingAgeMs = 2 * 60_000 } = {},
+) {
+  const intents = await listActiveFixedReservations(tenantId, schemeId);
+  if (!intents.length) return 0;
+  const { applyTerminalGatewayFailure } =
+    await import("../services/gateway-terminal-failure.service.js");
+  const cutoff = Date.now() - maxPendingAgeMs;
+  let released = 0;
+  for (const intent of intents) {
+    if (!intent.paymentId) continue;
+    const payment = await Payment.findOne({ _id: intent.paymentId, tenantId }).lean();
+    if (!payment || payment.status !== PaymentStatus.PENDING) continue;
+    const started = new Date(payment.paidAt ?? payment.createdAt ?? Date.now()).getTime();
+    if (started > cutoff) continue;
+    const reference =
+      payment.receiptNumber?.startsWith("PENDING-")
+        ? payment.receiptNumber.slice("PENDING-".length)
+        : intent._id;
+    const result = await applyTerminalGatewayFailure({
+      tenantId,
+      paymentId: payment._id,
+      reference,
+      providerPayload: { reason: "ABANDONED_CHECKOUT" },
+    });
+    if (!result.skipped) released += 1;
+  }
+  return released;
+}
+
+/** Drop fixed installment holds tied to failed gateway attempts (failed payments should not block new tries). */
+export async function detachFailedFixedReservations(tenantId, schemeId, session = null) {
+  const intents = await PaymentIntent.find({
+    tenantId,
+    schemeId,
+    status: PaymentIntentStatus.PENDING,
+    fixedFromInstallment: { $gte: 1 },
+    paymentId: { $ne: null },
+  })
+    .select("_id paymentId")
+    .session(session ?? null)
+    .lean();
+  if (!intents.length) return 0;
+  const paymentIds = [...new Set(intents.map((row) => row.paymentId).filter(Boolean))];
+  const failedPayments = await Payment.find({
+    tenantId,
+    _id: { $in: paymentIds },
+    status: { $in: [PaymentStatus.FAILED, PaymentStatus.REVERSED] },
+  })
+    .select("_id")
+    .session(session ?? null)
+    .lean();
+  if (!failedPayments.length) return 0;
+  const failedSet = new Set(failedPayments.map((row) => String(row._id)));
+  let released = 0;
+  for (const intent of intents) {
+    if (!failedSet.has(String(intent.paymentId))) continue;
+    const updated = await PaymentIntent.updateOne(
+      { _id: intent._id, tenantId, status: PaymentIntentStatus.PENDING },
+      { $set: { status: PaymentIntentStatus.FAILED }, $inc: { version: 1 } },
+    ).session(session ?? null);
+    if (updated.modifiedCount) released += 1;
+  }
+  return released;
+}
+
+/**
+ * After reconcile, drop PENDING gateway holds that did not succeed (failed checkout must not
+ * reduce payable). Keeps a short grace window for an in-flight PhonePe session.
+ */
+export async function detachStalePendingFixedHoldsAfterReconcile(
+  tenantId,
+  schemeId,
+  { graceMs = FIXED_GATEWAY_CHECKOUT_GRACE_MS } = {},
+) {
+  const intents = await listActiveFixedReservations(tenantId, schemeId);
+  if (!intents.length) return 0;
+  const { applyTerminalGatewayFailure } =
+    await import("../services/gateway-terminal-failure.service.js");
+  const tenant = await Tenant.findById(tenantId).select("+integrationSecrets").lean();
+  const credentials = resolvePhonePeCredentials(tenant);
+  const now = Date.now();
+  let released = 0;
+
+  for (const intent of intents) {
+    if (!intent.paymentId) continue;
+    const payment = await Payment.findOne({ _id: intent.paymentId, tenantId }).lean();
+    if (
+      !payment
+      || payment.status !== PaymentStatus.PENDING
+      || payment.mode !== PaymentMode.ONLINE_GATEWAY
+    ) {
+      continue;
+    }
+    const started = new Date(payment.paidAt ?? payment.createdAt ?? Date.now()).getTime();
+    const ageMs = now - started;
+    const merchantOrderId = merchantOrderIdForGatewayPayment(payment, intent);
+
+    let shouldFail = false;
+    let reason = "CHECKOUT_NOT_COMPLETED";
+
+    if (credentials?.clientId && merchantOrderId) {
+      try {
+        const status = await phonePeProvider.getOrderStatus(
+          merchantOrderId,
+          credentials,
+          tenantId,
+        );
+        const normalized = normalizePhonePeOrderStatus(status);
+        if (normalized.kind === PhonePeOrderStatusKind.COMPLETED) {
+          continue;
+        }
+        if (normalized.kind === PhonePeOrderStatusKind.TERMINAL_FAILED) {
+          shouldFail = true;
+          reason = "GATEWAY_TERMINAL_FAILED";
+        } else if (ageMs >= graceMs) {
+          shouldFail = true;
+        }
+      } catch {
+        if (ageMs >= graceMs) {
+          shouldFail = true;
+          reason = "GATEWAY_STATUS_UNAVAILABLE";
+        }
+      }
+    } else if (ageMs >= graceMs) {
+      shouldFail = true;
+    }
+
+    if (!shouldFail) continue;
+
+    const result = await applyTerminalGatewayFailure({
+      tenantId,
+      paymentId: payment._id,
+      reference: merchantOrderId,
+      providerPayload: { reason, quoteRefresh: true },
+    });
+    if (!result.skipped) released += 1;
+  }
+  return released;
+}
+
+/** Reconcile stuck gateway attempts, then detach failed holds before quoting payable range. */
+export async function refreshFixedInstallmentReservationCapacity(tenantId, schemeId) {
+  await detachOrphanFixedReservations(tenantId, schemeId);
+  await detachFailedFixedReservations(tenantId, schemeId);
+  const intents = await listActiveFixedReservations(tenantId, schemeId);
+  if (intents.length) {
+    const { reconcileGatewayPayment } = await import("../services/phonepe-reconcile.service.js");
+    for (const intent of intents.slice(0, 8)) {
+      if (!intent.paymentId) continue;
+      const payment = await Payment.findOne({ _id: intent.paymentId, tenantId }).lean();
+      if (
+        !payment
+        || payment.status !== PaymentStatus.PENDING
+        || payment.mode !== PaymentMode.ONLINE_GATEWAY
+      ) {
+        continue;
+      }
+      try {
+        await reconcileGatewayPayment(payment, {
+          source: "FIXED_RESERVATION_REFRESH",
+          leaseWorkerLabel: "payable-range",
+        });
+      } catch {
+        /* best-effort — expiry job will retry */
+      }
+    }
+  }
+  await detachFailedFixedReservations(tenantId, schemeId);
+  await detachStalePendingFixedHoldsAfterReconcile(tenantId, schemeId);
+  await detachFailedFixedReservations(tenantId, schemeId);
 }
 
 /** Sum of active fixed-scheme payment intent reservations. */
@@ -32,6 +286,20 @@ export async function sumActiveFixedReservationPaise(tenantId, schemeId, session
         status: PaymentIntentStatus.PENDING,
         reservationExpiresAt: { $gt: now },
         fixedFromInstallment: { $gte: 1 },
+      },
+    },
+    {
+      $lookup: {
+        from: Payment.collection.name,
+        localField: "paymentId",
+        foreignField: "_id",
+        as: "paymentDoc",
+      },
+    },
+    {
+      $match: {
+        paymentId: { $ne: null },
+        "paymentDoc.0.status": PaymentStatus.PENDING,
       },
     },
     { $group: { _id: null, amountPaise: { $sum: "$amountPaise" }, intentIds: { $push: "$_id" } } },
@@ -88,6 +356,7 @@ export async function reserveFixedPaymentIntentInSession(
   }
   const schemeObj = typeof scheme.toObject === "function" ? scheme.toObject() : scheme;
   const paymentRules = schemeObj.planSnapshot?.paymentRules ?? {};
+  await expireCompetingFixedReservations(tenantId, schemeObj._id, session);
   const blocking = await sumActiveFixedReservationPaise(tenantId, schemeObj._id, session);
   if (excludeIntentId) {
     const excluded = await PaymentIntent.findOne({ _id: excludeIntentId }).session(session).lean();

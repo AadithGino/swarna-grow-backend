@@ -23,6 +23,10 @@ test("assertOtpProviderReady requires MSG91 credentials in live mode", () => {
     MSG91_OTP_TEMPLATE_ID: "t",
     MSG91_SENDER_ID: "SWRNGR",
   }));
+  assert.doesNotThrow(() => assertOtpProviderReady({
+    PROVIDER_MODE: "live",
+    OTP_PROVIDER: "message_central",
+  }));
 });
 
 test("OTP verify succeeds once and locks out after five failures", async () => {

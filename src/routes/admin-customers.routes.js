@@ -12,7 +12,6 @@ import {
   customerSetPasswordBody,
   kycSubmitBody,
   nomineeBody,
-  whatsappOptBody,
 } from "../validators/common.validators.js";
 import { kycVerifyBody } from "../validators/admin-mutation.validators.js";
 import { Permission } from "../constants/permissions.js";
@@ -138,15 +137,6 @@ adminCustomerRouter.post(
     asyncHandler(controller.setPassword),
   ),
 );
-adminCustomerRouter.patch(
-  "/:customerId/whatsapp-opt",
-  ...guarded(
-    Permission.CUSTOMER_WRITE,
-    validate({ body: whatsappOptBody }),
-    idempotent,
-    asyncHandler(controller.whatsappOpt),
-  ),
-);
 adminCustomerRouter.post(
   "/:customerId/notes",
   ...guarded(
@@ -233,12 +223,4 @@ adminCustomerRouter.delete(
 adminCustomerRouter.get(
   "/:customerId/statement",
   ...guarded(Permission.CUSTOMER_READ, asyncHandler(controller.statement)),
-);
-adminCustomerRouter.post(
-  "/:customerId/statement/share-whatsapp",
-  ...guarded(
-    Permission.MESSAGE_SEND,
-    idempotent,
-    asyncHandler(controller.shareStatement),
-  ),
 );

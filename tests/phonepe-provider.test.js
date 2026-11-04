@@ -21,6 +21,7 @@ import {
 } from "../src/lib/phonepe-callback-classification.js";
 import { buildPhonePeWebhookEventId } from "../src/lib/phonepe-webhook-identity.js";
 import { normalizePhonePeWebhookEvent } from "../src/lib/phonepe-webhook-payload.js";
+import { phonePeSdkWebGatewayUrl } from "../src/lib/phonepe-gateway-url.js";
 
 test("getClientFor returns the same instance for repeated calls with same tenant credentials", async () => {
   const tenantId = "tenant_cache_a";
@@ -233,4 +234,14 @@ test("resolvePhonePeCredentials fails fast for sealed values that cannot be decr
     () => resolvePhonePeCredentials(tenant),
     (err) => err?.code === "INTEGRATION_SECRET_DECRYPT_FAILED",
   );
+});
+
+test("phonePeSdkWebGatewayUrl uses UAT Mercury for sandbox tokens", () => {
+  const url = phonePeSdkWebGatewayUrl("abc123", "SANDBOX");
+  assert.equal(url, "https://mercury-uat.phonepe.com/transact/pg?token=abc123");
+});
+
+test("phonePeSdkWebGatewayUrl uses production Mercury for live tokens", () => {
+  const url = phonePeSdkWebGatewayUrl("abc123", "PRODUCTION");
+  assert.equal(url, "https://mercury.phonepe.com/transact/pg?token=abc123");
 });

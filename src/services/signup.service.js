@@ -65,7 +65,7 @@ export async function startSignup(body) {
   return {
     signupId: signup._id,
     otpSent: true,
-    otpChannel: "WHATSAPP",
+    otpChannel: "SMS",
     maskedMobile: maskMobile(body.mobile),
     expiresInSeconds: otpResult.expiresIn ?? env.OTP_TTL_SECONDS,
     resendAvailableInSeconds: RESEND_COOLDOWN_SECONDS,
@@ -235,7 +235,7 @@ export async function getSignupStatus(signupId) {
       passwordSetRequired: true,
       ...(setupToken ? { setPasswordToken: setupToken } : {}),
     };
-    data.message = "Your account is created. Our team is configuring WhatsApp and payments — you'll be notified within 24 hours.";
+    data.message = "Your account is created. Our team is configuring payments — you'll be notified within 24 hours.";
   }
   return data;
 }

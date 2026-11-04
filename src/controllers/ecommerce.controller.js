@@ -19,6 +19,7 @@ import * as ecommerceOrderReturn from "../services/ecommerce-order-return.servic
 import * as ecommerceAdminCustomerOrders from "../services/ecommerce-admin-customer-orders.service.js";
 import * as ecommerceCourierCod from "../services/ecommerce-courier-cod.service.js";
 import * as ecommerceOrderHandover from "../services/ecommerce-order-handover.service.js";
+import * as ecommerceFulfilmentCompound from "../services/ecommerce-order-fulfilment-compound.service.js";
 import * as ecommerceBanner from "../services/ecommerce-banner.service.js";
 import * as ecommercePromotion from "../services/ecommerce-promotion.service.js";
 
@@ -298,6 +299,21 @@ export const recordOrderPaymentExceptionRefundManual = async (req, res) =>
 export const transitionOrderFulfilment = async (req, res) =>
   sendSuccess(res, await ecommerceFulfilment.transitionAdminOrderFulfilment(req));
 
+export const shipOrder = async (req, res) =>
+  sendSuccess(res, await ecommerceFulfilmentCompound.shipAdminOrder(req));
+
+export const confirmOrderDelivery = async (req, res) =>
+  sendSuccess(res, await ecommerceFulfilmentCompound.confirmAdminOrderDelivery(req));
+
+export const markOrderReadyForPickup = async (req, res) =>
+  sendSuccess(res, await ecommerceFulfilmentCompound.markAdminOrderReadyForPickup(req));
+
+export const confirmPickupCollection = async (req, res) =>
+  sendSuccess(res, await ecommerceFulfilmentCompound.confirmAdminPickupCollection(req));
+
+export const revealStaffHandoverChallenge = async (req, res) =>
+  sendSuccess(res, await ecommerceFulfilmentCompound.revealAdminStaffHandoverChallenge(req));
+
 export const acceptCodOrder = async (req, res) =>
   sendSuccess(res, await ecommerceCodOrder.acceptAdminCodOrder(req));
 
@@ -331,6 +347,9 @@ export const addOrderToCodRemittanceBatch = async (req, res) =>
 
 export const reconcileCodRemittanceBatch = async (req, res) =>
   sendSuccess(res, await ecommerceCourierCod.reconcileCodRemittanceBatch(req));
+
+export const recordCourierMoneyReceived = async (req, res) =>
+  sendSuccess(res, await ecommerceCourierCod.recordCourierMoneyReceived(req));
 
 export const listPaymentExceptions = async (req, res) =>
   sendSuccess(res, await ecommerceExceptionRefund.listAdminPaymentExceptions(req));

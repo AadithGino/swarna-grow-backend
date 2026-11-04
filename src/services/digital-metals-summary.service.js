@@ -352,3 +352,40 @@ export async function getAdminDigitalMetalsDashboardSummary(req) {
     trend,
   };
 }
+
+/** Lightweight wallet totals for overview cards — no hedge/procurement math. */
+export async function getAdminDigitalMetalsWalletTotals(req) {
+  const { tenantId, branchId } = await dashboardScope(req);
+  const base = { tenantId, ...(branchId ? { branchId } : {}) };
+
+  const [walletAgg, walletFreshness] = await Promise.all([
+    DigitalMetalWallet.aggregate([
+      { $match: { ...base, $or: [{ heldUg: { $gt: 0 } }, { reservedUg: { $gt: 0 } }] } },
+      {
+        $group: {
+          _id: { metal: "$metal", finenessPpm: "$finenessPpm" },
+          heldUg: { $sum: "$heldUg" },
+          reservedUg: { $sum: "$reservedUg" },
+          customers: { $addToSet: "$customerId" },
+        },
+      },
+    ]),
+    DigitalMetalWallet.findOne(base).sort({ updatedAt: -1 }).select("updatedAt").lean(),
+  ]);
+
+  const lines = walletAgg.map((row) => ({
+    metal: row._id.metal,
+    finenessPpm: row._id.finenessPpm,
+    heldUg: String(row.heldUg ?? 0),
+    reservedUg: String(row.reservedUg ?? 0),
+    availableUg: String(Math.max(0, Number(row.heldUg ?? 0) - Number(row.reservedUg ?? 0))),
+    customers: row.customers.length,
+  }));
+
+  return {
+    scope: { branchId: branchId ?? null },
+    computedAt: new Date().toISOString(),
+    dataFreshThrough: walletFreshness?.updatedAt?.toISOString?.() ?? null,
+    lines,
+  };
+}

@@ -24,3 +24,15 @@ export function businessDateOnOrBefore(reportBusinessDate, candidate) {
 export function businessDateInPeriodExclusiveStart(startExclusive, endInclusive, candidate) {
   return candidate > startExclusive && candidate <= endInclusive;
 }
+
+/** IST calendar dates ending on `endBusinessDate`, newest first (inclusive). */
+export function listIstBusinessDatesEnding(endBusinessDate, count) {
+  const n = Math.max(1, Math.min(Number(count) || 1, 90));
+  const out = [];
+  let cur = dayjs.tz(`${endBusinessDate}T12:00:00.000`, env.APP_TIMEZONE);
+  for (let i = 0; i < n; i += 1) {
+    out.push(cur.format("YYYY-MM-DD"));
+    cur = cur.subtract(1, "day");
+  }
+  return out;
+}

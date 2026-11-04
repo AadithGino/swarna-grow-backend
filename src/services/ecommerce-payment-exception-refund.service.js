@@ -1,3 +1,5 @@
+import { claimManualRefund } from "../lib/ecommerce-manual-refund.js";
+import { selectOrderRefund } from "../lib/order-refund-selection.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -56,6 +58,16 @@ const TERMINAL_REFUND_STATUSES = new Set([
   EcommercePaymentExceptionRefundStatus.SUCCEEDED,
   EcommercePaymentExceptionRefundStatus.MANUAL_RECORDED,
 ]);
+
+async function clearResolvedPaymentException(tenantId, orderId, session) {
+  const outstanding = await EcommercePaymentExceptionRefund.exists({ tenantId, orderId,
+    refundSource: EcommerceOrderRefundSource.PAYMENT_EXCEPTION,
+    status: { $nin: [...TERMINAL_REFUND_STATUSES] } }).session(session);
+  if (!outstanding) await EcommerceOrder.updateOne({ _id: orderId, tenantId,
+    paymentExceptionStatus: { $in: [EcommerceOrderPaymentExceptionStatus.DUPLICATE_PAYMENT_REFUND_REQUIRED,
+      EcommerceOrderPaymentExceptionStatus.LATE_SUCCESS_REFUND_REQUIRED] } },
+  { $set: { paymentExceptionStatus: null }, $inc: { version: 1 } }, { session });
+}
 
 async function resolveExceptionRefundCase({ tenantId, payload }) {
   const providerRefundId = payload.refundId ?? payload.merchantRefundId ?? null;
@@ -116,11 +128,9 @@ export async function getAdminPaymentExceptionRefund(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!order) throw errors.notFound("Order");
-  const row = await EcommercePaymentExceptionRefund.findOne({
-    tenantId: req.auth.tenantId,
-    orderId: order._id,
-  }).lean();
-  return { orderId: order._id, refund: row ?? null };
+  const selected = await selectOrderRefund(EcommercePaymentExceptionRefund, req, order._id);
+  return { orderId: order._id, ...selected };
+
 }
 
 const REFUND_APPLICABLE_EXCEPTIONS = new Set([
@@ -134,10 +144,7 @@ export async function initiateAdminPaymentExceptionRefund(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!order) throw errors.notFound("Order");
-  const refundRow = await EcommercePaymentExceptionRefund.findOne({
-    tenantId: req.auth.tenantId,
-    orderId: order._id,
-  }).lean();
+  const { refund: refundRow } = await selectOrderRefund(EcommercePaymentExceptionRefund, req, order._id, { mutation: true });
   if (!refundRow) throw errors.notFound("Payment exception refund");
   const workflowRefund =
     refundRow.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION
@@ -321,30 +328,9 @@ export async function recordAdminPaymentExceptionRefundManual(req) {
   if (!order) throw errors.notFound("Order");
 
   return withTransaction(async (session) => {
-    const updated = await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      {
-        tenantId: req.auth.tenantId,
-        orderId: order._id,
-        status: {
-          $nin: [
-            EcommercePaymentExceptionRefundStatus.SUCCEEDED,
-            EcommercePaymentExceptionRefundStatus.MANUAL_RECORDED,
-          ],
-        },
-      },
-      {
-        $set: {
-          status: EcommercePaymentExceptionRefundStatus.MANUAL_RECORDED,
-          providerRefundId: reference,
-          assignedUserId: req.auth.id,
-        },
-        $inc: { version: 1 },
-      },
-      { session, new: true },
-    );
-    if (!updated) {
-      throw new AppError("REFUND_ALREADY_CLOSED", "Refund case is already completed.", 409);
-    }
+    const { refund: selected } = await selectOrderRefund(EcommercePaymentExceptionRefund, req, order._id, { mutation: true, session });
+    if (!selected) throw errors.notFound("Refund case");
+    const updated = await claimManualRefund(session, { tenantId: req.auth.tenantId, orderId: order._id, refundId: selected._id, reference, userId: req.auth.id });
     await EcommerceOrderEvent.create(
       [
         {
@@ -368,10 +354,11 @@ export async function recordAdminPaymentExceptionRefundManual(req) {
     await enqueueEcommerceOutboxEvent({
       tenantId: req.auth.tenantId,
       topic: ECOMMERCE_OUTBOX_TOPICS.REFUND_COMPLETED,
-      key: `${order._id}:manual`,
+      key: `${order._id}:${updated._id}:manual`,
       payload: { orderId: order._id, refundId: updated._id, manual: true },
       session,
     });
+    await clearResolvedPaymentException(req.auth.tenantId, order._id, session);
     if (updated.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION) {
       const { completeOnlineCancellationAfterRefund } = await import(
         "./ecommerce-order-cancellation.service.js"
@@ -477,6 +464,7 @@ export async function confirmPaymentExceptionRefundFromProvider({
     payload: { orderId, refundId: updated._id },
     session,
   });
+  await clearResolvedPaymentException(tenantId, orderId, session);
   if (updated.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION) {
     const { completeOnlineCancellationAfterRefund } = await import(
       "./ecommerce-order-cancellation.service.js"

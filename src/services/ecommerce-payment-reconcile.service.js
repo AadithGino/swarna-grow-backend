@@ -1,8 +1,11 @@
+import { withTransaction } from "../lib/transaction.js";
+import { checkoutReconcileFilter } from "../lib/checkout-reconcile-filter.js";
+import { upsertOperationalAlert } from "../lib/operational-alert.js";
+import { AlertType } from "../constants/enums.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import {
   EcommercePaymentAttemptOperationalStatus,
-  EcommercePaymentAttemptStatus,
 } from "../constants/enums.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import { randomToken } from "../lib/crypto.js";
@@ -13,6 +16,40 @@ import {
   finalizeEcommercePaymentSuccess,
   finalizeEcommercePaymentTerminalFailure,
 } from "./ecommerce-payment-finalize.service.js";
+import { EcommerceOrder } from "../models/index.js";
+import { EcommerceOrderStatus } from "../constants/enums.js";
+import { findActivePaymentAttempt } from "../lib/ecommerce-payment-in-flight.js";
+
+const CUSTOMER_VISIBLE_RECONCILE_MIN_MS = 8_000;
+
+function isLiveEcommercePaymentAttempt(attempt) {
+  if (!attempt?.providerOrderId) return false;
+  if (String(attempt.provider ?? "").toUpperCase() === "MOCK") return false;
+  return true;
+}
+
+export async function maybeReconcileLiveEcommercePaymentAttempt(attempt, { at = new Date() } = {}) {
+  if (!attempt || !isLiveEcommercePaymentAttempt(attempt)) return { reconciled: false };
+  if (!["PENDING", "INITIATED"].includes(attempt.status)) return { reconciled: false };
+  const lastAt = attempt.gatewayLastReconcileAt
+    ? new Date(attempt.gatewayLastReconcileAt).getTime()
+    : 0;
+  if (lastAt && at.getTime() - lastAt < CUSTOMER_VISIBLE_RECONCILE_MIN_MS) {
+    return { reconciled: false, skipped: "THROTTLED" };
+  }
+  const result = await reconcileEcommercePaymentAttempt(attempt, { at });
+  return { reconciled: true, result };
+}
+
+export async function refreshEcommerceOrderFromPhonePe({ tenantId, customerId, orderId }) {
+  const order = await EcommerceOrder.findOne({ _id: orderId, tenantId, customerId }).lean();
+  if (!order || order.status === EcommerceOrderStatus.PAID) return order;
+  const active = await findActivePaymentAttempt(tenantId, orderId);
+  if (active && isLiveEcommercePaymentAttempt(active)) {
+    await maybeReconcileLiveEcommercePaymentAttempt(active, { at: new Date() });
+  }
+  return EcommerceOrder.findOne({ _id: orderId, tenantId, customerId }).lean();
+}
 
 function staleCutoffMs() {
   return env.PHONEPE_RECONCILE_STALE_SECONDS ?? 900;
@@ -46,7 +83,7 @@ export async function claimEcommercePaymentAttemptForReconcile(attemptId, at = n
   return EcommercePaymentAttempt.findOneAndUpdate(
     {
       _id: attemptId,
-      status: EcommercePaymentAttemptStatus.INITIATED,
+      status: { $in: ["PENDING", "INITIATED"] },
       $and: [
         {
           $or: [
@@ -76,14 +113,16 @@ export async function claimEcommercePaymentAttemptForReconcile(attemptId, at = n
 
 export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Date(), leaseOwner } = {}) {
   const tenant = await Tenant.findById(attemptRow.tenantId).select("+integrationSecrets").lean();
-  if (!tenant) return { outcome: "TENANT_MISSING" };
+  if (!tenant) {
+    await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: "TENANT_MISSING" });
+    return { outcome: "TENANT_MISSING" };
+  }
   const credentials = resolvePhonePeCredentials(tenant);
   const merchantOrderId = attemptRow.merchantOrderId ?? attemptRow._id;
-  const providerOrderId = attemptRow.providerOrderId ?? merchantOrderId;
   let statusPayload;
   try {
     statusPayload = await phonePeProvider.getOrderStatus(
-      providerOrderId,
+      merchantOrderId,
       credentials,
       attemptRow.tenantId,
     );
@@ -110,7 +149,7 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
       },
     });
     if (!verified.ok) {
-      await releaseReconcileLease(attemptRow._id, leaseOwner);
+      await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: "INVALID_COMPLETED", errorMessage: verified.code });
       return { outcome: "INVALID_COMPLETED", code: verified.code };
     }
     const result = await finalizeEcommercePaymentSuccess({
@@ -123,7 +162,10 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
       webhookEventId: null,
       source: "RECONCILE",
     });
-    await releaseReconcileLease(attemptRow._id, leaseOwner);
+    const latest = await EcommercePaymentAttempt.findById(attemptRow._id).select("status").lean();
+    if (latest && !["SUCCEEDED", "FAILED"].includes(latest.status)) {
+      await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: result.outcome ?? "UNRESOLVED" });
+    } else await releaseReconcileLease(attemptRow._id, leaseOwner);
     return result;
   }
   if (normalized.kind === PhonePeOrderStatusKind.TERMINAL_FAILED) {
@@ -135,7 +177,10 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
       webhookEventId: null,
       reason: "RECONCILE_TERMINAL_FAILURE",
     });
-    await releaseReconcileLease(attemptRow._id, leaseOwner);
+    const latest = await EcommercePaymentAttempt.findById(attemptRow._id).select("status").lean();
+    if (latest && !["SUCCEEDED", "FAILED"].includes(latest.status)) {
+      await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: result.outcome ?? "UNRESOLVED" });
+    } else await releaseReconcileLease(attemptRow._id, leaseOwner);
     return result;
   }
   await recordReconcileProgress(attemptRow, {
@@ -164,9 +209,11 @@ async function releaseReconcileLease(attemptId, leaseOwner) {
 async function recordReconcileProgress(attemptRow, { leaseOwner, outcome, at, errorMessage, providerState }) {
   const attempts = (attemptRow.gatewayReconcileAttempts ?? 0) + 1;
   const stuck = attempts >= maxAttempts();
-  await EcommercePaymentAttempt.updateOne(
+  return withTransaction(async (session) => {
+  const progressed = await EcommercePaymentAttempt.updateOne(
     {
       _id: attemptRow._id,
+      status: { $in: ["PENDING", "INITIATED"] },
       ...(leaseOwner ? { gatewayReconcileLeaseOwner: leaseOwner } : {}),
     },
     {
@@ -185,19 +232,20 @@ async function recordReconcileProgress(attemptRow, { leaseOwner, outcome, at, er
       },
       $inc: { version: 1 },
     },
+    { session },
   );
+  if (stuck && progressed.modifiedCount === 1) await upsertOperationalAlert({ tenantId: attemptRow.tenantId,
+    session, type: AlertType.GATEWAY_RECONCILE_EXHAUSTED, entityId: attemptRow._id,
+    title: "Checkout reconciliation exhausted", message: "Provider outcome remains unresolved. Review before permitting another charge.",
+    metadata: { orderId: attemptRow.orderId, paymentAttemptId: attemptRow._id, attempts, outcome } });
+
+  });
 }
 
 export async function runEcommercePaymentReconcile(at = new Date()) {
   const cutoff = new Date(at.getTime() - staleCutoffMs() * 1000);
   const rows = await EcommercePaymentAttempt.find({
-    status: EcommercePaymentAttemptStatus.INITIATED,
-    providerOrderId: { $exists: true, $ne: "" },
-    updatedAt: { $lte: cutoff },
-    operationalStatus: {
-      $ne: EcommercePaymentAttemptOperationalStatus.STUCK_RECONCILE,
-    },
-    $or: [{ gatewayReconcileNextAt: { $lte: at } }, { gatewayReconcileNextAt: null }],
+    ...checkoutReconcileFilter({ at, cutoff, maxAttempts: maxAttempts() }),
   })
     .sort({ gatewayReconcileNextAt: 1, updatedAt: 1 })
     .limit(batchSize())

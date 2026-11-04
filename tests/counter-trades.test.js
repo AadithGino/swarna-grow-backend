@@ -1,3 +1,4 @@
+import { placeAssistedOrder } from "../src/services/ecommerce-assisted-order.service.js";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -22,6 +23,7 @@ import {
   DigitalMetalSellOrder,
   DigitalMetalWallet,
   EcommerceOrder,
+  EcommerceInventory,
   Session,
   Tenant,
   User,
@@ -29,6 +31,7 @@ import {
 import { createId } from "../src/lib/ids.js";
 import { seal } from "../src/lib/crypto.js";
 import { withTransaction } from "../src/lib/transaction.js";
+import { placeAssistedBuy, placeAssistedSell } from "../src/services/digital-metals-assisted.service.js";
 import { creditWalletForTest } from "../src/services/digital-metals-ledger.service.js";
 import { signAccessToken } from "../src/services/token.service.js";
 import * as ecommerce from "../src/services/ecommerce.service.js";
@@ -127,11 +130,11 @@ async function customerToken({ tenant, branch, customer }) {
   });
 }
 
-function post(path, token, body) {
+function post(path, token, body, key = randomUUID()) {
   return request(app)
     .post(`/api/v1/admin${path}`)
     .set("Authorization", `Bearer ${token}`)
-    .set("X-Idempotency-Key", randomUUID())
+    .set("X-Idempotency-Key", key)
     .send(body);
 }
 
@@ -225,7 +228,7 @@ test("counter buy by UPI needs a reference and the counter quote cannot be used 
   assert.equal(await CashAdjustment.countDocuments({ tenantId: tenant._id }), 0);
 });
 
-test("counter sell paid in cash waits for approval, then cash payout settles it", async () => {
+test("counter cash sale is automatically accepted; only cash payment remains", async () => {
   const { tenant, manager, owner, customer } = await digitalGoldReady();
   await withTransaction((session) =>
     creditWalletForTest(session, {
@@ -244,25 +247,19 @@ test("counter sell paid in cash waits for approval, then cash payout settles it"
     quantityUg: UG_PER_G,
   });
   assert.equal(quote.status, 201, JSON.stringify(quote.body));
+  const sellKey = randomUUID();
   const sell = await post(`/digital-metals/customers/${customer._id}/counter/sell`, token, {
     quoteId: quote.body.data.quoteId,
     payoutMethod: "CASH",
     customerConsent: true,
-  });
+  }, sellKey);
   assert.equal(sell.status, 201, JSON.stringify(sell.body));
   const orderId = sell.body.data.order.id;
-  assert.equal(sell.body.data.order.status, "PENDING_APPROVAL");
+  assert.equal(sell.body.data.order.status, "PAYABLE_OPEN");
   assert.equal(sell.body.data.order.payoutMethod, "CASH");
 
-  const early = await post(`/digital-metals/sell-orders/${orderId}/cash-payout`, token, {});
-  assert.equal(early.status, 409);
-  assert.equal(early.body.error?.code, "SELL_NOT_APPROVED");
-
-  const approve = await post(`/digital-metals/sell-orders/${orderId}/approve`, bearerFor(owner), {});
-  assert.equal(approve.status, 200, JSON.stringify(approve.body));
-  assert.equal(approve.body.data.status, "PAYABLE_OPEN");
-
   const payable = await DigitalMetalPayable.findOne({ sellOrderId: orderId }).lean();
+  assert.ok(payable?.outstandingPaise > 0);
   const bankPayout = await post("/digital-metals/payouts", bearerFor(owner), { payableId: payable._id });
   assert.equal(bankPayout.status, 409);
   assert.equal(bankPayout.body.error?.code, "CASH_PAYOUT_ORDER");
@@ -270,6 +267,7 @@ test("counter sell paid in cash waits for approval, then cash payout settles it"
   const paid = await post(`/digital-metals/sell-orders/${orderId}/cash-payout`, token, { receiptNote: "Paid at counter" });
   assert.equal(paid.status, 200, JSON.stringify(paid.body));
   assert.equal(paid.body.data.payable.status, "SETTLED");
+  assert.equal(paid.body.data.order.paymentDisplayState.key, "PAID");
   assert.equal(paid.body.data.payable.settlementMethod, "CASH");
   const debit = await CashAdjustment.findOne({ tenantId: tenant._id, staffId: manager._id, direction: "DEBIT" }).lean();
   assert.equal(debit.amountPaise, payable.amountPaise);
@@ -278,6 +276,16 @@ test("counter sell paid in cash waits for approval, then cash payout settles it"
   assert.equal(again.status, 200);
   assert.equal(again.body.data.alreadyPaid, true);
   assert.equal(await CashAdjustment.countDocuments({ tenantId: tenant._id, direction: "DEBIT" }), 1);
+  // Bypass the HTTP replay cache: the underlying service must return the same accepted sale.
+  const replay = await placeAssistedSell({
+    auth: { type: "TENANT_USER", id: manager._id, role: manager.role, tenantId: tenant._id, branchId: customer.branchId },
+    scope: { branchId: customer.branchId }, params: { customerId: customer._id },
+    headers: { "x-idempotency-key": sellKey },
+    body: { quoteId: quote.body.data.quoteId, payoutMethod: "CASH", customerConsent: true },
+  });
+  assert.equal(replay.order.id, orderId);
+  assert.equal(replay.order.paymentDisplayState.key, "PAID");
+  assert.equal(await DigitalMetalPayable.countDocuments({ sellOrderId: orderId }), 1);
 });
 
 test("counter sell by bank transfer needs a verified account", async () => {
@@ -323,7 +331,7 @@ test("counter sell by bank transfer needs a verified account", async () => {
   });
   assert.equal(sell.status, 201, JSON.stringify(sell.body));
   const order = await DigitalMetalSellOrder.findById(sell.body.data.order.id).lean();
-  assert.equal(order.status, "PENDING_APPROVAL");
+  assert.equal(order.status, "PAYABLE_OPEN");
   assert.equal(order.bankDestinationId, dest._id);
   assert.equal(order.assisted.byUserId, owner._id);
 });
@@ -517,4 +525,47 @@ test("customer store summary includes counter orders", async () => {
   assert.equal(res.body.data.itemsBought, 1);
   assert.equal(res.body.data.counterOrders.count, 1);
   assert.equal(res.body.data.lastOrder.status, "PAID");
+});
+
+
+test("R05 counter cash failure rolls back metal credit; retry binds tender and posts once", async t => {
+  const { tenant, branch, manager, customer } = await digitalGoldReady();
+  const quote = await post(`/digital-metals/customers/${customer._id}/counter/buy-quote`, bearerFor(manager), { metal: "GOLD", finenessPpm: 999_000, inputMode: "QUANTITY_UG", quantityUg: UG_PER_G });
+  assert.equal(quote.status, 201, JSON.stringify(quote.body));
+  const req = { auth: { tenantId: tenant._id, id: manager._id, role: manager.role, type: "TENANT_USER", branchId: branch._id }, scope: { branchId: branch._id },
+    tenant: await Tenant.findById(tenant._id).lean(), params: { customerId: customer._id }, headers: { "x-idempotency-key": randomUUID() },
+    body: { quoteId: quote.body.data.quoteId, paymentMode: "CASH", customerConsent: true } };
+  const failing = t.mock.method(CashAdjustment, "create", async () => { throw new Error("SIMULATED_CASH_WRITE_FAILURE"); });
+  await assert.rejects(placeAssistedBuy(req), /SIMULATED_CASH_WRITE_FAILURE/);
+  failing.mock.restore();
+  const beforeRetry = await DigitalMetalWallet.findOne({ tenantId: tenant._id, customerId: customer._id }).lean();
+  assert.equal(beforeRetry?.heldUg ?? 0, 0);
+  assert.equal(await DigitalMetalBuyOrder.countDocuments({ tenantId: tenant._id, status: "CREDITED" }), 0);
+  const paid = await placeAssistedBuy(req);
+  assert.equal(paid.order.status, "CREDITED");
+  await placeAssistedBuy(req);
+  assert.equal((await DigitalMetalWallet.findOne({ customerId: customer._id }).lean()).heldUg, UG_PER_G);
+  assert.equal(await CashAdjustment.countDocuments({ tenantId: tenant._id }), 1);
+  await assert.rejects(placeAssistedBuy({ ...req, body: { ...req.body, paymentMode: "UPI", paymentReference: "DIFFERENT-TENDER" } }), { code: "IDEMPOTENCY_KEY_REUSED" });
+});
+
+
+test("R05 store cash failure rolls back paid state and stock consumption", async t => {
+  const { tenant, branch, manager, customer, product } = await storeReady();
+  const quote = await post(`/customers/${customer._id}/ecommerce/counter/quote`, bearerFor(manager), { lines: [{ productId: product.id, quantity: 2 }], fulfilmentMode: EcommerceFulfilmentMode.BRANCH_PICKUP, pickupBranchId: branch._id });
+  assert.equal(quote.status, 201, JSON.stringify(quote.body));
+  const before = await EcommerceInventory.findOne({ tenantId: tenant._id, productId: product.id }).lean();
+  const req = { auth: { tenantId: tenant._id, id: manager._id, role: manager.role, type: "TENANT_USER", branchId: branch._id }, scope: { branchId: branch._id },
+    tenant: await Tenant.findById(tenant._id).lean(), params: { customerId: customer._id }, headers: { "x-idempotency-key": randomUUID() },
+    body: { quoteId: quote.body.data.id, paymentMode: "CASH", customerConsent: true } };
+  const failing = t.mock.method(CashAdjustment, "create", async () => { throw new Error("SIMULATED_STORE_CASH_FAILURE"); });
+  await assert.rejects(placeAssistedOrder(req), /SIMULATED_STORE_CASH_FAILURE/);
+  failing.mock.restore();
+  assert.equal(await EcommerceOrder.countDocuments({ tenantId: tenant._id, status: "PAID" }), 0);
+  assert.equal((await EcommerceInventory.findById(before._id).lean()).quantityOnHand, before.quantityOnHand);
+  const paid = await placeAssistedOrder(req);
+  assert.equal(paid.order.status, "PAID");
+  await placeAssistedOrder(req);
+  assert.equal((await EcommerceInventory.findById(before._id).lean()).quantityOnHand, before.quantityOnHand - 2);
+  assert.equal(await CashAdjustment.countDocuments({ tenantId: tenant._id }), 1);
 });

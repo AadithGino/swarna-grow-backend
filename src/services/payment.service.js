@@ -1830,6 +1830,152 @@ export async function createSdkPaymentIntent(req) {
   }
 }
 
+/** Fixed scheme: reserve link, create SDK order (merchantOrderId = link id), pending payment. */
+export async function createFixedSdkPayment(req) {
+  if (!req.body.redirectUrl) {
+    throw errors.validation([
+      {
+        field: "redirectUrl",
+        message: "redirectUrl is required for PhonePe SDK checkout.",
+      },
+    ]);
+  }
+  req.body.schemeId = req.params.schemeId;
+  req.scope = { tenantId: req.auth.tenantId, customerId: req.auth.id };
+  let linkMeta;
+  await withTransaction(async (session) => {
+    linkMeta = await reservePaymentLinkInSession(session, req);
+  });
+  const link = await PaymentLink.findById(linkMeta.id).lean();
+  if (!link) throw errors.notFound("Payment link");
+  const tenant = await Tenant.findById(link.tenantId)
+    .select("operations branding")
+    .lean();
+  assertCustomerPaymentsEnabled(tenant);
+  assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
+  if (link.paymentId && !isPaymentLinkClaim(link.paymentId)) {
+    const existing = await Payment.findById(link.paymentId).lean();
+    if (
+      [
+        PaymentStatus.PENDING,
+        PaymentStatus.SUCCESS,
+        PaymentStatus.UNALLOCATED_PENDING_REVIEW,
+      ].includes(existing?.status)
+    ) {
+      throw errors.business(
+        "PAYMENT_LINK_BUSY",
+        "A payment attempt is already in progress for this scheme.",
+        { paymentLinkId: link._id, paymentId: existing?._id, status: existing?.status },
+      );
+    }
+  }
+  const claimMarker = `CLAIMING-${createId("payment")}`;
+  const claimExpiresAt = new Date(Date.now() + 5 * 60_000);
+  const claimed = await PaymentLink.findOneAndUpdate(
+    {
+      _id: link._id,
+      $and: [
+        { $or: [{ paymentId: null }, { paymentId: { $exists: false } }] },
+        {
+          $or: [
+            { initiationClaimToken: null },
+            { initiationClaimToken: { $exists: false } },
+            { initiationClaimExpiresAt: { $lte: new Date() } },
+          ],
+        },
+      ],
+    },
+    {
+      $set: {
+        initiationClaimToken: claimMarker,
+        initiationClaimExpiresAt: claimExpiresAt,
+      },
+    },
+    { new: true },
+  );
+  if (!claimed) {
+    throw errors.business(
+      "PAYMENT_LINK_BUSY",
+      "Another payment attempt is already in progress for this link.",
+    );
+  }
+  try {
+    const provider = await phonePeProvider.createSdkOrder({
+      merchantOrderId: claimed._id,
+      amountPaise: claimed.amountPaise,
+      redirectUrl: req.body.redirectUrl,
+      credentials: await gatewayCredentials(claimed.tenantId),
+      tenantId: claimed.tenantId,
+    });
+    const pending = await Payment.create({
+      _id: createId("payment"),
+      tenantId: claimed.tenantId,
+      branchId: claimed.branchId,
+      schemeId: claimed.schemeId,
+      customerId: claimed.customerId,
+      receiptNumber: `PENDING-${claimed._id}`,
+      amountPaise: claimed.amountPaise,
+      targetCycle: claimed.targetCycle,
+      mode: PaymentMode.ONLINE_GATEWAY,
+      status: PaymentStatus.PENDING,
+      source: PaymentSource.CUSTOMER_APP,
+      providerTransactionId: provider.providerOrderId,
+      paidAt: new Date(),
+    });
+    const committed = await PaymentLink.updateOne(
+      { _id: claimed._id, initiationClaimToken: claimMarker },
+      {
+        $set: { paymentId: pending._id },
+        $unset: { initiationClaimToken: "", initiationClaimExpiresAt: "" },
+      },
+    );
+    if (committed.modifiedCount !== 1) {
+      await Payment.deleteOne({
+        _id: pending._id,
+        status: PaymentStatus.PENDING,
+      });
+      throw errors.business(
+        "PAYMENT_LINK_CLAIM_LOST",
+        "The payment-link claim expired before initiation completed.",
+      );
+    }
+    if (claimed.paymentIntentId) {
+      await PaymentIntent.updateOne(
+        { _id: claimed.paymentIntentId, status: PaymentIntentStatus.PENDING },
+        {
+          $set: {
+            paymentId: pending._id,
+            providerOrderId: provider.providerOrderId,
+          },
+        },
+      );
+    }
+    return {
+      paymentLinkId: claimed._id,
+      linkToken: linkMeta.token,
+      url: linkMeta.url,
+      amountPaise: claimed.amountPaise,
+      status: claimed.status,
+      expiresAt: claimed.expiresAt,
+      paymentId: pending._id,
+      sdkToken: provider.token,
+      merchantOrderId: claimed._id,
+      providerOrderId: provider.providerOrderId,
+    };
+  } catch (error) {
+    await PaymentLink.updateOne(
+      { _id: claimed._id, initiationClaimToken: claimMarker },
+      { $unset: { initiationClaimToken: "", initiationClaimExpiresAt: "" } },
+    );
+    if (error instanceof AppError) throw error;
+    throw errors.dependency(
+      error?.message?.includes("transient")
+        ? "Payment provider is temporarily unavailable. Retry shortly."
+        : "Payment provider initiation failed.",
+    );
+  }
+}
+
 export async function cancelPaymentIntent(req) {
   return withTransaction(async (session) => {
     const intent = await PaymentIntent.findOne({
@@ -1916,69 +2062,6 @@ export async function cancelPaymentLink(req) {
   });
 }
 
-export async function resendPaymentLink(req) {
-  const link = await PaymentLink.findOne({
-    _id: req.params.linkId,
-    ...req.scope,
-  }).lean();
-  if (!link) throw errors.notFound("Payment link");
-  if (!["CREATED", "SENT", "OPENED"].includes(link.status)) {
-    throw errors.business(
-      "PAYMENT_LINK_NOT_SENDABLE",
-      "This payment link cannot be resent.",
-    );
-  }
-  const customer = await Customer.findOne({
-    _id: link.customerId,
-    tenantId: link.tenantId,
-  })
-    .select("mobile whatsappOptedOutAt")
-    .lean();
-  if (!customer) throw errors.notFound("Customer");
-  if (customer.whatsappOptedOutAt) {
-    throw errors.business(
-      "WHATSAPP_OPTED_OUT",
-      "The customer has opted out of WhatsApp messages.",
-    );
-  }
-  const created = await createPaymentLink({
-    ...req,
-    body: {
-      schemeId: link.schemeId,
-      amountPaise: link.amountPaise,
-      targetCycle: link.targetCycle,
-    },
-  });
-  const today = new Date().toLocaleDateString("en-CA", {
-    timeZone: "Asia/Kolkata",
-  });
-  const { queueMessage } = await import("./messaging.service.js");
-  const scheme = await Scheme.findById(link.schemeId)
-    .select("enrollmentNumber branchId")
-    .lean();
-  await queueMessage(req, {
-    branchId: link.branchId ?? scheme?.branchId,
-    customerId: link.customerId,
-    schemeId: link.schemeId,
-    type: "PAYMENT_DUE",
-    templateKey: "PAYMENT_DUE",
-    templateParams: {
-      mobile: customer.mobile,
-      reminderDate: today,
-      enrollmentNumber: scheme?.enrollmentNumber,
-      paymentLinkToken: created.token,
-    },
-  });
-  await PaymentLink.updateOne(
-    { _id: link._id },
-    { $set: { status: LinkStatus.CANCELLED } },
-  );
-  await PaymentLink.updateOne(
-    { _id: created.id ?? created._id },
-    { $set: { status: LinkStatus.SENT } },
-  );
-  return { id: created.id ?? created._id, queued: true };
-}
 /** @deprecated use persistVerifiedWebhook from webhook-event.service.js */
 export async function persistWebhook(args) {
   const { persistVerifiedWebhook } = await import("./webhook-event.service.js");

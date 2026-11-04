@@ -38,7 +38,9 @@ for (const [file, prefix] of Object.entries(routeFiles)) {
     const routeKey = `${method} ${path}`;
     if (selfServiceAllowlist.has(routeKey)) continue;
     const args = match[3] ?? "";
-    const hasGuard = /requirePermission\s*\(|guarded\s*\(/.test(args) || /PUBLIC/.test(args);
+    const hasGuard =
+      /requirePermission\s*\(|requireAnyPermission\s*\(|guarded\s*\(|guardedAny\s*\(/.test(args)
+      || /PUBLIC/.test(args);
     if (!hasGuard) unguarded.push(`${routeKey} (${file})`);
   }
 }

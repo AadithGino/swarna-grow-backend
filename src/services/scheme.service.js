@@ -1,24 +1,6 @@
-import {
-  AuditEntityType,
-  FirstInstallmentMode,
-  FlexiblePhase,
-  PaymentIntentStatus,
-  PaymentPattern,
-  PaymentStatus,
-  RedemptionStatus,
-  SchemePlanStatus,
-  SchemeStatus,
-} from "../constants/enums.js";
-import {
-  Branch,
-  Customer,
-  LedgerEntry,
-  Payment,
-  PaymentIntent,
-  Redemption,
-  Scheme,
-  SchemePlan,
-} from "../models/index.js";
+import { withDurableEnrolment } from "../lib/enrolment-operation.js";
+import { AuditEntityType, FirstInstallmentMode, FlexiblePhase, PaymentPattern, RedemptionStatus, SchemePlanStatus, SchemeStatus } from "../constants/enums.js";
+import { Branch, Customer, LedgerEntry, Payment, Redemption, Scheme, SchemePlan } from "../models/index.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
@@ -33,10 +15,7 @@ import { buildFixedPayableQuote } from "../lib/fixed-payment-policy.js";
 import { sumActiveFixedReservationPaise } from "../lib/fixed-payment-reservation.js";
 import { analyzeFreeWindowLedgerForCap } from "../lib/flexible-free-window-net.js";
 import { applySystemFlexLockClosure } from "../lib/flexible-lock-settlement.js";
-import {
-  withTransaction,
-  withTransientTransactionRetry,
-} from "../lib/transaction.js";
+import { withTransaction } from "../lib/transaction.js";
 import {
   assertAnalyticsPeriod,
   buildAnalyticsScope,
@@ -178,9 +157,12 @@ async function schemePresentationExtras(scheme) {
   ]);
   const canRecordPayment =
     !open &&
-    [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED].includes(
-      scheme.status,
-    );
+    [
+      SchemeStatus.PENDING_PAYMENT,
+      SchemeStatus.ACTIVE,
+      SchemeStatus.LOCKED,
+      SchemeStatus.DEFAULTED,
+    ].includes(scheme.status);
   const maturityContributions = assessMaturityContributionEligibility(scheme);
   const canRedeem =
     !open &&
@@ -716,16 +698,11 @@ export async function validateEnrolmentResponse(req) {
   }
 }
 export async function enrol(req) {
-  const validation = await validateEnrolment(req);
-  if (validation.installmentAmountPaise == null) {
-    throw errors.business(
-      "INVALID_INSTALLMENT_AMOUNT",
-      "Choose an installment amount for this plan.",
-    );
-  }
-  return withTransientTransactionRetry(async (session) =>
-    createEnrolmentInSession(req, validation, session),
-  );
+  return withDurableEnrolment(req, async session => {
+    const validation = await validateEnrolment(req);
+    if (validation.installmentAmountPaise == null) throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
+    return createEnrolmentInSession(req, validation, session);
+  });
 }
 
 async function lockPlanForEnrolment(session, tenantId, planId) {
@@ -905,90 +882,16 @@ export async function createEnrolmentInSession(req, validation, session) {
   };
 }
 
-/** Re-use pending self-enrol checkout when PhonePe initiation failed after the local transaction committed. */
-async function tryResumeCustomerPendingEnrolCheckout(req) {
-  if (req.auth?.type !== "CUSTOMER" || !req.body.planId) return null;
-  const planForMode = await SchemePlan.findOne({
-    _id: req.body.planId,
-    tenantId: req.auth.tenantId,
-  }).lean();
-  if (!planForMode) return null;
-  const resolvedMode = resolveFirstInstallmentMode(req, planForMode);
-  if (resolvedMode !== FirstInstallmentMode.COLLECT_NOW) return null;
-  const scheme = await Scheme.findOne({
-    tenantId: req.auth.tenantId,
-    customerId: req.auth.id,
-    planId: req.body.planId,
-    status: SchemeStatus.PENDING_PAYMENT,
-  }).lean();
-  if (!scheme) return null;
-  if (
-    req.body.installmentAmountPaise != null &&
-    req.body.installmentAmountPaise !== scheme.installmentAmountPaise
-  ) {
-    return null;
-  }
-  const planActive = await SchemePlan.exists({
-    _id: req.body.planId,
-    tenantId: req.auth.tenantId,
-    status: SchemePlanStatus.ACTIVE,
-  });
-  if (!planActive) return null;
-
-  if (scheme.paymentPattern !== PaymentPattern.FLEXIBLE) return null;
-
-  const intent = await PaymentIntent.findOne({
-    tenantId: req.auth.tenantId,
-    schemeId: scheme._id,
-    customerId: req.auth.id,
-    status: PaymentIntentStatus.PENDING,
-    reservationExpiresAt: { $gt: new Date() },
-  })
-    .sort({ createdAt: -1 })
-    .lean();
-  if (!intent?.paymentId) return null;
-  const paymentPending = await Payment.exists({
-    _id: intent.paymentId,
-    tenantId: req.auth.tenantId,
-    status: PaymentStatus.PENDING,
-  });
-  if (!paymentPending) return null;
-
-  const { initiateProviderForReservedIntent } =
-    await import("./payment.service.js");
-  const checkout = await initiateProviderForReservedIntent(
-    {
-      auth: req.auth,
-      tenant: req.tenant,
-      body: { redirectUrl: req.body.redirectUrl },
-    },
-    { intent, paymentId: intent.paymentId, tenantId: req.auth.tenantId },
-  );
-  return {
-    enrolled: scheme,
-    checkout,
-    checkoutKind: "FLEXIBLE_PAYMENT_INTENT",
-  };
-}
-
 /** Customer self-enrol: scheme + local checkout reservation in one transaction; PhonePe only after commit. */
 export async function customerEnrolWithCheckout(req) {
-  const resumed = await tryResumeCustomerPendingEnrolCheckout(req);
-  if (resumed) return resumed;
-
-  const validation = await validateEnrolment(req);
-  if (validation.installmentAmountPaise == null) {
-    throw errors.business(
-      "INVALID_INSTALLMENT_AMOUNT",
-      "Choose an installment amount for this plan.",
-    );
-  }
-  let reservedIntent = null;
-  let reservedLink = null;
-  const enrolled = await withTransientTransactionRetry(async (session) => {
+  const committed = await withDurableEnrolment(req, async session => {
+    const validation = await validateEnrolment(req);
+    if (validation.installmentAmountPaise == null) throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
+    let reservedIntent = null;
+    let reservedLink = null;
     const scheme = await createEnrolmentInSession(req, validation, session);
     const needsCheckout = scheme.firstInstallmentRequired === true;
-    if (!needsCheckout) return scheme;
+    if (!needsCheckout) return { enrolled: scheme, reservedIntent: null, reservedLink: null };
     const schemeId = scheme._id ?? scheme.id;
     const targetCycle =
       req.query?.targetCycle ?? req.body?.targetCycle ?? monthKey();
@@ -1014,8 +917,9 @@ export async function customerEnrolWithCheckout(req) {
     } else {
       reservedLink = await reservePaymentLinkInSession(session, payReq);
     }
-    return scheme;
+    return { enrolled: scheme, reservedIntent, reservedLink };
   });
+  const { enrolled, reservedIntent, reservedLink } = committed;
   if (reservedIntent) {
     const { initiateProviderForReservedIntent } =
       await import("./payment.service.js");
@@ -2032,6 +1936,9 @@ export async function payableRange(req, schemeInput, options = {}) {
   const targetCycle = req.query?.targetCycle ?? req.body?.targetCycle;
   if (scheme.paymentPattern === PaymentPattern.FIXED) {
     const paymentRules = plan.paymentRules ?? {};
+    const { refreshFixedInstallmentReservationCapacity } =
+      await import("../lib/fixed-payment-reservation.js");
+    await refreshFixedInstallmentReservationCapacity(scheme.tenantId, scheme._id);
     const { reservedPaise } = await sumActiveFixedReservationPaise(
       scheme.tenantId,
       scheme._id,

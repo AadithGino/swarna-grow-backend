@@ -11,7 +11,7 @@ const id = z.string().trim().min(4).max(80);
 const tenantIdParam = z.object({ tenantId: id });
 const planIdParam = z.object({ planId: id });
 const invoiceIdParam = z.object({ invoiceId: id });
-const messageTypeParam = z.object({ messageType: z.string().trim().min(2).max(64) });
+
 const webhookRetryParam = z.object({ id: id });
 
 export const platformTenantListQuery = z.object({
@@ -103,13 +103,6 @@ export const platformDigitalMetalsPauseBody = z.object({
   reason: z.string().trim().min(3).max(500).optional(),
 }).strict();
 
-export const platformWhatsappIntegrationBody = z.object({
-  phoneNumberId: z.string().trim().min(4).max(80),
-  wabaId: z.string().trim().min(4).max(80).optional(),
-  appSecret: z.string().trim().min(8).max(512).optional(),
-  accessToken: z.string().trim().min(8).max(2048).optional(),
-}).strict();
-
 export const platformPhonePeIntegrationBody = z.object({
   clientId: z.string().trim().min(4).max(120),
   clientSecret: z.string().trim().min(8).max(512).optional(),
@@ -123,6 +116,19 @@ export const platformFcmIntegrationBody = z.object({
   projectId: z.string().trim().min(4).max(120),
   clientEmail: z.string().email(),
   privateKey: z.string().trim().min(32).max(8192).optional(),
+}).strict();
+
+export const platformMessageCentralIntegrationBody = z.object({
+  customerId: z.string().trim().min(2).max(120),
+  key: z.string().trim().min(8).max(2048).optional(),
+  email: z.string().email(),
+  countryCode: z.literal("91").optional(),
+  flowType: z.enum(["SMS", "WHATSAPP"]).optional(),
+  otpLength: z.coerce.number().int().min(4).max(8).optional(),
+}).strict();
+
+export const platformMessageCentralVerifyBody = z.object({
+  testMobile: z.string().trim().min(10).max(16).optional(),
 }).strict();
 
 export const platformTenantTemplateBody = z.object({
@@ -189,14 +195,11 @@ export const platformRouteValidators = {
   "POST /tenants/:tenantId/go-live": { params: tenantIdParam, body: platformTenantActionBody },
   "POST /tenants/:tenantId/suspend": { params: tenantIdParam, body: platformTenantActionBody },
   "POST /tenants/:tenantId/reactivate": { params: tenantIdParam, body: platformTenantActionBody },
-  "PUT /tenants/:tenantId/integrations/whatsapp": { params: tenantIdParam, body: platformWhatsappIntegrationBody },
-  "POST /tenants/:tenantId/integrations/whatsapp/verify": { params: tenantIdParam, body: z.object({}).strict() },
   "PUT /tenants/:tenantId/integrations/payment-gateway": { params: tenantIdParam, body: platformPhonePeIntegrationBody },
   "POST /tenants/:tenantId/integrations/payment-gateway/verify": { params: tenantIdParam, body: z.object({}).strict() },
   "PUT /tenants/:tenantId/integrations/fcm": { params: tenantIdParam, body: platformFcmIntegrationBody },
-  "PUT /tenants/:tenantId/templates/:messageType": { params: tenantIdParam.merge(messageTypeParam), body: platformTenantTemplateBody },
-  "DELETE /tenants/:tenantId/templates/:messageType": { params: tenantIdParam.merge(messageTypeParam) },
-  "POST /tenants/:tenantId/templates/:messageType/test": { params: tenantIdParam.merge(messageTypeParam), body: platformTemplateTestBody },
+  "PUT /tenants/:tenantId/integrations/message-central": { params: tenantIdParam, body: platformMessageCentralIntegrationBody },
+  "POST /tenants/:tenantId/integrations/message-central/verify": { params: tenantIdParam, body: platformMessageCentralVerifyBody },
   "POST /tenants/:tenantId/subscription/change-plan": { params: tenantIdParam, body: platformSubscriptionChangeBody },
   "PATCH /tenants/:tenantId/subscription/limits": { params: tenantIdParam, body: platformSubscriptionLimitsBody },
   "POST /tenants/:tenantId/subscription/extend": { params: tenantIdParam, body: platformSubscriptionExtendBody },

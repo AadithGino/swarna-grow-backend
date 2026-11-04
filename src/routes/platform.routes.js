@@ -12,40 +12,14 @@ import {
   platformDigitalMetalsTaxApproveBody,
   platformDigitalMetalsTermsBody,
 } from "../validators/digital-metals.validators.js";
-import {
-  platformCreatePlanBody,
-  platformCreateTenantBody,
-  platformDeprecatePlanBody,
-  platformDigitalMetalsPauseBody,
-  platformFcmIntegrationBody,
-  platformFlagsBody,
-  platformInvoiceCreateBody,
-  platformMarkInvoicePaidBody,
-  platformLogoutBody,
-  platformOwnerCredentialsBody,
-  platformPhonePeIntegrationBody,
-  platformSubscriptionCancelBody,
-  platformSubscriptionChangeBody,
-  platformSubscriptionExtendBody,
-  platformSubscriptionLimitsBody,
-  platformTemplateTestBody,
-  platformTenantActionBody,
-  platformTenantListQuery,
-  platformTenantTemplateBody,
-  platformUpdatePlanBody,
-  platformUpdateTenantBody,
-  platformWebhookRetryBody,
-  platformWhatsappIntegrationBody,
-} from "../validators/platform.validators.js";
+import { platformCreatePlanBody, platformCreateTenantBody, platformDeprecatePlanBody, platformDigitalMetalsPauseBody, platformFcmIntegrationBody, platformFlagsBody, platformInvoiceCreateBody, platformMarkInvoicePaidBody, platformLogoutBody, platformOwnerCredentialsBody, platformPhonePeIntegrationBody, platformSubscriptionCancelBody, platformSubscriptionChangeBody, platformSubscriptionExtendBody, platformSubscriptionLimitsBody, platformTenantActionBody, platformTenantListQuery, platformUpdatePlanBody, platformUpdateTenantBody, platformWebhookRetryBody, platformMessageCentralIntegrationBody, platformMessageCentralVerifyBody } from "../validators/platform.validators.js";
 import { loginRateLimit } from "../middlewares/security.middleware.js";
 import { z } from "zod";
 
 const tenantIdParam = validate({ params: z.object({ tenantId: z.string().min(4).max(80) }) });
 const planIdParam = validate({ params: z.object({ planId: z.string().min(4).max(80) }) });
 const invoiceIdParam = validate({ params: z.object({ invoiceId: z.string().min(4).max(80) }) });
-const messageTypeParams = validate({
-  params: z.object({ tenantId: z.string().min(4).max(80), messageType: z.string().min(2).max(64) }),
-});
+
 const webhookRetryParams = validate({ params: z.object({ id: z.string().min(4).max(80) }) });
 
 export const platformRouter = Router();
@@ -67,15 +41,11 @@ platformRouter.post("/tenants/:tenantId/owner-credentials", tenantIdParam, valid
 platformRouter.post("/tenants/:tenantId/go-live", tenantIdParam, validate({ body: platformTenantActionBody }), idempotent, asyncHandler(controller.tenantAction("go-live")));
 platformRouter.post("/tenants/:tenantId/suspend", tenantIdParam, validate({ body: platformTenantActionBody }), idempotent, asyncHandler(controller.tenantAction("suspend")));
 platformRouter.post("/tenants/:tenantId/reactivate", tenantIdParam, validate({ body: platformTenantActionBody }), idempotent, asyncHandler(controller.tenantAction("reactivate")));
-platformRouter.put("/tenants/:tenantId/integrations/whatsapp", tenantIdParam, validate({ body: platformWhatsappIntegrationBody }), idempotent, asyncHandler(controller.integration("whatsapp")));
-platformRouter.post("/tenants/:tenantId/integrations/whatsapp/verify", tenantIdParam, validate({ body: z.object({}).strict() }), idempotent, asyncHandler(controller.verifyIntegration("whatsapp")));
 platformRouter.put("/tenants/:tenantId/integrations/payment-gateway", tenantIdParam, validate({ body: platformPhonePeIntegrationBody }), idempotent, asyncHandler(controller.integration("phonepe")));
 platformRouter.post("/tenants/:tenantId/integrations/payment-gateway/verify", tenantIdParam, validate({ body: z.object({}).strict() }), idempotent, asyncHandler(controller.verifyIntegration("phonepe")));
 platformRouter.put("/tenants/:tenantId/integrations/fcm", tenantIdParam, validate({ body: platformFcmIntegrationBody }), idempotent, asyncHandler(controller.integration("fcm")));
-platformRouter.put("/tenants/:tenantId/templates/:messageType", messageTypeParams, validate({ body: platformTenantTemplateBody }), asyncHandler(controller.tenantTemplate));
-platformRouter.get("/tenants/:tenantId/templates", tenantIdParam, asyncHandler(controller.tenantTemplates));
-platformRouter.delete("/tenants/:tenantId/templates/:messageType", messageTypeParams, idempotent, asyncHandler(controller.deleteTenantTemplate));
-platformRouter.post("/tenants/:tenantId/templates/:messageType/test", messageTypeParams, validate({ body: platformTemplateTestBody }), idempotent, asyncHandler(controller.testTenantTemplate));
+platformRouter.put("/tenants/:tenantId/integrations/message-central", tenantIdParam, validate({ body: platformMessageCentralIntegrationBody }), idempotent, asyncHandler(controller.integration("messageCentral")));
+platformRouter.post("/tenants/:tenantId/integrations/message-central/verify", tenantIdParam, validate({ body: platformMessageCentralVerifyBody }), idempotent, asyncHandler(controller.verifyIntegration("messageCentral")));
 platformRouter.post("/tenants/:tenantId/subscription/change-plan", tenantIdParam, validate({ body: platformSubscriptionChangeBody }), idempotent, asyncHandler(controller.subscriptionAction("change-plan")));
 platformRouter.patch("/tenants/:tenantId/subscription/limits", tenantIdParam, validate({ body: platformSubscriptionLimitsBody }), idempotent, asyncHandler(controller.subscriptionAction("limits")));
 platformRouter.post("/tenants/:tenantId/subscription/extend", tenantIdParam, validate({ body: platformSubscriptionExtendBody }), idempotent, asyncHandler(controller.subscriptionAction("extend")));
@@ -111,7 +81,6 @@ platformRouter.get("/tenants/:tenantId/invoices", tenantIdParam, asyncHandler(co
 platformRouter.post("/invoices/:invoiceId/mark-paid", invoiceIdParam, validate({ body: platformMarkInvoicePaidBody }), idempotent, asyncHandler(controller.markInvoicePaid));
 platformRouter.get("/tenants/:tenantId/flags", tenantIdParam, asyncHandler(controller.flags(false)));
 platformRouter.put("/tenants/:tenantId/flags", tenantIdParam, validate({ body: platformFlagsBody }), idempotent, asyncHandler(controller.flags(true)));
-platformRouter.get("/template-definitions", asyncHandler(controller.templates));
 platformRouter.get("/app-config", asyncHandler(controller.appConfig(false)));
 platformRouter.put("/app-config", idempotent, validate({ body: platformAppConfigBody }), asyncHandler(controller.appConfig(true)));
 platformRouter.get("/digital-metals/hedge-health", asyncHandler(controller.digitalMetalsHedgeHealth));

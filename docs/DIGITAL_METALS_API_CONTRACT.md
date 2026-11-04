@@ -241,18 +241,20 @@ Charge payment merchant prefix **`dmrpay_`**. Success finalizes to `CHARGE_PAID`
 | POST | `/admin/digital-metals/redemption/orders/:orderId/charge-refund/initiate` | payout.record |
 | POST | `/admin/digital-metals/redemption/charge-refunds/:refundCaseId/record-manual` | payout.approve |
 
-### Fulfilment (Phase 7)
+### Fulfilment (Phase 7, simplified P4)
+
+**Happy path (new orders):** `CHARGE_PAID` → `pickup-ready` (pickup; customer pickup code issued automatically) **or** `dispatch` (delivery) → `complete-pickup` / `complete-delivery` → `COMPLETED`. Legacy `accept` / `packing` remain for in-flight orders.
 
 | Method | Path | Permission |
 |--------|------|------------|
 | GET | `/admin/digital-metals/redemption/fulfilment/queue` | read |
-| POST | `.../fulfilment/accept` | redemption.fulfil |
-| POST | `.../fulfilment/packing` | redemption.fulfil |
+| POST | `.../fulfilment/accept` | redemption.fulfil (legacy) |
+| POST | `.../fulfilment/packing` | redemption.fulfil (legacy) |
 | POST | `.../fulfilment/delay` | redemption.fulfil |
 | POST | `.../fulfilment/dispatch` | redemption.fulfil (manual tracking labelled `MANUAL`); **`X-Idempotency-Key` required**; assigns immutable `shipmentEventId` and enqueues `DISPATCHED` notice in the same transaction |
 | POST | `.../fulfilment/pickup-ready` | redemption.fulfil |
 | POST | `.../fulfilment/pickup-code` | redemption.fulfil — returns one-time `pickupCode` to staff only |
-| POST | `.../fulfilment/complete-pickup` | redemption.fulfil |
+| POST | `.../fulfilment/complete-pickup` | redemption.fulfil — body: `pickupCode`, `fulfilmentBranchId`, `expectedVersion`, **`staffHandoverConfirmed: true`** (staff attestation that code was verified and metal handed over) |
 | POST | `.../fulfilment/complete-delivery` | redemption.fulfil — requires `approverAttestation: true` |
 | POST | `.../fulfilment/cancel` | redemption.fulfil — pre-dispatch only; releases reservation + refund case when charged |
 | POST | `.../fulfilment/investigation` | redemption.fulfil |
@@ -301,8 +303,9 @@ Commitments are reported separately and do not count as received coverage. Missi
 | GET | `/admin/digital-metals/procurement/entries/:id` | read |
 | POST | `/admin/digital-metals/procurement/entries` | procurement.write |
 | POST | `/admin/digital-metals/procurement/entries/:id/approve` | procurement.approve (≠ creator) |
-| GET | `/admin/digital-metals/hedge/live?businessDate=&asOf=` | report.read — IST `businessDate`; optional ISO `asOf` cutoff |
-| POST | `/admin/digital-metals/hedge/snapshots/close-day` | report.read — body `businessDate`, optional `revisionReason` |
+| GET | `/admin/digital-metals/dashboard/wallet-totals?branchId=` | read — lightweight wallet aggregates (held/reserved by metal); independent of hedge book |
+| GET | `/admin/digital-metals/hedge/live?businessDate=&asOf=` | report.read — **Daily hedge book** (ledger-derived metal owed); IST `businessDate`; optional ISO `asOf` cutoff; **no mandatory close** |
+| POST | `/admin/digital-metals/hedge/snapshots/close-day` | report.read — **legacy** optional snapshot; not required for daily operations |
 | GET | `/admin/digital-metals/hedge/snapshots/:businessDate` | report.read |
 | GET | `/admin/digital-metals/hedge/snapshots-invalidated` | report.read — invalidated closes requiring re-close |
 | GET | `/platform/digital-metals/hedge-health` | platform — aggregate only |

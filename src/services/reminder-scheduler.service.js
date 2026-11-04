@@ -12,11 +12,8 @@ import {
   releaseReminderSchedulerLease,
 } from "../lib/reminder-scheduler-lease.js";
 import { Customer, Payment, Scheme, Tenant } from "../models/index.js";
-import { installmentRemainingPaise } from "./admin-summary.service.js";
-import {
-  attachPaymentLinkToMessage,
-  claimReminderMessage,
-} from "./reminder-message.service.js";
+
+import { claimReminderMessage } from "./reminder-message.service.js";
 import {
   incrementOpsMetric,
   OpsMetric,
@@ -34,7 +31,7 @@ import {
   runBoundedSchemeStream,
 } from "../lib/reminder-scheme-runner.js";
 import { ReminderStream } from "../lib/reminder-stream-cursor.js";
-import * as payments from "./payment.service.js";
+
 
 function ymdAddDays(ymd, days) {
   return dayjs(`${ymd}T12:00:00+05:30`).add(days, "day").format("YYYY-MM-DD");
@@ -57,8 +54,8 @@ function channelDailyCap(config, channel) {
     const cap = config.maxPushPerCustomerPerDay ?? 3;
     return cap > 0 ? cap : Number.MAX_SAFE_INTEGER;
   }
-  const cap = config.maxWhatsAppPerCustomerPerDay ?? 0;
-  return cap > 0 ? cap : Number.MAX_SAFE_INTEGER;
+  if (channel === "WHATSAPP") return 0;
+  return Number.MAX_SAFE_INTEGER;
 }
 
 async function quotaCountsForCustomers({ tenantId, customerIds, channel, dayYmd }) {
@@ -157,15 +154,7 @@ async function latestPaymentsByScheme(tenantId, schemeIds) {
   return new Map(rows.map((row) => [row._id, row.paidAt]));
 }
 
-function systemPaymentLinkReq(scheme) {
-  return {
-    auth: { id: "reminder-worker", tenantId: scheme.tenantId, type: "SYSTEM" },
-    scope: { tenantId: scheme.tenantId, branchId: scheme.branchId },
-    headers: {},
-    ip: "worker",
-    body: {},
-  };
-}
+
 
 async function queueFixedOffsetReminder({
   config,
@@ -186,16 +175,14 @@ async function queueFixedOffsetReminder({
     offset.messageType
     ?? (offset.days > 0 ? MessageType.PAYMENT_OVERDUE : MessageType.PAYMENT_DUE);
   const pushOnly = offset.pushOnly === true;
-  const { whatsapp, push } = evaluateReminderChannels({
+  const { push } = evaluateReminderChannels({
     config,
-    customer,
     type,
     templateParams: { pushKind: offset.key },
     pushOnly,
     pushCountToday,
-    whatsAppCountToday: whatsAppCounts?.get(scheme.customerId) ?? 0,
   });
-  if (!whatsapp && !push) return 0;
+  if (!push) return 0;
 
   const baseParams = {
     mobile: customer.mobile,
@@ -203,7 +190,6 @@ async function queueFixedOffsetReminder({
     pushKind: offset.key,
   };
   let queued = 0;
-  let whatsappMessageId = null;
   const claimBase = {
     tenantId: scheme.tenantId,
     branchId: scheme.branchId,
@@ -216,17 +202,6 @@ async function queueFixedOffsetReminder({
     templateParams: baseParams,
   };
 
-  if (whatsapp) {
-    whatsappMessageId = await claimReminderWithDailyQuota({
-      config,
-      dayYmd: today,
-      channel: "WHATSAPP",
-      pushCounts,
-      whatsAppCounts,
-      claimArgs: claimBase,
-    });
-    if (whatsappMessageId) queued += 1;
-  }
   if (push) {
     const pushId = await claimReminderWithDailyQuota({
       config,
@@ -239,19 +214,6 @@ async function queueFixedOffsetReminder({
     if (pushId) queued += 1;
   }
 
-  if (
-    whatsappMessageId
-    && config.attachPaymentLink !== false
-  ) {
-    const remaining = installmentRemainingPaise(installment);
-    if (remaining > 0) {
-      const link = await payments.createPaymentLink({
-        ...systemPaymentLinkReq(scheme),
-        body: { schemeId: scheme._id, amountPaise: remaining },
-      });
-      await attachPaymentLinkToMessage(whatsappMessageId, link.token);
-    }
-  }
   return queued;
 }
 

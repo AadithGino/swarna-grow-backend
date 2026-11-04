@@ -7,7 +7,6 @@ import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { validate } from "../middlewares/validation.middleware.js";
 import { handoverBody, messageBody, uploadBody } from "../validators/common.validators.js";
 import {
-  bulkMessageResendBody,
   cashAdjustmentBody,
   grievanceAssignBody,
   grievancePriorityBody,
@@ -19,18 +18,15 @@ import {
   postSettlementRefundResolveBody,
   pushBroadcastAudiencePreviewBody,
   pushBroadcastBody,
-  reminderConfigPatchBody,
   uploadCompleteBody,
 } from "../validators/admin-mutation.validators.js";
 import { presignUpload } from "../services/upload.service.js";
 import * as upload from "../controllers/upload.controller.js";
-import { CashHandover, Customer, Message, WebhookEvent } from "../models/index.js";
+import { CashHandover } from "../models/index.js";
 import { Permission } from "../constants/permissions.js";
 import { guarded } from "../lib/route.js";
 import { AppError, errors } from "../lib/app-error.js";
-import { getQueue } from "../queues/index.js";
 import * as audit from "../services/audit.service.js";
-import * as messaging from "../services/messaging.service.js";
 
 export const adminOperationsRouter = Router();
 adminOperationsRouter.get("/cash/overview", ...guarded(Permission.CASH_READ, asyncHandler(controller.cashOverview)));
@@ -79,67 +75,6 @@ adminOperationsRouter.post(
     validate({ body: cashAdjustmentBody }),
     idempotent,
     asyncHandler(controller.cashAdjustment),
-  ),
-);
-adminOperationsRouter.get("/messaging/templates", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.templates)));
-adminOperationsRouter.get("/messaging/templates/:messageType/preview", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.templatePreview)));
-adminOperationsRouter.get("/messaging/summary", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.messageSummary)));
-adminOperationsRouter.get("/messaging/messages", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.messages)));
-adminOperationsRouter.get("/messaging/messages/:messageId", ...guarded(Permission.MESSAGE_READ, asyncHandler(controller.messageDetail)));
-adminOperationsRouter.post("/messaging/messages/:messageId/resend", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(controller.resendMessage)));
-adminOperationsRouter.post(
-  "/messaging/messages/bulk-resend",
-  ...guarded(
-    Permission.MESSAGE_SEND,
-    validate({ body: bulkMessageResendBody }),
-    idempotent,
-    asyncHandler(async (req, res) =>
-      sendSuccess(res, await messaging.bulkResendMessages(req), {}, 202),
-    ),
-  ),
-);
-adminOperationsRouter.get("/messaging/opt-outs", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, await Customer.find({ ...req.scope, whatsappOptedOutAt: { $ne: null } }).select("_id customerNumber name mobile whatsappOptedOutAt").lean()))));
-adminOperationsRouter.get("/messaging/quota", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, { used: await Message.countDocuments(req.scope), limit: req.tenant.subscription?.limits?.whatsappMessages ?? null }))));
-adminOperationsRouter.get("/messaging/dead-letter", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => sendSuccess(res, await WebhookEvent.find({ ...req.scope, status: "DEAD_LETTER" }).lean()))));
-adminOperationsRouter.post("/messaging/dead-letter/:id/requeue", ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(async (req, res) => {
-  const { replayWebhookEvent } = await import("../services/webhook-event.service.js");
-  const replayed = await replayWebhookEvent({
-    tenantId: req.auth.tenantId,
-    webhookEventId: req.params.id,
-  });
-  if (!replayed) throw errors.notFound("Webhook event");
-  await getQueue("webhooks")?.add(
-    replayed.provider.toLowerCase(),
-    { webhookEventId: replayed._id },
-    {
-      jobId: `${replayed._id}-requeue-${Date.now()}`,
-      attempts: 5,
-      backoff: { type: "exponential", delay: 5000 },
-    },
-  );
-  sendSuccess(res, { id: replayed._id, queued: true }, {}, 202);
-})));
-adminOperationsRouter.get("/messaging/inbound", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => {
-  const { listInboundMessages } = await import("../services/inbound-message.service.js");
-  const page = await listInboundMessages(req);
-  return sendList(res, page);
-})));
-adminOperationsRouter.get("/messaging/inbound/:id", ...guarded(Permission.MESSAGE_READ, asyncHandler(async (req, res) => {
-  const { getInboundMessage } = await import("../services/inbound-message.service.js");
-  return sendSuccess(res, await getInboundMessage(req));
-})));
-adminOperationsRouter.post("/messaging/inbound/:id/read", ...guarded(Permission.MESSAGE_READ, idempotent, asyncHandler(async (req, res) => {
-  const { markInboundMessageRead } = await import("../services/inbound-message.service.js");
-  return sendSuccess(res, await markInboundMessageRead(req));
-})));
-adminOperationsRouter.get("/reminders/config", ...guarded(Permission.SETTINGS_READ, asyncHandler(controller.reminderConfig)));
-adminOperationsRouter.put(
-  "/reminders/config",
-  ...guarded(
-    Permission.SETTINGS_WRITE,
-    validate({ body: reminderConfigPatchBody }),
-    idempotent,
-    asyncHandler(controller.updateReminderConfig),
   ),
 );
 adminOperationsRouter.post(

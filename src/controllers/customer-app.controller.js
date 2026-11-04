@@ -4,7 +4,11 @@ import { presignUpload } from "../services/upload.service.js";
 import { mapCustomerPlanListItem } from "../lib/customer-app-dto.js";
 import { validateEnrolmentResponse } from "../services/scheme.service.js";
 import * as plans from "../services/plan.service.js";
-import { paymentIntentAppDto, paymentLinkDto } from "../lib/customer-app-dto.js";
+import {
+  paymentIntentAppDto,
+  paymentLinkDto,
+  paymentLinkSdkCheckoutDto,
+} from "../lib/customer-app-dto.js";
 import * as payments from "../services/payment.service.js";
 import { PaymentPattern } from "../constants/enums.js";
 import { Scheme } from "../models/index.js";
@@ -37,6 +41,9 @@ export const getScheme = async (req, res) =>
 
 export const listPayments = async (req, res) =>
   sendList(res, await customerApp.listPaymentsForApp(req));
+
+export const listActivity = async (req, res) =>
+  sendList(res, await customerApp.listActivityForApp(req));
 
 export const getPayment = async (req, res) =>
   sendSuccess(res, await customerApp.getPaymentForApp(req));
@@ -122,7 +129,29 @@ export const fixedSchemePay = async (req, res) => {
   req.body.schemeId = req.params.schemeId;
   req.scope = { tenantId: req.auth.tenantId, customerId: req.auth.id };
   const link = await payments.createPaymentLink(req);
-  return sendSuccess(res, paymentLinkDto(link, link.token), {}, 201);
+  const base = paymentLinkDto({ ...link, _id: link.id }, link.token);
+  if (req.body.redirectUrl) {
+    const initiated = await payments.initiatePublicPayment({
+      params: { linkToken: link.token },
+      body: { redirectUrl: req.body.redirectUrl },
+    });
+    const hostedUrl = initiated.redirectUrl ?? initiated.paymentUrl ?? null;
+    return sendSuccess(
+      res,
+      {
+        ...base,
+        checkoutKind: hostedUrl ? "HOSTED_REDIRECT" : base.checkoutKind,
+        provider: hostedUrl ? "PHONEPE" : base.provider,
+        paymentUrl: hostedUrl ?? undefined,
+        gatewayUrl: hostedUrl ?? base.gatewayUrl,
+        paymentId: initiated.paymentId ?? base.transactionId,
+        statusPollUrl: `/app/payments/${link.id}/status`,
+      },
+      {},
+      201,
+    );
+  }
+  return sendSuccess(res, base, {}, 201);
 };
 
 export const createIntent = async (req, res) => {
@@ -140,17 +169,56 @@ export const createIntent = async (req, res) => {
 };
 
 export const createSdkOrder = async (req, res) => {
-  const created = await payments.createSdkPaymentIntent(req);
-  return sendSuccess(
-    res,
-    paymentIntentAppDto(created, {
-      token: created.token,
-      merchantOrderId: created.merchantOrderId,
-      paymentId: created.paymentId,
-      providerOrderId: created.providerOrderId,
-    }),
-    {},
-    201,
+  const scheme = await Scheme.findOne({
+    _id: req.params.schemeId,
+    tenantId: req.auth.tenantId,
+    customerId: req.auth.id,
+  }).lean();
+  if (!scheme) throw errors.notFound("Scheme");
+  if (scheme.paymentPattern === PaymentPattern.FLEXIBLE) {
+    const created = await payments.createSdkPaymentIntent(req);
+    return sendSuccess(
+      res,
+      paymentIntentAppDto(created, {
+        token: created.token,
+        merchantOrderId: created.merchantOrderId,
+        paymentId: created.paymentId,
+        providerOrderId: created.providerOrderId,
+      }),
+      {},
+      201,
+    );
+  }
+  if (scheme.paymentPattern === PaymentPattern.FIXED) {
+    const created = await payments.createFixedSdkPayment(req);
+    return sendSuccess(
+      res,
+      paymentLinkSdkCheckoutDto(
+        {
+          _id: created.paymentLinkId,
+          schemeId: scheme._id,
+          amountPaise: created.amountPaise,
+          status: created.status,
+          expiresAt: created.expiresAt,
+          paymentId: created.paymentId,
+          url: created.url,
+        },
+        created.linkToken,
+        {
+          sdkToken: created.sdkToken,
+          merchantOrderId: created.merchantOrderId,
+          providerOrderId: created.providerOrderId,
+          paymentId: created.paymentId,
+        },
+      ),
+      {},
+      201,
+    );
+  }
+  throw new AppError(
+    "PAYMENT_PATTERN_UNSUPPORTED",
+    "SDK checkout is supported only for fixed and flexible schemes.",
+    422,
   );
 };
 
@@ -170,6 +238,22 @@ export const getIntent = async (req, res) => {
     intent,
     payment,
   });
+  if (
+    payment?.status === "PENDING"
+    && payment.mode === "ONLINE_GATEWAY"
+  ) {
+    try {
+      const { reconcileGatewayPayment } = await import("../services/phonepe-reconcile.service.js");
+      await reconcileGatewayPayment(payment, {
+        source: "CUSTOMER_INTENT_POLL",
+        leaseWorkerLabel: "customer-poll",
+      });
+      payment = (await Payment.findById(payment._id).lean()) ?? payment;
+      intent = (await PaymentIntent.findById(intent._id).lean()) ?? intent;
+    } catch {
+      /* best-effort — same as shop / DM poll */
+    }
+  }
   if (payment?.status === "SUCCESS") {
     intent = (await PaymentIntent.findById(intent._id).lean()) ?? intent;
   }

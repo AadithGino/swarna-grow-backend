@@ -2,6 +2,8 @@ import { Router } from "express";
 import * as scheme from "../controllers/scheme.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import * as operations from "../controllers/operations.controller.js";
+import * as analytics from "../controllers/analytics.controller.js";
+import { errors } from "../lib/app-error.js";
 import {
   AuditEntityType,
   ClosureType,
@@ -36,8 +38,7 @@ import {
   redemptionBody,
   settlementPreviewQuery,
 } from "../validators/common.validators.js";
-import { guarded } from "../lib/route.js";
-import { errors } from "../lib/app-error.js";
+import { guarded, guardedAny } from "../lib/route.js";
 import * as audit from "../services/audit.service.js";
 
 export const adminSchemeRouter = Router();
@@ -272,6 +273,14 @@ adminSchemeRouter.get(
   ),
 );
 adminSchemeRouter.get(
+  "/payments/needing-attention",
+  ...guardedAny(
+    Permission.ECOMMERCE_READ,
+    Permission.DIGITAL_METALS_READ,
+    asyncHandler(analytics.paymentsNeedingAttention),
+  ),
+);
+adminSchemeRouter.get(
   "/payments/:paymentId",
   ...guarded(Permission.PAYMENT_READ, asyncHandler(payment.detail)),
 );
@@ -307,10 +316,6 @@ adminSchemeRouter.post(
     idempotent,
     asyncHandler(payment.passbookImage),
   ),
-);
-adminSchemeRouter.post(
-  "/payments/:paymentId/share-whatsapp",
-  ...guarded(Permission.MESSAGE_SEND, idempotent, asyncHandler(payment.share)),
 );
 adminSchemeRouter.post(
   "/payments/:paymentId/reverse",
@@ -472,14 +477,6 @@ adminSchemeRouter.post(
     Permission.PAYMENT_RECORD,
     idempotent,
     asyncHandler(payment.cancelLink),
-  ),
-);
-adminSchemeRouter.post(
-  "/payment-links/:linkId/resend",
-  ...guarded(
-    Permission.MESSAGE_SEND,
-    idempotent,
-    asyncHandler(payment.resendLink),
   ),
 );
 adminSchemeRouter.get(

@@ -368,6 +368,18 @@ export const ecommerceCodRemittanceReconcileBody = z
   })
   .strict();
 
+export const ecommerceRecordCourierMoneyReceivedBody = z
+  .object({
+    orderIds: z.array(z.string().trim().min(1).max(80)).min(1).max(100),
+    bankCreditReference: z.string().trim().min(2).max(160),
+    bankCreditRupees: z.union([z.number(), z.string()]),
+    totalCourierFeeRupees: z.union([z.number(), z.string()]).optional(),
+    bankCreditedAt: z.string().datetime().optional(),
+    statementReference: z.string().trim().min(2).max(160).optional(),
+    providerId: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict();
+
 export const ecommerceOrderCreateBody = z
   .object({
     quoteId: z.string().trim().min(4).max(80),
@@ -429,6 +441,7 @@ export const ecommerceCodCancellationManualRefundBody = z
 
 export const ecommercePaymentExceptionRefundManualBody = z
   .object({
+    refundId: z.string().trim().min(1).optional(),
     providerRefundReference: z.string().trim().min(4).max(120),
     reason: z.string().trim().min(8).max(500),
     evidenceNote: z.string().trim().min(8).max(2000),
@@ -542,15 +555,62 @@ export const ecommerceSummaryQuery = z
 
 export const ecommercePickupConfirmBody = z
   .object({
-    code: z.string().trim().regex(/^\d{6}$/),
+    code: z.string().trim().regex(/^\d{6}$/).optional(),
+    staffHandoverChallengeCode: z.string().trim().regex(/^\d{6}$/).optional(),
     recipientName: z.string().trim().min(2).max(120).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((body, ctx) => {
+    const hasCustomer = Boolean(body.code);
+    const hasLegacy = Boolean(body.staffHandoverChallengeCode);
+    if (hasCustomer === hasLegacy) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide the customer pickup code or the legacy staff challenge code, not both.",
+        path: ["code"],
+      });
+    }
+  });
 
 export const ecommerceDeliveryHandoverBody = z
   .object({
     expectedVersion: z.number().int().nonnegative(),
     proofReference: z.string().trim().min(4).max(160),
+    recipientName: z.string().trim().min(2).max(120),
+  })
+  .strict();
+
+export const ecommerceShipOrderBody = z
+  .object({
+    expectedVersion: z.number().int().nonnegative(),
+    carrierName: z.string().trim().max(120).optional(),
+    trackingNumber: z.string().trim().max(80).optional(),
+    trackingUrl: z.string().trim().max(500).optional(),
+    dispatchedAt: z.string().datetime().optional(),
+  })
+  .strict();
+
+export const ecommerceConfirmOrderDeliveryBody = z
+  .object({
+    expectedVersion: z.number().int().nonnegative(),
+    proofReference: z.string().trim().min(4).max(160),
+    recipientName: z.string().trim().min(2).max(120),
+    courierCollectionReference: z.string().trim().min(2).max(160).optional(),
+    courierCollectionEvidenceNote: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+export const ecommerceReadyForPickupBody = z
+  .object({
+    expectedVersion: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const ecommerceConfirmPickupCollectionBody = z
+  .object({
+    expectedVersion: z.number().int().nonnegative(),
+    pickupCode: z.string().trim().regex(/^\d{6}$/),
+    staffHandoverConfirmed: z.literal(true),
     recipientName: z.string().trim().min(2).max(120),
   })
   .strict();

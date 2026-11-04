@@ -26,12 +26,23 @@ const integrationSecretsSchema = new mongoose.Schema({
     verifiedAt: Date,
     verificationStatus: String,
   },
-  whatsapp: { provider: String, phoneNumberId: String, businessAccountId: String, accessToken: String, appSecret: String, verifyToken: String, environment: String, callbackUrlOverride: String, verifiedAt: Date, verificationStatus: String },
   fcm: {
     projectId: String,
     serviceAccountJsonSealed: { type: String, select: false },
     credentialVersion: { type: Number, default: 1 },
     updatedAt: Date,
+  },
+  messageCentral: {
+    provider: String,
+    customerId: String,
+    keySealed: String,
+    email: String,
+    countryCode: { type: String, default: "91" },
+    flowType: { type: String, default: "SMS" },
+    otpLength: { type: Number, default: 6 },
+    credentialVersion: { type: Number, default: 1 },
+    verifiedAt: Date,
+    verificationStatus: String,
   },
 }, { _id: false });
 
@@ -75,6 +86,8 @@ const tenantOperationsSchema = new mongoose.Schema(
     redemptionApprovalRequired: { type: Boolean, default: true },
     termsAndConditions: { type: String, default: "" },
     ecommerceEnabled: { type: Boolean, default: false },
+    /** Tenant opt-in for live ecommerce PhonePe checkout (with platform ECOMMERCE_PAYMENTS_ROLLOUT_ENABLED). */
+    ecommercePaymentsRolloutEnabled: { type: Boolean, default: false },
     digitalMetalsEnabled: { type: Boolean, default: false },
     digitalMetalsPaused: { type: Boolean, default: false },
     digitalMetalsPauseReason: { type: String, default: "" },

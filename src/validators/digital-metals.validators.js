@@ -165,6 +165,17 @@ export const digitalMetalsSellApproveBody = z
   })
   .strict();
 
+export const digitalMetalsSellRecordPaymentBody = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    amountPaise: z.number().int().positive(),
+    settlementDate: z.string().trim().min(8).max(32),
+    bankReference: z.string().trim().min(1).max(128),
+    evidenceUploadIds: z.array(z.string().trim().min(1)).min(1).max(10),
+    staffAttestation: z.literal(true),
+  })
+  .strict();
+
 export const digitalMetalsBankDestinationCreateBody = z
   .object({
     accountHolderName: z.string().trim().min(2).max(120),
@@ -330,6 +341,7 @@ export const digitalMetalsRedemptionFulfilmentVersionBody = z
     trackingReference: z.string().trim().max(128).optional(),
     evidenceUploadIds: z.array(z.string().trim().min(1)).max(10).optional(),
     pickupCode: z.string().trim().min(4).max(12).optional(),
+    staffHandoverConfirmed: z.boolean().optional(),
     approverAttestation: z.boolean().optional(),
     reason: z.string().trim().max(500).optional(),
   })
@@ -390,6 +402,17 @@ export const digitalMetalsAdminScopedOrderListQuery = z
     status: z.string().trim().max(64).optional(),
     customerId: z.string().trim().min(1).optional(),
     q: z.string().trim().max(80).optional(),
+  })
+  .passthrough();
+
+export const digitalMetalsHedgeDailyIndexQuery = z
+  .object({
+    days: z.coerce.number().int().min(1).max(14).optional(),
+    endDate: z
+      .string()
+      .trim()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
   })
   .passthrough();
 

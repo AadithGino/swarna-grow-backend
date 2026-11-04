@@ -49,7 +49,7 @@ test("push daily cap blocks push only", () => {
     pushOnly: false,
     pushCountToday: 99,
   });
-  assert.equal(channels.whatsapp, true);
+  assert.equal(channels.whatsapp, false);
   assert.equal(channels.push, false);
 });
 

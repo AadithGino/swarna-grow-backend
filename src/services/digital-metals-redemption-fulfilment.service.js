@@ -1,3 +1,4 @@
+import { beforeDigitalMetalHandoverForTests } from "../lib/digital-metals-handover-test-hooks.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -13,17 +14,6 @@ import { ensureRedemptionChargeRefundCase } from "./digital-metals-redemption-ch
 import { enqueueRedemptionCustomerNotice } from "../lib/digital-metals-customer-notice.js";
 import { redemptionFulfilmentTestHooks } from "../lib/digital-metals-redemption-fulfilment-test-hooks.js";
 
-async function notifyRedemptionTransition(orderLike, transition, eventAt = new Date()) {
-  await withTransaction(async (session) => {
-    await enqueueRedemptionCustomerNotice(session, {
-      tenantId: orderLike.tenantId,
-      orderId: orderLike._id,
-      customerId: orderLike.customerId,
-      transition,
-      eventAt,
-    });
-  });
-}
 import {
   Customer,
   DigitalMetalPhysicalOutEvent,
@@ -95,10 +85,21 @@ function assertFulfilmentAllowed(order) {
   throw new AppError("INVALID_STATE", "Order is not in a fulfilment state.", 409);
 }
 
+function applyFreshPickupCode(orderDoc) {
+  const code = generatePickupCode();
+  orderDoc.pickupCodeHash = hashPickupCode(code);
+  orderDoc.pickupCodeSealed = seal(code);
+  orderDoc.pickupCodeExpiresAt = new Date(Date.now() + PICKUP_CODE_TTL_MS);
+  orderDoc.pickupCodeAttempts = 0;
+}
+
 export function buildPermittedFulfilmentActions(order, auth) {
   const actions = [];
   if (!order || !auth?.id) return actions;
-  if (order.status === "CHARGE_PAID") actions.push("ACCEPT_FULFILMENT", "CANCEL_PRE_DISPATCH");
+  if (order.status === "CHARGE_PAID") {
+    if (order.fulfilmentMode === "DELIVERY") actions.push("DISPATCH", "CANCEL_PRE_DISPATCH");
+    else actions.push("MARK_PICKUP_READY", "CANCEL_PRE_DISPATCH");
+  }
   if (order.status === "FULFILMENT_ACCEPTED") actions.push("RECORD_PACKING", "RECORD_DELAY", "CANCEL_PRE_DISPATCH");
   if (order.status === "PACKING") {
     if (order.fulfilmentMode === "DELIVERY") actions.push("DISPATCH");
@@ -285,8 +286,8 @@ export async function dispatchRedemptionOrder(req) {
     });
   }
   assertVersion(order, req.body.expectedVersion);
-  if (order.status !== "PACKING" || order.fulfilmentMode !== "DELIVERY") {
-    throw new AppError("INVALID_STATE", "Order must be packing for delivery dispatch.", 409);
+  if (!["CHARGE_PAID", "PACKING"].includes(order.status) || order.fulfilmentMode !== "DELIVERY") {
+    throw new AppError("INVALID_STATE", "Order must be charge-paid (or legacy packing) for delivery dispatch.", 409);
   }
   const shipmentEventId = createId("dmship");
   const dispatchedAt = new Date();
@@ -294,7 +295,7 @@ export async function dispatchRedemptionOrder(req) {
     const locked = await DigitalMetalRedemptionOrder.findOne({
       _id: order._id,
       tenantId: req.auth.tenantId,
-      status: "PACKING",
+      status: { $in: ["CHARGE_PAID", "PACKING"] },
     }).session(session);
     if (!locked) throw errors.conflict("STATE_RACE", "Order state changed.");
     locked.status = "DISPATCHED";
@@ -340,17 +341,35 @@ export async function dispatchRedemptionOrder(req) {
 export async function markPickupReady(req) {
   const order = await loadOrderForAdmin(req, req.params.orderId);
   assertVersion(order, req.body.expectedVersion);
-  if (order.status !== "PACKING" || order.fulfilmentMode !== "PICKUP") {
-    throw new AppError("INVALID_STATE", "Order must be packing for pickup.", 409);
+  if (!["CHARGE_PAID", "PACKING"].includes(order.status) || order.fulfilmentMode !== "PICKUP") {
+    throw new AppError("INVALID_STATE", "Order must be charge-paid (or legacy packing) for pickup.", 409);
   }
-  order.status = "PICKUP_READY";
-  order.fulfilmentBranchId = req.body.fulfilmentBranchId ?? order.fulfilmentBranchId ?? order.pickupBranchId;
-  appendHistory(order, "PICKUP_READY", req.auth.id);
-  order.version = (order.version ?? 1) + 1;
-  await order.save();
-  await notifyRedemptionTransition(order, "PICKUP_READY");
-  return mapFulfilmentOrder(order.toObject(), {
-    permittedActions: buildPermittedFulfilmentActions(order, req.auth),
+  const updated = await withTransaction(async (session) => {
+    const locked = await DigitalMetalRedemptionOrder.findOne({
+      _id: order._id,
+      tenantId: req.auth.tenantId,
+      status: { $in: ["CHARGE_PAID", "PACKING"] },
+      version: order.version ?? 1,
+    }).session(session);
+    if (!locked) throw errors.conflict("STATE_RACE", "Order state changed.");
+    locked.status = "PICKUP_READY";
+    locked.fulfilmentBranchId =
+      req.body.fulfilmentBranchId ?? locked.fulfilmentBranchId ?? locked.pickupBranchId;
+    if (!locked.pickupCodeHash) applyFreshPickupCode(locked);
+    appendHistory(locked, "PICKUP_READY", req.auth.id, "Ready for pickup — customer code active");
+    locked.version = (locked.version ?? 1) + 1;
+    await locked.save({ session });
+    await enqueueRedemptionCustomerNotice(session, {
+      tenantId: locked.tenantId,
+      orderId: locked._id,
+      customerId: locked.customerId,
+      transition: "PICKUP_READY",
+      eventAt: new Date(),
+    });
+    return locked.toObject();
+  });
+  return mapFulfilmentOrder(updated, {
+    permittedActions: buildPermittedFulfilmentActions(updated, req.auth),
   });
 }
 
@@ -365,9 +384,20 @@ export async function issuePickupCode(req) {
   order.pickupCodeAttempts = 0;
   appendHistory(order, "PICKUP_READY", req.auth.id, "Pickup code reissued");
   order.version = (order.version ?? 1) + 1;
-  await order.save();
+  const updated = await DigitalMetalRedemptionOrder.findOneAndUpdate(
+    { _id: order._id, tenantId: req.auth.tenantId, status: "PICKUP_READY", version: Number(req.body.expectedVersion) },
+    { $set: {
+      pickupCodeHash: order.pickupCodeHash,
+      pickupCodeSealed: order.pickupCodeSealed,
+      pickupCodeExpiresAt: order.pickupCodeExpiresAt,
+      pickupCodeAttempts: 0,
+      statusHistory: order.statusHistory,
+    }, $inc: { version: 1 } },
+    { new: true },
+  );
+  if (!updated) throw errors.conflict("VERSION_CONFLICT", "Pickup code or order changed; refresh and retry.");
   return {
-    order: mapFulfilmentOrder(order.toObject(), {
+    order: mapFulfilmentOrder(updated.toObject(), {
       permittedActions: buildPermittedFulfilmentActions(order, req.auth),
     }),
     pickupCodeIssued: true,
@@ -402,15 +432,23 @@ export async function completePickupHandover(req) {
   if ((order.pickupCodeAttempts ?? 0) >= maxAttempts) {
     throw new AppError("PICKUP_CODE_LOCKED", "Too many invalid attempts. Reissue the code.", 403);
   }
+  if (req.body.staffHandoverConfirmed !== true) {
+    throw errors.validation([
+      { field: "staffHandoverConfirmed", message: "Authorized staff must confirm physical handover." },
+    ]);
+  }
   const code = String(req.body.pickupCode ?? "").trim();
   if (!order.pickupCodeHash || !pickupCodeMatches(order.pickupCodeHash, code)) {
-    order.pickupCodeAttempts = (order.pickupCodeAttempts ?? 0) + 1;
-    await order.save();
+    await DigitalMetalRedemptionOrder.updateOne(
+      { _id: order._id, tenantId: req.auth.tenantId, status: "PICKUP_READY", version: order.version, pickupCodeHash: order.pickupCodeHash },
+      { $inc: { pickupCodeAttempts: 1 } },
+    );
     throw new AppError("PICKUP_CODE_INVALID", "Invalid pickup code.", 403);
   }
   if (order.pickupCodeExpiresAt && new Date(order.pickupCodeExpiresAt).getTime() < Date.now()) {
     throw new AppError("PICKUP_CODE_EXPIRED", "Pickup code expired.", 409);
   }
+  await beforeDigitalMetalHandoverForTests();
   return finalizePhysicalHandover(req, order, "PICKUP");
 }
 
@@ -440,6 +478,7 @@ async function finalizePhysicalHandover(req, orderDoc, mode) {
     idempotencyKey,
   }).lean();
   if (existing) {
+    if (String(existing.redemptionOrderId) !== String(orderDoc._id)) throw errors.conflict("IDEMPOTENCY_KEY_REUSED", "Handover key belongs to another order.");
     const fresh = await DigitalMetalRedemptionOrder.findById(orderDoc._id).lean();
     return mapFulfilmentOrder(fresh, { physicalOutEventId: existing._id, replay: true });
   }
@@ -453,6 +492,12 @@ async function finalizePhysicalHandover(req, orderDoc, mode) {
       _id: orderDoc._id,
       tenantId: req.auth.tenantId,
       status: orderDoc.status,
+      version: orderDoc.version,
+      ...(mode === "PICKUP" ? {
+        pickupCodeHash: orderDoc.pickupCodeHash,
+        pickupCodeExpiresAt: { $gt: new Date() },
+        pickupCodeAttempts: { $lt: orderDoc.pickupCodeMaxAttempts ?? PICKUP_CODE_MAX_ATTEMPTS },
+      } : {}),
     }).session(session);
     if (!locked) throw errors.conflict("STATE_RACE", "Order state changed.");
     await commitReservation(session, locked.tenantId, reserveKey, commitKey);
@@ -475,6 +520,10 @@ async function finalizePhysicalHandover(req, orderDoc, mode) {
       ],
       { session },
     );
+    if (mode === "DELIVERY") {
+      locked.completionAttestation = orderDoc.completionAttestation === true;
+      locked.completionEvidenceUploadIds = [...(orderDoc.completionEvidenceUploadIds ?? [])];
+    }
     locked.status = "COMPLETED";
     locked.completedAt = new Date();
     locked.physicalOutEventId = eventId;

@@ -27,7 +27,11 @@ export const ECOMMERCE_ORDER_TRANSITIONS = Object.freeze({
     [EcommerceOrderStatus.REFUND_PENDING]: [EcommerceOrderStatus.REFUNDED],
   }),
   STAFF: Object.freeze({
-    [EcommerceOrderStatus.PAID]: [EcommerceOrderStatus.PROCESSING],
+    [EcommerceOrderStatus.PAID]: [
+      EcommerceOrderStatus.PROCESSING,
+      EcommerceOrderStatus.READY_FOR_PICKUP,
+      EcommerceOrderStatus.SHIPPED,
+    ],
     [EcommerceOrderStatus.PROCESSING]: [
       EcommerceOrderStatus.READY_FOR_PICKUP,
       EcommerceOrderStatus.SHIPPED,

@@ -1,7 +1,9 @@
+import { claimManualRefund } from "../lib/ecommerce-manual-refund.js";
 import { createId } from "../lib/ids.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
+import { returnEligibilityAnchorAt } from "../lib/ecommerce-return-eligibility.js";
 import { mapPublishedStorePolicies } from "../lib/ecommerce-store-policies.js";
 import { applyReturnReceiptRestockOnce } from "../lib/ecommerce-order-stock-restock.js";
 import {
@@ -60,9 +62,9 @@ function returnEligible(order, settingsRow) {
   if (days <= 0) {
     return { allowed: false, code: "RETURNS_NOT_CONFIGURED" };
   }
-  const deliveredAt = order.deliveryTracking?.deliveredAt ?? order.updatedAt ?? order.createdAt;
-  if (!deliveredAt) return { allowed: false, code: "DELIVERY_DATE_UNKNOWN" };
-  const elapsed = Date.now() - new Date(deliveredAt).getTime();
+  const anchorAt = returnEligibilityAnchorAt(order);
+  if (!anchorAt) return { allowed: false, code: "DELIVERY_DATE_UNKNOWN" };
+  const elapsed = Date.now() - anchorAt.getTime();
   if (elapsed > days * 86_400_000) {
     return { allowed: false, code: "RETURN_WINDOW_EXPIRED" };
   }
@@ -131,7 +133,7 @@ async function createOnlineReturnRefundCase({ tenantId, order, returnRequestId, 
   const refundId = createId("epayref");
   try {
     const row = await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      { tenantId, orderId: order._id },
+      { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
       {
         $setOnInsert: {
           _id: refundId,
@@ -201,6 +203,8 @@ export async function createCustomerReturnRequest(req) {
         return { request: mapReturn(dup), created: false };
       }
     }
+    const priorResolved = await EcommerceOrderReturnRequest.findOne({ tenantId: req.auth.tenantId, orderId: order._id, status: "RESOLVED" }).session(session).lean();
+    if (priorResolved) throw errors.business("RETURN_ALREADY_RESOLVED", "The original order has already been returned or exchanged.");
     const now = new Date();
     const row = (
       await EcommerceOrderReturnRequest.create(
@@ -422,6 +426,12 @@ export async function resolveAdminReturnRequest(req) {
         session,
       });
     }
+    if (row.kind === EcommerceOrderReturnKind.RETURN && !row.manualRefundRecordedAt) {
+      const refund = row.onlineRefundId ? await EcommercePaymentExceptionRefund.findOne({ _id: row.onlineRefundId, tenantId: req.auth.tenantId, orderId: row.orderId }).session(session).lean() : null;
+      if (!refund || !["SUCCEEDED", "MANUAL_RECORDED"].includes(refund.status)) {
+        throw errors.business("RETURN_REFUND_INCOMPLETE", "Record completed repayment before resolving this return.");
+      }
+    }
     row.status = EcommerceOrderReturnRequestStatus.RESOLVED;
     row.resolutionNote = resolutionNote;
     row.replacementOrderId = replacementOrderId;
@@ -453,6 +463,7 @@ export async function createAdminReturnRefundCase(req) {
       return { request: mapReturn(row.toObject()), refund: existing, created: false };
     }
     assertExpectedVersion(row, expectedVersion);
+    if (row.manualRefundRecordedAt) throw errors.business("REFUND_ALREADY_RECORDED", "Manual repayment was already recorded.");
     if (row.kind !== EcommerceOrderReturnKind.RETURN) {
       throw errors.business("REFUND_NOT_APPLICABLE", "Refund cases apply to return requests, not exchanges.");
     }
@@ -506,6 +517,7 @@ export async function recordAdminReturnManualRefund(req) {
       return { request: mapReturn(row.toObject()), recorded: false };
     }
     assertExpectedVersion(row, expectedVersion);
+    if (row.manualRefundRecordedAt) throw errors.business("REFUND_ALREADY_RECORDED", "Manual repayment was already recorded.");
     if (row.kind !== EcommerceOrderReturnKind.RETURN) {
       throw errors.business("REFUND_NOT_APPLICABLE", "Manual refunds apply to return requests.");
     }
@@ -521,6 +533,16 @@ export async function recordAdminReturnManualRefund(req) {
         { field: "amountPaise", message: "Refund amount must match the order total for this return." },
       ]);
     }
+    let onlineRefundId = row.onlineRefundId;
+    if (order.paymentMethod === EcommercePaymentMethod.ONLINE) {
+      const refundCase = onlineRefundId
+        ? await EcommercePaymentExceptionRefund.findOne({ _id: onlineRefundId, tenantId: req.auth.tenantId, orderId: order._id }).session(session)
+        : await createOnlineReturnRefundCase({ tenantId: req.auth.tenantId, order, returnRequestId: row._id, session });
+      if (!refundCase) throw errors.notFound("Refund case");
+      if (Number(refundCase.amountPaise) !== amountPaise) throw errors.business("REFUND_AMOUNT_MISMATCH", "Refund entitlement differs from manual repayment.");
+      await claimManualRefund(session, { tenantId: req.auth.tenantId, orderId: order._id, refundId: refundCase._id, reference, userId: req.auth.id });
+      onlineRefundId = refundCase._id;
+    }
     const updated = await EcommerceOrderReturnRequest.findOneAndUpdate(
       {
         _id: row._id,
@@ -530,8 +552,10 @@ export async function recordAdminReturnManualRefund(req) {
       },
       {
         $set: {
+          ...(onlineRefundId ? { onlineRefundId } : {}),
           manualRefundRecordedAt: new Date(),
           manualRefundProof: {
+            ...(onlineRefundId ? { refundCaseId: onlineRefundId } : {}),
             amountPaise,
             recipient,
             method,

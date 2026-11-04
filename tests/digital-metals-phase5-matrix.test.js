@@ -173,11 +173,16 @@ async function sellThroughConfirm({ tenant, user, customer, token, quantityUg = 
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", confirmKey)
     .send({ bankDestinationId: dest._id });
-  assert.equal(confirm.status, 200);
-  return { order: order.body.data, dest, adminToken: bearerFor(user), confirmKey };
+  assert.equal(confirm.status, 200, JSON.stringify(confirm.body?.error ?? {}));
+  return {
+    order: { ...order.body.data, ...confirm.body.data, version: confirm.body.data.version },
+    dest,
+    adminToken: bearerFor(user),
+    confirmKey,
+  };
 }
 
-test("duplicate sell confirm is idempotent for pending approval", async () => {
+test("duplicate sell confirm is idempotent after auto-acceptance", async () => {
   const { tenant, branch, user } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const token = await customerToken({ tenant, branch, customer });
@@ -195,7 +200,7 @@ test("duplicate sell confirm is idempotent for pending approval", async () => {
     .set("X-Idempotency-Key", randomUUID())
     .send({ bankDestinationId: dest._id });
   assert.equal(dupState.status, 200);
-  assert.equal(dupState.body.data.status, "PENDING_APPROVAL");
+  assert.equal(dupState.body.data.status, "PAYABLE_OPEN");
 });
 
 test("concurrent duplicate sell approval: one execution", async () => {
@@ -220,29 +225,76 @@ test("rollback after metal debit then retry creates single payable", async () =>
   const { tenant, branch, user } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const token = await customerToken({ tenant, branch, customer });
-  const { order, adminToken } = await sellThroughConfirm({ tenant, user, customer, token });
+  await enablePlan(tenant._id);
+  await makeTenantQuoteReady(app, tenant._id, bearerFor(user));
+  await seedWalletGold({ tenant, customer });
+  const quote = await request(app)
+    .post("/api/v1/app/digital-metals/quotes/sell")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({ metal: "GOLD", finenessPpm: 999000, quantityUg: UG_PER_G });
+  assert.equal(quote.status, 201);
+  const orderRes = await request(app)
+    .post("/api/v1/app/digital-metals/sell-orders")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({
+      quoteId: quote.body.data.quoteId,
+      termsVersionAccepted: quote.body.data.termsVersion,
+      termsContentHashAccepted: quote.body.data.termsContentHash,
+    });
+  assert.equal(orderRes.status, 201);
+  const dest = await activeBankDestination({ tenant, customer });
   armPauseAfterDigitalMetalSellDebitForTests();
   const fail = await request(app)
-    .post(`/api/v1/admin/digital-metals/sell-orders/${order.id}/approve`)
-    .set("Authorization", `Bearer ${adminToken}`)
+    .post(`/api/v1/app/digital-metals/sell-orders/${orderRes.body.data.id}/confirm`)
+    .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({});
+    .send({ bankDestinationId: dest._id });
   assert.equal(fail.status, 500);
   clearDigitalMetalSellFinalizeTestHooksForTests();
   const retry = await request(app)
-    .post(`/api/v1/admin/digital-metals/sell-orders/${order.id}/approve`)
-    .set("Authorization", `Bearer ${adminToken}`)
+    .post(`/api/v1/app/digital-metals/sell-orders/${orderRes.body.data.id}/confirm`)
+    .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({});
+    .send({ bankDestinationId: dest._id });
   assert.equal(retry.status, 200);
-  assert.equal((await DigitalMetalPayable.countDocuments({ sellOrderId: order.id })), 1);
+  assert.equal(retry.body.data.status, "PAYABLE_OPEN");
+  assert.equal((await DigitalMetalPayable.countDocuments({ sellOrderId: orderRes.body.data.id })), 1);
 });
 
-test("risk hold between confirm and execution blocks approval", async () => {
+test("risk hold blocks sell auto-acceptance on confirm", async () => {
   const { tenant, branch, user } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const token = await customerToken({ tenant, branch, customer });
-  const { order, adminToken } = await sellThroughConfirm({ tenant, user, customer, token });
+  await enablePlan(tenant._id);
+  await makeTenantQuoteReady(app, tenant._id, bearerFor(user));
+  await withTransaction((session) =>
+    creditWalletForTest(session, {
+      tenantId: tenant._id,
+      customerId: customer._id,
+      metal: "GOLD",
+      finenessPpm: 999_000,
+      quantityUg: UG_PER_G,
+      idempotencyKey: randomUUID(),
+    }),
+  );
+  const quote = await request(app)
+    .post("/api/v1/app/digital-metals/quotes/sell")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({ metal: "GOLD", finenessPpm: 999000, quantityUg: UG_PER_G });
+  assert.equal(quote.status, 201);
+  const order = await request(app)
+    .post("/api/v1/app/digital-metals/sell-orders")
+    .set("Authorization", `Bearer ${token}`)
+    .set("X-Idempotency-Key", randomUUID())
+    .send({
+      quoteId: quote.body.data.quoteId,
+      termsVersionAccepted: quote.body.data.termsVersion,
+      termsContentHashAccepted: quote.body.data.termsContentHash,
+    });
+  assert.equal(order.status, 201);
   await DigitalMetalCustomerRiskHold.create({
     _id: createId("dmrh"),
     tenantId: tenant._id,
@@ -251,13 +303,24 @@ test("risk hold between confirm and execution blocks approval", async () => {
     reasonCode: "REFUND_EXPOSURE",
     exposurePaise: 10_000,
   });
-  const approve = await request(app)
-    .post(`/api/v1/admin/digital-metals/sell-orders/${order.id}/approve`)
-    .set("Authorization", `Bearer ${adminToken}`)
+  const dest = await DigitalMetalBankDestination.create({
+    _id: createId("dmbd"),
+    tenantId: tenant._id,
+    customerId: customer._id,
+    accountHolderName: "Test User",
+    accountNumberSealed: seal("123456789012"),
+    accountLast4: "9012",
+    ifsc: "HDFC0001234",
+    status: "ACTIVE",
+    verifiedAt: new Date(),
+  });
+  const confirm = await request(app)
+    .post(`/api/v1/app/digital-metals/sell-orders/${order.body.data.id}/confirm`)
+    .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({});
-  assert.equal(approve.status, 409);
-  assert.equal(approve.body.error?.code, "DIGITAL_METALS_RISK_HOLD");
+    .send({ bankDestinationId: dest._id });
+  assert.equal(confirm.status, 409);
+  assert.equal(confirm.body.error?.code, "DIGITAL_METALS_RISK_HOLD");
 });
 
 test("payment exception refund case auto-creates durable risk hold", async () => {

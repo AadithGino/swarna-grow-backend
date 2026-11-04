@@ -77,7 +77,7 @@ async function makerOnlyToken({ tenant, branch }) {
   return bearerFor(user, perms);
 }
 
-test("payout settlement requires payout.approve permission", async () => {
+test("payout settlement requires payout.record permission (same operator allowed)", async () => {
   const { tenant, branch, user } = await seedTenantUser({});
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   await enablePlan(tenant._id);
@@ -116,7 +116,8 @@ test("payout settlement requires payout.approve permission", async () => {
       evidenceUploadIds: ["upl_1"],
       approverAttestation: true,
     });
-  assert.equal(settle.status, 403);
+  assert.equal(settle.status, 200);
+  assert.equal(settle.body.data.payout.status, "SETTLED");
 });
 
 test("branch manager cannot read risk holds for customer in another branch", async () => {

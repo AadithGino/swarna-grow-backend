@@ -8,6 +8,11 @@ import {
   isMockDigitalMetalsPaymentAttempt,
   mapCheckoutFieldsForPaymentIntent,
 } from "../lib/digital-metals-checkout-init.js";
+import {
+  mapPhonePeCustomerCheckoutResponse,
+  mergePhonePeCheckoutProviderPayload,
+  readPersistedPhonePeCheckoutRedirectUrl,
+} from "../lib/phonepe-customer-web-checkout.js";
 import { tenantForEcommerceCheckout } from "../lib/ecommerce-checkout-tenant.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
 import {
@@ -42,10 +47,10 @@ function mapRedemptionPaymentIntent(attempt, order) {
     amountPaise: attempt.amountPaise,
     currency: "INR",
     merchantOrderId: attempt.merchantOrderId ?? attempt._id,
-    token: attempt.sdkToken ?? null,
     redirectUrl: attempt.redirectUrl ?? null,
     statusPollUrl: `/app/digital-metals/redemption/orders/${order._id}/payment-intents/${attempt._id}`,
     failureReason: attempt.failureReason ?? null,
+    ...mapPhonePeCustomerCheckoutResponse(attempt),
     ...mapCheckoutFieldsForPaymentIntent(attempt),
   };
 }
@@ -98,6 +103,13 @@ export async function initiateRedemptionChargePayment(req) {
       ) {
         throw errors.notFound("Order");
       }
+      if (["FAILED", "SUCCEEDED"].includes(existing.status)) {
+        throw errors.business(
+          "PAYMENT_ATTEMPT_TERMINAL",
+          "This idempotency key belongs to a finished payment attempt. Retry with a new session.",
+          { paymentAttemptId: existing._id, status: existing.status },
+        );
+      }
       const order = await DigitalMetalRedemptionOrder.findById(existing.orderId).session(session).lean();
       return { replay: true, attempt: existing.toObject(), order };
     }
@@ -119,6 +131,24 @@ export async function initiateRedemptionChargePayment(req) {
     if (new Date(order.chargePaymentExpiresAt).getTime() < Date.now()) {
       throw new AppError("QUOTE_EXPIRED", "Charge payment window expired.", 409);
     }
+    const active = await DigitalMetalRedemptionPaymentAttempt.findOne({
+      tenantId: req.auth.tenantId,
+      orderId: order._id,
+      status: { $in: ["PENDING", "INITIATED"] },
+    }).session(session);
+    if (active && active.idempotencyKey !== idempotencyKey) {
+      await DigitalMetalRedemptionPaymentAttempt.updateOne(
+        { _id: active._id, status: { $in: ["PENDING", "INITIATED"] } },
+        {
+          $set: { status: "FAILED", failureReason: "SUPERSEDED_BY_RETRY" },
+          $inc: { version: 1 },
+        },
+        { session },
+      );
+    }
+    // Serialize provider initiation against unattended expiry on the order itself.
+    const claimed = await DigitalMetalRedemptionOrder.updateOne({ _id: order._id, tenantId: req.auth.tenantId, status: "CHARGE_PENDING", version: order.version }, { $inc: { version: 1 } }, { session });
+    if (claimed.modifiedCount !== 1) throw errors.conflict("STATE_RACE", "Redemption changed; refresh and retry.");
     const attemptId = createId("dmrpay");
     const attempt = (
       await DigitalMetalRedemptionPaymentAttempt.create(
@@ -145,12 +175,21 @@ export async function initiateRedemptionChargePayment(req) {
   const credentials = resolvePhonePeCredentials(tenant);
   const attempt = result.attempt;
 
+  const persistedCheckoutUrl = readPersistedPhonePeCheckoutRedirectUrl(attempt);
+  if (["FAILED", "SUCCEEDED"].includes(attempt.status)) {
+    throw errors.business(
+      "PAYMENT_ATTEMPT_TERMINAL",
+      "This payment session has ended. Retry to start a new checkout.",
+      { paymentAttemptId: attempt._id, status: attempt.status },
+    );
+  }
   if (
     result.replay
     && attempt.status === "INITIATED"
-    && attempt.sdkToken
     && attempt.providerOrderId
     && attempt.checkoutMode
+    && persistedCheckoutUrl
+    && result.order.status === "CHARGE_PENDING"
   ) {
     return {
       paymentIntent: mapRedemptionPaymentIntent(attempt, result.order),
@@ -177,6 +216,10 @@ export async function initiateRedemptionChargePayment(req) {
           sdkToken: provider.token ?? null,
           redirectUrl: attempt.redirectUrl ?? redirectUrl,
           providerOrderId: provider.providerOrderId ?? provider.orderId ?? null,
+          providerPayload: mergePhonePeCheckoutProviderPayload(
+            attempt.providerPayload,
+            provider.checkoutRedirectUrl ?? provider.redirectUrl,
+          ),
           checkoutMode,
         },
       },
@@ -194,7 +237,7 @@ export async function initiateRedemptionChargePayment(req) {
   } catch (error) {
     await DigitalMetalRedemptionPaymentAttempt.updateOne(
       { _id: attempt._id },
-      { $set: { failureReason: "PROVIDER_INITIATION_UNCERTAIN" } },
+      { $set: { failureReason: "PROVIDER_INITIATION_UNCERTAIN", gatewayReconcileNextAt: new Date() } },
     );
     if (error instanceof AppError) throw error;
     throw errors.business(

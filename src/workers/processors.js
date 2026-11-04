@@ -4,12 +4,9 @@ import { once } from "node:events";
 import path from "node:path";
 import { PushOutcomeKind } from "../lib/fcm-outcomes.js";
 import { Customer, ExportJob, Message, OutboxEvent, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
-import { whatsappProvider } from "../integrations/whatsapp.provider.js";
-import { updateDelivery } from "../services/messaging.service.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { storageProvider } from "../integrations/storage.provider.js";
-import { unseal } from "../lib/crypto.js";
 import { AppError } from "../lib/app-error.js";
 import { AlertType } from "../constants/enums.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
@@ -316,22 +313,25 @@ export async function processMessage(job) {
       }
       return;
     }
-    const templateName = message.templateKey === "PAYMENT_SUCCESS_MEDIA" && !message.templateParams?.passbookImageUrl ? "PAYMENT_SUCCESS_TEXT_FALLBACK" : message.templateKey;
-    const tenant = await Tenant.findById(message.tenantId).select("+integrationSecrets").lean();
-    const config = tenant?.integrationSecrets?.whatsapp;
-    const credentials = config ? { phoneNumberId: config.phoneNumberId, accessToken: config.accessToken ? unseal(config.accessToken) : undefined } : {};
-    const result = await whatsappProvider.sendTemplate({ to: message.templateParams?.mobile, templateName, components: templateName === "PAYMENT_SUCCESS_TEXT_FALLBACK" ? message.templateParams?.textComponents : message.templateParams?.components, credentials });
-    message.status = result.status;
-    if (env.PROVIDER_MODE === "mock" && message.status === "SENT") {
-      message.status = "DELIVERED";
-      message.deliveredAt = new Date();
+    if (message.channel === "WHATSAPP") {
+      message.status = "FAILED";
+      message.failureCode = "WHATSAPP_REMOVED";
+      message.failureMessage = "WhatsApp messaging is no longer supported.";
+      message.failedAt = new Date();
+      message.lastAttemptAt = new Date();
+      message.attemptCount = (message.attemptCount ?? 0) + 1;
+      await message.save();
+      recordMessageStatusTransition("FAILED");
+      return;
     }
-    message.templateKey = templateName;
-    message.providerMessageId = result.providerMessageId;
+    message.status = "FAILED";
+    message.failureCode = "UNSUPPORTED_CHANNEL";
+    message.failureMessage = `Unsupported message channel: ${message.channel ?? "unknown"}`;
+    message.failedAt = new Date();
     message.lastAttemptAt = new Date();
     message.attemptCount = (message.attemptCount ?? 0) + 1;
     await message.save();
-    recordMessageStatusTransition(message.status);
+    recordMessageStatusTransition("FAILED");
   } catch (error) {
     if (error?.name === "DelayedError") throw error;
     if (!TERMINAL_MESSAGE_STATUSES.has(message.status)) {
@@ -429,7 +429,7 @@ export async function processWebhook(job) {
         } else if (reference && isDigitalMetalRedemptionChargeMerchantOrderId(reference)) {
           await processDigitalMetalRedemptionChargePhonePeWebhook({
             tenantId: event.tenantId,
-            payload: normalized?.raw ?? normalized,
+            normalized,
           });
         } else if (reference && isEcommercePaymentMerchantOrderId(reference)) {
           await processEcommercePhonePeWebhook({
@@ -528,7 +528,7 @@ export async function processWebhook(job) {
         } else if (reference && isDigitalMetalRedemptionChargeMerchantOrderId(reference)) {
           await processDigitalMetalRedemptionChargePhonePeWebhook({
             tenantId: event.tenantId,
-            payload: normalized?.raw ?? normalized,
+            normalized,
           });
         } else if (reference && isEcommercePaymentMerchantOrderId(reference)) {
           await processEcommercePhonePeWebhook({
@@ -566,14 +566,7 @@ export async function processWebhook(job) {
         return;
       }
     } else if (event.provider === "WHATSAPP") {
-      const { persistWhatsAppInboundFromWebhook } = await import("../services/inbound-message.service.js");
-      await persistWhatsAppInboundFromWebhook({
-        tenantId: event.tenantId,
-        webhookEventId: event._id,
-        payload: event.payload,
-      });
-      const status = event.payload?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
-      if (status) await updateDelivery(status.id, status.status?.toUpperCase(), status.errors?.[0]);
+      /* Legacy WhatsApp webhooks — feature removed; acknowledge without processing. */
     }
     const { JobStatus } = await import("../constants/enums.js");
     const completed = await WebhookEvent.findOneAndUpdate(
@@ -658,38 +651,26 @@ export async function processOutbox(job) {
       const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
       const { paymentSuccessTemplateKeyForTenant } = await import("../services/messaging.service.js");
       const paymentSuccessTemplateKey = await paymentSuccessTemplateKeyForTenant(event.tenantId);
-      if (!customer.whatsappOptedOutAt) {
-        await queueCustomerNotification({
-          tenantId: event.tenantId,
-          branchId: event.payload.branchId,
-          customerId: event.payload.customerId,
-          schemeId: event.payload.schemeId,
-          type: "PAYMENT_SUCCESS",
-          templateKey: paymentSuccessTemplateKey,
-          templateParams: {
-            paymentId: event.payload.paymentId,
-            mobile: customer.mobile,
-            passbookImageUrl: null,
-            textComponents: [],
-          },
-        });
-      } else {
-        await queueCustomerNotification({
-          tenantId: event.tenantId,
-          branchId: event.payload.branchId,
-          customerId: event.payload.customerId,
-          schemeId: event.payload.schemeId,
-          type: "PAYMENT_SUCCESS",
-          pushOnly: true,
-          templateParams: {
-            paymentId: event.payload.paymentId,
-            mobile: customer.mobile,
-          },
-        });
-      }
+      await queueCustomerNotification({
+        tenantId: event.tenantId,
+        branchId: event.payload.branchId,
+        customerId: event.payload.customerId,
+        schemeId: event.payload.schemeId,
+        type: "PAYMENT_SUCCESS",
+        pushOnly: true,
+        templateKey: paymentSuccessTemplateKey,
+        templateParams: {
+          paymentId: event.payload.paymentId,
+          mobile: customer.mobile,
+        },
+      });
     }
   } else if (event.topic === "payment.gateway.failed") {
     // Durable signal for gateway terminal failure; no customer fan-out.
+  } else if (event.topic === "scheme.enrolment.expired") {
+    // Durable signal that an unpaid pending enrolment lapsed; no customer
+    // fan-out today. Handled explicitly so the event completes instead of
+    // dead-lettering and raising a false "unknown outbox topic" alert.
   } else if (event.topic === "scheme.flex_policy.closed") {
     const customer = await Customer.findOne({
       _id: event.payload.customerId,
@@ -718,6 +699,40 @@ export async function processOutbox(job) {
           schemeName: scheme.planSnapshot?.displayName ?? scheme.planSnapshot?.name,
           event: "FLEX_POLICY_CLOSED",
           closeReason: event.payload.closeReason,
+        },
+      });
+    }
+  } else if (event.topic === "scheme.closed") {
+    const customer = await Customer.findOne({
+      _id: event.payload.customerId,
+      tenantId: event.tenantId,
+    }).select("mobile whatsappOptedOutAt").lean();
+    const scheme = await Scheme.findOne({
+      _id: event.payload.schemeId,
+      tenantId: event.tenantId,
+    }).select("enrollmentNumber planSnapshot").lean();
+    const exists = await Message.exists({
+      tenantId: event.tenantId,
+      schemeId: event.payload.schemeId,
+      type: "SCHEME_CLOSED",
+    });
+    if (customer && scheme && !exists) {
+      const { queueCustomerNotification } = await import("../services/customer-notification.service.js");
+      await queueCustomerNotification({
+        tenantId: event.tenantId,
+        branchId: event.payload.branchId,
+        customerId: event.payload.customerId,
+        schemeId: event.payload.schemeId,
+        type: "SCHEME_CLOSED",
+        templateParams: {
+          mobile: customer.mobile,
+          enrollmentNumber: scheme.enrollmentNumber,
+          schemeName: scheme.planSnapshot?.displayName ?? scheme.planSnapshot?.name,
+          event:
+            event.payload.closureType === "PREMATURE_CLOSURE"
+              ? "CLOSED_PREMATURE"
+              : "REDEEMED",
+          closeReason: event.payload.closureType,
         },
       });
     }
@@ -985,6 +1000,11 @@ export async function processPaymentsMaintenance(job) {
 }
 
 export async function processMaintenance(job) {
+  if (job.name === "digital-metals-reservation-expiry") {
+    const { runDigitalMetalReservationExpiry } = await import("../services/digital-metals-reservation-expiry.service.js");
+    await runDigitalMetalReservationExpiry();
+    return;
+  }
   const now = new Date();
   if (job.name === "push-broadcast-fanout") {
     const { processPushBroadcastFanout } = await import("../services/push-broadcast.service.js");

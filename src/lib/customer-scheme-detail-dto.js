@@ -6,6 +6,7 @@ import { monthKey, today } from "./date.js";
 function statusLabel(scheme, uiStatus) {
   if (uiStatus === "REDEMPTION_PENDING") return "Redemption in progress";
   const map = {
+    PENDING_PAYMENT: "Awaiting first payment",
     ACTIVE: "Active",
     LOCKED: "Capped phase",
     DEFAULTED: "Defaulted",
@@ -613,7 +614,7 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
   let progressPhase;
   let nextActionLabel;
   let nextActionAmount = null;
-  let canPay = ["ACTIVE", "LOCKED", "DEFAULTED"].includes(scheme.status);
+  let canPay = ["PENDING_PAYMENT", "ACTIVE", "LOCKED", "DEFAULTED"].includes(scheme.status);
   let cappedProgress;
   const planMonths = scheme.planSnapshot?.durationMonths ?? scheme.planSnapshot?.installmentCount ?? null;
 

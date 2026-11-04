@@ -12,7 +12,13 @@ import { orderUsesCod } from "../lib/ecommerce-cod.js";
 import { assertOrderPaymentBoundary } from "../lib/ecommerce-order-payment-boundary.js";
 import { EcommercePaymentAttemptOperationalStatus } from "../constants/enums.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
-import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
+import { resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
+import {
+  initiatePhonePeCustomerWebCheckout,
+  mapPhonePeCustomerCheckoutResponse,
+  mergePhonePeCheckoutProviderPayload,
+  readPersistedPhonePeCheckoutRedirectUrl,
+} from "../lib/phonepe-customer-web-checkout.js";
 import {
   EcommerceFulfilmentSettings,
   EcommerceOrder,
@@ -36,8 +42,8 @@ export function mapPaymentIntent(row, order) {
     currency: row.currency ?? "INR",
     providerOrderId: row.providerOrderId ?? null,
     merchantOrderId: row.merchantOrderId ?? row._id,
-    token: row.sdkToken ?? null,
     redirectUrl: row.redirectUrl ?? null,
+    ...mapPhonePeCustomerCheckoutResponse(row),
     orderStatus: order?.status ?? null,
     paymentAllowed: true,
     paymentCompleted: order?.status === EcommerceOrderStatus.PAID,
@@ -77,12 +83,43 @@ export async function loadPaymentCapability(tenantId, tenantLite) {
 }
 
 async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId, created) {
+  if (["FAILED", "SUCCEEDED"].includes(attempt.status)) {
+    throw errors.business(
+      "PAYMENT_ATTEMPT_TERMINAL",
+      "This payment session has ended. Retry to start a new checkout.",
+      { paymentAttemptId: attempt._id, status: attempt.status },
+    );
+  }
+  const persistedCheckoutUrl = readPersistedPhonePeCheckoutRedirectUrl(attempt);
+  if (
+    attempt.status === EcommercePaymentAttemptStatus.INITIATED
+    && attempt.providerOrderId
+    && persistedCheckoutUrl
+    && order.status === EcommerceOrderStatus.PENDING_PAYMENT
+  ) {
+    return { paymentIntent: mapPaymentIntent(attempt, order), created: false };
+  }
+
   if (
     attempt.status === EcommercePaymentAttemptStatus.INITIATED
     && attempt.sdkToken
+    && !persistedCheckoutUrl
     && attempt.providerOrderId
   ) {
-    return { paymentIntent: mapPaymentIntent(attempt, order), created: false };
+    await EcommercePaymentAttempt.updateOne(
+      { _id: attempt._id },
+      {
+        $set: { status: EcommercePaymentAttemptStatus.PENDING },
+        $unset: { sdkToken: "", providerOrderId: "" },
+        $inc: { version: 1 },
+      },
+    );
+    attempt = {
+      ...attempt,
+      status: EcommercePaymentAttemptStatus.PENDING,
+      sdkToken: null,
+      providerOrderId: null,
+    };
   }
 
   const claimMarker = `CLAIM-${createId("claim")}`;
@@ -92,7 +129,7 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
       _id: attempt._id,
       tenantId,
       status: { $in: [EcommercePaymentAttemptStatus.PENDING, EcommercePaymentAttemptStatus.INITIATED] },
-      sdkToken: { $in: [null, ""] },
+      providerOrderId: { $in: [null, ""] },
       $or: [
         { initiationClaimToken: null },
         { initiationClaimToken: { $exists: false } },
@@ -111,7 +148,7 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
   if (!claimed) {
     let fresh = await EcommercePaymentAttempt.findById(attempt._id).lean();
     for (let i = 0; i < 25; i += 1) {
-      if (fresh?.sdkToken && fresh?.providerOrderId) {
+      if (fresh?.providerOrderId && readPersistedPhonePeCheckoutRedirectUrl(fresh)) {
         return { paymentIntent: mapPaymentIntent(fresh, order), created: false };
       }
       const claimActive =
@@ -124,7 +161,7 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
       });
       fresh = await EcommercePaymentAttempt.findById(attempt._id).lean();
     }
-    if (fresh?.sdkToken && fresh?.providerOrderId) {
+    if (fresh?.providerOrderId && readPersistedPhonePeCheckoutRedirectUrl(fresh)) {
       return { paymentIntent: mapPaymentIntent(fresh, order), created: false };
     }
     if (
@@ -148,7 +185,7 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
   const tenant = await tenantForEcommerceCheckout(tenantId);
   const credentials = resolvePhonePeCredentials(tenant);
   try {
-    const provider = await phonePeProvider.createSdkOrder({
+    const provider = await initiatePhonePeCustomerWebCheckout({
       merchantOrderId: claimed.merchantOrderId ?? claimed._id,
       amountPaise: claimed.amountPaise,
       redirectUrl: claimed.redirectUrl ?? redirectUrl,
@@ -167,7 +204,11 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
         $set: {
           status: EcommercePaymentAttemptStatus.INITIATED,
           providerOrderId: provider.providerOrderId,
-          sdkToken: provider.token,
+          sdkToken: provider.token ?? null,
+          providerPayload: mergePhonePeCheckoutProviderPayload(
+            claimed.providerPayload,
+            provider.checkoutRedirectUrl ?? provider.redirectUrl,
+          ),
           providerInitConfirmedAt: new Date(),
           operationalStatus: EcommercePaymentAttemptOperationalStatus.AWAITING_PROVIDER,
           gatewayReconcileNextAt: new Date(Date.now() + 60_000),
@@ -252,6 +293,13 @@ export async function createEcommercePaymentIntent(req) {
           customerId: req.auth.id,
         }).session(session);
         if (!order) throw errors.notFound("Order");
+        if (["FAILED", "SUCCEEDED"].includes(existingByKey.status)) {
+          throw errors.business(
+            "PAYMENT_ATTEMPT_TERMINAL",
+            "This idempotency key belongs to a finished payment attempt. Retry with a new session.",
+            { paymentAttemptId: existingByKey._id, status: existingByKey.status },
+          );
+        }
         return { kind: "REPLAY", attempt: existingByKey.toObject(), order: order.toObject() };
       }
 
@@ -291,10 +339,17 @@ export async function createEcommercePaymentIntent(req) {
 
       const active = await findActivePaymentAttempt(req.auth.tenantId, order._id, session);
       if (active && active.idempotencyKey !== idempotencyKey) {
-        throw errors.business("PAYMENT_ATTEMPT_IN_PROGRESS", "A payment attempt is already in progress.", {
-          paymentAttemptId: active._id,
-          activePaymentAttempt: mapCustomerActivePaymentAttempt(active),
-        });
+        await EcommercePaymentAttempt.updateOne(
+          { _id: active._id, status: { $in: [EcommercePaymentAttemptStatus.PENDING, EcommercePaymentAttemptStatus.INITIATED] } },
+          {
+            $set: {
+              status: EcommercePaymentAttemptStatus.FAILED,
+              failureReason: "SUPERSEDED_BY_RETRY",
+            },
+            $inc: { version: 1 },
+          },
+          { session },
+        );
       }
       if (active?.idempotencyKey === idempotencyKey) {
         return { kind: "REPLAY", attempt: active, order: order.toObject() };
@@ -400,12 +455,17 @@ export async function createEcommercePaymentIntent(req) {
 
 export async function getEcommercePaymentIntent(req) {
   assertEcommerceOperational(req.tenant);
-  const row = await EcommercePaymentAttempt.findOne({
+  let row = await EcommercePaymentAttempt.findOne({
     _id: req.params.paymentAttemptId,
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
   }).lean();
   if (!row) throw errors.notFound("Payment attempt");
+  const { maybeReconcileLiveEcommercePaymentAttempt } = await import(
+    "./ecommerce-payment-reconcile.service.js"
+  );
+  await maybeReconcileLiveEcommercePaymentAttempt(row, { at: new Date() });
+  row = (await EcommercePaymentAttempt.findById(row._id).lean()) ?? row;
   const order = await EcommerceOrder.findOne({
     _id: row.orderId,
     tenantId: req.auth.tenantId,

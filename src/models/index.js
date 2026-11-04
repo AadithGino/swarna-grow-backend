@@ -9,9 +9,10 @@ export * from "./counter.model.js";
 export * from "./device-registration.model.js";
 export * from "./push-device-delivery.model.js";
 export * from "./reminder-daily-quota.model.js";
-export * from "./inbound-message.model.js";
 export * from "./gateway-settlement.models.js";
 export * from "./ecommerce.models.js";
 export * from "./ecommerce-commerce.models.js";
 export * from "./digital-metals.models.js";
 export * from "./assistant.models.js";
+
+export * from "./enrolment-operation.model.js";

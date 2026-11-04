@@ -14,8 +14,3 @@ webhookRouter.post(
   webhookPerTenantRateLimit,
   asyncHandler(controller.phonepe),
 );
-webhookRouter.post(
-  "/whatsapp/:tenantId",
-  webhookPerTenantRateLimit,
-  asyncHandler(controller.whatsapp),
-);

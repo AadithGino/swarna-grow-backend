@@ -1,3 +1,4 @@
+import { postAssistedOrderCash } from "../lib/counter-tender.js";
 import { createId } from "../lib/ids.js";
 import { withTransaction } from "../lib/transaction.js";
 import { assertEcommerceOrderTransition } from "../lib/ecommerce-order-transitions.js";
@@ -71,6 +72,11 @@ export async function finalizeEcommercePaymentSuccess({
   if (!attempt) return { outcome: "NOT_FOUND" };
 
   if (attempt.status === EcommercePaymentAttemptStatus.SUCCEEDED) {
+    if (attempt.provider === "COUNTER") await withTransaction(async (session) => {
+      const order = await EcommerceOrder.findOne({ _id: attempt.orderId, tenantId }).session(session).lean();
+      if (!order) throw new Error("Counter order missing");
+      await postAssistedOrderCash(session, order, "ECOMMERCE_COUNTER_ORDER");
+    });
     return { outcome: "ALREADY_SUCCESS", orderId: attempt.orderId };
   }
   const attemptCurrency = String(attempt.currency ?? "INR");
@@ -108,7 +114,11 @@ export async function finalizeEcommercePaymentSuccess({
     }).session(session);
     if (!order) return { outcome: "ORDER_NOT_FOUND" };
 
-    if (order.status === EcommerceOrderStatus.PAID) {
+    const currentAttempt = await EcommercePaymentAttempt.findById(attempt._id).session(session).lean();
+    if (currentAttempt?.status === EcommercePaymentAttemptStatus.SUCCEEDED) {
+      return { outcome: "ALREADY_SUCCESS", orderId: order._id };
+    }
+    if (order.successfulPaymentAttemptId || order.status === EcommerceOrderStatus.PAID) {
       const winningAttemptId = order.successfulPaymentAttemptId ?? null;
       if (
         attempt.status === EcommercePaymentAttemptStatus.SUCCEEDED
@@ -176,16 +186,14 @@ export async function finalizeEcommercePaymentSuccess({
         session,
       });
       await EcommercePaymentExceptionRefund.findOneAndUpdate(
-        { tenantId, orderId: order._id },
+        { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
         {
-          $set: {
+          $setOnInsert: {
             paymentAttemptId: attempt._id,
             amountPaise: attempt.amountPaise,
             currency: attemptCurrency,
             providerPaymentId: transactionId,
             merchantOrderId: attempt.merchantOrderId ?? attempt._id,
-          },
-          $setOnInsert: {
             _id: createId("epayref"),
             tenantId,
             orderId: order._id,
@@ -211,7 +219,7 @@ export async function finalizeEcommercePaymentSuccess({
       await enqueueEcommerceOutboxEvent({
         tenantId,
         topic: ECOMMERCE_OUTBOX_TOPICS.PAYMENT_SUCCEEDED,
-        key: `${order._id}:duplicate-exception`,
+        key: `${order._id}:${attempt._id}:duplicate-exception`,
         payload: {
           orderId: order._id,
           paymentAttemptId: attempt._id,
@@ -283,7 +291,7 @@ export async function finalizeEcommercePaymentSuccess({
         session,
       });
       await EcommercePaymentExceptionRefund.updateOne(
-        { tenantId, orderId: order._id },
+        { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
         {
           $setOnInsert: {
             _id: createId("epayref"),
@@ -302,7 +310,7 @@ export async function finalizeEcommercePaymentSuccess({
       await enqueueEcommerceOutboxEvent({
         tenantId,
         topic: ECOMMERCE_OUTBOX_TOPICS.PAYMENT_SUCCEEDED,
-        key: `${order._id}:late-exception`,
+        key: `${order._id}:${attempt._id}:late-exception`,
         payload: {
           orderId: order._id,
           paymentAttemptId: attempt._id,
@@ -425,6 +433,7 @@ export async function finalizeEcommercePaymentSuccess({
       },
       session,
     });
+    await postAssistedOrderCash(session, order, "ECOMMERCE_COUNTER_ORDER");
     return { outcome: "SUCCESS", orderId: order._id };
   });
 }

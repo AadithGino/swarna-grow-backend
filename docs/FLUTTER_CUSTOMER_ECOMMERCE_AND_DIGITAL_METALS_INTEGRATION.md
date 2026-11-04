@@ -2,7 +2,7 @@
 
 **Audience:** Flutter/mobile engineers  
 **Base URL:** `{API_BASE}/api/v1` (production: `https://swarnagrow-backend.vercel.app/api/v1`)  
-**Verified backend commit:** `b1a03cd` (`ecommerce`, Oct 2026)
+**Verified backend commit:** `30b3e479` (`ecommerce`, Nov 2026)
 
 Every section below includes **example requests and responses** as returned by the API (`{ success, data, meta?, error? }`). Money is **paise** (integer). Digital metal quantity is **micrograms** as strings (`"1000000"` = 1 g at 999 fineness).
 
@@ -970,7 +970,7 @@ X-Idempotency-Key: dm-sell-confirm-001
 }
 ```
 
-Customer app **polls**; staff approves payout in admin. Track bank payout:
+Customer app **polls**; staff **accepts the sale** and **records bank payment** as separate admin steps (same operator allowed). Sell order detail includes `paymentDisplayState` with plain labels: `Awaiting staff acceptance`, `Unpaid`, `Partially paid`, `Paid`, `Payment being checked`. Track bank payout:
 
 ```http
 GET /api/v1/app/digital-metals/sell-orders/dmso_01/payout-status

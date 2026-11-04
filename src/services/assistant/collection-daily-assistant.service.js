@@ -73,7 +73,7 @@ export async function runCollectionDailyAssistant(req, action) {
 }
 
 function pivotModeComparisonRows(modeMatrix, metricKey) {
-  const { dates, cells, modes } = modeMatrix;
+  const { dates, cells } = modeMatrix;
   const valueField =
     metricKey === "gross_receipts" ? "grossReceiptsPaise" : "netCollectedPaise";
   const byDate = new Map();

@@ -115,7 +115,6 @@ export async function customerAnalytics(req) {
     newInPriorPeriod,
     withActiveScheme,
     withRegisteredDevice,
-    whatsappOptedIn,
     scopeBlock,
   ] = await Promise.all([
     Customer.countDocuments(match),
@@ -165,10 +164,6 @@ export async function customerAnalytics(req) {
       status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED"] },
     }).then((ids) => ids.length),
     Customer.countDocuments({ ...match, "fcmTokens.0": { $exists: true } }),
-    Customer.countDocuments({
-      ...match,
-      $or: [{ whatsappOptedOutAt: null }, { whatsappOptedOutAt: { $exists: false } }],
-    }),
     analyticsScopeBlock(scope),
   ]);
 
@@ -213,13 +208,6 @@ export async function customerAnalytics(req) {
       key: "KYC_PENDING",
       label: "KYC pending",
       value: kycPending,
-      valueType: "count",
-      note: "Current snapshot",
-    },
-    {
-      key: "WHATSAPP_OPTED_IN",
-      label: "WhatsApp opted in",
-      value: whatsappOptedIn,
       valueType: "count",
       note: "Current snapshot",
     },
@@ -349,7 +337,6 @@ export async function customerAnalytics(req) {
       newCustomersInPeriod: newInPeriod,
       customersWithActiveScheme: withActiveScheme,
       customersWithRegisteredDevice: withRegisteredDevice,
-      whatsappOptedIn,
       kyc: {
         notSubmitted: byKyc.find((row) => row._id === KycStatus.NOT_SUBMITTED)?.count ?? 0,
         submitted: byKyc.find((row) => row._id === KycStatus.SUBMITTED)?.count ?? 0,
@@ -828,7 +815,6 @@ export async function setCustomerPassword(req) {
     };
   });
 }
-export async function setWhatsappOpt(req) { const optedOut = req.body.optedIn === false; const customer = await Customer.findOneAndUpdate({ _id: req.params.customerId, ...req.scope }, { $set: { whatsappOptedOutAt: optedOut ? new Date() : null }, $inc: { version: 1 } }, { new: true }); if (!customer) throw errors.notFound("Customer"); return { customerId: customer._id, optedIn: !customer.whatsappOptedOutAt, version: customer.version }; }
 export async function addNote(req) { const customer = await getCustomer(req); const auditEventId = await writeAudit({ req, action: "CUSTOMER_NOTE_ADDED", entityType: AuditEntityType.CUSTOMER, entityId: customer._id, metadata: { note: req.body.note } }); return { customerId: customer._id, auditEventId }; }
 export async function listCustomerRelations(req, relation) {
   await getCustomer(req);

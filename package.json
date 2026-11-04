@@ -14,12 +14,13 @@
     "start": "node --env-file=.env src/server.js",
     "worker": "node --env-file=.env src/workers/index.js",
     "scheduler": "node --env-file=.env src/schedulers/index.js",
-    "check": "node scripts/check-syntax.js && node scripts/check-route-coverage.js && npm run lint",
+    "check": "node scripts/check-syntax.js && node scripts/check-route-coverage.js && node scripts/audit-outbox-transaction-session.js && npm run lint",
+    "audit:outbox-session": "node scripts/audit-outbox-transaction-session.js",
     "package:export": "node scripts/package-source-export.mjs",
     "package:verify": "node scripts/verify-source-export-manifest.mjs",
     "lint": "eslint src tests scripts",
-    "test": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-isolation=none --test-force-exit --test-reporter=spec",
-    "test:release": "RUN_HEAVY=1 NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-isolation=none --test-reporter=spec",
+    "test": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit --test-reporter=spec",
+    "test:release": "bash scripts/run-test-release.sh",
     "test:hardening": "node scripts/run-hardening-tests.js",
     "test:phase-e": "node scripts/run-phase-e-tests.js",
     "test:phase-f": "node scripts/run-phase-f-tests.js",
@@ -34,6 +35,9 @@
     "seed:demo": "node --env-file=.env scripts/seed-demo.js",
     "seed:kairali-digital-metals": "node --env-file=.env scripts/seed-kairali-digital-metals.js",
     "patch:kairali-digital-metals": "node --env-file=.env scripts/patch-kairali-digital-metals-live.js --refresh-rates",
+    "patch:evoluxe-rates": "node --env-file=.env scripts/patch-evoluxe-rates.js",
+    "configure:evoluxe-phonepe": "node --env-file=.env scripts/configure-evoluxe-phonepe.js",
+    "verify:phonepe-oauth": "node --env-file=.env scripts/verify-phonepe-oauth.js",
     "seed:ecommerce-demo": "node --env-file=.env scripts/seed-ecommerce-demo.js",
     "diagnose:ecommerce-payments": "node --env-file=.env scripts/diagnose-ecommerce-payment-capability.js",
     "ecommerce:payment-test-ui": "node scripts/run-ecommerce-payment-test-ui.js",
@@ -53,7 +57,9 @@
     "seed:active-customer-counters": "node --env-file=.env scripts/seed-active-customer-counters.js",
     "db:sync-indexes": "node --env-file=.env scripts/sync-indexes.js --apply",
     "db:sync-indexes:dry-run": "node --env-file=.env scripts/sync-indexes.js --dry-run",
-    "ops:inspect": "node --env-file=.env scripts/ops-inspect.js"
+    "ops:inspect": "node --env-file=.env scripts/ops-inspect.js",
+    "test:audit:unit": "NODE_ENV=test node --test --test-concurrency=1 tests/nov03-audit-regressions.unit.test.js tests/digital-metals-auto-accept-replay.unit.test.js tests/ecommerce-admin-orders-list-filter.test.js tests/ecommerce-return-eligibility-anchor.test.js",
+    "test:audit:integration": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit --test-reporter=spec tests/digital-metals-auto-accept.test.js tests/counter-trades.test.js tests/digital-metals-phase7-matrix.test.js tests/enrolment-phase2.test.js tests/ecommerce-return-inspection-restock.test.js tests/customer-enrol-checkout-resume.test.js tests/customer-otp-message-central-contract.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1134.0",
@@ -86,5 +92,8 @@
     "eslint": "^10.10.0",
     "mongodb-memory-server": "^10.2.0",
     "supertest": "^7.1.4"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   }
 }

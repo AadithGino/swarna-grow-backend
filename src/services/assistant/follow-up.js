@@ -28,7 +28,6 @@ const REPORT_TITLE_TO_KEY = Object.freeze({
   "gold accrual & liability": "GOLD_ACCRUAL",
   "cash handover": "CASH_HANDOVER",
   "reminder delivery": "REMINDER_DELIVERY",
-  "whatsapp usage": "WHATSAPP_USAGE",
 });
 
 function normalizeFollowUpQuestion(question) {

@@ -1,3 +1,7 @@
+import { withTransaction } from "../lib/transaction.js";
+import { checkoutReconcileFilter } from "../lib/checkout-reconcile-filter.js";
+import { upsertOperationalAlert } from "../lib/operational-alert.js";
+import { AlertType } from "../constants/enums.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
@@ -39,7 +43,7 @@ export async function claimRedemptionChargeAttemptForReconcile(attemptId, at = n
   return DigitalMetalRedemptionPaymentAttempt.findOneAndUpdate(
     {
       _id: attemptId,
-      status: "INITIATED",
+      status: { $in: ["PENDING", "INITIATED"] },
       $and: [
         {
           $or: [
@@ -78,7 +82,8 @@ async function releaseReconcileLease(attemptId, leaseOwner) {
 async function recordReconcileProgress(attemptRow, { leaseOwner, outcome, at, errorMessage, providerState }) {
   const attempts = (attemptRow.gatewayReconcileAttempts ?? 0) + 1;
   const stuck = attempts >= maxAttempts();
-  await DigitalMetalRedemptionPaymentAttempt.updateOne(
+  return withTransaction(async (session) => {
+  const progressed = await DigitalMetalRedemptionPaymentAttempt.updateOne(
     { _id: attemptRow._id, ...(leaseOwner ? { gatewayReconcileLeaseOwner: leaseOwner } : {}) },
     {
       $set: {
@@ -93,18 +98,27 @@ async function recordReconcileProgress(attemptRow, { leaseOwner, outcome, at, er
       },
       $inc: { version: 1 },
     },
+    { session },
   );
+  if (stuck && progressed.modifiedCount === 1) await upsertOperationalAlert({ tenantId: attemptRow.tenantId,
+    session, type: AlertType.GATEWAY_RECONCILE_EXHAUSTED, entityId: attemptRow._id,
+    title: "Checkout reconciliation exhausted", message: "Provider outcome remains unresolved. Review before permitting another charge.",
+    metadata: { orderId: attemptRow.orderId, paymentAttemptId: attemptRow._id, attempts, outcome } });
+
+  });
 }
 
 export async function reconcileRedemptionChargePaymentAttempt(attemptRow, { at = new Date(), leaseOwner } = {}) {
   const tenant = await Tenant.findById(attemptRow.tenantId).select("+integrationSecrets").lean();
-  if (!tenant) return { outcome: "TENANT_MISSING" };
+  if (!tenant) {
+    await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: "TENANT_MISSING" });
+    return { outcome: "TENANT_MISSING" };
+  }
   const credentials = resolvePhonePeCredentials(tenant);
   const merchantOrderId = attemptRow.merchantOrderId ?? attemptRow._id;
-  const providerOrderId = attemptRow.providerOrderId ?? merchantOrderId;
   let statusPayload;
   try {
-    statusPayload = await phonePeProvider.getOrderStatus(providerOrderId, credentials, attemptRow.tenantId);
+    statusPayload = await phonePeProvider.getOrderStatus(merchantOrderId, credentials, attemptRow.tenantId);
   } catch (error) {
     logger.warn(
       { attemptId: attemptRow._id, orderId: attemptRow.orderId, err: error?.message },
@@ -128,7 +142,7 @@ export async function reconcileRedemptionChargePaymentAttempt(attemptRow, { at =
       },
     });
     if (!verified.ok) {
-      await releaseReconcileLease(attemptRow._id, leaseOwner);
+      await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: "INVALID_COMPLETED", errorMessage: verified.code });
       return { outcome: "INVALID_COMPLETED", code: verified.code };
     }
     const result = await finalizeDigitalMetalRedemptionChargeSuccess({
@@ -139,8 +153,18 @@ export async function reconcileRedemptionChargePaymentAttempt(attemptRow, { at =
       providerPayload: statusPayload,
       source: "RECONCILE",
     });
-    await releaseReconcileLease(attemptRow._id, leaseOwner);
+    const latest = await DigitalMetalRedemptionPaymentAttempt.findById(attemptRow._id).select("status").lean();
+    if (latest && !["SUCCEEDED", "FAILED"].includes(latest.status)) {
+      await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: result.outcome ?? "UNRESOLVED" });
+    } else await releaseReconcileLease(attemptRow._id, leaseOwner);
     return result;
+  }
+  if (normalized.kind === PhonePeOrderStatusKind.TERMINAL_FAILED) {
+    await DigitalMetalRedemptionPaymentAttempt.updateOne({ _id: attemptRow._id,
+      ...(leaseOwner ? { gatewayReconcileLeaseOwner: leaseOwner } : {}), status: { $in: ["PENDING", "INITIATED"] } },
+      { $set: { status: "FAILED", failureReason: "RECONCILE_TERMINAL_FAILURE", providerPayload: statusPayload } });
+    await releaseReconcileLease(attemptRow._id, leaseOwner);
+    return { outcome: "FAILED" };
   }
   await recordReconcileProgress(attemptRow, {
     leaseOwner,
@@ -154,10 +178,7 @@ export async function reconcileRedemptionChargePaymentAttempt(attemptRow, { at =
 export async function runDigitalMetalRedemptionChargePaymentReconcile(at = new Date()) {
   const cutoff = new Date(at.getTime() - staleCutoffMs() * 1000);
   const rows = await DigitalMetalRedemptionPaymentAttempt.find({
-    status: "INITIATED",
-    providerOrderId: { $exists: true, $ne: "" },
-    updatedAt: { $lte: cutoff },
-    $or: [{ gatewayReconcileNextAt: { $lte: at } }, { gatewayReconcileNextAt: null }],
+    ...checkoutReconcileFilter({ at, cutoff, maxAttempts: maxAttempts() }),
   })
     .sort({ gatewayReconcileNextAt: 1, updatedAt: 1 })
     .limit(batchSize())

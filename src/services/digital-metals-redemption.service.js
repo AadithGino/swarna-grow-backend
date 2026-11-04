@@ -456,11 +456,12 @@ export async function createRedemptionOrder(req) {
         { session },
       )
     )[0];
-    await DigitalMetalQuote.updateOne(
-      { _id: quote._id, consumedAt: null },
+    const consumed = await DigitalMetalQuote.updateOne(
+      { _id: quote._id, tenantId: req.auth.tenantId, customerId: req.auth.id, consumedAt: null, expiresAt: { $gt: new Date() } },
       { $set: { consumedAt: new Date(), consumedByOrderId: orderId } },
       { session },
     );
+    if (consumed.modifiedCount !== 1) throw errors.conflict("QUOTE_ALREADY_USED", "Quote was already accepted or expired.");
     if (status === "CHARGE_PAID") {
       const { enqueueRedemptionCustomerNotice } = await import("../lib/digital-metals-customer-notice.js");
       await enqueueRedemptionCustomerNotice(session, {
@@ -521,11 +522,30 @@ export async function cancelRedemptionOrder(req) {
 
 export async function getCustomerRedemptionOrder(req) {
   await expireStaleRedemptionOrdersForTenant(req.auth.tenantId, req.params.orderId);
-  const order = await DigitalMetalRedemptionOrder.findOne({
+  let order = await DigitalMetalRedemptionOrder.findOne({
     _id: req.params.orderId,
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
   }).lean();
+  if (!order) throw errors.notFound("Redemption order");
+  if (order.status === "CHARGE_PENDING") {
+    const { DigitalMetalRedemptionPaymentAttempt } = await import("../models/index.js");
+    const active = await DigitalMetalRedemptionPaymentAttempt.findOne({
+      tenantId: req.auth.tenantId,
+      orderId: order._id,
+      status: { $in: ["PENDING", "INITIATED"] },
+      providerOrderId: { $exists: true, $ne: null },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (active) {
+      const { reconcileRedemptionChargePaymentAttempt } = await import(
+        "./digital-metals-redemption-charge-reconcile.service.js"
+      );
+      await reconcileRedemptionChargePaymentAttempt(active, { at: new Date(), leaseOwner: null });
+      order = await DigitalMetalRedemptionOrder.findById(order._id).lean();
+    }
+  }
   if (!order) throw errors.notFound("Redemption order");
   return mapRedemptionOrder(order);
 }

@@ -67,7 +67,6 @@ const customerSchema = new mongoose.Schema(
       select: false,
       default: [],
     },
-    whatsappOptedOutAt: Date,
     profileCompletedAt: Date,
     createdBy: String,
     securityVersion: { type: Number, default: 0, validate: { validator: (value) => value == null || Number.isSafeInteger(value), message: "{PATH} must be a safe integer" } },

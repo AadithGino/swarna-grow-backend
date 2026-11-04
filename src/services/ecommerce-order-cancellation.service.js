@@ -388,7 +388,7 @@ async function createOnlineCancellationRefundCase({ tenantId, order, cancellatio
   const refundId = createId("epayref");
   const row = (
     await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      { tenantId, orderId: order._id },
+      { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
       {
         $setOnInsert: {
           _id: refundId,

@@ -1,0 +1,25 @@
+✔ P4 buy: quote payment credits wallet (harness) (16482.200458ms)
+✔ P4 pickup: charge-paid to ready-for-pickup issues code without accept/packing (698.261541ms)
+✔ P4 pickup handover requires staff attestation and consumes metal once (708.31625ms)
+✔ P4 delivery: charge-paid to ship to complete delivery (630.107584ms)
+✔ P4 zero-charge redemption reaches charge-paid without payment intent (506.546583ms)
+✔ P4 concurrent pickup handover idempotency replays once (747.000833ms)
+✔ P4 pre-dispatch cancel releases reservation (644.542125ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 34100.238334
+✔ pickup handover consumes metal exactly once and records physical-out event (8944.5845ms)
+✔ late charge success creates refund case with operational path (298.264417ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 12188.279958

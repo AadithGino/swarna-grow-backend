@@ -351,7 +351,7 @@ test("resolveUnknownPayout FAILED enqueues outbox intent atomically with payout 
     statusHistory: [{ at: new Date(), status: "UNKNOWN", actorUserId: maker, note: "test" }],
   });
   const req = {
-    auth: { id: approver, tenantId: tenant._id, role: "TENANT_OWNER" },
+    auth: { id: approver, tenantId: tenant._id, role: "TENANT_OWNER", type: "TENANT_USER" },
     params: { payoutId },
     body: {
       outcome: "FAILED",

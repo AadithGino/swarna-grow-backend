@@ -29,7 +29,8 @@ export async function listAdminOrdersPaginated(req, mapRow) {
   const [page, totalCountRaw] = await Promise.all([
     paginate(EcommerceOrder, {
       scope,
-      filters: normalized,
+      filters: {},
+      cursorFilters: normalized,
       cursor: req.query?.cursor,
       limit: req.query?.limit,
       sort,

@@ -49,7 +49,7 @@ export function parseRelativeDateWindow(text, todayIst) {
 }
 
 /** Resolve action/report filters to concrete from/to using presets when needed. */
-export function resolveActionDateBounds(action, todayIst) {
+export function resolveActionDateBounds(action, _todayIst) {
   if (!action || typeof action !== "object") return { from: undefined, to: undefined, period: undefined };
   const bag =
     action.kind === "report"

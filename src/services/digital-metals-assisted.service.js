@@ -1,12 +1,12 @@
+import { assertCounterTenderReplay } from "../lib/counter-tender.js";
 /**
  * Counter trades: an admin or branch manager buys or sells Digi Gold for a customer in the shop.
  *
  * Buy  — quote at today's buy rate → customer pays at the counter (cash / UPI / card) → grams credited
  *        immediately, with the normal receipt + GST invoice. Cash is posted to the staff member's
  *        cash-in-hand.
- * Sell — quote at today's sell rate → grams reserved → order goes to the existing "To approve" queue.
- *        Payout is either the usual bank transfer (maker-checker) or cash at the counter, recorded here
- *        once the sell is approved.
+ * Sell — quote at today's sell rate → consent → metal debited and payment becomes due.
+ *        Bank transfers and cash payouts are recorded separately after the customer is paid.
  *
  * Every step reuses the customer services (pricing, terms, tax, ledger, outbox) through a
  * customer-bound request, so counter trades behave exactly like app trades.
@@ -39,18 +39,16 @@ import {
   mapBuyOrderStatusDto,
 } from "./digital-metals-buy-finalize.service.js";
 import { createCustomerSellQuote, createSellOrder, mapSellOrderDto } from "./digital-metals-sell.service.js";
-import { latestSettings } from "./digital-metals-phase2.service.js";
-import { loadActiveBankDestinationForCustomer } from "./digital-metals-bank-destination.service.js";
 import { writeAudit } from "./audit.service.js";
 
-async function loadCounterCustomer(req) {
+async function loadCounterCustomer(req, { allowInactive = false } = {}) {
   const customer = await Customer.findOne({
     _id: req.params.customerId,
     tenantId: req.auth.tenantId,
   }).lean();
   if (!customer) throw errors.notFound("Customer");
   assertTenantOwnsCustomerScope(req, customer);
-  assertCustomerCanTradeAtCounter(customer);
+  if (!allowInactive) assertCustomerCanTradeAtCounter(customer);
   return customer;
 }
 
@@ -91,7 +89,7 @@ export async function createAssistedBuyQuote(req) {
 
 export async function placeAssistedBuy(req) {
   assertConsent(req.body);
-  const customer = await loadCounterCustomer(req);
+  const customer = await loadCounterCustomer(req, { allowInactive: true });
   const paymentMode = req.body.paymentMode;
   const paymentReference = String(req.body.paymentReference ?? "").trim();
   if (paymentMode !== "CASH" && paymentReference.length < 4) {
@@ -102,14 +100,18 @@ export async function placeAssistedBuy(req) {
       },
     ]);
   }
-  const quote = await loadAssistedQuote(req, customer, "BUY");
+  const prior = await DigitalMetalBuyOrder.findOne({ tenantId: req.auth.tenantId, idempotencyKey: counterStepKey(req, "dm-buy") }).lean();
+  if (prior && (String(prior.customerId) !== String(customer._id) || String(prior.quoteId) !== String(req.body.quoteId))) throw errors.conflict("IDEMPOTENCY_KEY_REUSED", "Counter purchase inputs differ from the original purchase.");
+  if (prior) assertCounterTenderReplay(prior, req);
+  else assertCustomerCanTradeAtCounter(customer);
+  const quote = prior ? { _id: prior.quoteId } : await loadAssistedQuote(req, customer, "BUY");
 
   const assisted = assistedMetadata(req, customer, {
     paymentMode,
     paymentReference,
     note: String(req.body.note ?? "").trim().slice(0, 500),
   });
-  const orderDto = await createBuyOrder(
+  const orderDto = prior ? { id: prior._id } : await createBuyOrder(
     customerBoundRequest(req, customer, {
       idempotencyKey: counterStepKey(req, "dm-buy"),
       body: {
@@ -123,6 +125,7 @@ export async function placeAssistedBuy(req) {
   const orderId = orderDto.id;
   const order = await DigitalMetalBuyOrder.findOne({ _id: orderId, tenantId: req.auth.tenantId }).lean();
   if (!order) throw errors.notFound("Order");
+  assertCounterTenderReplay(order, req);
 
   const attemptKey = counterStepKey(req, "dm-buy-pay");
   let attempt = await DigitalMetalBuyPaymentAttempt.findOne({
@@ -225,16 +228,20 @@ export async function createAssistedSellQuote(req) {
 
 export async function placeAssistedSell(req) {
   assertConsent(req.body);
-  const customer = await loadCounterCustomer(req);
+  const customer = await loadCounterCustomer(req, { allowInactive: true });
   const payoutMethod = req.body.payoutMethod;
   const destinationId = String(req.body.bankDestinationId ?? "").trim();
   if (payoutMethod === "BANK") {
     if (!destinationId) {
       throw errors.validation([{ field: "bankDestinationId", message: "Choose the customer's verified bank account." }]);
     }
-    await loadActiveBankDestinationForCustomer(req.auth.tenantId, String(customer._id), destinationId);
   }
-  const quote = await loadAssistedQuote(req, customer, "SELL");
+  const prior = await DigitalMetalSellOrder.findOne({ tenantId: req.auth.tenantId, idempotencyKey: counterStepKey(req, "dm-sell") }).lean();
+  if (prior && (String(prior.customerId) !== String(customer._id) || String(prior.quoteId) !== String(req.body.quoteId)
+    || String(prior.assisted?.byUserId) !== String(req.auth.id))) throw errors.conflict("IDEMPOTENCY_KEY_REUSED", "Counter sale inputs differ from the original sale.");
+  if (!prior) assertCustomerCanTradeAtCounter(customer);
+  const quote = prior ? { _id: prior.quoteId, termsVersion: prior.termsVersion, termsContentHash: prior.termsContentHash }
+    : await loadAssistedQuote(req, customer, "SELL");
   const assisted = assistedMetadata(req, customer, {
     note: String(req.body.note ?? "").trim().slice(0, 500),
   });
@@ -247,27 +254,12 @@ export async function placeAssistedSell(req) {
         termsContentHashAccepted: quote.termsContentHash,
       },
     }),
-    { assisted, payoutMethod },
+    { assisted, payoutMethod, bankDestinationId: payoutMethod === "BANK" ? destinationId : null, finalizeImmediately: true },
   );
 
-  const settings = await latestSettings(req.auth.tenantId, quote.metal, quote.finenessPpm);
-  const approvalExpiresAt = new Date(Date.now() + (settings?.sellApprovalTtlSeconds ?? 1800) * 1000);
-  await DigitalMetalSellOrder.updateOne(
-    { _id: created.id, tenantId: req.auth.tenantId, status: "RESERVED" },
-    {
-      $set: {
-        status: "PENDING_APPROVAL",
-        bankDestinationId: payoutMethod === "BANK" ? destinationId : null,
-        confirmedAt: new Date(),
-        approvalExpiresAt,
-      },
-    },
-  );
-  const order = await DigitalMetalSellOrder.findById(created.id).lean();
-  if (!order || !["PENDING_APPROVAL", "PAYABLE_OPEN"].includes(order.status)) {
-    throw new AppError("INVALID_STATE", "The sell could not be sent for approval.", 409, {
-      status: order?.status ?? null,
-    });
+  const order = created;
+  if (order.status !== "PAYABLE_OPEN") {
+    throw new AppError("INVALID_STATE", "The sale could not be confirmed.", 409);
   }
   await writeAudit({
     req,
@@ -275,7 +267,7 @@ export async function placeAssistedSell(req) {
     entityType: AuditEntityType.CUSTOMER,
     entityId: String(customer._id),
     after: {
-      orderId: order._id,
+      orderId: order.id,
       branchId: counterBranchId(req, customer),
       metal: order.metal,
       quantityUg: String(order.quantityUg),
@@ -283,10 +275,10 @@ export async function placeAssistedSell(req) {
       payoutMethod,
     },
   });
-  return { order: mapSellOrderDto(order) };
+  return { order };
 }
 
-/** Pay an approved counter sell in cash. Settles the payable and debits the staff member's cash in hand. */
+/** Pay an accepted counter sell in cash. Settles the payable and debits the staff member's cash in hand. */
 export async function recordSellCashPayout(req) {
   const order = await DigitalMetalSellOrder.findOne({
     _id: req.params.orderId,
@@ -306,7 +298,7 @@ export async function recordSellCashPayout(req) {
     throw new AppError(
       "SELL_NOT_APPROVED",
       order.status === "PENDING_APPROVAL"
-        ? "Approve the sell before paying the customer."
+        ? "This previous sell request needs review before payment."
         : "This sell can no longer be paid.",
       409,
       { status: order.status },
@@ -376,7 +368,7 @@ export async function recordSellCashPayout(req) {
   });
 
   return {
-    order: mapSellOrderDto(order),
+    order: mapSellOrderDto(order, { payable: result.payable }),
     payable: {
       id: result.payable._id,
       amountPaise: result.payable.amountPaise,

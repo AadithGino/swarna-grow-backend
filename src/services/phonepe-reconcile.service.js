@@ -31,22 +31,25 @@ function backoffNextAt(attempts) {
 }
 
 export async function resolveMerchantOrderIdForPayment(payment) {
+  // Receipt prefix is the PhonePe merchantOrderId we used at initiation (link plk_* or intent pmi_*).
+  const receiptRef = payment.receiptNumber?.match(/^PENDING-(.+)$/)?.[1];
+  if (receiptRef) return receiptRef;
   const intent = await PaymentIntent.findOne({
     tenantId: payment.tenantId,
     paymentId: payment._id,
   })
     .select("_id providerOrderId")
     .lean();
-  if (intent) return intent._id;
+  if (intent?.providerOrderId) return intent.providerOrderId;
+  if (intent?._id) return intent._id;
   const link = await PaymentLink.findOne({
     tenantId: payment.tenantId,
     paymentId: payment._id,
   })
     .select("_id")
     .lean();
-  if (link) return link._id;
-  const match = payment.receiptNumber?.match(/^PENDING-(.+)$/);
-  return match?.[1] ?? null;
+  if (link?._id) return link._id;
+  return null;
 }
 
 async function loadIntentAndLink({ tenantId, paymentId, merchantOrderId }) {
@@ -66,6 +69,17 @@ export const loadIntentAndLinkForPayment = loadIntentAndLink;
 
 function buildReconcileLeaseToken(workerLabel, paymentId) {
   return `${workerLabel}_${paymentId}_${randomToken(8)}`;
+}
+
+/** Customer status polls must still query PhonePe after a false RECONCILE_EXHAUSTED (e.g. wrong merchant id). */
+const BYPASS_EXHAUSTED_RECONCILE_SOURCES = new Set([
+  "CUSTOMER_SCHEME_PAY_POLL",
+  "CUSTOMER_INTENT_POLL",
+  "PUBLIC_PAY_LINK_STATUS",
+]);
+
+export function reconcileBypassesExhaustedGate(source) {
+  return BYPASS_EXHAUSTED_RECONCILE_SOURCES.has(source);
 }
 
 async function establishReconcileExhaustedIfAtThreshold(payment, merchantOrderId) {
@@ -400,6 +414,7 @@ export async function reconcileGatewayPayment(payment, {
       source,
       webhookEventId,
       expectedLeaseOwner: leaseToken,
+      bypassExhaustedGate: reconcileBypassesExhaustedGate(source),
     });
   } finally {
     if (leaseToken) {
@@ -412,6 +427,7 @@ async function reconcileGatewayPaymentCore(payment, {
   source = "RECONCILE_JOB",
   webhookEventId = null,
   expectedLeaseOwner = null,
+  bypassExhaustedGate = false,
 } = {}) {
   await reconcileTestHookBeforeReconcileCore();
 
@@ -422,7 +438,10 @@ async function reconcileGatewayPaymentCore(payment, {
   const merchantOrderId = await resolveMerchantOrderIdForPayment(payment);
 
   const thresholdExhausted = await establishReconcileExhaustedIfAtThreshold(payment, merchantOrderId);
-  if (thresholdExhausted) return thresholdExhausted;
+  if (thresholdExhausted && !bypassExhaustedGate) return thresholdExhausted;
+  if (thresholdExhausted && bypassExhaustedGate) {
+    payment = (await Payment.findOne({ _id: payment._id, tenantId: payment.tenantId }).lean()) ?? payment;
+  }
 
   if (!merchantOrderId) {
     const progress = await recordNonTerminalReconcileProgress(

@@ -78,7 +78,7 @@ export function assertTenantOwnsCustomerScope(req, customerRow) {
   const roleScope = ROLE_SCOPE[req.auth?.role] ?? "BRANCH";
   if (roleScope === "BRANCH") {
     const scopeBranch = req.scope?.branchId ?? req.auth?.branchId;
-    if (scopeBranch && customerRow.branchId && String(customerRow.branchId) !== String(scopeBranch)) {
+    if (!scopeBranch || !customerRow.branchId || String(customerRow.branchId) !== String(scopeBranch)) {
       throw new AppError("FORBIDDEN", "Customer is outside your branch scope.", 403);
     }
   }

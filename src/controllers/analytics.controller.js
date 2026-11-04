@@ -20,6 +20,11 @@ import { istTodayYmd, workboardSchemeFilter } from "../lib/dues-workboard.js";
 import { monthKey } from "../lib/date.js";
 import dayjs from "dayjs";
 
+export const paymentsNeedingAttention = async (req, res) => {
+  const svc = await import("../services/payments-needing-attention.service.js");
+  return sendSuccess(res, await svc.listPaymentsNeedingAttention(req));
+};
+
 export const dashboard = async (req, res) =>
   sendSuccess(res, await reporting.dashboard(req));
 export const chart = async (req, res) =>

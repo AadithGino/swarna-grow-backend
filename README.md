@@ -2,6 +2,11 @@
 
 Production-oriented JavaScript implementation of the SwarnaGrow v1.2 API contract. It serves the platform console, tenant-admin portal, staff app API, customer app API, public payment/signup flows, provider webhooks, exports, and background processing.
 
+The 30 October financial fixes require an offline index migration before deploying
+this release. See [the remediation and rollout guide](docs/PRODUCTION_REMEDIATION_2026-10-30.md)
+for the phased changes, migration commands and staging acceptance checks. Production
+startup refuses an unmigrated financial index layout.
+
 ## Stack
 
 - Node.js 22+, ECMAScript modules, Express 5

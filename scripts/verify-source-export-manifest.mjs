@@ -69,6 +69,10 @@ function isDeniedPath(entry) {
     if (n === "docs/QA_DEMO_CREDENTIALS.md" || n === "docs/DEMO_CREDENTIALS.md") {
       return null;
     }
+    // Loader only: reads sealed tenant secrets / env — no embedded key material.
+    if (n === "src/lib/message-central-credentials.js") {
+      return null;
+    }
     return { reason: "credential filename" };
   }
 

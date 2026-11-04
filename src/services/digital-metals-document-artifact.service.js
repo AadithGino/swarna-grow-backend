@@ -203,24 +203,37 @@ export async function requestDigitalMetalDocument(req) {
   await assertAdminDigitalMetalsCustomerSubject(req, subjectCustomerId);
 
   const artifactId = createId("dmdoc");
-  const row = await DigitalMetalDocumentArtifact.create({
-    _id: artifactId,
-    tenantId,
-    docType,
-    subjectKey,
-    customerId: docType === "METAL_STATEMENT" ? (customerId ?? req.auth.id) : (snapshot.order?.customerId ?? snapshot.payout?.customerId ?? customerId),
-    status: "PENDING",
-    sourceSnapshot: snapshot,
-    idempotencyKey,
-    requestedByUserId: req.auth.id,
-    requestedByType: req.auth.type === "CUSTOMER" ? "CUSTOMER" : "TENANT_USER",
-  });
-
-  await enqueueDigitalMetalOutboxEvent({
-    tenantId,
-    topic: DIGITAL_METAL_OUTBOX_TOPICS.DOCUMENT_ARTIFACT_REQUEST,
-    key: `${docType}:${subjectKey}:${idempotencyKey}`,
-    payload: { artifactId },
+  const row = await withTransaction(async (session) => {
+    const created = (
+      await DigitalMetalDocumentArtifact.create(
+        [
+          {
+            _id: artifactId,
+            tenantId,
+            docType,
+            subjectKey,
+            customerId:
+              docType === "METAL_STATEMENT"
+                ? (customerId ?? req.auth.id)
+                : (snapshot.order?.customerId ?? snapshot.payout?.customerId ?? customerId),
+            status: "PENDING",
+            sourceSnapshot: snapshot,
+            idempotencyKey,
+            requestedByUserId: req.auth.id,
+            requestedByType: req.auth.type === "CUSTOMER" ? "CUSTOMER" : "TENANT_USER",
+          },
+        ],
+        { session },
+      )
+    )[0];
+    await enqueueDigitalMetalOutboxEvent({
+      tenantId,
+      topic: DIGITAL_METAL_OUTBOX_TOPICS.DOCUMENT_ARTIFACT_REQUEST,
+      key: `${docType}:${subjectKey}:${idempotencyKey}`,
+      payload: { artifactId },
+      session,
+    });
+    return created;
   });
 
   return mapArtifact(row.toObject());
@@ -333,23 +346,30 @@ export async function retryDigitalMetalDocument(req) {
   if (!idempotencyKey) {
     throw errors.validation([{ field: "x-idempotency-key", message: "Required." }]);
   }
-  await DigitalMetalDocumentArtifact.updateOne(
-    { _id: artifact._id, tenantId: req.auth.tenantId, status: { $in: ["FAILED", "PENDING"] } },
-    {
-      $set: {
-        status: "PENDING",
-        lastError: null,
-        availableAt: new Date(),
-        processingLeaseOwner: null,
-        processingLeaseExpiresAt: null,
+  await withTransaction(async (session) => {
+    const updated = await DigitalMetalDocumentArtifact.updateOne(
+      { _id: artifact._id, tenantId: req.auth.tenantId, status: { $in: ["FAILED", "PENDING"] } },
+      {
+        $set: {
+          status: "PENDING",
+          lastError: null,
+          availableAt: new Date(),
+          processingLeaseOwner: null,
+          processingLeaseExpiresAt: null,
+        },
       },
-    },
-  );
-  await enqueueDigitalMetalOutboxEvent({
-    tenantId: req.auth.tenantId,
-    topic: DIGITAL_METAL_OUTBOX_TOPICS.DOCUMENT_ARTIFACT_REQUEST,
-    key: `retry:${artifact._id}:${idempotencyKey}`,
-    payload: { artifactId: artifact._id },
+      { session },
+    );
+    if (!updated.matchedCount) {
+      throw new AppError("DOCUMENT_BUSY", "Document changed elsewhere.", 409);
+    }
+    await enqueueDigitalMetalOutboxEvent({
+      tenantId: req.auth.tenantId,
+      topic: DIGITAL_METAL_OUTBOX_TOPICS.DOCUMENT_ARTIFACT_REQUEST,
+      key: `retry:${artifact._id}:${idempotencyKey}`,
+      payload: { artifactId: artifact._id },
+      session,
+    });
   });
   const refreshed = await DigitalMetalDocumentArtifact.findById(artifact._id).lean();
   return mapArtifact(refreshed);

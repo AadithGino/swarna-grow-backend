@@ -22,6 +22,8 @@ import { testPaymentHarnessMetaForClient } from "./ecommerce-test-payment-comple
 import { computePendingPaymentExpiresAt } from "../lib/ecommerce-pending-payment-policy.js";
 import { snapshotStorePolicyForOrder } from "../lib/ecommerce-store-policies.js";
 import { isEcommerceOrderInvoiceAvailable } from "../lib/ecommerce-order-invoice-eligibility.js";
+import { plainLanguageEcommerceOrderStatusForOrder } from "../lib/plain-language-labels.js";
+import { codCustomerPaymentEvidence } from "../lib/cod-customer-payment-evidence.js";
 import { paginate } from "../lib/pagination.js";
 import { listAdminOrdersPaginated } from "./ecommerce-admin-order-list.service.js";
 import { attachAdminOrderCustomerDisplay } from "../lib/ecommerce-admin-order-customer-display.js";
@@ -106,7 +108,8 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
     checkoutTaxReady: false,
   };
   const paymentMethod = row.paymentMethod ?? EcommercePaymentMethod.ONLINE;
-  let statusLabel = String(row.status);
+  let statusLabel =
+    plainLanguageEcommerceOrderStatusForOrder(row.status, row.fulfilmentMode) ?? String(row.status);
   if (pending) statusLabel = "Awaiting payment — not charged";
   else if (row.status === EcommerceOrderStatus.PAYMENT_EXPIRED) {
     statusLabel = "Payment window expired — not charged";
@@ -167,6 +170,7 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
           }
         : null,
     storePolicySnapshot: row.storePolicySnapshot ?? null,
+    codPaymentEvidence: cod ? codCustomerPaymentEvidence(row) : null,
   };
 }
 
@@ -500,11 +504,18 @@ export async function listCustomerOrders(req) {
 
 export async function getCustomerOrder(req) {
   const { capability } = await loadCheckoutContext(req.auth.tenantId, req.tenant);
-  const row = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-    customerId: req.auth.id,
-  }).lean();
+  const { refreshEcommerceOrderFromPhonePe } = await import("./ecommerce-payment-reconcile.service.js");
+  const row =
+    (await refreshEcommerceOrderFromPhonePe({
+      tenantId: req.auth.tenantId,
+      customerId: req.auth.id,
+      orderId: req.params.orderId,
+    }))
+    ?? (await EcommerceOrder.findOne({
+      _id: req.params.orderId,
+      tenantId: req.auth.tenantId,
+      customerId: req.auth.id,
+    }).lean());
   if (!row) throw errors.notFound("Order");
   const refund = await EcommercePaymentExceptionRefund.findOne({
     tenantId: req.auth.tenantId,
@@ -523,8 +534,14 @@ export async function getCustomerOrder(req) {
     ? await EcommerceOrderCancellationRequest.findById(row.activeCancellationRequestId).lean()
     : null;
   const { mapCancellationRequest } = await import("./ecommerce-order-cancellation.service.js");
+  const {
+    mapHandoverForDetail,
+    revealCustomerPickupDisplayCode,
+  } = await import("./ecommerce-order-handover.service.js");
   return {
     ...mapped,
+    fulfilmentHandover: mapHandoverForDetail(row),
+    pickupCode: revealCustomerPickupDisplayCode(row),
     cancellation: {
       capabilities: mapCancellationCapabilities(row, activeAttempt),
       request: mapCancellationRequest(cancellationRequest),

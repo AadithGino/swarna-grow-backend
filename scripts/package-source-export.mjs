@@ -14,6 +14,8 @@ const repoRoot = path.resolve(__dirname, "..");
 const ROOT_ALLOW_FILES = new Set([
   "package.json",
   "package-lock.json",
+  "next-env.d.ts",
+  "package-lock.json",
   "eslint.config.js",
   ".gitignore",
   ".env.example",
@@ -27,7 +29,7 @@ const ROOT_ALLOW_PREFIXES = ["src/", "scripts/", "tests/", "docs/", "api/"];
 
 function gitLines(args) {
   try {
-    return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" })
+    return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
@@ -49,10 +51,25 @@ function allowedRelative(rel) {
 }
 
 function collectFiles() {
-  const tracked = gitLines(["ls-files"]);
-  const untracked = gitLines(["ls-files", "-o", "--exclude-standard"]);
-  const all = new Set([...tracked, ...untracked]);
-  return [...all].filter(allowedRelative).sort();
+  const gitRoot = gitLines(["rev-parse", "--show-toplevel"])[0];
+  if (gitRoot && path.resolve(gitRoot) === repoRoot) {
+    const files = new Set([...gitLines(["ls-files"]), ...gitLines(["ls-files", "-o", "--exclude-standard"])]);
+    return [...files].filter(rel => allowedRelative(rel) && fs.existsSync(path.join(repoRoot, rel)) && fs.statSync(path.join(repoRoot, rel)).isFile()).sort();
+  }
+  // Extracted source has no Git metadata. Walk only exportable source paths.
+  const files = [];
+  const walk = rel => {
+    for (const entry of fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true })) {
+      const child = rel ? `${rel}/${entry.name}` : entry.name;
+      if (["node_modules", ".git", "dist", ".next", ".wrangler", ".sites-runtime", "coverage", "test-results"].includes(entry.name) || entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (!rel && !ROOT_ALLOW_PREFIXES.some(prefix => prefix.startsWith(`${child}/`))) continue;
+        walk(child);
+      } else if (entry.isFile() && allowedRelative(child)) files.push(child);
+    }
+  };
+  walk("");
+  return files.sort();
 }
 
 const outArg = process.argv.find((a) => a.startsWith("--out="));

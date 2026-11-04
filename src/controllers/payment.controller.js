@@ -6,8 +6,6 @@ import { isOverlappingFeatureEnabled } from "../lib/feature-entitlements.js";
 import { paymentReceiptExtraLines } from "../lib/payment-gold-dto.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import * as payments from "../services/payment.service.js";
-import * as messaging from "../services/messaging.service.js";
-
 export const record = async (req, res) =>
   sendSuccess(res, await payments.recordPayment(req), {}, 201);
 export const list = async (req, res) =>
@@ -139,8 +137,6 @@ export const passbookImage = async (req, res) => {
   res.type("png").send(png);
 };
 
-export const share = async (req, res) =>
-  sendSuccess(res, await messaging.sharePayment(req), {}, 202);
 export const listLinks = async (req, res) =>
   sendSuccess(
     res,
@@ -148,5 +144,3 @@ export const listLinks = async (req, res) =>
   );
 export const cancelLink = async (req, res) =>
   sendSuccess(res, await payments.cancelPaymentLink(req));
-export const resendLink = async (req, res) =>
-  sendSuccess(res, await payments.resendPaymentLink(req), {}, 202);

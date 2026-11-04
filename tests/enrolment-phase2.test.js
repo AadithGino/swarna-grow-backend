@@ -380,7 +380,7 @@ async function seedPendingEnrolCheckout({ tenant, branch, user, customer }) {
   return { plan, enrolled, payment, intent };
 }
 
-test("terminal gateway failure expires unpaid pending enrolment", async () => {
+test("terminal gateway failure keeps pending enrolment so customer can retry first payment", async () => {
   const { tenant, branch, user } = await tenantWithPolicy(false);
   const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
   const { enrolled, payment, intent } = await seedPendingEnrolCheckout({
@@ -393,14 +393,14 @@ test("terminal gateway failure expires unpaid pending enrolment", async () => {
   });
   assert.ok(result.paymentId);
   const scheme = await Scheme.findById(enrolled._id).lean();
-  assert.equal(scheme.status, SchemeStatus.ENROLMENT_EXPIRED);
+  assert.equal(scheme.status, SchemeStatus.PENDING_PAYMENT);
   assert.equal(
     (await Payment.findById(payment._id).lean()).status,
     PaymentStatus.FAILED,
   );
   assert.equal(
     await OutboxEvent.countDocuments({ tenantId: tenant._id, topic: "scheme.enrolment.expired", key: enrolled._id }),
-    1,
+    0,
   );
 });
 
@@ -511,6 +511,8 @@ test("plan capacity frees after enrolment expiry", async () => {
     paymentId,
     reference: intentId,
   });
+  const { expirePendingEnrolmentIfUnpaid } = await import("../src/lib/pending-enrolment-expiry.js");
+  await expirePendingEnrolmentIfUnpaid({ tenantId: tenant._id, schemeId: enrolled._id });
   const occupied = await Scheme.countDocuments({
     tenantId: tenant._id,
     planId: plan._id,
@@ -584,6 +586,8 @@ test("late gateway success after enrolment expiry routes to manual review once",
     paymentId,
     reference: intentId,
   });
+  const { expirePendingEnrolmentIfUnpaid } = await import("../src/lib/pending-enrolment-expiry.js");
+  await expirePendingEnrolmentIfUnpaid({ tenantId: tenant._id, schemeId: enrolled._id });
   assert.equal((await Scheme.findById(enrolled._id).lean()).status, SchemeStatus.ENROLMENT_EXPIRED);
   const intent = await PaymentIntent.findById(intentId).lean();
   assert.equal(intent.status, PaymentIntentStatus.FAILED);
@@ -642,4 +646,26 @@ test("late gateway success after enrolment expiry routes to manual review once",
     await OutboxEvent.countDocuments({ tenantId: tenant._id, topic: "payment.unallocated.enrolment_expired", key: paymentId }),
     1,
   );
+});
+
+
+test("R17 admin enrolment durable replay survives HTTP cache loss without duplicate manual collection", async () => {
+  const { tenant, branch, user } = await tenantWithPolicy(false);
+  const plan = buildFixedPlan(tenant._id, "DURABLE", { scheduleRules: { dueDateRule: "JOIN_ANNIVERSARY", firstInstallmentModeDefault: FirstInstallmentMode.COLLECT_NOW } });
+  await SchemePlan.create(plan);
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const req = enrolReq({ tenant, branch, user, customerId: customer._id, planId: plan._id, body: {
+    firstInstallmentMode: FirstInstallmentMode.COLLECT_NOW, firstInstallmentAction: "RECORD_MANUAL_PAYMENT", payment: { amountPaise: 100_000, mode: "CASH" },
+  } });
+  req.headers = { "x-idempotency-key": "durable-admin-enrol-replay-01" };
+  const first = await enrol(req);
+  const replay = await enrol(req); // no HTTP idempotency record participates
+  assert.equal(replay._id, first._id);
+  assert.equal(await Scheme.countDocuments({ tenantId: tenant._id, customerId: customer._id }), 1);
+  assert.equal(await Payment.countDocuments({ tenantId: tenant._id, schemeId: first._id }), 1);
+  assert.equal(await LedgerEntry.countDocuments({ tenantId: tenant._id, schemeId: first._id }), 1);
+  await assert.rejects(enrol({ ...req, body: { ...req.body, installmentAmountPaise: 200_000 } }), { code: "IDEMPOTENCY_KEY_REUSED" });
+  const second = await enrol({ ...req, headers: { "x-idempotency-key": "durable-admin-enrol-new-operation-02" } });
+  assert.notEqual(second._id, first._id);
+  assert.equal(await Scheme.countDocuments({ tenantId: tenant._id, customerId: customer._id }), 2);
 });

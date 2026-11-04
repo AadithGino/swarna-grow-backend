@@ -145,10 +145,6 @@ staffRouter.post(
     asyncHandler(payment.createLink),
   ),
 );
-staffRouter.post(
-  "/payments/:paymentId/share-whatsapp",
-  ...guarded(Permission.PAYMENT_RECORD, idempotent, asyncHandler(payment.share)),
-);
 staffRouter.get(
   "/collections/summary",
   ...guarded(Permission.PAYMENT_READ, asyncHandler(analytics.collectionSummary)),

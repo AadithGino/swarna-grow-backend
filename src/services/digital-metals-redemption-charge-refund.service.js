@@ -23,7 +23,10 @@ import { OPEN_REDEMPTION_CHARGE_REFUND_STATUSES } from "../lib/digital-metals-op
 
 const TERMINAL = new Set(["SUCCEEDED", "MANUAL_RECORDED"]);
 
-async function resolveRedemptionOrderAfterChargeRefund(tenantId, refundCase) {
+async function resolveRedemptionOrderAfterChargeRefund(tenantId, refundCase, session) {
+  const outstanding = await DigitalMetalRedemptionChargeRefundCase.exists({ tenantId,
+    redemptionOrderId: refundCase.redemptionOrderId, status: { $nin: [...TERMINAL] } }).session(session);
+  if (outstanding) return;
   if (refundCase.exceptionType === "ADDITIONAL_CAPTURE") {
     await DigitalMetalRedemptionOrder.updateOne(
       {
@@ -32,6 +35,7 @@ async function resolveRedemptionOrderAfterChargeRefund(tenantId, refundCase) {
         paymentExceptionStatus: "ADDITIONAL_CAPTURE",
       },
       { $set: { paymentExceptionStatus: "REFUNDED" }, $inc: { version: 1 } },
+      { session },
     );
     return;
   }
@@ -46,6 +50,7 @@ async function resolveRedemptionOrderAfterChargeRefund(tenantId, refundCase) {
       $set: { status: "CANCELLED", paymentExceptionStatus: "REFUNDED" },
       $inc: { version: 1 },
     },
+    { session },
   );
 }
 
@@ -217,10 +222,11 @@ export async function recordManualRedemptionChargeRefund(req) {
       { field: "evidenceUploadIds", message: "At least one evidence upload is required." },
     ]);
   }
+  return withTransaction(async (session) => {
   const refundRow = await DigitalMetalRedemptionChargeRefundCase.findOne({
     _id: req.params.refundCaseId,
     tenantId: req.auth.tenantId,
-  });
+  }).session(session);
   if (!refundRow) throw errors.notFound("Refund case");
   await assertAdminCustomerInScope(req, refundRow.customerId);
   if (TERMINAL.has(refundRow.status)) return { refund: refundRow.toObject() };
@@ -247,10 +253,10 @@ export async function recordManualRedemptionChargeRefund(req) {
       },
       $inc: { version: 1 },
     },
-    { new: true },
+    { new: true, session },
   );
   if (!updated) {
-    const fresh = await DigitalMetalRedemptionChargeRefundCase.findById(refundRow._id).lean();
+    const fresh = await DigitalMetalRedemptionChargeRefundCase.findById(refundRow._id).session(session).lean();
     if (fresh?.status === "REFUND_INITIATED") {
       throw new AppError("GATEWAY_REFUND_IN_FLIGHT", "Gateway refund is in flight.", 409);
     }
@@ -259,8 +265,9 @@ export async function recordManualRedemptionChargeRefund(req) {
     }
     throw errors.conflict("REFUND_STATE", "Refund case changed; refresh and retry.");
   }
-  await resolveRedemptionOrderAfterChargeRefund(req.auth.tenantId, updated.toObject());
+  await resolveRedemptionOrderAfterChargeRefund(req.auth.tenantId, updated.toObject(), session);
   return { refund: updated.toObject() };
+  });
 }
 
 export async function confirmRedemptionChargeRefundFromProvider({ tenantId, payload }) {
@@ -268,10 +275,11 @@ export async function confirmRedemptionChargeRefundFromProvider({ tenantId, payl
   if (!providerRefundId || !isDigitalMetalRedemptionChargeRefundMerchantId(providerRefundId)) {
     return { outcome: "IGNORED" };
   }
+  return withTransaction(async (session) => {
   const existing = await DigitalMetalRedemptionChargeRefundCase.findOne({
     _id: providerRefundId,
     tenantId,
-  }).lean();
+  }).session(session).lean();
   if (!existing) return { outcome: "NOT_FOUND" };
   if (TERMINAL.has(existing.status)) return { outcome: "ALREADY_TERMINAL" };
 
@@ -283,20 +291,22 @@ export async function confirmRedemptionChargeRefundFromProvider({ tenantId, payl
     const updated = await DigitalMetalRedemptionChargeRefundCase.findOneAndUpdate(
       { _id: providerRefundId, tenantId, status: { $nin: [...TERMINAL] } },
       { $set: { status: "SUCCEEDED" }, $inc: { version: 1 } },
-      { new: true },
+      { new: true, session },
     );
     if (!updated) return { outcome: "ALREADY_TERMINAL" };
-    await resolveRedemptionOrderAfterChargeRefund(tenantId, updated.toObject());
+    await resolveRedemptionOrderAfterChargeRefund(tenantId, updated.toObject(), session);
     return { outcome: "SUCCEEDED" };
   }
   if (failed) {
     await DigitalMetalRedemptionChargeRefundCase.updateOne(
       { _id: providerRefundId, tenantId, status: { $nin: [...TERMINAL] } },
       { $set: { status: "FAILED" }, $inc: { version: 1 } },
+      { session },
     );
     return { outcome: "FAILED" };
   }
   return { outcome: "PENDING" };
+  });
 }
 
 /** Poll PhonePe for in-flight redemption charge refunds (recovery after ambiguous initiation). */

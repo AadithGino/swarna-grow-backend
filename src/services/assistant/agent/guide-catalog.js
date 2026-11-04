@@ -811,6 +811,23 @@ export const GUIDE_CATALOG = Object.freeze([
     ]
   },
   {
+    "id": "payments-needing-attention",
+    "title": "Payments needing attention",
+    "summary": "Store and digital-metal payment exceptions in one queue.",
+    "category": "money",
+    "keywords": [
+      "payment exception",
+      "late success",
+      "duplicate payment",
+      "refund needed",
+      "payment attention"
+    ],
+    "steps": [
+      "Open Payments needing attention",
+      "Unified queue"
+    ]
+  },
+  {
     "id": "accept-handover",
     "title": "Accept or resolve a cash handover",
     "summary": "Approve handovers submitted by collectors, or settle a mismatch.",
@@ -1162,7 +1179,7 @@ export const GUIDE_CATALOG = Object.freeze([
       "late payment store"
     ],
     "steps": [
-      "Open Payment exceptions",
+      "Open Payments needing attention",
       "Payments that need a decision"
     ]
   },
@@ -1431,7 +1448,7 @@ export const GUIDE_CATALOG = Object.freeze([
       "digi refund"
     ],
     "steps": [
-      "Open Payment exceptions",
+      "Open Payments needing attention",
       "Open a case"
     ]
   },

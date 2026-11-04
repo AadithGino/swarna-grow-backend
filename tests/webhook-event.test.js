@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { JobStatus } from "../src/constants/enums.js";
-import { buildWhatsAppWebhookEventId } from "../src/lib/whatsapp-webhook-identity.js";
 import { resetWebhookMetricsForTests } from "../src/lib/webhook-metrics.js";
 import {
   claimWebhookForProcessing,
@@ -61,18 +60,6 @@ test("claimWebhookForProcessing reclaims expired lease", async () => {
   const claimed = await claimWebhookForProcessing(event._id, "new-worker");
   assert.ok(claimed);
   assert.equal(claimed.leaseOwner, "new-worker");
-});
-
-test("buildWhatsAppWebhookEventId is stable for status id", () => {
-  const id = buildWhatsAppWebhookEventId({
-    tenantId: "tnt_1",
-    payload: {
-      entry: [{
-        changes: [{ value: { statuses: [{ id: "wamid.abc" }] } }],
-      }],
-    },
-  });
-  assert.equal(id, "wa:tnt_1:wamid.abc");
 });
 
 test("duplicate verified webhook returns null", async () => {

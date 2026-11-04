@@ -87,6 +87,7 @@ Dead-letter replay: `node scripts/reconcile-ecommerce-outbox-dead-letter.js` (dr
 | POST | `/admin/ecommerce/courier-cod/remittance-batches` | `{ statementReference }` — create draft batch |
 | POST | `/admin/ecommerce/courier-cod/remittance-batches/:batchId/orders/:orderId/lines` | `{ grossPaise, feePaise }` — gross must match order COD total |
 | POST | `/admin/ecommerce/courier-cod/remittance-batches/:batchId/reconcile` | `{ bankCreditReference, bankCreditPaise, bankCreditedAt? }` — idempotent reconcile |
+| POST | `/admin/ecommerce/courier-cod/record-money-received` | `{ orderIds[], bankCreditReference, bankCreditRupees, totalCourierFeeRupees?, bankCreditedAt?, statementReference? }` — creates batch, lines, and reconciles in one step (rupees in body); returns `reconciliation.outcomeLabel` (Matched / Short payment / Over payment) |
 
 **Removed (do not call):** `/admin/ecommerce/cod-custody/*`, `/admin/ecommerce/orders/:orderId/cod/record-collection`.
 

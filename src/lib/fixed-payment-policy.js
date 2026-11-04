@@ -34,6 +34,10 @@ function applyReservationToQuote(baseQuote, reservedPaise, paymentRules) {
   const minPayablePaise = partialAllowed
     ? Math.min(baseQuote.minPayablePaise, maxPayablePaise)
     : (allowedAmountsPaise?.[0] ?? maxPayablePaise);
+  const suggestedPaise = Math.min(
+    baseQuote.suggestedPaise ?? maxPayablePaise,
+    maxPayablePaise,
+  );
   return {
     ...baseQuote,
     payable: maxPayablePaise > 0 && (partialAllowed || (allowedAmountsPaise?.length ?? 0) > 0),
@@ -42,6 +46,7 @@ function applyReservationToQuote(baseQuote, reservedPaise, paymentRules) {
     allowedAmountsPaise: allowedAmountsPaise?.length ? allowedAmountsPaise : baseQuote.allowedAmountsPaise,
     reservedPaise,
     remainingPayablePaise: maxPayablePaise,
+    suggestedPaise,
   };
 }
 

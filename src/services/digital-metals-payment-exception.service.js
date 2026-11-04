@@ -1,3 +1,4 @@
+import { selectOrderRefund } from "../lib/order-refund-selection.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -13,7 +14,7 @@ import {
   Tenant,
 } from "../models/index.js";
 import { ensureCustomerRiskHoldForPaymentException } from "./digital-metals-risk-hold.service.js";
-import { applyAdminCustomerScopeFilter } from "../lib/digital-metals-admin-scope.js";
+import { applyAdminCustomerScopeFilter, assertAdminCustomerInScope } from "../lib/digital-metals-admin-scope.js";
 
 const TERMINAL_REFUND = new Set(["SUCCEEDED", "MANUAL_RECORDED"]);
 const REFUND_EXCEPTIONS = new Set([
@@ -30,7 +31,7 @@ export async function ensureDigitalMetalPaymentExceptionRefundCase(
 ) {
   const refundId = createId("dmref");
   const updated = await DigitalMetalPaymentExceptionRefund.findOneAndUpdate(
-    { tenantId, orderId: order._id },
+    { tenantId, orderId: order._id, paymentAttemptId },
     {
       $setOnInsert: {
         _id: refundId,
@@ -99,11 +100,10 @@ export async function getAdminDigitalMetalBuyOrderRefund(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!order) throw errors.notFound("Order");
-  const refund = await DigitalMetalPaymentExceptionRefund.findOne({
-    tenantId: req.auth.tenantId,
-    orderId: order._id,
-  }).lean();
-  return { orderId: order._id, refund: refund ?? null, order };
+  await assertAdminCustomerInScope(req, order.customerId);
+  const selected = await selectOrderRefund(DigitalMetalPaymentExceptionRefund, req, order._id);
+  return { orderId: order._id, ...selected, order };
+
 }
 
 export async function initiateAdminDigitalMetalBuyOrderRefund(req) {
@@ -112,10 +112,8 @@ export async function initiateAdminDigitalMetalBuyOrderRefund(req) {
     tenantId: req.auth.tenantId,
   }).lean();
   if (!order) throw errors.notFound("Order");
-  const refundRow = await DigitalMetalPaymentExceptionRefund.findOne({
-    tenantId: req.auth.tenantId,
-    orderId: order._id,
-  }).lean();
+  await assertAdminCustomerInScope(req, order.customerId);
+  const { refund: refundRow } = await selectOrderRefund(DigitalMetalPaymentExceptionRefund, req, order._id, { mutation: true });
   if (!refundRow) throw errors.notFound("Payment exception refund");
   if (
     !REFUND_EXCEPTIONS.has(order.paymentExceptionStatus)
@@ -240,6 +238,7 @@ export async function confirmDigitalMetalPaymentExceptionRefundFromProvider({
       refundCase = await DigitalMetalPaymentExceptionRefund.findOne({
         tenantId,
         orderId: attempt.orderId,
+        paymentAttemptId: attempt._id,
       }).lean();
     }
   }
@@ -254,18 +253,27 @@ export async function confirmDigitalMetalPaymentExceptionRefundFromProvider({
   }
 
   if (succeeded) {
-    await DigitalMetalPaymentExceptionRefund.updateOne(
-      { _id: refundCase._id, status: { $nin: ["SUCCEEDED", "MANUAL_RECORDED"] } },
-      {
-        $set: { status: "SUCCEEDED", providerPayload: payload },
-        $inc: { version: 1 },
-      },
-    );
-    await DigitalMetalBuyOrder.updateOne(
-      { _id: refundCase.orderId, tenantId, status: { $ne: "REFUNDED" } },
-      { $set: { status: "REFUNDED" }, $inc: { version: 1 } },
-    );
-    return { outcome: "SUCCEEDED", refundId: refundCase._id };
+    return withTransaction(async (session) => {
+      const updated = await DigitalMetalPaymentExceptionRefund.findOneAndUpdate(
+        { _id: refundCase._id, tenantId, status: { $nin: ["SUCCEEDED", "MANUAL_RECORDED"] } },
+        { $set: { status: "SUCCEEDED", providerPayload: payload }, $inc: { version: 1 } },
+        { session, new: true },
+      );
+      if (!updated) return { outcome: "ALREADY_TERMINAL", refundId: refundCase._id };
+      const outstanding = await DigitalMetalPaymentExceptionRefund.exists({ tenantId, orderId: refundCase.orderId,
+        status: { $nin: ["SUCCEEDED", "MANUAL_RECORDED"] } }).session(session);
+      if (!outstanding) {
+        await DigitalMetalBuyOrder.updateOne(
+          { _id: refundCase.orderId, tenantId, status: "REFUND_REVIEW", creditJournalId: null },
+          { $set: { status: "REFUNDED" }, $inc: { version: 1 } }, { session },
+        );
+        await DigitalMetalBuyOrder.updateOne(
+          { _id: refundCase.orderId, tenantId, status: "CREDITED" },
+          { $set: { paymentExceptionStatus: null }, $inc: { version: 1 } }, { session },
+        );
+      }
+      return { outcome: "SUCCEEDED", refundId: refundCase._id };
+    });
   }
   if (failed) {
     await DigitalMetalPaymentExceptionRefund.updateOne(

@@ -29,6 +29,7 @@ import {
   ecommerceCodRemittanceBatchCreateBody,
   ecommerceCodRemittanceLineBody,
   ecommerceCodRemittanceReconcileBody,
+  ecommerceRecordCourierMoneyReceivedBody,
   ecommercePaymentExceptionRefundManualBody,
   ecommercePaymentOperationalAckBody,
   ecommercePaymentReconcileRetryBody,
@@ -46,6 +47,10 @@ import {
   ecommerceSummaryQuery,
   ecommerceReportKeyParam,
   ecommerceDeliveryHandoverBody,
+  ecommerceShipOrderBody,
+  ecommerceConfirmOrderDeliveryBody,
+  ecommerceReadyForPickupBody,
+  ecommerceConfirmPickupCollectionBody,
 } from "../validators/ecommerce.validators.js";
 import { cursorQuery, uploadBody } from "../validators/common.validators.js";
 import { uploadCompleteBody } from "../validators/admin-mutation.validators.js";
@@ -478,6 +483,46 @@ adminEcommerceRouter.post(
     asyncHandler(controller.transitionOrderFulfilment),
   ),
 );
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/ship",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceShipOrderBody }),
+    idempotent,
+    asyncHandler(controller.shipOrder),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/confirm-delivery",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceConfirmOrderDeliveryBody }),
+    idempotent,
+    asyncHandler(controller.confirmOrderDelivery),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/ready-for-pickup",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceReadyForPickupBody }),
+    idempotent,
+    asyncHandler(controller.markOrderReadyForPickup),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/confirm-pickup-collection",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceConfirmPickupCollectionBody }),
+    idempotent,
+    asyncHandler(controller.confirmPickupCollection),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/staff-handover-challenge/reveal",
+  ...guarded(Permission.ECOMMERCE_FULFILMENT_OPERATE, asyncHandler(controller.revealStaffHandoverChallenge)),
+);
 adminEcommerceRouter.patch(
   "/ecommerce/orders/:orderId/delivery-tracking",
   ...guarded(
@@ -605,6 +650,15 @@ adminEcommerceRouter.post(
     validate({ body: ecommerceCodRemittanceReconcileBody }),
     idempotent,
     asyncHandler(controller.reconcileCodRemittanceBatch),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/courier-cod/record-money-received",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    validate({ body: ecommerceRecordCourierMoneyReceivedBody }),
+    idempotent,
+    asyncHandler(controller.recordCourierMoneyReceived),
   ),
 );
 adminEcommerceRouter.get(

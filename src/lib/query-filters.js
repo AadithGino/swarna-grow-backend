@@ -105,45 +105,33 @@ export function resolveDatePreset(preset, query = {}) {
   if (!p || p === "ALL" || p === "CUSTOM") {
     return { from: query.from, to: query.to };
   }
-  const now = new Date();
-  const ist = new Date(
-    now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }),
-  );
-  const ymd = (d) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
+  const cal = istNow();
+  const today = cal.format("YYYY-MM-DD");
+  const mondayWeekStart = () => {
+    const dow = cal.day();
+    const diff = dow === 0 ? 6 : dow - 1;
+    return cal.subtract(diff, "day").format("YYYY-MM-DD");
   };
-  const startOfWeek = (d) => {
-    const copy = new Date(d);
-    const day = copy.getDay();
-    const diff = day === 0 ? 6 : day - 1;
-    copy.setDate(copy.getDate() - diff);
-    return copy;
-  };
-  const today = ymd(ist);
   if (p === "TODAY") return { from: today, to: today };
   if (p === "TOMORROW") {
     const tomorrow = shiftYmd(today, 1);
     return { from: tomorrow, to: tomorrow };
   }
   if (p === "THIS_WEEK") {
-    return { from: ymd(startOfWeek(ist)), to: today };
+    return { from: mondayWeekStart(), to: today };
   }
   if (p === "NEXT_7_DAYS") {
     return { from: today, to: shiftYmd(today, 6) };
   }
   if (p === "THIS_MONTH") {
-    const from = `${ist.getFullYear()}-${String(ist.getMonth() + 1).padStart(2, "0")}-01`;
-    return { from, to: today };
+    return { from: cal.startOf("month").format("YYYY-MM-DD"), to: today };
   }
   if (p === "LAST_MONTH") {
-    const firstThis = new Date(ist.getFullYear(), ist.getMonth(), 1);
-    const lastPrev = new Date(firstThis);
-    lastPrev.setDate(0);
-    const firstPrev = new Date(lastPrev.getFullYear(), lastPrev.getMonth(), 1);
-    return { from: ymd(firstPrev), to: ymd(lastPrev) };
+    const prev = cal.subtract(1, "month");
+    return {
+      from: prev.startOf("month").format("YYYY-MM-DD"),
+      to: prev.endOf("month").format("YYYY-MM-DD"),
+    };
   }
   if (p === "LAST_3_MONTHS") {
     return { from: shiftYmd(today, -89), to: today };

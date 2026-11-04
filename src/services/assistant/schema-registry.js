@@ -17,7 +17,6 @@ export const REPORT_KEYS = Object.freeze(Object.keys({
   CUSTOMER_LEDGER: true,
   CASH_HANDOVER: true,
   REMINDER_DELIVERY: true,
-  WHATSAPP_USAGE: true,
   BRANCH_PERFORMANCE: true,
   SCHEME_PERFORMANCE: true,
   CUSTOMER_PERFORMANCE: true,

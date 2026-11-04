@@ -1,3 +1,4 @@
+import { setBeforeDigitalMetalHandoverForTests, clearDigitalMetalHandoverTestHook } from "../src/lib/digital-metals-handover-test-hooks.js";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,6 +33,7 @@ import { seedCustomerDeliveryAddress } from "./helpers/digital-metals-redemption
 
 const app = createApp();
 const G2 = 2 * UG_PER_G;
+test.afterEach(() => clearDigitalMetalHandoverTestHook());
 
 test.before(async () => {
   await startTestDb();
@@ -177,6 +179,7 @@ test("pickup: wrong branch, expiry, attempt limit and customer reveal", async ()
       expectedVersion: version,
       pickupCode,
       fulfilmentBranchId: createId("branch"),
+      staffHandoverConfirmed: true,
     });
   assert.equal(wrongBranch.status, 403);
 
@@ -185,13 +188,23 @@ test("pickup: wrong branch, expiry, attempt limit and customer reveal", async ()
       .post(`/api/v1/admin/digital-metals/redemption/orders/${orderId}/fulfilment/complete-pickup`)
       .set("Authorization", `Bearer ${adminToken}`)
       .set("X-Idempotency-Key", randomUUID())
-      .send({ expectedVersion: version, pickupCode: "000000", fulfilmentBranchId: branch._id });
+      .send({
+        expectedVersion: version,
+        pickupCode: "000000",
+        fulfilmentBranchId: branch._id,
+        staffHandoverConfirmed: true,
+      });
   }
   const locked = await request(app)
     .post(`/api/v1/admin/digital-metals/redemption/orders/${orderId}/fulfilment/complete-pickup`)
     .set("Authorization", `Bearer ${adminToken}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ expectedVersion: version, pickupCode, fulfilmentBranchId: branch._id });
+    .send({
+      expectedVersion: version,
+      pickupCode,
+      fulfilmentBranchId: branch._id,
+      staffHandoverConfirmed: true,
+    });
   assert.equal(locked.status, 403);
 
   await DigitalMetalRedemptionOrder.updateOne(
@@ -202,7 +215,12 @@ test("pickup: wrong branch, expiry, attempt limit and customer reveal", async ()
     .post(`/api/v1/admin/digital-metals/redemption/orders/${orderId}/fulfilment/complete-pickup`)
     .set("Authorization", `Bearer ${adminToken}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ expectedVersion: version, pickupCode, fulfilmentBranchId: branch._id });
+    .send({
+      expectedVersion: version,
+      pickupCode,
+      fulfilmentBranchId: branch._id,
+      staffHandoverConfirmed: true,
+    });
   assert.equal(expired.status, 409);
 });
 
@@ -621,6 +639,9 @@ test("manual delivery completion requires attestation and is idempotent on physi
     .set("X-Idempotency-Key", idem)
     .send({ expectedVersion: dispatched.version, approverAttestation: true, evidenceUploadIds: ["u1"] });
   assert.equal(done.status, 200);
+  const completed = await DigitalMetalRedemptionOrder.findById(orderId).lean();
+  assert.equal(completed.completionAttestation, true);
+  assert.deepEqual(completed.completionEvidenceUploadIds, ["u1"]);
   const replayBody = {
     expectedVersion: dispatched.version,
     approverAttestation: true,
@@ -634,4 +655,30 @@ test("manual delivery completion requires attestation and is idempotent on physi
   assert.equal(replay.status, 200);
   assert.equal(replay.headers["x-idempotent-replay"], "true");
   assert.equal(await DigitalMetalPhysicalOutEvent.countDocuments({ redemptionOrderId: orderId }), 1);
+});
+
+
+test("R08 pickup reissue after validation fences the stale transaction before physical out", async () => {
+  const { tenant, branch, user } = await seedTenantUser({});
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const ctx = await seedPaidPickupOrder({ tenant, branch, user, customer });
+  const { pickupCode, version } = await advanceToPickupReady(ctx);
+  const path = `/api/v1/admin/digital-metals/redemption/orders/${ctx.orderId}/fulfilment`;
+  setBeforeDigitalMetalHandoverForTests(async () => {
+    clearDigitalMetalHandoverTestHook();
+    const issued = await request(app).post(`${path}/pickup-code`).set("Authorization", `Bearer ${ctx.adminToken}`).set("X-Idempotency-Key", randomUUID()).send({ expectedVersion: version });
+    assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  });
+  const stale = await request(app).post(`${path}/complete-pickup`).set("Authorization", `Bearer ${ctx.adminToken}`).set("X-Idempotency-Key", randomUUID())
+    .send({ expectedVersion: version, pickupCode, staffHandoverConfirmed: true, fulfilmentBranchId: branch._id });
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.equal(stale.body.error.code, "STATE_RACE");
+  assert.equal(await DigitalMetalPhysicalOutEvent.countDocuments({ redemptionOrderId: ctx.orderId }), 0);
+  const fresh = await DigitalMetalRedemptionOrder.findById(ctx.orderId).lean();
+  assert.equal(fresh.status, "PICKUP_READY");
+  const reveal = await request(app).get(`/api/v1/app/digital-metals/redemption/orders/${ctx.orderId}/pickup-instructions`).set("Authorization", `Bearer ${ctx.token}`);
+  const done = await request(app).post(`${path}/complete-pickup`).set("Authorization", `Bearer ${ctx.adminToken}`).set("X-Idempotency-Key", randomUUID())
+    .send({ expectedVersion: fresh.version, pickupCode: reveal.body.data.pickupCode, staffHandoverConfirmed: true, fulfilmentBranchId: branch._id });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.equal(await DigitalMetalPhysicalOutEvent.countDocuments({ redemptionOrderId: ctx.orderId }), 1);
 });

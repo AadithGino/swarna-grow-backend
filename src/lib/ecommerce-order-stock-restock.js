@@ -8,6 +8,7 @@ import {
   EcommerceInventory,
   EcommerceInventoryAdjustment,
   EcommerceOrder,
+  EcommerceOrderReturnRequest,
   EcommerceStockReservation,
 } from "../models/index.js";
 import {
@@ -152,6 +153,16 @@ export async function applyReturnReceiptRestockOnce({
 }) {
   const order = await EcommerceOrder.findOne({ _id: orderId, tenantId }).session(session);
   if (!order) throw new AppError("NOT_FOUND", "Order not found.", 404);
+
+  const previous = await EcommerceOrderReturnRequest.findOne({ tenantId, orderId, _id: { $ne: returnRequestId }, stockRestockedAt: { $ne: null } }).session(session).lean();
+  const priorRequestId = order.returnStockRestockedRequestId ?? previous?._id;
+  if (priorRequestId) {
+    if (String(priorRequestId) === String(returnRequestId)) return { restockLineCount: 0, at: order.returnStockRestockedAt ?? previous.stockRestockedAt, idempotent: true };
+    throw new AppError("ORDER_ALREADY_RESTOCKED", "Original goods were already restocked by another return.", 409);
+  }
+  const claimed = await EcommerceOrder.updateOne({ _id: orderId, tenantId, version: order.version, returnStockRestockedAt: null },
+    { $set: { returnStockRestockedAt: at, returnStockRestockedRequestId: returnRequestId }, $inc: { version: 1 } }, { session });
+  if (claimed.modifiedCount !== 1) throwInventoryVersionWriteConflict(orderId);
 
   const consumption = await resolveOrderStockConsumptionEvidence(order.toObject(), session);
   const restockLines = restockLinesFromEvidence(consumption);

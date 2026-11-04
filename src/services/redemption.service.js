@@ -11,6 +11,7 @@ import {
   Branch,
   Customer,
   LedgerEntry,
+  OutboxEvent,
   Redemption,
   Scheme,
   Tenant,
@@ -1334,6 +1335,35 @@ export async function transitionRedemption(req, action) {
         metadata: { redemptionId: row._id },
         session,
       });
+      // Notify the customer that their scheme was settled (maturity redemption)
+      // or closed early (premature closure). Guarded on the status actually set
+      // above so the system-policy settlement path (which does not close the
+      // scheme here) does not emit. The worker dedupes on an existing
+      // SCHEME_CLOSED message for the scheme.
+      if (
+        scheme.status === SchemeStatus.CLOSED_PREMATURE
+        || scheme.status === SchemeStatus.REDEEMED
+      ) {
+        await OutboxEvent.create(
+          [
+            {
+              tenantId: scheme.tenantId,
+              topic: "scheme.closed",
+              key: `${scheme._id}:${row.closureType}`,
+              payload: {
+                schemeId: scheme._id,
+                customerId: scheme.customerId,
+                branchId: scheme.branchId,
+                closureType: row.closureType,
+                schemeStatus: scheme.status,
+                enrollmentNumber: scheme.enrollmentNumber,
+                redemptionId: row._id,
+              },
+            },
+          ],
+          { session },
+        );
+      }
     }
     if (action === "reject") row.rejectionReason = req.body.reason;
     row.version += 1;

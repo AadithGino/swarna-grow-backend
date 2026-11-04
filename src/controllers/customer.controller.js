@@ -2,7 +2,6 @@ import { Customer, Message, Payment, Scheme } from "../models/index.js";
 import { streamCustomerStatementPdf } from "../lib/customer-statement-pdf.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import * as customers from "../services/customer.service.js";
-import * as messaging from "../services/messaging.service.js";
 import { mobileLookupVariants } from "../lib/mobile.js";
 
 export const list = async (req, res) => sendList(res, await customers.listCustomers(req));
@@ -15,7 +14,6 @@ export const kyc = (verify = false) => async (req, res) => sendSuccess(res, awai
 export const nominee = (remove = false) => async (req, res) => sendSuccess(res, await customers.setNominee(req, remove));
 export const nomineeDetail = async (req, res) => sendSuccess(res, (await customers.getCustomer(req)).nominee);
 export const block = (blocked = true) => async (req, res) => sendSuccess(res, await customers.blockCustomer(req, blocked));
-export const whatsappOpt = async (req, res) => sendSuccess(res, await customers.setWhatsappOpt(req));
 export const note = async (req, res) => sendSuccess(res, await customers.addNote(req), {}, 201);
 export const checkMobile = async (req, res) => {
   const variants = mobileLookupVariants(req.query.mobile);
@@ -30,8 +28,6 @@ export const checkMobile = async (req, res) => {
   sendSuccess(res, { exists, mobile: req.query.mobile });
 };
 export const analytics = async (req, res) => sendSuccess(res, await customers.customerAnalytics(req));
-export const shareStatement = async (req, res) =>
-  sendSuccess(res, await messaging.shareCustomerStatement(req), {}, 202);
 export const statement = async (req, res) => {
   const customer = await customers.customer360(req);
   const payments = await Payment.find({ tenantId: req.auth.tenantId, customerId: customer._id })

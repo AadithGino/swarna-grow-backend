@@ -46,3 +46,9 @@ test("production parse succeeds when OTP_PROVIDER is msg91", () => {
   const result = parseEnv(validProductionEnv);
   assert.equal(result.success, true);
 });
+
+test("production parse succeeds when OTP_PROVIDER is message_central without MSG91", () => {
+  const { MSG91_AUTH_KEY: _MSG91_AUTH_KEY, MSG91_OTP_TEMPLATE_ID: _MSG91_OTP_TEMPLATE_ID, MSG91_SENDER_ID: _MSG91_SENDER_ID, ...rest } = validProductionEnv;
+  const result = parseEnv({ ...rest, OTP_PROVIDER: "message_central" });
+  assert.equal(result.success, true);
+});

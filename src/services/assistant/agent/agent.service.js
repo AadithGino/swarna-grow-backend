@@ -235,7 +235,7 @@ export async function runAgentTurn({ req, message, history = [], onEvent }) {
           ? { mode: "ANY", allowedFunctionNames: ["final_answer"] }
           : { mode: "ANY" },
       },
-      contents,
+      contents: globalThis.structuredClone(contents),
     });
     timings.llmMs.push(Date.now() - llmStarted);
     if (round > 0) emit({ type: "step", id: `write${round}`, label: "Writing the answer", status: "done" });

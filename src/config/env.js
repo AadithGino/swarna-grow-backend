@@ -69,7 +69,15 @@ export function parseEnv(source = process.env) {
     PHONEPE_UPI_APPS: csvString,
     PHONEPE_UPI_FLOWS: upiFlowsString,
     WHATSAPP_BASE_URL: z.string().default(""), WHATSAPP_ACCESS_TOKEN: z.string().default(""), WHATSAPP_APP_SECRET: z.string().default(""),
-    OTP_PROVIDER: z.enum(["mock", "msg91"]).default("mock"), OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+    OTP_PROVIDER: z.enum(["mock", "msg91", "message_central"]).default("mock"), OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+    MESSAGE_CENTRAL_BASE_URL: z.string().default("https://cpaas.messagecentral.com"),
+    MESSAGE_CENTRAL_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
+    /** Pre-tenant merchant signup OTP (VerifyNow platform scope). */
+    MESSAGE_CENTRAL_PLATFORM_CUSTOMER_ID: z.string().default(""),
+    MESSAGE_CENTRAL_PLATFORM_KEY: z.string().default(""),
+    MESSAGE_CENTRAL_PLATFORM_EMAIL: z.string().default(""),
+    MESSAGE_CENTRAL_PLATFORM_COUNTRY_CODE: z.string().default("91"),
+    MESSAGE_CENTRAL_PLATFORM_OTP_LENGTH: z.coerce.number().int().min(4).max(8).default(6),
     MSG91_AUTH_KEY: z.string().optional(),
     MSG91_OTP_TEMPLATE_ID: z.string().optional(),
     MSG91_SENDER_ID: z.string().optional(),
@@ -199,6 +207,9 @@ export function parseEnv(source = process.env) {
         const raw = source[key];
         if (raw == null || String(raw).trim() === "") offending.push(key);
       }
+    }
+    if (otpProvider === "message_central") {
+      /* Per-tenant Message Central credentials; no platform-wide MSG91 keys required. */
     }
     const phonePeEnv = source.PHONEPE_ENV ?? "SANDBOX";
     if (phonePeEnv !== "PRODUCTION") offending.push("PHONEPE_ENV");

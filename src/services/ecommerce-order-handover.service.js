@@ -1,5 +1,5 @@
 import { createId } from "../lib/ids.js";
-import { errors } from "../lib/app-error.js";
+import { AppError, errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import {
   EcommerceFulfilmentHandoverMethod,
@@ -12,8 +12,16 @@ import {
   generatePickupCode,
   hashPickupCode,
   pickupCodeMatches,
+  PICKUP_CODE_MAX_ATTEMPTS,
   PICKUP_CODE_TTL_MS,
 } from "../lib/ecommerce-pickup-code.js";
+import { seal, unseal } from "../lib/crypto.js";
+import {
+  staffHandoverChallengeActiveFilter,
+  staffHandoverChallengeConsumeMongoUpdate,
+  STAFF_HANDOVER_CHALLENGE_PURPOSE,
+  verifyStaffHandoverChallenge,
+} from "../lib/staff-handover-challenge.js";
 
 function assertHandoverEligible(order) {
   const ok = new Set([
@@ -54,7 +62,9 @@ export async function issueAdminPickupCode(req) {
       {
         $set: {
           "fulfilmentHandover.pickupCodeHash": hashPickupCode(code),
+          "fulfilmentHandover.pickupCodeSealed": seal(code),
           "fulfilmentHandover.pickupCodeExpiresAt": expiresAt,
+          "fulfilmentHandover.pickupCodeFailedAttempts": 0,
         },
         $inc: { version: 1 },
       },
@@ -116,12 +126,50 @@ async function recordPickupHandover(order, session, { recipientName, actorType, 
   );
 }
 
+export function pickupCodeAttemptCount(order) {
+  return Number(order.fulfilmentHandover?.pickupCodeFailedAttempts ?? 0);
+}
+
+/** Throws business errors; caller increments attempts on PICKUP_CODE_INVALID. */
+export function assertActiveCustomerPickupCode(order, code) {
+  const attempts = pickupCodeAttemptCount(order);
+  if (attempts >= PICKUP_CODE_MAX_ATTEMPTS) {
+    throw new AppError(
+      "PICKUP_ATTEMPTS_EXCEEDED",
+      "Too many incorrect pickup attempts. Ask the store to reissue the pickup code.",
+      429,
+    );
+  }
+  const hash = order.fulfilmentHandover?.pickupCodeHash;
+  const exp = order.fulfilmentHandover?.pickupCodeExpiresAt;
+  if (!hash || !exp || new Date(exp) <= new Date()) {
+    throw errors.conflict(
+      "PICKUP_CODE_EXPIRED",
+      "Pickup code is missing or expired. Ask the store for a new code.",
+    );
+  }
+  if (!pickupCodeMatches(hash, code)) {
+    throw errors.business("PICKUP_CODE_INVALID", "That pickup code is incorrect.");
+  }
+}
+
+export function revealCustomerPickupDisplayCode(order) {
+  const h = order.fulfilmentHandover ?? {};
+  if (order.status !== EcommerceOrderStatus.READY_FOR_PICKUP || h.recordedAt) return null;
+  if (!h.pickupCodeSealed || !h.pickupCodeExpiresAt || new Date(h.pickupCodeExpiresAt) <= new Date()) {
+    return null;
+  }
+  try {
+    return unseal(h.pickupCodeSealed);
+  } catch {
+    return null;
+  }
+}
+
 export async function confirmCustomerPickupHandover(req) {
+  const legacyStaffCode = String(req.body.staffHandoverChallengeCode ?? "").trim();
   const code = String(req.body.code ?? "").trim();
   const recipientName = String(req.body.recipientName ?? req.auth.name ?? "Customer").trim().slice(0, 120);
-  if (!/^\d{6}$/.test(code)) {
-    throw errors.validation([{ field: "code", message: "Enter the 6-digit pickup code." }]);
-  }
   return withTransaction(async (session) => {
     const order = await EcommerceOrder.findOne({
       _id: req.params.orderId,
@@ -132,21 +180,85 @@ export async function confirmCustomerPickupHandover(req) {
     if (order.fulfilmentHandover?.recordedAt) {
       return { orderId: order._id, alreadyRecorded: true };
     }
-    const hash = order.fulfilmentHandover?.pickupCodeHash;
-    const exp = order.fulfilmentHandover?.pickupCodeExpiresAt;
-    if (!hash || !exp || new Date(exp) <= new Date()) {
-      throw errors.business("PICKUP_CODE_EXPIRED", "Pickup code is missing or expired. Ask the store for a new code.");
+    if (legacyStaffCode) {
+      if (!/^\d{6}$/.test(legacyStaffCode)) {
+        throw errors.validation([
+          { field: "staffHandoverChallengeCode", message: "Enter the 6-digit staff challenge code." },
+        ]);
+      }
+      const binding = {
+        orderId: order._id,
+        customerId: order.customerId,
+        branchId: order.pickupBranchId ?? null,
+        purpose: STAFF_HANDOVER_CHALLENGE_PURPOSE.ECOMMERCE_PICKUP_LEGACY_CONFIRM,
+      };
+      verifyStaffHandoverChallenge(order.staffHandoverChallenge ?? {}, legacyStaffCode, binding);
+      const filter = {
+        _id: order._id,
+        tenantId: req.auth.tenantId,
+        ...staffHandoverChallengeActiveFilter(binding),
+      };
+      const challengeConsume = staffHandoverChallengeConsumeMongoUpdate(req.auth.id);
+      const locked = await EcommerceOrder.findOneAndUpdate(
+        filter,
+        { $set: challengeConsume.$set },
+        { session, new: true },
+      );
+      if (!locked) {
+        throw errors.conflict("HANDOVER_CHALLENGE_RACE", "Staff challenge was already used or expired.", 409);
+      }
+      await recordPickupHandover(order, session, {
+        recipientName,
+        actorType: "CUSTOMER",
+        actorId: req.auth.id,
+        verifiedAt: new Date(),
+      });
+      return { orderId: order._id, recorded: true, method: "LEGACY_STAFF_CHALLENGE" };
     }
-    if (!pickupCodeMatches(hash, code)) {
-      throw errors.business("PICKUP_CODE_INVALID", "That pickup code is incorrect.");
+    if (!/^\d{6}$/.test(code)) {
+      throw errors.validation([{ field: "code", message: "Enter the 6-digit pickup code." }]);
     }
-    await recordPickupHandover(order, session, {
-      recipientName,
-      actorType: "CUSTOMER",
-      actorId: req.auth.id,
-      verifiedAt: new Date(),
-    });
-    return { orderId: order._id, recorded: true };
+    if (order.fulfilmentHandover?.customerPickupAcknowledgedAt) {
+      return { orderId: order._id, alreadyAcknowledged: true };
+    }
+    try {
+      assertActiveCustomerPickupCode(order, code);
+    } catch (err) {
+      if (err?.code === "PICKUP_CODE_INVALID") {
+        await EcommerceOrder.updateOne(
+          { _id: order._id, tenantId: req.auth.tenantId },
+          { $inc: { "fulfilmentHandover.pickupCodeFailedAttempts": 1 } },
+        );
+      }
+      throw err;
+    }
+    const acknowledgedAt = new Date();
+    await EcommerceOrder.findOneAndUpdate(
+      { _id: order._id, tenantId: req.auth.tenantId },
+      {
+        $set: {
+          "fulfilmentHandover.customerPickupAcknowledgedAt": acknowledgedAt,
+          "fulfilmentHandover.customerPickupAcknowledgedByCustomerId": req.auth.id,
+        },
+        $inc: { version: 1 },
+      },
+      { session },
+    );
+    await EcommerceOrderEvent.create(
+      [
+        {
+          _id: createId("eoev"),
+          tenantId: req.auth.tenantId,
+          orderId: order._id,
+          type: EcommerceOrderEventType.PICKUP_CODE_CUSTOMER_ACKNOWLEDGED,
+          actorType: "CUSTOMER",
+          actorId: req.auth.id,
+          payload: { note: "Customer acknowledged pickup code; staff must verify in store." },
+        },
+      ],
+      { session },
+    );
+    return { orderId: order._id, acknowledged: true };
   });
 }
 
@@ -238,5 +350,7 @@ export function mapHandoverForDetail(order) {
       h.pickupCodeHash && h.pickupCodeExpiresAt && new Date(h.pickupCodeExpiresAt) > new Date() && !h.recordedAt,
     ),
     pickupCodeExpiresAt: h.pickupCodeExpiresAt ?? null,
+    pickupCodeFailedAttempts: h.pickupCodeFailedAttempts ?? 0,
+    customerPickupAcknowledgedAt: h.customerPickupAcknowledgedAt ?? null,
   };
 }

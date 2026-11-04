@@ -1,11 +1,11 @@
 import argon2 from "argon2";
 import dayjs from "dayjs";
 import {
-  AuditEvent, Branch, Customer, ErrorLog, Invoice, Message, PlatformSettings, Scheme, SchemePlan, SubscriptionPlan, TemplateDefinition, Tenant, User, WebhookEvent,
+  AuditEvent, Branch, Customer, ErrorLog, Invoice, PlatformSettings, Scheme, SchemePlan, SubscriptionPlan, TemplateDefinition, Tenant, User, WebhookEvent,
 } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import {
-  AuditEntityType, BillingCycle, InvoiceStatus, MessageStatus, PlanTier, SchemePlanStatus, SubscriptionExtensionType, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType,
+  AuditEntityType, BillingCycle, InvoiceStatus, PlanTier, SchemePlanStatus, SubscriptionExtensionType, SubscriptionStatus, TenantRole, TenantStatus, UserStatus, UserType,
 } from "../constants/enums.js";
 import { ROLE_PERMISSIONS } from "../constants/permissions.js";
 import { paginate } from "../lib/pagination.js";
@@ -42,7 +42,7 @@ import {
   subscriptionPatchFromPlan,
   validateSupportedBillingCyclesInput,
 } from "../lib/subscription-provision.js";
-import { PLATFORM_TEMPLATE_DEFINITIONS, REQUIRED_TEMPLATE_TYPES, getTemplateDefinition } from "../constants/template-registry.js";
+import { PLATFORM_TEMPLATE_DEFINITIONS, getTemplateDefinition } from "../constants/template-registry.js";
 import { auditPlatformMutation } from "../lib/platform-audit.js";
 
 export const DEFAULT_APP_CONFIG = Object.freeze({
@@ -196,34 +196,24 @@ export async function listTemplates() {
 
 async function provisioningSummary(tenantId) {
   const tenant = await Tenant.findById(tenantId).select("+integrationSecrets").lean();
-  const configuredRows = await TemplateDefinition.find({ tenantId, active: true }).select("messageType").lean();
-  const configuredTypes = new Set(configuredRows.map((row) => row.messageType));
-  const configuredRequired = REQUIRED_TEMPLATE_TYPES.filter((type) => configuredTypes.has(type)).length;
-  const whatsappConfigured = Boolean(tenant?.integrationSecrets?.whatsapp?.accessToken);
   const paymentGatewayConfigured = Boolean(tenant?.integrationSecrets?.phonepe?.clientId);
-  const templatesRequired = REQUIRED_TEMPLATE_TYPES.length;
   return {
-    whatsappConfigured,
     paymentGatewayConfigured,
-    templatesConfigured: configuredRequired,
-    templatesRequired,
-    readyToGoLive: whatsappConfigured && paymentGatewayConfigured && configuredRequired >= templatesRequired,
+    readyToGoLive: paymentGatewayConfigured,
   };
 }
 
 async function usageSnapshot(tenantId, limits = {}) {
   const apiLimits = limitsToApi(limits);
-  const [activeCustomers, branches, staff, whatsappUsedThisMonth] = await Promise.all([
+  const [activeCustomers, branches, staff] = await Promise.all([
     Customer.countDocuments({ tenantId, status: "ACTIVE" }),
     Branch.countDocuments({ tenantId, active: true }),
     User.countDocuments({ tenantId, status: UserStatus.ACTIVE, type: UserType.TENANT_USER }),
-    Message.countDocuments({ tenantId, createdAt: { $gte: dayjs().startOf("month").toDate() } }),
   ]);
   return {
     activeCustomers,
     branches,
     staff,
-    whatsappUsedThisMonth,
     limits: apiLimits,
     activeCustomersPercent: usagePercent(activeCustomers, apiLimits.activeCustomers),
   };
@@ -382,9 +372,7 @@ export async function createTenant(req) {
       },
       defaultBranch: branch ? { id: branch._id, name: branch.name, code: branch.code } : null,
       nextSteps: [
-        { key: "WHATSAPP_CREDENTIALS", done: false },
         { key: "PAYMENT_GATEWAY", done: false },
-        { key: "WHATSAPP_TEMPLATES", done: false },
         { key: "GO_LIVE", done: false },
       ],
       ...(body.sendWelcomeMessage ? { welcomeMessageQueued: true } : {}),
@@ -405,10 +393,9 @@ export async function tenantDetail(id) {
   const tenant = await Tenant.findById(id).select("-integrationSecrets").lean();
   if (!tenant) throw errors.notFound("Tenant");
   const secrets = await Tenant.findById(id).select("+integrationSecrets").lean();
-  const [branches, owner, templates, stats] = await Promise.all([
+  const [branches, owner, stats] = await Promise.all([
     Branch.find({ tenantId: id }).lean(),
     User.findOne({ tenantId: id, role: TenantRole.TENANT_OWNER }).select("-passwordHash").lean(),
-    TemplateDefinition.find({ tenantId: id, active: true }).lean(),
     Promise.all([
       Scheme.countDocuments({ tenantId: id }),
       Scheme.countDocuments({ tenantId: id, status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED", "MATURED"] } }),
@@ -416,7 +403,7 @@ export async function tenantDetail(id) {
   ]);
   const limits = limitsToApi(tenant.subscription?.limits);
   const usageLimits = limits;
-  const [activeCustomers, branchCount, staffCount, schemePlanCount, whatsappUsed] = await Promise.all([
+  const [activeCustomers, branchCount, staffCount, schemePlanCount] = await Promise.all([
     Customer.countDocuments({ tenantId: id, status: "ACTIVE" }),
     Branch.countDocuments({ tenantId: id, active: true }),
     User.countDocuments({ tenantId: id, status: UserStatus.ACTIVE, type: UserType.TENANT_USER }),
@@ -424,10 +411,7 @@ export async function tenantDetail(id) {
       tenantId: id,
       status: { $in: [SchemePlanStatus.ACTIVE, SchemePlanStatus.INACTIVE] },
     }),
-    Message.countDocuments({ tenantId: id, createdAt: { $gte: dayjs().startOf("month").toDate() } }),
   ]);
-  const configuredTypes = new Set(templates.map((row) => row.messageType));
-  const missing = REQUIRED_TEMPLATE_TYPES.filter((type) => !configuredTypes.has(type));
   const featureMap = resolvePlanFeatureBooleans(tenant);
   const provisioning = await provisioningSummary(id);
   const { flags, effectiveFlags } = await tenantFlags(id);
@@ -459,15 +443,6 @@ export async function tenantDetail(id) {
     },
     provisioning,
     integrations: {
-      whatsapp: {
-        configured: Boolean(secrets?.integrationSecrets?.whatsapp?.accessToken),
-        provider: "META_CLOUD",
-        phoneNumberDisplay: secrets?.integrationSecrets?.whatsapp?.phoneNumberId ?? null,
-        lastVerifiedAt: secrets?.integrationSecrets?.whatsapp?.verifiedAt ?? null,
-        accessTokenMasked: maskSecret(secrets?.integrationSecrets?.whatsapp?.accessToken),
-        verificationStatus: secrets?.integrationSecrets?.whatsapp?.verificationStatus
-          ?? (secrets?.integrationSecrets?.whatsapp?.verifiedAt ? "VERIFIED" : "NOT_VERIFIED"),
-      },
       fcm: {
         configured: Boolean(secrets?.integrationSecrets?.fcm?.projectId
           && secrets?.integrationSecrets?.fcm?.serviceAccountJsonSealed),
@@ -488,27 +463,32 @@ export async function tenantDetail(id) {
         verificationStatus: secrets?.integrationSecrets?.phonepe?.verificationStatus
           ?? (secrets?.integrationSecrets?.phonepe?.verifiedAt ? "VERIFIED" : "NOT_VERIFIED"),
       },
-    },
-    templates: {
-      configured: REQUIRED_TEMPLATE_TYPES.filter((type) => configuredTypes.has(type)).length,
-      required: REQUIRED_TEMPLATE_TYPES.length,
-      missing,
+      messageCentral: {
+        configured: Boolean(
+          secrets?.integrationSecrets?.messageCentral?.customerId
+            && secrets?.integrationSecrets?.messageCentral?.keySealed,
+        ),
+        provider: "MESSAGE_CENTRAL",
+        customerIdMasked: maskSecret(secrets?.integrationSecrets?.messageCentral?.customerId),
+        email: secrets?.integrationSecrets?.messageCentral?.email ?? null,
+        countryCode: secrets?.integrationSecrets?.messageCentral?.countryCode ?? "91",
+        flowType: secrets?.integrationSecrets?.messageCentral?.flowType ?? "SMS",
+        otpLength: secrets?.integrationSecrets?.messageCentral?.otpLength ?? 6,
+        lastVerifiedAt: secrets?.integrationSecrets?.messageCentral?.verifiedAt ?? null,
+        verificationStatus: secrets?.integrationSecrets?.messageCentral?.verificationStatus
+          ?? (secrets?.integrationSecrets?.messageCentral?.verifiedAt ? "VERIFIED" : "NOT_VERIFIED"),
+      },
     },
     usage: {
       activeCustomers,
       branches: branchCount,
       staff: staffCount,
-      whatsappUsedThisMonth: whatsappUsed,
     },
     usageDetail: {
       activeCustomers: metric(activeCustomers, "activeCustomers"),
       branches: metric(branchCount, "branches"),
       staff: metric(staffCount, "staffSeats"),
       schemePlans: metric(schemePlanCount, "schemePlans"),
-      whatsappMessages: {
-        ...metric(whatsappUsed, "whatsappMessagesPerMonth"),
-        resetDate: dayjs().add(1, "month").startOf("month").format("YYYY-MM-DD"),
-      },
     },
     branches: branches.map((row) => ({ id: row._id, name: row.name, code: row.code, status: row.active ? "ACTIVE" : "INACTIVE" })),
     owner: owner
@@ -527,13 +507,7 @@ export async function tenantAction(id, action, body = {}, req) {
     const issues = [];
     const tenant = await Tenant.findById(id).select("+integrationSecrets").lean();
     if (!tenant) throw errors.notFound("Tenant");
-    if (!tenant.integrationSecrets?.whatsapp?.verifiedAt) issues.push({ key: "WHATSAPP", message: "WhatsApp integration is not verified." });
     if (!tenant.integrationSecrets?.phonepe?.verifiedAt) issues.push({ key: "PAYMENT_GATEWAY", message: "Payment gateway is not verified." });
-    const templates = await TemplateDefinition.find({ tenantId: id, active: true }).select("messageType").lean();
-    const configured = new Set(templates.map((row) => row.messageType));
-    for (const messageType of REQUIRED_TEMPLATE_TYPES.filter((type) => !configured.has(type))) {
-      issues.push({ key: "WHATSAPP_TEMPLATES", message: `Template for ${messageType} is not configured` });
-    }
     const branchCount = await Branch.countDocuments({ tenantId: id, active: true });
     if (branchCount < 1) issues.push({ key: "BRANCH", message: "At least one active branch is required" });
     if (issues.length) {
@@ -543,9 +517,7 @@ export async function tenantAction(id, action, body = {}, req) {
     const response = {
       ok: true,
       checklist: [
-        { key: "WHATSAPP_CREDENTIALS", done: true },
         { key: "PAYMENT_GATEWAY", done: true },
-        { key: "WHATSAPP_TEMPLATES", done: true },
         { key: "GO_LIVE", done: true },
       ],
       tenant: { id: updated._id, status: updated.status, goLiveAt: updated.goLiveAt },
@@ -603,7 +575,7 @@ export async function platformSummary() {
   const monthStart = dayjs().startOf("month").toDate();
   const [
     total, active, pendingSetup, suspended, cancelled, tierRows, paidInvoices, customers, schemes,
-    whatsappSent, whatsappFailed, webhookFailures, pastDue,
+    webhookFailures, pastDue,
   ] = await Promise.all([
     Tenant.countDocuments(),
     Tenant.countDocuments({ status: TenantStatus.ACTIVE }),
@@ -614,14 +586,11 @@ export async function platformSummary() {
     Invoice.find({ status: InvoiceStatus.PAID, paidAt: { $gte: monthStart } }).select("amountPaise").lean(),
     Customer.countDocuments({ status: "ACTIVE" }),
     Scheme.countDocuments({ status: { $in: ["ACTIVE", "LOCKED", "DEFAULTED", "MATURED"] } }),
-    Message.countDocuments({ createdAt: { $gte: monthStart }, status: { $in: [MessageStatus.SENT, MessageStatus.DELIVERED, MessageStatus.READ] } }),
-    Message.countDocuments({ createdAt: { $gte: monthStart }, status: MessageStatus.FAILED }),
     WebhookEvent.countDocuments({ status: { $in: ["FAILED", "SIGNATURE_FAILED", "DEAD_LETTER"] } }),
     Tenant.countDocuments({ "subscription.status": SubscriptionStatus.PAST_DUE }),
   ]);
   const mrrPaise = paidInvoices.reduce((sum, row) => sum + (row.amountPaise ?? 0), 0);
   const collectionPaise = mrrPaise;
-  const whatsappTotal = whatsappSent + whatsappFailed;
   return {
     tenants: { total, active, pendingSetup, suspended, cancelled },
     tenantsByTier: tierRows.map((row) => ({ tier: row._id ?? "UNKNOWN", count: row.count })),
@@ -630,11 +599,6 @@ export async function platformSummary() {
       collectionThisMonth: moneyRef(collectionPaise),
       activeCustomersTotal: customers,
       activeSchemesTotal: schemes,
-    },
-    whatsapp: {
-      sentThisMonth: whatsappSent,
-      failedThisMonth: whatsappFailed,
-      deliveryRatePercent: whatsappTotal ? Math.round((whatsappSent / whatsappTotal) * 1000) / 10 : 100,
     },
     alerts: [
       ...(webhookFailures ? [{ severity: "HIGH", key: "WEBHOOK_FAILURES", message: `${webhookFailures} unprocessed webhook failures`, count: webhookFailures }] : []),
@@ -774,25 +738,22 @@ export async function tenantUsage(id) {
     tenantId: id,
     status: { $in: [SchemePlanStatus.ACTIVE, SchemePlanStatus.INACTIVE] },
   };
-  const [activeCustomers, branches, staff, schemePlanTemplates, whatsappUsed] = await Promise.all([
+  const [activeCustomers, branches, staff, schemePlanTemplates] = await Promise.all([
     Customer.countDocuments({ tenantId: id, status: "ACTIVE" }),
     Branch.countDocuments({ tenantId: id, active: true }),
     User.countDocuments({ tenantId: id, status: UserStatus.ACTIVE }),
     SchemePlan.countDocuments(schemePlanFilter),
-    Message.countDocuments({ tenantId: id, createdAt: { $gte: dayjs().startOf("month").toDate() } }),
   ]);
   const mk = (used, limitKey) => ({
     used,
     limit: limits[limitKey] ?? null,
     percentage: usagePercent(used, limits[limitKey]),
-    ...(limitKey === "whatsappMessagesPerMonth" ? { resetDate: dayjs().add(1, "month").startOf("month").format("YYYY-MM-DD") } : {}),
   });
   return {
     activeCustomers: mk(activeCustomers, "activeCustomers"),
     branches: mk(branches, "branches"),
     staff: mk(staff, "staffSeats"),
     schemePlans: mk(schemePlanTemplates, "schemePlans"),
-    whatsappMessages: mk(whatsappUsed, "whatsappMessagesPerMonth"),
   };
 }
 
@@ -825,8 +786,58 @@ export async function setOwnerCredentials(id, body, req) {
 }
 
 export async function setIntegration(id, kind, body, req) {
+  if (kind === "whatsapp") throw errors.notFound("Integration");
   const before = await Tenant.findById(id).select("+integrationSecrets").lean();
   const integrationKey = kind === "phonepe" ? "phonepe" : kind;
+  if (kind === "messageCentral") {
+    const existingBucket = before?.integrationSecrets?.messageCentral ?? {};
+    const value = {
+      ...existingBucket,
+      provider: "MESSAGE_CENTRAL",
+      customerId: body.customerId ?? existingBucket.customerId,
+      email: body.email ?? existingBucket.email,
+      countryCode: body.countryCode ?? existingBucket.countryCode ?? "91",
+      flowType: body.flowType ?? existingBucket.flowType ?? "SMS",
+      otpLength: body.otpLength != null ? Number(body.otpLength) : (existingBucket.otpLength ?? 6),
+    };
+    if (body.key !== undefined) {
+      value.keySealed = isSealedSecret(body.key) ? body.key : seal(body.key);
+      value.credentialVersion = Number(existingBucket.credentialVersion ?? 0) + 1;
+      value.verifiedAt = undefined;
+      value.verificationStatus = "NOT_VERIFIED";
+    }
+    const row = await Tenant.findByIdAndUpdate(
+      id,
+      { $set: { "integrationSecrets.messageCentral": value }, $inc: { version: 1 } },
+      { new: true },
+    ).select("_id version");
+    if (!row) throw errors.notFound("Tenant");
+    const { invalidateMessageCentralAuthCache } = await import("../lib/message-central-credentials.js");
+    invalidateMessageCentralAuthCache(id);
+    const after = await Tenant.findById(id).select("+integrationSecrets").lean();
+    if (req) {
+      await auditPlatformMutation({
+        req,
+        action: "PLATFORM_MESSAGE_CENTRAL_INTEGRATION_UPDATED",
+        entityType: AuditEntityType.TENANT,
+        entityId: id,
+        tenantId: id,
+        before: before?.integrationSecrets?.messageCentral,
+        after: after?.integrationSecrets?.messageCentral,
+      });
+    }
+    return {
+      configured: Boolean(value.customerId && value.keySealed),
+      provider: "MESSAGE_CENTRAL",
+      customerIdMasked: maskSecret(value.customerId),
+      email: value.email ?? null,
+      countryCode: value.countryCode,
+      flowType: value.flowType,
+      otpLength: value.otpLength,
+      verificationStatus: value.verificationStatus ?? "NOT_VERIFIED",
+      version: row.version,
+    };
+  }
   if (kind === "fcm") {
     const existingBucket = before?.integrationSecrets?.fcm ?? {};
     const { invalidateFcmAuthCache } = await import("../lib/fcm-config.js");
@@ -871,21 +882,19 @@ export async function setIntegration(id, kind, body, req) {
       version: row.version,
     };
   }
-  const allowed = kind === "whatsapp"
-    ? ["phoneNumberId", "businessAccountId", "accessToken", "appSecret", "verifyToken", "environment", "callbackUrlOverride"]
-    : [
-      "clientId",
-      "clientSecret",
-      "clientVersion",
-      "webhookUsername",
-      "webhookPassword",
-      "environment",
-      "provider",
-    ];
+  const allowed = [
+    "clientId",
+    "clientSecret",
+    "clientVersion",
+    "webhookUsername",
+    "webhookPassword",
+    "environment",
+    "provider",
+  ];
   const existingBucket = before?.integrationSecrets?.[integrationKey] ?? {};
   const value = {
     ...existingBucket,
-    provider: body.provider ?? existingBucket.provider ?? (kind === "whatsapp" ? "META_CLOUD" : "PHONEPE"),
+    provider: body.provider ?? existingBucket.provider ?? "PHONEPE",
   };
   const sealedKeys = new Set(["accessToken", "appSecret", "verifyToken", "clientSecret", "webhookPassword"]);
   for (const key of allowed) if (body[key] !== undefined) {
@@ -913,7 +922,7 @@ export async function setIntegration(id, kind, body, req) {
   if (req) {
     await auditPlatformMutation({
       req,
-      action: kind === "whatsapp" ? "PLATFORM_WHATSAPP_INTEGRATION_UPDATED" : "PLATFORM_PAYMENT_GATEWAY_UPDATED",
+      action: "PLATFORM_PAYMENT_GATEWAY_UPDATED",
       entityType: AuditEntityType.TENANT,
       entityId: id,
       tenantId: id,
@@ -925,33 +934,52 @@ export async function setIntegration(id, kind, body, req) {
     configured: true,
     verificationStatus: "NOT_VERIFIED",
     version: row.version,
-    ...(kind === "whatsapp"
-      ? { provider: "META_CLOUD", phoneNumberDisplay: body.phoneNumberId, accessTokenMasked: maskSecret(body.accessToken) }
-      : {
-        provider: "PHONEPE",
-        clientIdMasked: maskSecret(body.clientId ?? existingBucket.clientId),
-        clientCredentialsConfigured: Boolean(
-          (body.clientId ?? existingBucket.clientId)
-            && (body.clientSecret ?? existingBucket.clientSecret),
-        ),
-        environment: body.environment ?? existingBucket.environment ?? "SANDBOX",
-      }),
+    provider: "PHONEPE",
+    clientIdMasked: maskSecret(body.clientId ?? existingBucket.clientId),
+    clientCredentialsConfigured: Boolean(
+      (body.clientId ?? existingBucket.clientId)
+        && (body.clientSecret ?? existingBucket.clientSecret),
+    ),
+    environment: body.environment ?? existingBucket.environment ?? "SANDBOX",
   };
 }
 
+function integrationBucket(tenant, kind) {
+  if (kind === "phonepe") return tenant.integrationSecrets?.phonepe;
+  if (kind === "messageCentral") return tenant.integrationSecrets?.messageCentral;
+  return null;
+}
+
 export async function verifyIntegration(id, kind, body = {}, req) {
+  if (kind === "whatsapp") throw errors.notFound("Integration");
   const tenant = await Tenant.findById(id).select("+integrationSecrets");
-  if (!tenant?.integrationSecrets?.[kind === "phonepe" ? "phonepe" : kind]) throw errors.notFound("Integration configuration");
-  const bucket = kind === "phonepe" ? tenant.integrationSecrets.phonepe : tenant.integrationSecrets.whatsapp;
+  const bucket = tenant ? integrationBucket(tenant, kind) : null;
+  if (!bucket) throw errors.notFound("Integration configuration");
   if (kind === "phonepe") {
     if (!bucket.clientId || !bucket.clientSecret || bucket.clientVersion == null) {
       throw errors.business("INTEGRATION_INCOMPLETE", "The phonepe integration is incomplete.");
     }
     const { phonePeProvider, resolvePhonePeCredentials } = await import("../integrations/phonepe.provider.js");
     await phonePeProvider.verifyCredentials(resolvePhonePeCredentials(tenant), tenant._id);
+  } else if (kind === "messageCentral") {
+    const { resolveMessageCentralBucket, getMessageCentralAuthToken } = await import("../lib/message-central-credentials.js");
+    const { sendMessageCentralOtp } = await import("../integrations/message-central.client.js");
+    const credentials = resolveMessageCentralBucket(tenant);
+    if (!credentials?.customerId || !credentials?.key || !credentials?.email) {
+      throw errors.business("INTEGRATION_INCOMPLETE", "The message central integration is incomplete.");
+    }
+    const authToken = await getMessageCentralAuthToken(credentials, tenant._id);
+    if (body.testMobile) {
+      await sendMessageCentralOtp({
+        authToken,
+        mobile: body.testMobile,
+        countryCode: credentials.countryCode,
+        flowType: credentials.flowType,
+        otpLength: credentials.otpLength,
+      });
+    }
   } else {
-    const required = ["phoneNumberId", "accessToken", "appSecret"];
-    if (required.some((key) => !bucket[key])) throw errors.business("INTEGRATION_INCOMPLETE", `The ${kind} integration is incomplete.`);
+    throw errors.notFound("Integration");
   }
   const before = tenant.toObject();
   bucket.verifiedAt = new Date();
@@ -964,7 +992,7 @@ export async function verifyIntegration(id, kind, body = {}, req) {
     verified: true,
     verificationStatus: "VERIFIED",
     verifiedAt: bucket.verifiedAt,
-    ...(kind === "whatsapp" && body.testMobile ? { messageId: `wamid.mock.${Date.now()}`, deliveryStatus: "SENT", testMobile: body.testMobile } : {}),
+    ...(kind === "messageCentral" && body.testMobile ? { deliveryStatus: "SENT", testMobile: body.testMobile } : {}),
   };
 }
 
@@ -1288,18 +1316,6 @@ export async function platformChart(key) {
       title: "Platform collection volume",
       yAxis: { type: "currency", label: "Amount", unit: "INR" },
       series: [{ key: "COLLECTED", name: "Collected", data: rows.map((row) => ({ x: row._id, y: row.value, yDisplay: moneyRef(row.value).amountDisplay })) }],
-    });
-  }
-  if (key === "whatsapp-volume") {
-    const rows = await Message.aggregate([
-      { $group: { _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" } }, value: { $sum: 1 } } },
-      { $sort: { _id: 1 } },
-    ]);
-    return chartSeries({
-      chartType: "line",
-      title: "WhatsApp volume",
-      yAxis: { type: "count", label: "Messages", unit: "count" },
-      series: [{ key: "WHATSAPP", name: "Messages", data: rows.map((row) => ({ x: row._id, y: row.value, yDisplay: String(row.value) })) }],
     });
   }
   throw new AppError("NOT_FOUND", "Unknown chart key.", 404);

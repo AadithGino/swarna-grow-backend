@@ -6,7 +6,6 @@ import { Payment } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import { resetTestDb, seedTenantUser } from "./helpers/db.js";
 import {
-  mergeCollectionAnalyticsPlan,
   parseCompareModesFromQuestion,
   buildCollectionDailyAction,
 } from "../src/services/assistant/collection-analytics-plan.js";

@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bearerFor, resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 import { publishDefaultAssetSettings } from "./helpers/digital-metals-live-ready.js";
+import { seal } from "../src/lib/crypto.js";
 
 const app = createApp();
 const routesSource = readFileSync(
@@ -169,18 +170,6 @@ test("POST /tenants/:tenantId/reactivate valid acceptance", async () => {
 test("PUT integrations and verify valid acceptance", async () => {
   const token = await seedPlatformAdminToken(app);
   const { tenant } = await seedTenantContext();
-  const wa = await platformRequest(app, token, "PUT", `/api/v1/platform/tenants/${tenant._id}/integrations/whatsapp`, {
-    body: { phoneNumberId: "123456789012345" },
-    idempotencyKey: "valid-wa-put",
-  });
-  assert.equal(wa.status, 200);
-  mark("PUT /tenants/:tenantId/integrations/whatsapp");
-  const waVerify = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/integrations/whatsapp/verify`, {
-    body: {},
-    idempotencyKey: "valid-wa-verify",
-  });
-  assert.ok([200, 422, 503].includes(waVerify.status));
-  mark("POST /tenants/:tenantId/integrations/whatsapp/verify");
   const pg = await platformRequest(app, token, "PUT", `/api/v1/platform/tenants/${tenant._id}/integrations/payment-gateway`, {
     body: { clientId: "mock-client-id" },
     idempotencyKey: "valid-pg-put",
@@ -201,27 +190,25 @@ test("PUT integrations and verify valid acceptance", async () => {
   mark("PUT /tenants/:tenantId/integrations/fcm");
 });
 
-test("tenant templates valid acceptance", async () => {
+test("Message Central integration valid acceptance", async () => {
   const token = await seedPlatformAdminToken(app);
   const { tenant } = await seedTenantContext();
-  const messageType = "PAYMENT_RECEIPT";
-  const put = await platformRequest(app, token, "PUT", `/api/v1/platform/tenants/${tenant._id}/templates/${messageType}`, {
-    body: { body: "Receipt {{amount}}", enabled: true },
-    idempotencyKey: null,
+  const mc = await platformRequest(app, token, "PUT", `/api/v1/platform/tenants/${tenant._id}/integrations/message-central`, {
+    body: {
+      customerId: "MC-CUST-001",
+      email: "otp@test.example.com",
+      key: seal("integration-test-key-0123456789"),
+    },
+    idempotencyKey: "valid-mc-put",
   });
-  assert.equal(put.status, 200);
-  mark("PUT /tenants/:tenantId/templates/:messageType");
-  const testSend = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/templates/${messageType}/test`, {
-    body: { mobile: "+919876543210" },
-    idempotencyKey: "valid-template-test",
+  assert.equal(mc.status, 200);
+  mark("PUT /tenants/:tenantId/integrations/message-central");
+  const mcVerify = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/integrations/message-central/verify`, {
+    body: {},
+    idempotencyKey: "valid-mc-verify",
   });
-  assert.ok([200, 202, 503].includes(testSend.status));
-  mark("POST /tenants/:tenantId/templates/:messageType/test");
-  const del = await platformRequest(app, token, "DELETE", `/api/v1/platform/tenants/${tenant._id}/templates/${messageType}`, {
-    idempotencyKey: "valid-template-delete",
-  });
-  assert.equal(del.status, 200);
-  mark("DELETE /tenants/:tenantId/templates/:messageType");
+  assert.notEqual(mcVerify.status, 404);
+  mark("POST /tenants/:tenantId/integrations/message-central/verify");
 });
 
 test("POST /tenants/:tenantId/subscription/change-plan valid acceptance", async () => {
@@ -388,8 +375,8 @@ test("POST /tenants/:tenantId/digital-metals/terms/publish valid acceptance", as
 test("platform mutation valid coverage table is complete", () => {
   const missing = routeKeys.filter((k) => !validRouteCoverage[k]);
   assert.deepEqual(missing, [], `Missing valid HTTP acceptance for: ${missing.join(", ")}`);
-  assert.equal(routeKeys.length, 30);
-  assert.equal(Object.keys(platformRouteValidators).length, 30);
+  assert.equal(routeKeys.length, 27);
+  assert.equal(Object.keys(platformRouteValidators).length, 27);
   for (const key of routeKeys) {
     const row = platformRouteValidators[key];
     assert.ok(row.body || row.params, key);

@@ -1,12 +1,9 @@
 import { Tenant } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
-import { whatsappProvider } from "../integrations/whatsapp.provider.js";
 import { getQueue } from "../queues/index.js";
 import { AppError } from "../lib/app-error.js";
-import { unseal } from "../lib/crypto.js";
 import { buildPhonePeWebhookEventId } from "../lib/phonepe-webhook-identity.js";
-import { buildWhatsAppWebhookEventId } from "../lib/whatsapp-webhook-identity.js";
 import { assertWebhookTenantReceivable } from "../lib/webhook-tenant-guard.js";
 import {
   persistVerifiedWebhook,
@@ -58,42 +55,5 @@ export const phonepe = async (req, res) => {
     payload,
   });
   await enqueueWebhookJob(event, "phonepe");
-  sendSuccess(res, { received: true, eventId: event?._id ?? null });
-};
-
-export const whatsapp = async (req, res) => {
-  const tenant = await Tenant.findById(req.params.tenantId).select("+integrationSecrets").lean();
-  const raw = req.rawBody;
-  const signatureHeader = req.headers["x-hub-signature-256"];
-  const sealed = tenant?.integrationSecrets?.whatsapp?.appSecret;
-  if (!whatsappProvider.verifyWebhook(raw, signatureHeader, sealed ? unseal(sealed) : undefined)) {
-    await persistWebhookSignatureFailure({
-      tenantId: req.params.tenantId,
-      provider: "WHATSAPP",
-      rawBody: raw,
-      signatureHeader,
-      clientIp: req.ip,
-    });
-    throw new AppError("WEBHOOK_SIGNATURE_INVALID", "Invalid webhook signature.", 401);
-  }
-  let payload;
-  try {
-    payload = JSON.parse(raw.toString());
-  } catch {
-    throw new AppError("WEBHOOK_PAYLOAD_INVALID", "Invalid webhook payload.", 400);
-  }
-  const providerEventId = buildWhatsAppWebhookEventId({
-    tenantId: req.params.tenantId,
-    payload,
-  });
-  const event = await persistVerifiedWebhook({
-    tenantId: req.params.tenantId,
-    provider: "WHATSAPP",
-    providerEventId,
-    signatureHeader,
-    rawBody: raw,
-    payload,
-  });
-  await enqueueWebhookJob(event, "whatsapp");
   sendSuccess(res, { received: true, eventId: event?._id ?? null });
 };

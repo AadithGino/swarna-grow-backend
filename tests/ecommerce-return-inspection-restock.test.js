@@ -205,7 +205,8 @@ test("manual COD return refund is exactly-once", async () => {
 
 test("replacement order must match customer and cannot be reused", async () => {
   const ctx = await seedDeliveredReturnOrder();
-  const { tenant, branch, customer, admin, orderId } = ctx;
+  const { tenant, branch, customer, admin, orderId, returnId } = ctx;
+  await EcommerceOrderReturnRequest.updateOne({ _id: returnId }, { $set: { kind: "EXCHANGE" } });
   const replacementOrderId = createId("eord");
   const otherCustomer = await seedCustomer({
     tenantId: tenant._id,
@@ -290,4 +291,16 @@ test("replacement order must match customer and cannot be reused", async () => {
       }),
     (err) => err.code === "REPLACEMENT_ORDER_ALREADY_LINKED",
   );
+});
+
+
+test("R09 pending provider RETURN refund blocks manual repayment on the same entitlement", async () => {
+  const { admin, tenant } = await seedDeliveredReturnOrder();
+  await returnSvc.recordAdminReturnReceived(admin({ body: { expectedVersion: 1 } }));
+  await returnSvc.recordAdminReturnInspection(admin({ body: { expectedVersion: 2, inspectionNote: "Refund approved", inspectionOutcome: "REJECTED_NOT_RESALABLE" } }));
+  const opened = await returnSvc.createAdminReturnRefundCase(admin({ body: { expectedVersion: 3 } }));
+  await EcommercePaymentExceptionRefund.updateOne({ _id: opened.refund._id, tenantId: tenant._id }, { $set: { status: "PROVIDER_PENDING", providerRefundId: "provider-pending-refund" } });
+  await assert.rejects(returnSvc.recordAdminReturnManualRefund(admin({ body: { expectedVersion: 4, amountPaise: 50_000, recipient: "Customer", method: "BANK", reference: "MANUAL-REFUND-1", proofNote: "Manual external repayment" } })), { code: "REFUND_NOT_MANUALLY_PAYABLE" });
+  assert.equal((await EcommerceOrderReturnRequest.findById(opened.request.id).lean()).manualRefundRecordedAt, undefined);
+  assert.equal((await EcommercePaymentExceptionRefund.findById(opened.refund._id).lean()).status, "PROVIDER_PENDING");
 });

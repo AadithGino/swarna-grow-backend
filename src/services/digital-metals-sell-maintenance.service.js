@@ -1,6 +1,14 @@
 import { withTransaction } from "../lib/transaction.js";
-import { DigitalMetalSellOrder } from "../models/index.js";
+import { DigitalMetalReservation, DigitalMetalSellOrder } from "../models/index.js";
 import { releaseReservation } from "./digital-metals-ledger.service.js";
+
+async function releaseSellReservationIfActive(session, tenantId, reserveKey, releaseKey) {
+  const reservation = await DigitalMetalReservation.findOne({ tenantId, idempotencyKey: reserveKey })
+    .session(session);
+  if (!reservation) return;
+  if (reservation.status === "RELEASED" || reservation.status === "COMMITTED") return;
+  await releaseReservation(session, tenantId, reserveKey, releaseKey);
+}
 
 export async function expireStaleSellOrdersForTenant(tenantId, orderId = null) {
   const now = new Date();
@@ -36,11 +44,7 @@ export async function cancelAndReleaseSellOrder(order) {
     }).session(session);
     if (!locked) return { outcome: "NOOP", orderId: order._id };
     const reserveKey = `${locked.idempotencyKey}:reserve`;
-    try {
-      await releaseReservation(session, locked.tenantId, reserveKey, `sell-cancel:${locked._id}`);
-    } catch {
-      /* already released */
-    }
+    await releaseSellReservationIfActive(session, locked.tenantId, reserveKey, `sell-cancel:${locked._id}`);
     locked.status = "CANCELLED";
     await locked.save({ session });
     return { outcome: "CANCELLED", orderId: locked._id };
@@ -56,14 +60,12 @@ export async function expireAndReleaseSellOrder(order) {
       _id: order._id,
       tenantId: order.tenantId,
       status: { $in: ["RESERVED", "PENDING_APPROVAL"] },
+      version: order.version,
+      $or: [{ status: "RESERVED", quoteExpiresAt: { $lte: new Date() } }, { status: "PENDING_APPROVAL", approvalExpiresAt: { $lte: new Date() } }],
     }).session(session);
     if (!locked) return { outcome: "NOOP", orderId: order._id };
     const reserveKey = `${locked.idempotencyKey}:reserve`;
-    try {
-      await releaseReservation(session, locked.tenantId, reserveKey, `sell-release:${locked._id}`);
-    } catch {
-      /* already released */
-    }
+    await releaseSellReservationIfActive(session, locked.tenantId, reserveKey, `sell-release:${locked._id}`);
     locked.status = "EXPIRED";
     await locked.save({ session });
     return { outcome: "EXPIRED", orderId: locked._id };

@@ -1,10 +1,4 @@
-import {
-  Counter,
-  Customer,
-  Message,
-  Payment,
-  Tenant,
-} from "../models/index.js";
+import { Counter, Customer, Message, Tenant } from "../models/index.js";
 import { MessageStatus } from "../constants/enums.js";
 import { createId } from "../lib/ids.js";
 import { dispatchPriorityForMessageType } from "../lib/message-dispatch-priority.js";
@@ -15,7 +9,7 @@ import { errors } from "../lib/app-error.js";
 import { now as istNow } from "../lib/date.js";
 import { env } from "../config/env.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
-import { moneyRef } from "../lib/money.js";
+
 import { isOverlappingFeatureEnabled } from "../lib/feature-entitlements.js";
 import {
   buildCountTrendPoints,
@@ -178,12 +172,20 @@ export async function getMessagingSummaryForAdmin(req) {
 }
 
 export async function queueMessage(req, payload) {
+  const channel = payload.channel ?? "WHATSAPP";
+  if (channel === "WHATSAPP") {
+    return {
+      skipped: true,
+      reason: "WHATSAPP_REMOVED",
+      channel: "WHATSAPP",
+      type: payload.type ?? null,
+    };
+  }
   return withTransaction(async (session) => {
     const tenant = await Tenant.findById(req.auth.tenantId)
       .select("subscription")
       .session(session)
       .lean();
-    const channel = payload.channel ?? "WHATSAPP";
     const limit = Number(tenant?.subscription?.limits?.whatsappMessages ?? 0);
     if (channel === "WHATSAPP" && limit > 0) {
       const period = istNow().format("YYYY-MM");
@@ -332,57 +334,3 @@ export async function paymentSuccessTemplateKeyForTenant(tenantId) {
     : "PAYMENT_SUCCESS_TEXT_FALLBACK";
 }
 
-export async function sharePayment(req) {
-  const payment = await Payment.findOne({ _id: req.params.paymentId, ...req.scope }).lean();
-  if (!payment) throw errors.notFound("Payment");
-  const customer = await Customer.findOne({ _id: payment.customerId, tenantId: payment.tenantId }).select("mobile whatsappOptedOutAt").lean();
-  if (!customer || customer.whatsappOptedOutAt) throw errors.business("WHATSAPP_OPTED_OUT", "The customer has opted out of WhatsApp messages.");
-  const templateKey = await paymentSuccessTemplateKeyForTenant(payment.tenantId);
-  return queueMessage(req, {
-    branchId: payment.branchId,
-    customerId: payment.customerId,
-    schemeId: payment.schemeId,
-    type: "PAYMENT_SUCCESS",
-    channel: "WHATSAPP",
-    templateKey,
-    templateParams: { mobile: customer.mobile, paymentId: payment._id, passbookImageUrl: null, textComponents: [] },
-  });
-}
-
-export async function shareCustomerStatement(req) {
-  const customer = await Customer.findOne({
-    _id: req.params.customerId,
-    tenantId: req.auth.tenantId,
-    ...(req.scope?.branchId ? { branchId: req.scope.branchId } : {}),
-  }).lean();
-  if (!customer) throw errors.notFound("Customer");
-  if (customer.whatsappOptedOutAt) {
-    throw errors.business("WHATSAPP_OPTED_OUT", "The customer has opted out of WhatsApp messages.");
-  }
-  const { netAmountPaiseFromDoc, netCollectionStatusFilter } = await import(
-    "../lib/payment-net-aggregation.js"
-  );
-  const payments = await Payment.find({
-    tenantId: req.auth.tenantId,
-    customerId: customer._id,
-    ...netCollectionStatusFilter(),
-  })
-    .sort({ paidAt: -1 })
-    .limit(100)
-    .lean();
-  const totalPaise = payments.reduce((sum, row) => sum + netAmountPaiseFromDoc(row), 0);
-  return queueMessage(req, {
-    branchId: customer.branchId,
-    customerId: customer._id,
-    type: "CUSTOMER_STATEMENT",
-    channel: "WHATSAPP",
-    templateKey: "CUSTOMER_STATEMENT",
-    templateParams: {
-      mobile: customer.mobile,
-      customerName: customer.name,
-      customerNumber: customer.customerNumber,
-      paymentCount: payments.length,
-      totalDisplay: moneyRef(totalPaise).amountDisplay,
-    },
-  });
-}

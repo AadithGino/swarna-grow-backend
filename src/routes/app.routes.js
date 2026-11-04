@@ -234,6 +234,7 @@ appRouter.post(
   asyncHandler(payment.cancelIntent),
 );
 
+appRouter.get("/activity", asyncHandler(appCustomer.listActivity));
 appRouter.get("/payments", asyncHandler(appCustomer.listPayments));
 appRouter.get("/payments/:paymentId/receipt", asyncHandler(async (req, res) => {
   req.scope = { tenantId: req.auth.tenantId, customerId: req.auth.id };

@@ -156,6 +156,16 @@ export const adminApproveSellOrder = async (req, res) => {
   return sendSuccess(res, await svc.adminApproveSellOrder(req));
 };
 
+export const adminAcceptSellOrder = async (req, res) => {
+  const svc = await import("../services/digital-metals-sell.service.js");
+  return sendSuccess(res, await svc.adminApproveSellOrder(req));
+};
+
+export const adminRecordSellOrderPayment = async (req, res) => {
+  const svc = await import("../services/digital-metals-payout.service.js");
+  return sendSuccess(res, await svc.recordSellOrderBankPayment(req));
+};
+
 export const adminCancelSellOrder = async (req, res) => {
   const svc = await import("../services/digital-metals-sell.service.js");
   return sendSuccess(res, await svc.cancelSellOrder(req));
@@ -461,6 +471,11 @@ export const adminGetLiveHedgeReport = async (req, res) => {
   return sendSuccess(res, await svc.getLiveHedgeReport(req));
 };
 
+export const adminListDailyHedgeBookIndex = async (req, res) => {
+  const svc = await import("../services/digital-metals-hedge.service.js");
+  return sendSuccess(res, await svc.listDailyHedgeBookIndex(req));
+};
+
 export const adminCloseHedgeDay = async (req, res) => {
   const svc = await import("../services/digital-metals-hedge.service.js");
   return sendSuccess(res, await svc.closeHedgeDaySnapshot(req));
@@ -625,4 +640,9 @@ export const adminCustomerSummary = async (req, res) => {
 export const adminDashboardSummary = async (req, res) => {
   const svc = await import("../services/digital-metals-summary.service.js");
   return sendSuccess(res, await svc.getAdminDigitalMetalsDashboardSummary(req));
+};
+
+export const adminDigitalMetalsWalletTotals = async (req, res) => {
+  const svc = await import("../services/digital-metals-summary.service.js");
+  return sendSuccess(res, await svc.getAdminDigitalMetalsWalletTotals(req));
 };

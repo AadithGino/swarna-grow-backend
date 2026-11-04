@@ -1,5 +1,5 @@
 import { AppError } from "./app-error.js";
-import { phonePeProvider } from "../integrations/phonepe.provider.js";
+import { initiatePhonePeCustomerWebCheckout } from "./phonepe-customer-web-checkout.js";
 import {
   assertPhonePeCredentialsForLiveCheckout,
   isPersistedMockCheckoutMode,
@@ -36,7 +36,7 @@ export async function initiateDigitalMetalsPhonePeCheckout({
   const policy = resolveDigitalMetalsCheckoutMode();
   if (policy === "LIVE_REQUIRED") {
     assertPhonePeCredentialsForLiveCheckout(credentials);
-    const provider = await phonePeProvider.createSdkOrder({
+    const provider = await initiatePhonePeCustomerWebCheckout({
       merchantOrderId,
       amountPaise,
       redirectUrl,

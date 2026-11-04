@@ -65,7 +65,7 @@ test("perimeter math: open 0, buy 3g, sell 1g, handover 1g, procure 2g => obliga
   assert.equal(r.uncoveredUg, 0);
 });
 
-test("missing opening position marks coverageIncomplete on live hedge report", async () => {
+test("ledger-backed daily book reconciles wallet credit without procurement opening", async () => {
   const { tenant, branch, user } = await seedTenantUser({});
   await enablePlan(tenant._id);
   await makeTenantQuoteReady(app, tenant._id, bearerFor(user));
@@ -87,7 +87,9 @@ test("missing opening position marks coverageIncomplete on live hedge report", a
   assert.equal(live.status, 200);
   const line = live.body.data.lines.find((l) => l.metal === "GOLD");
   assert.ok(line);
-  assert.equal(line.coverageIncomplete, true);
+  assert.equal(live.body.data.reportType, "DAILY_HEDGE_BOOK");
+  assert.equal(Number(line.ledgerReconcileDeltaUg ?? line.walletReconcileDeltaUg), 0);
+  assert.equal(Number(line.closingMetalOwedUg ?? line.closingObligationUg), G1);
 });
 
 test("procurement opening approve + close-day snapshot (mocked Mongo)", async () => {

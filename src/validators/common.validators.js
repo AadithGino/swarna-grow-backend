@@ -871,7 +871,6 @@ export const paymentLinkBody = z.object({
 export const customerNoteBody = z.object({
   note: z.string().trim().min(1).max(4000),
 });
-export const whatsappOptBody = z.object({ optedIn: z.boolean() });
 export const kycSubmitBody = z
   .object({
     type: enumSchema(E.KycType),

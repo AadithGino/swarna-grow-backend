@@ -173,7 +173,12 @@ test("pickup handover consumes metal exactly once and records physical-out event
     .post(`/api/v1/admin/digital-metals/redemption/orders/${orderId}/fulfilment/complete-pickup`)
     .set("Authorization", `Bearer ${adminToken}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ expectedVersion: v++, pickupCode, fulfilmentBranchId: branch._id });
+    .send({
+      expectedVersion: v++,
+      pickupCode,
+      fulfilmentBranchId: branch._id,
+      staffHandoverConfirmed: true,
+    });
   assert.equal(complete.status, 200);
   assert.equal(complete.body.data.status, "COMPLETED");
   const events = await DigitalMetalPhysicalOutEvent.find({ redemptionOrderId: orderId }).lean();
@@ -191,7 +196,12 @@ test("pickup handover consumes metal exactly once and records physical-out event
     .post(`/api/v1/admin/digital-metals/redemption/orders/${orderId}/fulfilment/complete-pickup`)
     .set("Authorization", `Bearer ${adminToken}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ expectedVersion: v, pickupCode, fulfilmentBranchId: branch._id });
+    .send({
+      expectedVersion: v,
+      pickupCode,
+      fulfilmentBranchId: branch._id,
+      staffHandoverConfirmed: true,
+    });
   assert.equal(dup.status, 409);
   const progress = await request(app)
     .get(`/api/v1/app/digital-metals/redemption/orders/${orderId}/fulfilment`)

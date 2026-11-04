@@ -1,3 +1,4 @@
+import { assertCounterTenderReplay } from "../lib/counter-tender.js";
 /**
  * Store orders placed by staff for a customer at the counter (admin / branch manager).
  *
@@ -40,14 +41,14 @@ import { createCustomerOrder, getAdminOrder } from "./ecommerce-order.service.js
 import { finalizeEcommercePaymentSuccess } from "./ecommerce-payment-finalize.service.js";
 import { writeAudit } from "./audit.service.js";
 
-async function loadCounterCustomer(req) {
+async function loadCounterCustomer(req, { allowInactive = false } = {}) {
   const customer = await Customer.findOne({
     _id: req.params.customerId,
     tenantId: req.auth.tenantId,
   }).lean();
   if (!customer) throw errors.notFound("Customer");
   assertTenantOwnsCustomerScope(req, customer);
-  assertCustomerCanTradeAtCounter(customer);
+  if (!allowInactive) assertCustomerCanTradeAtCounter(customer);
   return customer;
 }
 
@@ -143,7 +144,7 @@ export async function placeAssistedOrder(req) {
       { field: "customerConsent", message: "Confirm the customer has agreed to the items and total." },
     ]);
   }
-  const customer = await loadCounterCustomer(req);
+  const customer = await loadCounterCustomer(req, { allowInactive: true });
   const paymentMode = req.body.paymentMode;
   const paymentReference = String(req.body.paymentReference ?? "").trim();
   if (paymentMode !== "CASH" && paymentReference.length < 4) {
@@ -154,19 +155,21 @@ export async function placeAssistedOrder(req) {
       },
     ]);
   }
-  const quote = await EcommercePriceQuote.findOne({
-    _id: req.body.quoteId,
-    tenantId: req.auth.tenantId,
-    customerId: String(customer._id),
+  const prior = await EcommerceOrder.findOne({ tenantId: req.auth.tenantId, idempotencyKey: counterStepKey(req, "eo") }).lean();
+  if (prior && (String(prior.customerId) !== String(customer._id) || String(prior.quoteId) !== String(req.body.quoteId))) throw errors.conflict("IDEMPOTENCY_KEY_REUSED", "Counter order inputs differ from the original order.");
+  if (prior) assertCounterTenderReplay(prior, req);
+  else assertCustomerCanTradeAtCounter(customer);
+  const quote = prior ? { _id: prior.quoteId } : await EcommercePriceQuote.findOne({
+    _id: req.body.quoteId, tenantId: req.auth.tenantId, customerId: String(customer._id),
   }).lean();
-  if (!quote || !quote.assistedByUserId) throw errors.notFound("Quote");
+  if (!quote || (!prior && !quote.assistedByUserId)) throw errors.notFound("Quote");
 
   const assisted = assistedMetadata(req, customer, {
     paymentMode,
     paymentReference,
     note: String(req.body.note ?? "").trim().slice(0, 500),
   });
-  const { order: created } = await createCustomerOrder(
+  const { order: created } = prior ? { order: { id: prior._id } } : await createCustomerOrder(
     customerBoundRequest(req, customer, {
       idempotencyKey: counterStepKey(req, "eo"),
       body: { quoteId: quote._id },
@@ -176,6 +179,7 @@ export async function placeAssistedOrder(req) {
   const orderId = created.id;
   const order = await EcommerceOrder.findOne({ _id: orderId, tenantId: req.auth.tenantId }).lean();
   if (!order) throw errors.notFound("Order");
+  assertCounterTenderReplay(order, req);
 
   const attemptKey = counterStepKey(req, "eo-pay");
   let attempt = await EcommercePaymentAttempt.findOne({ tenantId: req.auth.tenantId, idempotencyKey: attemptKey }).lean();

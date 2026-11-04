@@ -2,7 +2,6 @@ import {
   Alert,
   Grievance,
   Redemption,
-  TemplateDefinition,
 } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import { errors } from "../lib/app-error.js";
@@ -11,7 +10,6 @@ import * as tenantSettings from "../services/tenant-settings.service.js";
 import * as cash from "../services/cash.service.js";
 import * as redemption from "../services/redemption.service.js";
 import * as grievance from "../services/grievance.service.js";
-import * as messaging from "../services/messaging.service.js";
 import * as audit from "../services/audit.service.js";
 import * as postSettlementRefundCase from "../services/post-settlement-refund-case.service.js";
 import { effectiveScope } from "../lib/query-filters.js";
@@ -240,60 +238,6 @@ export const grievanceAudit = async (req, res) => {
   if (!row) throw errors.notFound("Grievance");
   sendList(res, await audit.listEntityAudit(req, "GRIEVANCE", row._id));
 };
-export const messages = async (req, res) =>
-  sendList(res, await messaging.listMessages(req));
-export const resendMessage = async (req, res) =>
-  sendSuccess(res, await messaging.resendMessage(req), {}, 202);
-export const templates = async (_req, res) =>
-  sendSuccess(res, await TemplateDefinition.find({ active: true }).lean());
-export const messageSummary = async (req, res) =>
-  sendSuccess(res, await messaging.getMessagingSummaryForAdmin(req));
-export const messageDetail = async (req, res) =>
-  sendSuccess(res, await messaging.getMessageForAdmin(req));
-export const templatePreview = async (req, res) => {
-  const template = await TemplateDefinition.findOne({
-    messageType: req.params.messageType,
-    active: true,
-    $or: [{ tenantId: req.auth.tenantId }, { tenantId: null }],
-  })
-    .sort({ tenantId: -1 })
-    .lean();
-  sendSuccess(res, {
-    template,
-    sample:
-      req.query.sample === "true"
-        ? { customerName: "Anjali Nair", amountPaise: 300000 }
-        : null,
-  });
-};
-export const reminderConfig = async (req, res) => {
-  const { reminderConfigForAdmin } = await import("../lib/reminder-config.js");
-  const { getMessagingSummaryForAdmin } = await import("../services/messaging.service.js");
-  let quotaMeta;
-  try {
-    const summary = await getMessagingSummaryForAdmin({
-      ...req,
-      query: { from: new Date().toISOString().slice(0, 10) },
-    });
-    quotaMeta = {
-      quota: {
-        used: summary.quotaUsed ?? 0,
-        limit: summary.quotaLimit ?? 0,
-        percent: summary.quotaUsedPercent ?? 0,
-        resetsOn: summary.resetsOn,
-        status:
-          (summary.quotaUsedPercent ?? 0) >= 100
-            ? "EXCEEDED"
-            : (summary.quotaUsedPercent ?? 0) >= 85
-              ? "NEAR_LIMIT"
-              : "OK",
-      },
-    };
-  } catch {
-    quotaMeta = undefined;
-  }
-  return sendSuccess(res, reminderConfigForAdmin(req.tenant, quotaMeta ?? {}));
-};
 export const pushBroadcastAudiencePreview = async (req, res) => {
   const pushBroadcast = await import("../services/push-broadcast.service.js");
   return sendSuccess(res, await pushBroadcast.countPushAudience(req, req.body ?? {}));
@@ -307,29 +251,6 @@ export const listPushBroadcasts = async (req, res) =>
 export const pushBroadcastDetail = async (req, res) => {
   const pushBroadcast = await import("../services/push-broadcast.service.js");
   return sendSuccess(res, await pushBroadcast.getPushBroadcast(req));
-};
-export const updateReminderConfig = async (req, res) => {
-  const { reminderConfigForAdmin } = await import("../lib/reminder-config.js");
-  const { getReminderConfig } = await import("../lib/reminder-config.js");
-  const patch = { ...req.body };
-  const expectedVersion = patch.expectedVersion ?? patch.audit?.version;
-  delete patch.expectedVersion;
-  delete patch.audit;
-  delete patch.quota;
-  const reminderConfig = {
-    ...getReminderConfig(req.tenant),
-    ...patch,
-    ...(patch.offsets ? { offsets: patch.offsets } : {}),
-    ...(patch.push ? { push: { ...getReminderConfig(req.tenant).push, ...patch.push } } : {}),
-    ...(patch.transactional
-      ? { transactional: { ...getReminderConfig(req.tenant).transactional, ...patch.transactional } }
-      : {}),
-  };
-  const updated = await tenant.updateTenantSettings(req, "settings", {
-    reminderConfig,
-    expectedVersion,
-  });
-  return sendSuccess(res, reminderConfigForAdmin(updated));
 };
 export const postSettlementRefundCases = async (req, res) =>
   sendList(res, await postSettlementRefundCase.listPostSettlementRefundCases(req));

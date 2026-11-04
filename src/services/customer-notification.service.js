@@ -4,12 +4,10 @@ import { dispatchPriorityForMessageType } from "../lib/message-dispatch-priority
 import {
   getReminderConfig,
   pushEnabledForType,
-  whatsAppEnabledForType,
 } from "../lib/reminder-config.js";
 import { withTransaction } from "../lib/transaction.js";
 import { Message, Tenant } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
-import { queueMessage } from "./messaging.service.js";
 
 function systemReq(tenantId, branchId) {
   return {
@@ -40,7 +38,7 @@ async function queuePushOnly(req, payload, session) {
   return message;
 }
 
-/** Queue WhatsApp and/or push based on tenant reminder config. */
+/** Queue push based on tenant reminder config, optionally in the business transaction. */
 export async function queueCustomerNotification({
   tenantId,
   branchId,
@@ -49,10 +47,10 @@ export async function queueCustomerNotification({
   type,
   templateKey,
   templateParams,
-  pushOnly = false,
-  customer = null,
-}) {
-  const tenant = await Tenant.findById(tenantId).select("settings version name displayName").lean();
+  pushOnly: _pushOnly = false,
+  customer: _customer = null,
+}, { session = null } = {}) {
+  const tenant = await Tenant.findById(tenantId).select("settings version name displayName").session(session).lean();
   if (!tenant) return { queued: [] };
   const config = getReminderConfig(tenant);
   const req = systemReq(tenantId, branchId);
@@ -66,18 +64,8 @@ export async function queueCustomerNotification({
   };
   const queued = [];
 
-  const whatsappOptedOut = Boolean(customer?.whatsappOptedOutAt);
-  if (
-    !pushOnly
-    && !whatsappOptedOut
-    && whatsAppEnabledForType(config, type)
-  ) {
-    queued.push(
-      await queueMessage(req, { ...base, channel: "WHATSAPP" }),
-    );
-  }
   if (pushEnabledForType(config, type, templateParams ?? {})) {
-    await withTransaction(async (session) => {
+    const work = async (session) => {
       const row = await queuePushOnly(req, base, session);
       await writeAudit({
         req,
@@ -88,7 +76,9 @@ export async function queueCustomerNotification({
         session,
       });
       queued.push(row.toObject());
-    });
+    };
+    if (session) await work(session);
+    else await withTransaction(work);
   }
   return { queued };
 }

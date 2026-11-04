@@ -14,6 +14,12 @@ import { hashIdempotencyBody } from "./idempotency.service.js";
 import { DigitalMetalBuyOrder, DigitalMetalBuyPaymentAttempt, WebhookEvent } from "../models/index.js";
 import { mapBuyOrderStatusDto } from "./digital-metals-buy-finalize.service.js";
 import { processWebhook } from "../workers/processors.js";
+import {
+  mapPhonePeCustomerCheckoutResponse,
+  mergePhonePeCheckoutProviderPayload,
+  readPersistedPhonePeCheckoutRedirectUrl,
+} from "../lib/phonepe-customer-web-checkout.js";
+import { maybeReconcileLiveDigitalMetalBuyAttempt } from "./digital-metals-payment-reconcile.service.js";
 
 function assertBuyPaymentTestHarness() {
   if (!isEcommercePaymentsTestHarnessEnabled()) throw errors.notFound("Route");
@@ -43,6 +49,16 @@ async function queueDigitalMetalBuyTestWebhook({ tenantId, type, payload, provid
 }
 
 const isMockProviderBuyPaymentAttempt = isMockDigitalMetalsPaymentAttempt;
+
+function isPhonePeCredentialError(error) {
+  const type = String(error?.type ?? error?.name ?? "");
+  const message = String(error?.message ?? error ?? "").toLowerCase();
+  return (
+    type === "UnauthorizedAccess"
+    || message.includes("unauthorized")
+    || message.includes("payment gateway not configured")
+  );
+}
 
 async function simulateBuyPaymentWebhookOutcome({ tenantId, attempt, order, outcome }) {
   const merchantOrderId = attempt.merchantOrderId ?? attempt._id;
@@ -101,10 +117,10 @@ function mapPaymentIntent(row, order) {
     amountPaise: row.amountPaise,
     currency: row.currency ?? "INR",
     merchantOrderId: row.merchantOrderId ?? row._id,
-    token: row.sdkToken ?? null,
     redirectUrl: row.redirectUrl ?? null,
     statusPollUrl: `/app/digital-metals/buy-orders/${order._id}/payment-intents/${row._id}`,
     failureReason: row.failureReason ?? null,
+    ...mapPhonePeCustomerCheckoutResponse(row),
     ...mapCheckoutFieldsForPaymentIntent(row),
   };
 }
@@ -144,6 +160,13 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
           customerId: req.auth.id,
         }).session(session);
         if (!order) throw errors.notFound("Order");
+        if (["FAILED", "SUCCEEDED"].includes(existingByKey.status)) {
+          throw errors.business(
+            "PAYMENT_ATTEMPT_TERMINAL",
+            "This idempotency key belongs to a finished payment attempt. Retry with a new session.",
+            { paymentAttemptId: existingByKey._id, status: existingByKey.status },
+          );
+        }
         return { kind: "REPLAY", attempt: existingByKey.toObject(), order: order.toObject() };
       }
 
@@ -174,9 +197,15 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
         status: { $in: ["PENDING", "INITIATED"] },
       }).session(session);
       if (active && active.idempotencyKey !== idempotencyKey) {
-        throw errors.business("PAYMENT_ATTEMPT_IN_PROGRESS", "Payment attempt already in progress.", {
-          paymentAttemptId: active._id,
-        });
+        // A new idempotency key means the customer started a fresh checkout (retry / continue).
+        await DigitalMetalBuyPaymentAttempt.updateOne(
+          { _id: active._id, status: { $in: ["PENDING", "INITIATED"] } },
+          {
+            $set: { status: "FAILED", failureReason: "SUPERSEDED_BY_RETRY" },
+            $inc: { version: 1 },
+          },
+          { session },
+        );
       }
       if (active?.idempotencyKey === idempotencyKey) {
         return { kind: "REPLAY", attempt: active.toObject(), order: order.toObject() };
@@ -236,17 +265,56 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
 
   const tenant = await tenantForEcommerceCheckout(req.auth.tenantId, req.tenant);
   const credentials = resolvePhonePeCredentials(tenant);
-  const attempt = reserved.attempt;
+  let attempt = reserved.attempt;
+  if (["FAILED", "SUCCEEDED"].includes(attempt.status)) {
+    throw errors.business(
+      "PAYMENT_ATTEMPT_TERMINAL",
+      "This payment session has ended. Retry to start a new checkout.",
+      { paymentAttemptId: attempt._id, status: attempt.status },
+    );
+  }
+  const persistedCheckoutUrl = readPersistedPhonePeCheckoutRedirectUrl(attempt);
   if (
     attempt.status === "INITIATED"
-    && attempt.sdkToken
     && attempt.providerOrderId
     && attempt.checkoutMode
+    && persistedCheckoutUrl
+    && reserved.order.status !== "PAYMENT_FAILED"
   ) {
     return {
       paymentIntent: mapPaymentIntent(attempt, reserved.order),
       order: mapBuyOrderStatusDto(reserved.order, [attempt]),
     };
+  }
+
+  if (
+    attempt.status === "INITIATED"
+    && attempt.sdkToken
+    && !persistedCheckoutUrl
+    && attempt.providerOrderId
+  ) {
+    await DigitalMetalBuyPaymentAttempt.updateOne(
+      { _id: attempt._id, status: { $in: ["PENDING", "INITIATED"] } },
+      {
+        $set: { status: "PENDING" },
+        $unset: { sdkToken: "", providerOrderId: "" },
+        $inc: { version: 1 },
+      },
+    );
+    attempt = {
+      ...attempt,
+      status: "PENDING",
+      sdkToken: null,
+      providerOrderId: null,
+    };
+  }
+
+  if (!attempt.sdkToken && !persistedCheckoutUrl && attempt.failureReason) {
+    await DigitalMetalBuyPaymentAttempt.updateOne(
+      { _id: attempt._id, status: { $in: ["PENDING", "INITIATED"] } },
+      { $unset: { failureReason: "" }, $inc: { version: 1 } },
+    );
+    attempt = { ...attempt, failureReason: null };
   }
 
   try {
@@ -265,7 +333,11 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
         $set: {
           status: "INITIATED",
           providerOrderId: provider.providerOrderId,
-          sdkToken: provider.token,
+          sdkToken: provider.token ?? null,
+          providerPayload: mergePhonePeCheckoutProviderPayload(
+            attempt.providerPayload,
+            provider.checkoutRedirectUrl ?? provider.redirectUrl,
+          ),
           checkoutMode,
           gatewayReconcileNextAt: new Date(Date.now() + 60_000),
         },
@@ -281,6 +353,22 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
       ),
     };
   } catch (error) {
+    if (error instanceof AppError) throw error;
+    if (isPhonePeCredentialError(error)) {
+      await DigitalMetalBuyPaymentAttempt.updateOne(
+        { _id: attempt._id, status: { $in: ["PENDING", "INITIATED"] } },
+        {
+          $set: { failureReason: "PHONEPE_UNAUTHORIZED" },
+          $unset: { sdkToken: "", providerOrderId: "" },
+          $inc: { version: 1 },
+        },
+      );
+      throw errors.business(
+        "PAYMENT_GATEWAY_UNAUTHORIZED",
+        "PhonePe rejected the jeweller credentials. Update payment gateway settings in Platform and retry.",
+        { paymentAttemptId: attempt._id },
+      );
+    }
     await DigitalMetalBuyPaymentAttempt.updateOne(
       { _id: attempt._id },
       {
@@ -291,7 +379,6 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
         $inc: { version: 1 },
       },
     );
-    if (error instanceof AppError) throw error;
     throw errors.business(
       "PAYMENT_INITIATION_UNCERTAIN",
       "Payment may have started at the provider. Poll status or wait for reconciliation.",
@@ -313,13 +400,23 @@ export async function getBuyOrderPaymentIntent(req) {
     orderId: order._id,
   }).lean();
   if (!attempt) throw errors.notFound("Payment attempt");
-  const mockCompleted = await maybeCompleteMockDigitalMetalBuyPayment({
-    tenantId: req.auth.tenantId,
-    attempt,
-    order,
-  });
-  const resolvedAttempt = mockCompleted.attempt;
-  const resolvedOrder = mockCompleted.order;
+  let resolvedAttempt = attempt;
+  let resolvedOrder = order;
+  if (isMockDigitalMetalsPaymentAttempt(attempt)) {
+    const mockCompleted = await maybeCompleteMockDigitalMetalBuyPayment({
+      tenantId: req.auth.tenantId,
+      attempt,
+      order,
+    });
+    resolvedAttempt = mockCompleted.attempt;
+    resolvedOrder = mockCompleted.order;
+  } else {
+    await maybeReconcileLiveDigitalMetalBuyAttempt(attempt, { at: new Date() });
+    resolvedAttempt =
+      (await DigitalMetalBuyPaymentAttempt.findById(attempt._id).lean()) ?? attempt;
+    resolvedOrder =
+      (await DigitalMetalBuyOrder.findById(order._id).lean()) ?? order;
+  }
   return {
     paymentIntent: mapPaymentIntent(resolvedAttempt, resolvedOrder),
     order: mapBuyOrderStatusDto(resolvedOrder, [resolvedAttempt]),

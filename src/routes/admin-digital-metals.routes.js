@@ -16,6 +16,7 @@ import {
   digitalMetalsRiskHoldCreateBody,
   digitalMetalsRiskHoldResolveBody,
   digitalMetalsSellApproveBody,
+  digitalMetalsSellRecordPaymentBody,
   digitalMetalsSettingsPatchBody,
   digitalMetalsTenantPauseBody,
   digitalMetalsRedemptionCatalogCreateBody,
@@ -23,6 +24,7 @@ import {
   digitalMetalsRedemptionChargeRefundManualBody,
   digitalMetalsProcurementEntryBody,
   digitalMetalsHedgeCloseDayBody,
+  digitalMetalsHedgeDailyIndexQuery,
   digitalMetalsDocumentRequestBody,
   digitalMetalsAdminScopedOrderListQuery,
   digitalMetalsBankVerificationQueueQuery,
@@ -136,6 +138,11 @@ adminDigitalMetalsRouter.get(
 );
 
 adminDigitalMetalsRouter.get(
+  "/digital-metals/dashboard/wallet-totals",
+  ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminDigitalMetalsWalletTotals)),
+);
+
+adminDigitalMetalsRouter.get(
   "/digital-metals/customers/:customerId/summary",
   ...guarded(Permission.DIGITAL_METALS_READ, asyncHandler(controller.adminCustomerSummary)),
 );
@@ -209,6 +216,26 @@ adminDigitalMetalsRouter.post(
     validate({ body: digitalMetalsSellApproveBody }),
     idempotent,
     asyncHandler(controller.adminApproveSellOrder),
+  ),
+);
+
+adminDigitalMetalsRouter.post(
+  "/digital-metals/sell-orders/:orderId/accept",
+  ...guarded(
+    Permission.DIGITAL_METALS_SELL_APPROVE,
+    validate({ body: digitalMetalsSellApproveBody }),
+    idempotent,
+    asyncHandler(controller.adminAcceptSellOrder),
+  ),
+);
+
+adminDigitalMetalsRouter.post(
+  "/digital-metals/sell-orders/:orderId/record-payment",
+  ...guarded(
+    Permission.DIGITAL_METALS_PAYOUT_RECORD,
+    validate({ body: digitalMetalsSellRecordPaymentBody }),
+    idempotent,
+    asyncHandler(controller.adminRecordSellOrderPayment),
   ),
 );
 
@@ -353,7 +380,7 @@ adminDigitalMetalsRouter.post(
 adminDigitalMetalsRouter.post(
   "/digital-metals/payouts/:payoutId/record-settlement",
   ...guarded(
-    Permission.DIGITAL_METALS_PAYOUT_APPROVE,
+    Permission.DIGITAL_METALS_PAYOUT_RECORD,
     validate({ body: digitalMetalsPayoutSettlementBody }),
     idempotent,
     asyncHandler(controller.adminRecordPayoutSettlement),
@@ -378,7 +405,7 @@ adminDigitalMetalsRouter.post(
 adminDigitalMetalsRouter.post(
   "/digital-metals/payouts/:payoutId/resolve-unknown",
   ...guarded(
-    Permission.DIGITAL_METALS_PAYOUT_APPROVE,
+    Permission.DIGITAL_METALS_PAYOUT_RECORD,
     validate({ body: digitalMetalsPayoutResolveUnknownBody }),
     idempotent,
     asyncHandler(controller.adminResolveUnknownPayout),
@@ -630,6 +657,15 @@ adminDigitalMetalsRouter.post(
 adminDigitalMetalsRouter.get(
   "/digital-metals/hedge/live",
   ...guarded(Permission.DIGITAL_METALS_REPORT_READ, asyncHandler(controller.adminGetLiveHedgeReport)),
+);
+
+adminDigitalMetalsRouter.get(
+  "/digital-metals/hedge/daily-index",
+  ...guarded(
+    Permission.DIGITAL_METALS_REPORT_READ,
+    validate({ query: digitalMetalsHedgeDailyIndexQuery }),
+    asyncHandler(controller.adminListDailyHedgeBookIndex),
+  ),
 );
 
 adminDigitalMetalsRouter.post(

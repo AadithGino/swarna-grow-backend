@@ -45,6 +45,31 @@ test("home scheme card — includes UI money and progress fields", () => {
   assert.equal(typeof card.canPay, "boolean");
 });
 
+test("scheme detail DTO — PENDING_PAYMENT enables first instalment pay", () => {
+  const dto = mapCustomerSchemeDetail({
+    _id: "sch_pending",
+    enrollmentNumber: "ENR-0000006",
+    planId: "plan_1",
+    planSnapshot: { name: "11+1 Cash Scheme", displayName: "11+1 Cash Scheme (₹5,000)" },
+    paymentPattern: "FIXED",
+    displayMode: "FIXED",
+    status: "PENDING_PAYMENT",
+    uiStatus: "PENDING_PAYMENT",
+    maturityDate: "2027-10-31",
+    startDate: "2026-11-02",
+    totals: { amountPaidPaise: 0, goldWeightMg: 0 },
+    actions: { canRecordPayment: true, canRedeem: false },
+    installments: [
+      { number: 1, dueDate: "2026-11-02", amountPaise: 500000, paidPaise: 0, status: "DUE" },
+      { number: 2, dueDate: "2026-12-02", amountPaise: 500000, paidPaise: 0, status: "UPCOMING" },
+    ],
+  });
+  assert.equal(dto.canPay, true);
+  assert.equal(dto.payButton.enabled, true);
+  assert.match(dto.payButton.label ?? "", /PhonePe/i);
+  assert.equal(dto.statusLabel, "Awaiting first payment");
+});
+
 test("scheme detail DTO — FIXED display mode", () => {
   const dto = mapCustomerSchemeDetail({
     _id: "sch_fixed",

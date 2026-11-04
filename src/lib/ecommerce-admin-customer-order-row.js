@@ -5,6 +5,12 @@ import {
 } from "../constants/enums.js";
 import { orderUsesCod } from "./ecommerce-cod.js";
 import { isCourierCodCollectionConfirmed } from "./ecommerce-courier-cod.js";
+import { codCustomerPaymentEvidence } from "./cod-customer-payment-evidence.js";
+import {
+  plainLanguageCodCourierPaymentLabel,
+  plainLanguageEcommerceOrderStatusForOrder,
+} from "./plain-language-labels.js";
+import { computeEcommerceOrderNextAction } from "./ecommerce-order-next-action.js";
 
 function lineSummary(lines) {
   const rows = Array.isArray(lines) ? lines : [];
@@ -50,9 +56,12 @@ function codCollectionLabel(row) {
 
 export function mapAdminCustomerOrderListRow(row, refundRow) {
   const cod = orderUsesCod(row);
-  const codCollected = cod && isCourierCodCollectionConfirmed(row);
+  const codPaymentEvidence = cod ? codCustomerPaymentEvidence(row) : null;
+  const codCollected = Boolean(codPaymentEvidence?.collectionConfirmed);
   const summary = lineSummary(row.lines);
   const attention = attentionState(row, refundRow);
+  const nextAction = computeEcommerceOrderNextAction(row);
+  const cc = row.courierCod ?? {};
   return {
     id: row._id,
     orderNumber: row.orderNumber,
@@ -69,8 +78,13 @@ export function mapAdminCustomerOrderListRow(row, refundRow) {
         && row.status !== EcommerceOrderStatus.PAYMENT_EXPIRED,
     fulfilmentMode: row.fulfilmentMode ?? null,
     status: row.status,
+    displayStatusLabel: plainLanguageEcommerceOrderStatusForOrder(row.status, row.fulfilmentMode),
+    codCustomerPaidLabel: codPaymentEvidence?.label ?? null,
+    codCustomerPaidEvidence: codPaymentEvidence?.evidence ?? null,
+    codCourierPaymentLabel: cod ? plainLanguageCodCourierPaymentLabel(cc.remittanceStatus) : null,
     attentionKind: attention.kind,
     attentionLabel: attention.label,
+    nextAction,
     detailPath: `/ecommerce/orders/${row._id}`,
   };
 }

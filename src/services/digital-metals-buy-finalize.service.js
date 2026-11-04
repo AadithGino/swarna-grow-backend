@@ -1,3 +1,4 @@
+import { postAssistedOrderCash } from "../lib/counter-tender.js";
 import {
   buildDigitalMetalPurchaseSummary,
   purchaseSummaryForJournalMetadata,
@@ -76,6 +77,11 @@ export async function finalizeDigitalMetalBuyPaymentSuccess({
   }).lean();
   if (!attempt) return { outcome: "NOT_FOUND" };
   if (attempt.status === "SUCCEEDED") {
+    if (attempt.provider === "COUNTER") await withTransaction(async (session) => {
+      const order = await DigitalMetalBuyOrder.findOne({ _id: attempt.orderId, tenantId }).session(session).lean();
+      if (!order) throw new Error("Counter order missing");
+      await postAssistedOrderCash(session, order, "DM_COUNTER_BUY");
+    });
     return { outcome: "ALREADY_SUCCESS", orderId: attempt.orderId };
   }
   if (String(attempt.currency ?? "INR") !== String(currency ?? "INR")) {
@@ -92,9 +98,51 @@ export async function finalizeDigitalMetalBuyPaymentSuccess({
     }).session(session);
     if (!order) return { outcome: "ORDER_NOT_FOUND" };
 
-    if (order.status === "CREDITED") {
-      return { outcome: "ALREADY_SUCCESS", orderId: order._id };
+    const currentAttempt = await DigitalMetalBuyPaymentAttempt.findById(attempt._id).session(session).lean();
+    if (currentAttempt?.status === "SUCCEEDED") return { outcome: "ALREADY_SUCCESS", orderId: order._id };
+
+    if ((order.successfulPaymentAttemptId && order.successfulPaymentAttemptId !== attempt._id)
+      || (order.status === "CREDITED" && order.successfulPaymentAttemptId !== attempt._id)) {
+      await DigitalMetalBuyPaymentAttempt.updateOne(
+        { _id: attempt._id, status: { $ne: "SUCCEEDED" } },
+        {
+          $set: {
+            status: "SUCCEEDED",
+            providerPaymentId: transactionId,
+            providerPayload,
+            failureReason: "DUPLICATE_PAYMENT",
+          },
+          $inc: { version: 1 },
+        },
+        { session },
+      );
+      await DigitalMetalBuyOrder.updateOne(
+        { _id: order._id },
+        {
+          $set: {
+            paymentExceptionStatus: "DUPLICATE_PAYMENT_REFUND_REQUIRED",
+            paymentExceptionPayload: {
+              paymentAttemptId: attempt._id,
+              winningAttemptId: order.successfulPaymentAttemptId,
+              transactionId,
+            },
+          },
+          $inc: { version: 1 },
+        },
+        { session },
+      );
+      await ensureDigitalMetalPaymentExceptionRefundCase(session, {
+        tenantId,
+        order,
+        paymentAttemptId: attempt._id,
+        merchantOrderId: attempt.merchantOrderId ?? attempt._id,
+        amountPaise: attempt.amountPaise,
+        exceptionType: "DUPLICATE_PAYMENT",
+      });
+      return { outcome: "DUPLICATE_PAYMENT", orderId: order._id };
     }
+
+    if (order.status === "CREDITED") return { outcome: "ALREADY_SUCCESS", orderId: order._id };
 
     const now = new Date();
     const paymentWindowOpen = now.getTime() <= new Date(order.paymentAcceptanceExpiresAt).getTime();
@@ -151,45 +199,6 @@ export async function finalizeDigitalMetalBuyPaymentSuccess({
       return { outcome: "LATE_SUCCESS_REVIEW", orderId: order._id };
     }
 
-    if (order.successfulPaymentAttemptId && order.successfulPaymentAttemptId !== attempt._id) {
-      await DigitalMetalBuyPaymentAttempt.updateOne(
-        { _id: attempt._id, status: { $ne: "SUCCEEDED" } },
-        {
-          $set: {
-            status: "SUCCEEDED",
-            providerPaymentId: transactionId,
-            providerPayload,
-            failureReason: "DUPLICATE_PAYMENT",
-          },
-          $inc: { version: 1 },
-        },
-        { session },
-      );
-      await DigitalMetalBuyOrder.updateOne(
-        { _id: order._id },
-        {
-          $set: {
-            paymentExceptionStatus: "DUPLICATE_PAYMENT_REFUND_REQUIRED",
-            paymentExceptionPayload: {
-              paymentAttemptId: attempt._id,
-              winningAttemptId: order.successfulPaymentAttemptId,
-              transactionId,
-            },
-          },
-          $inc: { version: 1 },
-        },
-        { session },
-      );
-      await ensureDigitalMetalPaymentExceptionRefundCase(session, {
-        tenantId,
-        order,
-        paymentAttemptId: attempt._id,
-        merchantOrderId: attempt.merchantOrderId ?? attempt._id,
-        amountPaise: attempt.amountPaise,
-        exceptionType: "DUPLICATE_PAYMENT",
-      });
-      return { outcome: "DUPLICATE_PAYMENT", orderId: order._id };
-    }
 
     await DigitalMetalBuyPaymentAttempt.updateOne(
       { _id: attempt._id, status: { $ne: "SUCCEEDED" } },
@@ -262,6 +271,7 @@ export async function finalizeDigitalMetalBuyPaymentSuccess({
       session,
     });
 
+    await postAssistedOrderCash(session, order, "DM_COUNTER_BUY");
     return { outcome: "CREDITED", orderId: order._id, journalId: credited.journalId };
   });
 }
