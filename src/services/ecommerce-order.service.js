@@ -26,6 +26,7 @@ import { plainLanguageEcommerceOrderStatusForOrder } from "../lib/plain-language
 import { codCustomerPaymentEvidence } from "../lib/cod-customer-payment-evidence.js";
 import { paginate } from "../lib/pagination.js";
 import { listAdminOrdersPaginated } from "./ecommerce-admin-order-list.service.js";
+import { loadEcommerceOrderForAdmin } from "../lib/ecommerce-admin-order-scope.js";
 import { attachAdminOrderCustomerDisplay } from "../lib/ecommerce-admin-order-customer-display.js";
 import { attachReturnSummaryToAdminOrder } from "./ecommerce-admin-order-returns.service.js";
 import {
@@ -559,11 +560,7 @@ export async function listAdminOrders(req) {
 
 export async function getAdminOrder(req) {
   const { capability } = await loadCheckoutContext(req.auth.tenantId, req.tenant);
-  const row = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-  }).lean();
-  if (!row) throw errors.notFound("Order");
+  const row = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
   const refund = await EcommercePaymentExceptionRefund.findOne({
     tenantId: req.auth.tenantId,
     orderId: row._id,
@@ -578,6 +575,7 @@ export async function getAdminOrder(req) {
 }
 
 export async function listAdminOrderEvents(req) {
+  await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true, select: "_id" });
   const rows = await EcommerceOrderEvent.find({
     tenantId: req.auth.tenantId,
     orderId: req.params.orderId,

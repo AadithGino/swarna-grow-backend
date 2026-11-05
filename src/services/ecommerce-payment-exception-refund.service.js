@@ -123,11 +123,8 @@ async function assertRefundPaymentReference(refundCase, payload) {
   return { ok: true, attempt };
 }
 export async function getAdminPaymentExceptionRefund(req) {
-  const order = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-  }).lean();
-  if (!order) throw errors.notFound("Order");
+  const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
+  const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
   const selected = await selectOrderRefund(EcommercePaymentExceptionRefund, req, order._id);
   return { orderId: order._id, ...selected };
 
@@ -139,11 +136,8 @@ const REFUND_APPLICABLE_EXCEPTIONS = new Set([
 ]);
 
 export async function initiateAdminPaymentExceptionRefund(req) {
-  const order = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-  }).lean();
-  if (!order) throw errors.notFound("Order");
+  const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
+  const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
   const { refund: refundRow } = await selectOrderRefund(EcommercePaymentExceptionRefund, req, order._id, { mutation: true });
   if (!refundRow) throw errors.notFound("Payment exception refund");
   const workflowRefund =

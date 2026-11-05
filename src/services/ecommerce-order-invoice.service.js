@@ -49,6 +49,8 @@ export async function streamCustomerOrderInvoice(req, res) {
 }
 
 export async function streamAdminOrderInvoice(req, res) {
+  const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
+  await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true, select: "_id" });
   const ctx = await loadEcommerceOrderInvoiceContext({
     tenantId: req.auth.tenantId,
     orderId: req.params.orderId,

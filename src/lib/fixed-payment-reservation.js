@@ -19,16 +19,16 @@ import {
   isFixedPaymentAmountAllowed,
   previewFixedAllocation,
 } from "./fixed-payment-policy.js";
-import { Payment, PaymentIntent, Scheme, Tenant } from "../models/index.js";
+import { Payment, PaymentIntent, PaymentLink, Scheme, Tenant } from "../models/index.js";
 import { createId } from "./ids.js";
+import { resolveGatewayMerchantOrderIdFromRows } from "./phonepe-gateway-merchant-order-id.js";
 
 export const FIXED_RESERVATION_TTL_MS = 30 * 60_000;
 /** While a customer is still on PhonePe, keep the instalment hold briefly. */
 export const FIXED_GATEWAY_CHECKOUT_GRACE_MS = 45_000;
 
-function merchantOrderIdForGatewayPayment(payment, intent) {
-  const match = payment?.receiptNumber?.match(/^PENDING-(.+)$/);
-  return match?.[1] ?? intent?._id ?? payment?._id;
+function merchantOrderIdForGatewayPayment(payment, intent, link = null) {
+  return resolveGatewayMerchantOrderIdFromRows(payment, { intent, link }) ?? null;
 }
 
 /** True when the intent holds a Phase 4 fixed installment reservation (not legacy gateway checkout). */
@@ -198,7 +198,8 @@ export async function detachStalePendingFixedHoldsAfterReconcile(
     }
     const started = new Date(payment.paidAt ?? payment.createdAt ?? Date.now()).getTime();
     const ageMs = now - started;
-    const merchantOrderId = merchantOrderIdForGatewayPayment(payment, intent);
+    const link = await PaymentLink.findOne({ tenantId, paymentId: payment._id }).select("_id paymentId").lean();
+    const merchantOrderId = merchantOrderIdForGatewayPayment(payment, intent, link);
 
     let shouldFail = false;
     let reason = "CHECKOUT_NOT_COMPLETED";

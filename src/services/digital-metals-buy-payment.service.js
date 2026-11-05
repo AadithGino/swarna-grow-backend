@@ -20,6 +20,7 @@ import {
   readPersistedPhonePeCheckoutRedirectUrl,
 } from "../lib/phonepe-customer-web-checkout.js";
 import { maybeReconcileLiveDigitalMetalBuyAttempt } from "./digital-metals-payment-reconcile.service.js";
+import { assertRedirectUrlAllowed } from "./payment.service.js";
 
 function assertBuyPaymentTestHarness() {
   if (!isEcommercePaymentsTestHarnessEnabled()) throw errors.notFound("Route");
@@ -109,7 +110,7 @@ export async function maybeCompleteMockDigitalMetalBuyPayment({ tenantId, attemp
   };
 }
 
-function mapPaymentIntent(row, order) {
+function mapPaymentIntent(row, order, phonePeEnvironment) {
   return {
     id: row._id,
     orderId: order._id,
@@ -120,7 +121,7 @@ function mapPaymentIntent(row, order) {
     redirectUrl: row.redirectUrl ?? null,
     statusPollUrl: `/app/digital-metals/buy-orders/${order._id}/payment-intents/${row._id}`,
     failureReason: row.failureReason ?? null,
-    ...mapPhonePeCustomerCheckoutResponse(row),
+    ...mapPhonePeCustomerCheckoutResponse(row, phonePeEnvironment),
     ...mapCheckoutFieldsForPaymentIntent(row),
   };
 }
@@ -264,7 +265,10 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
   }
 
   const tenant = await tenantForEcommerceCheckout(req.auth.tenantId, req.tenant);
+  assertRedirectUrlAllowed(redirectUrl, tenant);
   const credentials = resolvePhonePeCredentials(tenant);
+  const phonePeEnvironment = credentials?.environment ?? undefined;
+  const clientPlatform = String(req.headers["x-platform"] ?? "").trim();
   let attempt = reserved.attempt;
   if (["FAILED", "SUCCEEDED"].includes(attempt.status)) {
     throw errors.business(
@@ -282,7 +286,7 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
     && reserved.order.status !== "PAYMENT_FAILED"
   ) {
     return {
-      paymentIntent: mapPaymentIntent(attempt, reserved.order),
+      paymentIntent: mapPaymentIntent(attempt, reserved.order, phonePeEnvironment),
       order: mapBuyOrderStatusDto(reserved.order, [attempt]),
     };
   }
@@ -326,6 +330,7 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
       tenantId: req.auth.tenantId,
       demoProviderResult: demoBuyCheckoutProviderResult,
       attempt,
+      clientPlatform,
     });
     await DigitalMetalBuyPaymentAttempt.updateOne(
       { _id: attempt._id, status: { $in: ["PENDING", "INITIATED"] } },
@@ -346,7 +351,11 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
     );
     const fresh = await DigitalMetalBuyPaymentAttempt.findById(attempt._id).lean();
     return {
-      paymentIntent: mapPaymentIntent(fresh ?? { ...attempt, ...provider, status: "INITIATED" }, reserved.order),
+      paymentIntent: mapPaymentIntent(
+        fresh ?? { ...attempt, ...provider, status: "INITIATED" },
+        reserved.order,
+        phonePeEnvironment,
+      ),
       order: mapBuyOrderStatusDto(
         await DigitalMetalBuyOrder.findById(reserved.order._id).lean(),
         [fresh ?? attempt],
@@ -400,8 +409,8 @@ export async function getBuyOrderPaymentIntent(req) {
     orderId: order._id,
   }).lean();
   if (!attempt) throw errors.notFound("Payment attempt");
-  let resolvedAttempt = attempt;
-  let resolvedOrder = order;
+  let resolvedAttempt;
+  let resolvedOrder;
   if (isMockDigitalMetalsPaymentAttempt(attempt)) {
     const mockCompleted = await maybeCompleteMockDigitalMetalBuyPayment({
       tenantId: req.auth.tenantId,

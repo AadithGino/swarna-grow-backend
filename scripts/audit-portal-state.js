@@ -4,7 +4,11 @@
  */
 import fs from "node:fs";
 import { connectDatabase, disconnectDatabase } from "../src/config/database.js";
-import { OPEN_ENROLLMENT_STATUSES } from "../src/lib/scheme-enrollment-status.js";
+import {
+  ACTIVE_AND_LOCKED_STATUSES,
+  openEnrollmentKpi,
+} from "../src/lib/scheme-enrollment-status.js";
+import { SchemeStatus } from "../src/constants/enums.js";
 import {
   Branch,
   CashHandover,
@@ -59,7 +63,15 @@ async function main() {
       }
     }
     const activeCustomers = await Customer.countDocuments({ ...scope, status: "ACTIVE" });
-    const openSchemes = await Scheme.countDocuments({ ...scope, status: { $in: OPEN_ENROLLMENT_STATUSES } });
+    const activeAndLocked = await Scheme.countDocuments({
+      ...scope,
+      status: { $in: ACTIVE_AND_LOCKED_STATUSES },
+    });
+    const defaulted = await Scheme.countDocuments({
+      ...scope,
+      status: SchemeStatus.DEFAULTED,
+    });
+    const openSchemes = openEnrollmentKpi({ activeAndLocked, defaulted });
     const matured = await Scheme.countDocuments({ ...scope, status: "MATURED" });
     const openRedemptions = await Redemption.countDocuments({
       ...scope,

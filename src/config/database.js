@@ -52,6 +52,8 @@ async function connectAndVerify() {
     socketTimeoutMS: isServerless ? 20_000 : 45_000,
     maxIdleTimeMS: isServerless ? 10_000 : undefined,
     autoIndex: env.NODE_ENV !== "production",
+    // Atlas often resolves AAAA first; broken IPv6 routes cause long hangs (verify/OTP feel stuck).
+    family: 4,
   });
   if (env.NODE_ENV === "production") {
     try { await assertFinancialIndexesReady(); financialIndexesReady = true; }

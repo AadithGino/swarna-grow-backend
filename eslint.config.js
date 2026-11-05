@@ -22,4 +22,19 @@ export default [
       },
     },
   },
+  {
+    files: ["scripts/phase1-customer-identity.browser.cjs"],
+    languageOptions: {
+      globals: {
+        localStorage: "readonly",
+        sessionStorage: "readonly",
+        fetch: "readonly",
+        process: "readonly",
+        __dirname: "readonly",
+      },
+    },
+    rules: {
+      "no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+    },
+  },
 ];

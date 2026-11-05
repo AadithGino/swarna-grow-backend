@@ -5,6 +5,7 @@ import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phon
 import { validatePhonePeCompletedIdentifiers } from "../lib/phonepe-completed-identifiers.js";
 import { PhonePeOrderStatusKind, normalizePhonePeOrderStatus } from "../lib/phonepe-order-status.js";
 import { randomToken } from "../lib/crypto.js";
+import { resolveGatewayMerchantOrderIdForPayment } from "../lib/phonepe-gateway-merchant-order-id.js";
 import { Payment, PaymentIntent, PaymentLink, Tenant } from "../models/index.js";
 import { applyTerminalGatewayFailure } from "./gateway-terminal-failure.service.js";
 import { recordPhonePeReconcileOutcome } from "../lib/ops-metrics.js";
@@ -31,25 +32,7 @@ function backoffNextAt(attempts) {
 }
 
 export async function resolveMerchantOrderIdForPayment(payment) {
-  // Receipt prefix is the PhonePe merchantOrderId we used at initiation (link plk_* or intent pmi_*).
-  const receiptRef = payment.receiptNumber?.match(/^PENDING-(.+)$/)?.[1];
-  if (receiptRef) return receiptRef;
-  const intent = await PaymentIntent.findOne({
-    tenantId: payment.tenantId,
-    paymentId: payment._id,
-  })
-    .select("_id providerOrderId")
-    .lean();
-  if (intent?.providerOrderId) return intent.providerOrderId;
-  if (intent?._id) return intent._id;
-  const link = await PaymentLink.findOne({
-    tenantId: payment.tenantId,
-    paymentId: payment._id,
-  })
-    .select("_id")
-    .lean();
-  if (link?._id) return link._id;
-  return null;
+  return resolveGatewayMerchantOrderIdForPayment(payment);
 }
 
 async function loadIntentAndLink({ tenantId, paymentId, merchantOrderId }) {

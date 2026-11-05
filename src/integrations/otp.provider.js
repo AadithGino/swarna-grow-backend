@@ -235,8 +235,40 @@ export const otpProvider = {
           otpId,
         }, ttl);
       } catch (err) {
+        const mcMessage = String(err?.message ?? "");
+        if (mcMessage.includes("REQUEST_ALREADY_EXISTS")) {
+          if (
+            existing?.provider === "message_central"
+            && existing.verificationId
+          ) {
+            const reuseOtpId = existing.otpId ?? otpId;
+            await writeRecord(
+              key,
+              { ...existing, sentAt: Date.now(), otpId: reuseOtpId },
+              ttl,
+            );
+            logger.info(
+              { tenantId, tenantCode, purpose },
+              "Message Central OTP already active — reusing local verification session",
+            );
+            return {
+              otpId: reuseOtpId,
+              channel: "SMS",
+              maskedMobile: maskMobile(mobile),
+              resendAvailableInSeconds: RESEND_COOLDOWN_SECONDS,
+              attemptsAllowed: MAX_ATTEMPTS,
+              isRegistered,
+              expiresInSeconds: ttl,
+            };
+          }
+          throw new AppError(
+            "OTP_RESEND_COOLDOWN",
+            "An OTP was already sent to this mobile. Check your messages or wait a few minutes before requesting again.",
+            429,
+          );
+        }
         await deleteRecord(key);
-        logger.error({ err: err?.message, tenantId, tenantCode, purpose }, "Message Central OTP delivery failed");
+        logger.error({ err: mcMessage, tenantId, tenantCode, purpose }, "Message Central OTP delivery failed");
         throw new AppError("OTP_DELIVERY_FAILED", "Could not send the verification code. Please try again.", 502);
       }
       return {

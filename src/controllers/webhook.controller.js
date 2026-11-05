@@ -3,10 +3,10 @@ import { sendSuccess } from "../lib/response.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import { getQueue } from "../queues/index.js";
 import { AppError } from "../lib/app-error.js";
-import { buildPhonePeWebhookEventId } from "../lib/phonepe-webhook-identity.js";
+import { phonePeWebhookEventIdentityCandidates } from "../lib/phonepe-webhook-identity.js";
 import { assertWebhookTenantReceivable } from "../lib/webhook-tenant-guard.js";
 import {
-  persistVerifiedWebhook,
+  persistPhonePeVerifiedWebhook,
   persistWebhookSignatureFailure,
 } from "../services/webhook-event.service.js";
 
@@ -40,16 +40,17 @@ export const phonepe = async (req, res) => {
   }
 
   const payload = { type: callback.type, payload: callback.payload };
-  const providerEventId = buildPhonePeWebhookEventId({
+  const { primary: providerEventId, aliases: identityAliases } = phonePeWebhookEventIdentityCandidates({
     tenantId: req.params.tenantId,
     type: callback.type,
     payload: callback.payload,
     rawBody: raw,
   });
-  const event = await persistVerifiedWebhook({
+  const event = await persistPhonePeVerifiedWebhook({
     tenantId: req.params.tenantId,
     provider: "PHONEPE",
     providerEventId,
+    identityAliases,
     signatureHeader: authorization,
     rawBody: raw,
     payload,

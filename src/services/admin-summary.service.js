@@ -1,5 +1,14 @@
 import { Branch, Scheme, Session, User } from "../models/index.js";
-import { SchemeStatus, TenantRole, UserStatus, UserType } from "../constants/enums.js";
+import {
+  SchemeStatus,
+  TenantRole,
+  UserStatus,
+  UserType,
+} from "../constants/enums.js";
+import {
+  enrollmentStatusBreakdown,
+  openEnrollmentKpi,
+} from "../lib/scheme-enrollment-status.js";
 import {
   effectiveScope,
   maturityListFilter,
@@ -29,27 +38,53 @@ export async function schemePortfolioSummary(req, listFilters = {}) {
       ? Scheme.countDocuments({ ...match, status })
       : Scheme.countDocuments({ ...match, status });
 
-  const [activeOnly, locked, defaulted, matured, redeemed, closedPremature] =
-    await Promise.all([
-      count(SchemeStatus.ACTIVE),
-      count(SchemeStatus.LOCKED),
-      count(SchemeStatus.DEFAULTED),
-      count(SchemeStatus.MATURED),
-      count(SchemeStatus.REDEEMED),
-      count(SchemeStatus.CLOSED_PREMATURE),
-    ]);
+  const [
+    activeOnly,
+    locked,
+    defaulted,
+    pendingFirstPayment,
+    matured,
+    redeemed,
+    closedPremature,
+  ] = await Promise.all([
+    count(SchemeStatus.ACTIVE),
+    count(SchemeStatus.LOCKED),
+    count(SchemeStatus.DEFAULTED),
+    count(SchemeStatus.PENDING_PAYMENT),
+    count(SchemeStatus.MATURED),
+    count(SchemeStatus.REDEEMED),
+    count(SchemeStatus.CLOSED_PREMATURE),
+  ]);
 
   const activeAndLocked = activeOnly + locked;
-  const open = activeAndLocked + defaulted;
+  const open = openEnrollmentKpi({
+    activePaying: activeOnly,
+    planCapped: locked,
+    defaulted,
+  });
+  const completed = redeemed + closedPremature;
+  const statusBreakdown = enrollmentStatusBreakdown({
+    notStarted: pendingFirstPayment,
+    activePaying: activeOnly,
+    planCapped: locked,
+    defaulted,
+    matured,
+    completed,
+  });
   return {
     activeAndLocked,
     open,
+    pendingFirstPayment,
+    activePaying: activeOnly,
+    planCapped: locked,
+    completed,
+    statusBreakdown,
     /** @deprecated use activeAndLocked */
     active: activeAndLocked,
     locked,
     defaulted,
     matured,
-    redeemed: redeemed + closedPremature,
+    redeemed: completed,
     redemptionPending: matured,
   };
 }
@@ -99,7 +134,11 @@ export async function maturityBoardSummary(req) {
   const periodFilter = maturityListFilter(req.query);
   const today = istTodayYmd();
   const in30 = addDaysYmd(today, 30);
-  const OPEN = [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED];
+  const OPEN = [
+    SchemeStatus.ACTIVE,
+    SchemeStatus.LOCKED,
+    SchemeStatus.DEFAULTED,
+  ];
 
   const [upcoming, maturedToday, incomplete, notRedeemed, period] =
     await Promise.all([
@@ -145,7 +184,13 @@ export {
 } from "../lib/dues-workboard.js";
 
 /** Pick the instalment row shown on the dues / overdue / defaulters workboard for an enrollment. */
-export function pickWorkboardInstallment(scheme, boardKind, dates, query = {}, today = istTodayYmd()) {
+export function pickWorkboardInstallment(
+  scheme,
+  boardKind,
+  dates,
+  query = {},
+  today = istTodayYmd(),
+) {
   const visible = visibleWorkboardInstallments(scheme, boardKind, {
     kind: query.kind,
     dates,
@@ -200,11 +245,13 @@ export async function duesBoardSummary(req, kind) {
               {
                 key: "OVERDUE",
                 name: "Overdue",
-                data: Object.entries(summary.ageingPaise).map(([x, amountPaise]) => ({
-                  x,
-                  y: amountPaise,
-                  yDisplay: moneyRef(amountPaise).amountDisplay,
-                })),
+                data: Object.entries(summary.ageingPaise).map(
+                  ([x, amountPaise]) => ({
+                    x,
+                    y: amountPaise,
+                    yDisplay: moneyRef(amountPaise).amountDisplay,
+                  }),
+                ),
               },
             ],
           },

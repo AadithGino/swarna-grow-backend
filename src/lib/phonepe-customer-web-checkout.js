@@ -38,11 +38,12 @@ export function readPersistedPhonePeCheckoutRedirectUrl(attempt) {
   return null;
 }
 
-export function mapPhonePeCustomerCheckoutResponse(row) {
+export function mapPhonePeCustomerCheckoutResponse(row, phonePeEnvironment) {
   const hostedUrl = readPersistedPhonePeCheckoutRedirectUrl(row);
   const sdkToken = row.sdkToken ?? null;
+  const peEnv = phonePeEnvironment ?? env.PHONEPE_ENV;
   const paymentUrl =
-    hostedUrl ?? (sdkToken ? phonePeSdkWebGatewayUrl(sdkToken, env.PHONEPE_ENV) : null);
+    hostedUrl ?? (sdkToken ? phonePeSdkWebGatewayUrl(sdkToken, peEnv) : null);
   const checkoutKind = hostedUrl ? "HOSTED_REDIRECT" : sdkToken ? "SDK_ORDER" : null;
   return {
     checkoutKind,

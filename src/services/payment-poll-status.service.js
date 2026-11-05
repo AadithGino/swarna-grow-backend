@@ -1,11 +1,10 @@
 import { AlertType, PaymentMode, PaymentStatus } from "../constants/enums.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
-import { Payment, PaymentIntent, Tenant } from "../models/index.js";
-import { claimPaymentForReconcile, reconcileGatewayPayment } from "./phonepe-reconcile.service.js";
+import { Payment, Tenant } from "../models/index.js";
+import { claimPaymentForReconcile, reconcileGatewayPayment, resolveMerchantOrderIdForPayment } from "./phonepe-reconcile.service.js";
 import { randomToken } from "../lib/crypto.js";
 import { resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
-import { phonePeProvider } from "../integrations/phonepe.provider.js";
 
 function normalizePollResult(payment, reconcileResult = {}) {
   return {
@@ -35,11 +34,7 @@ export async function pollPaymentGatewayStatus(req) {
     return normalizePollResult(payment, { outcome: "ALREADY_TERMINAL" });
   }
 
-  const intent = await PaymentIntent.findOne({
-    tenantId: payment.tenantId,
-    paymentId: payment._id,
-  }).lean();
-  const merchantOrderId = intent?._id ?? intent?.providerOrderId;
+  const merchantOrderId = await resolveMerchantOrderIdForPayment(payment);
   if (!merchantOrderId) {
     await upsertOperationalAlert({
       tenantId: payment.tenantId,
@@ -56,25 +51,6 @@ export async function pollPaymentGatewayStatus(req) {
   const credentials = resolvePhonePeCredentials(tenant);
   if (!credentials) {
     throw errors.business("PAYMENT_GATEWAY_NOT_CONFIGURED", "PhonePe is not configured for this tenant.");
-  }
-
-  try {
-    await phonePeProvider.getOrderStatus(merchantOrderId, credentials, payment.tenantId);
-  } catch (error) {
-    if (error?.code === "ETIMEDOUT" || error?.message?.toLowerCase?.().includes("timeout")) {
-      throw new AppError("PROVIDER_TIMEOUT", "PhonePe did not respond in time. Retry poll-status shortly.", 503);
-    }
-    if (error?.name === "ResourceNotFound" || error?.code === "RESOURCE_NOT_FOUND") {
-      await upsertOperationalAlert({
-        tenantId: payment.tenantId,
-        type: AlertType.GATEWAY_WEBHOOK_UNMATCHED,
-        entityId: payment._id,
-        title: "Gateway poll unknown reference",
-        message: "PhonePe did not recognize the stored merchant order id.",
-        metadata: { paymentId: payment._id, merchantOrderId },
-      });
-      throw errors.business("POLL_STATUS_UNKNOWN_REFERENCE", "Provider did not recognize the stored order reference.");
-    }
   }
 
   if (payment.status !== PaymentStatus.PENDING) {
@@ -98,6 +74,17 @@ export async function pollPaymentGatewayStatus(req) {
   } catch (error) {
     if (error?.code === "ETIMEDOUT" || error?.message?.toLowerCase?.().includes("timeout")) {
       throw new AppError("PROVIDER_TIMEOUT", "PhonePe did not respond in time. Retry poll-status shortly.", 503);
+    }
+    if (error?.name === "ResourceNotFound" || error?.code === "RESOURCE_NOT_FOUND") {
+      await upsertOperationalAlert({
+        tenantId: payment.tenantId,
+        type: AlertType.GATEWAY_WEBHOOK_UNMATCHED,
+        entityId: payment._id,
+        title: "Gateway poll unknown reference",
+        message: "PhonePe did not recognize the stored merchant order id.",
+        metadata: { paymentId: payment._id, merchantOrderId },
+      });
+      throw errors.business("POLL_STATUS_UNKNOWN_REFERENCE", "Provider did not recognize the stored order reference.");
     }
     throw error;
   }

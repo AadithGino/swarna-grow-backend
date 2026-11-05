@@ -12,12 +12,7 @@ import { paginate } from "../lib/pagination.js";
 import { boundedSearchQuery, containsSearchRegex, escaped } from "../lib/query-filters.js";
 import { withTransaction } from "../lib/transaction.js";
 import { AppError, errors } from "../lib/app-error.js";
-import { seal } from "../lib/crypto.js";
-
-function isSealedSecret(value) {
-  const parts = String(value ?? "").split(".");
-  return parts.length === 3 && parts[0].length >= 8;
-}
+import { seal, sealIntegrationSecret } from "../lib/crypto.js";
 import { moneyRef, percentOfPaiseHalfUp } from "../lib/money.js";
 import { allocatePlatformInvoiceNumber } from "../lib/platform-invoice-sequence.js";
 import { generateTemporaryPassword } from "../lib/password-generator.js";
@@ -466,7 +461,10 @@ export async function tenantDetail(id) {
       messageCentral: {
         configured: Boolean(
           secrets?.integrationSecrets?.messageCentral?.customerId
-            && secrets?.integrationSecrets?.messageCentral?.keySealed,
+            && (
+              secrets?.integrationSecrets?.messageCentral?.authTokenSealed
+              || secrets?.integrationSecrets?.messageCentral?.keySealed
+            ),
         ),
         provider: "MESSAGE_CENTRAL",
         customerIdMasked: maskSecret(secrets?.integrationSecrets?.messageCentral?.customerId),
@@ -800,8 +798,16 @@ export async function setIntegration(id, kind, body, req) {
       flowType: body.flowType ?? existingBucket.flowType ?? "SMS",
       otpLength: body.otpLength != null ? Number(body.otpLength) : (existingBucket.otpLength ?? 6),
     };
+    if (body.authToken !== undefined) {
+      value.authTokenSealed = sealIntegrationSecret(body.authToken);
+      value.keySealed = undefined;
+      value.credentialVersion = Number(existingBucket.credentialVersion ?? 0) + 1;
+      value.verifiedAt = undefined;
+      value.verificationStatus = "NOT_VERIFIED";
+    }
     if (body.key !== undefined) {
-      value.keySealed = isSealedSecret(body.key) ? body.key : seal(body.key);
+      value.keySealed = sealIntegrationSecret(body.key);
+      value.authTokenSealed = undefined;
       value.credentialVersion = Number(existingBucket.credentialVersion ?? 0) + 1;
       value.verifiedAt = undefined;
       value.verificationStatus = "NOT_VERIFIED";
@@ -827,7 +833,9 @@ export async function setIntegration(id, kind, body, req) {
       });
     }
     return {
-      configured: Boolean(value.customerId && value.keySealed),
+      configured: Boolean(
+        value.customerId && (value.authTokenSealed || value.keySealed),
+      ),
       provider: "MESSAGE_CENTRAL",
       customerIdMasked: maskSecret(value.customerId),
       email: value.email ?? null,
@@ -835,6 +843,7 @@ export async function setIntegration(id, kind, body, req) {
       flowType: value.flowType,
       otpLength: value.otpLength,
       verificationStatus: value.verificationStatus ?? "NOT_VERIFIED",
+      authTokenConfigured: Boolean(value.authTokenSealed),
       version: row.version,
     };
   }
@@ -899,7 +908,7 @@ export async function setIntegration(id, kind, body, req) {
   const sealedKeys = new Set(["accessToken", "appSecret", "verifyToken", "clientSecret", "webhookPassword"]);
   for (const key of allowed) if (body[key] !== undefined) {
     value[key] = sealedKeys.has(key)
-      ? (isSealedSecret(body[key]) ? body[key] : seal(body[key]))
+      ? sealIntegrationSecret(body[key])
       : key === "clientVersion"
         ? Number(body[key])
         : body[key];
@@ -965,18 +974,39 @@ export async function verifyIntegration(id, kind, body = {}, req) {
     const { resolveMessageCentralBucket, getMessageCentralAuthToken } = await import("../lib/message-central-credentials.js");
     const { sendMessageCentralOtp } = await import("../integrations/message-central.client.js");
     const credentials = resolveMessageCentralBucket(tenant);
-    if (!credentials?.customerId || !credentials?.key || !credentials?.email) {
+    if (!credentials?.customerId) {
       throw errors.business("INTEGRATION_INCOMPLETE", "The message central integration is incomplete.");
     }
-    const authToken = await getMessageCentralAuthToken(credentials, tenant._id);
+    if (!credentials.authToken && (!credentials.key || !credentials.email)) {
+      throw errors.business(
+        "INTEGRATION_INCOMPLETE",
+        "Message Central needs either an auth token or a password key with account email.",
+      );
+    }
+    let authToken;
+    try {
+      authToken = await getMessageCentralAuthToken(credentials, tenant._id);
+    } catch (err) {
+      throw errors.business(
+        "INTEGRATION_VERIFY_FAILED",
+        err?.message ?? "Message Central authentication failed.",
+      );
+    }
     if (body.testMobile) {
-      await sendMessageCentralOtp({
-        authToken,
-        mobile: body.testMobile,
-        countryCode: credentials.countryCode,
-        flowType: credentials.flowType,
-        otpLength: credentials.otpLength,
-      });
+      try {
+        await sendMessageCentralOtp({
+          authToken,
+          mobile: body.testMobile,
+          countryCode: credentials.countryCode,
+          flowType: credentials.flowType,
+          otpLength: credentials.otpLength,
+        });
+      } catch (err) {
+        throw errors.business(
+          "INTEGRATION_VERIFY_FAILED",
+          err?.message ?? "Message Central test OTP send failed.",
+        );
+      }
     }
   } else {
     throw errors.notFound("Integration");

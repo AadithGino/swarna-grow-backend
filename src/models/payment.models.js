@@ -37,6 +37,8 @@ const paymentSchema = new mongoose.Schema(
     remarks: String,
     collectedBy: String,
     providerTransactionId: String,
+    /** Immutable PhonePe merchantOrderId sent at gateway initiation (not provider order / txn id). */
+    gatewayMerchantOrderId: String,
     providerPayload: mongoose.Schema.Types.Mixed,
     paidAt: { type: Date, default: Date.now },
     reversedAt: Date,

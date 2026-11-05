@@ -1,5 +1,5 @@
-import { errors } from "../lib/app-error.js";
-import { EcommerceOrder, EcommerceOrderReturnRequest } from "../models/index.js";
+import { loadEcommerceOrderForAdmin } from "../lib/ecommerce-admin-order-scope.js";
+import { EcommerceOrderReturnRequest } from "../models/index.js";
 
 function mapReturnSummary(row) {
   if (!row) return null;
@@ -20,8 +20,7 @@ function mapReturnSummary(row) {
 export async function listAdminOrderReturns(req) {
   const tenantId = req.auth.tenantId;
   const orderId = String(req.params.orderId ?? "").trim();
-  const order = await EcommerceOrder.findOne({ _id: orderId, tenantId }).select("_id").lean();
-  if (!order) throw errors.notFound("Order");
+  await loadEcommerceOrderForAdmin(req, orderId, { lean: true, select: "_id" });
   const rows = await EcommerceOrderReturnRequest.find({ tenantId, orderId })
     .sort({ createdAt: -1 })
     .limit(20)

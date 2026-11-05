@@ -23,6 +23,7 @@ import {
   finalizeDigitalMetalRedemptionChargeSuccess,
   mapRedemptionOrderPaymentDto,
 } from "./digital-metals-redemption-charge-finalize.service.js";
+import { assertRedirectUrlAllowed } from "./payment.service.js";
 
 function assertHarness() {
   if (!isEcommercePaymentsTestHarnessEnabled()) throw errors.notFound("Route");
@@ -39,7 +40,7 @@ function demoRedemptionCheckoutProviderResult(attempt) {
 
 const isMockProviderRedemptionPaymentAttempt = isMockDigitalMetalsPaymentAttempt;
 
-function mapRedemptionPaymentIntent(attempt, order) {
+function mapRedemptionPaymentIntent(attempt, order, phonePeEnvironment) {
   return {
     id: attempt._id,
     orderId: order._id,
@@ -50,7 +51,7 @@ function mapRedemptionPaymentIntent(attempt, order) {
     redirectUrl: attempt.redirectUrl ?? null,
     statusPollUrl: `/app/digital-metals/redemption/orders/${order._id}/payment-intents/${attempt._id}`,
     failureReason: attempt.failureReason ?? null,
-    ...mapPhonePeCustomerCheckoutResponse(attempt),
+    ...mapPhonePeCustomerCheckoutResponse(attempt, phonePeEnvironment),
     ...mapCheckoutFieldsForPaymentIntent(attempt),
   };
 }
@@ -172,7 +173,10 @@ export async function initiateRedemptionChargePayment(req) {
   });
 
   const tenant = await tenantForEcommerceCheckout(req.auth.tenantId);
+  assertRedirectUrlAllowed(redirectUrl, tenant);
   const credentials = resolvePhonePeCredentials(tenant);
+  const phonePeEnvironment = credentials?.environment ?? undefined;
+  const clientPlatform = String(req.headers["x-platform"] ?? "").trim();
   const attempt = result.attempt;
 
   const persistedCheckoutUrl = readPersistedPhonePeCheckoutRedirectUrl(attempt);
@@ -192,7 +196,7 @@ export async function initiateRedemptionChargePayment(req) {
     && result.order.status === "CHARGE_PENDING"
   ) {
     return {
-      paymentIntent: mapRedemptionPaymentIntent(attempt, result.order),
+      paymentIntent: mapRedemptionPaymentIntent(attempt, result.order, phonePeEnvironment),
       order: mapRedemptionOrderPaymentDto(result.order, [attempt]),
       replay: true,
     };
@@ -207,6 +211,7 @@ export async function initiateRedemptionChargePayment(req) {
       tenantId: req.auth.tenantId,
       demoProviderResult: demoRedemptionCheckoutProviderResult,
       attempt,
+      clientPlatform,
     });
     await DigitalMetalRedemptionPaymentAttempt.updateOne(
       { _id: attempt._id, status: { $in: ["PENDING", "INITIATED"] } },

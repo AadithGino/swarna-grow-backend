@@ -22,6 +22,7 @@ import {
   STAFF_HANDOVER_CHALLENGE_PURPOSE,
   verifyStaffHandoverChallenge,
 } from "../lib/staff-handover-challenge.js";
+import { loadEcommerceOrderForAdmin } from "../lib/ecommerce-admin-order-scope.js";
 
 function assertHandoverEligible(order) {
   const ok = new Set([
@@ -43,11 +44,10 @@ export async function issueAdminPickupCode(req) {
     throw errors.validation([{ field: "expectedVersion", message: "expectedVersion is required." }]);
   }
   return withTransaction(async (session) => {
-    const order = await EcommerceOrder.findOne({
-      _id: req.params.orderId,
-      tenantId: req.auth.tenantId,
-    }).session(session);
-    if (!order) throw errors.notFound("Order");
+    const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, {
+      session,
+      lean: false,
+    });
     if (order.fulfilmentMode !== EcommerceFulfilmentMode.BRANCH_PICKUP) {
       throw errors.business("NOT_PICKUP_ORDER", "Pickup codes apply to branch pickup orders only.");
     }
@@ -278,11 +278,10 @@ export async function recordAdminDeliveryHandover(req) {
     throw errors.validation([{ field: "recipientName", message: "Recipient name is required." }]);
   }
   return withTransaction(async (session) => {
-    const order = await EcommerceOrder.findOne({
-      _id: req.params.orderId,
-      tenantId: req.auth.tenantId,
-    }).session(session);
-    if (!order) throw errors.notFound("Order");
+    const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, {
+      session,
+      lean: false,
+    });
     if (order.fulfilmentMode !== EcommerceFulfilmentMode.DELIVERY) {
       throw errors.business("NOT_DELIVERY_ORDER", "Delivery proof applies to delivery orders only.");
     }

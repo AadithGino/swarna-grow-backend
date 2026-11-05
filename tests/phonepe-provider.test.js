@@ -132,6 +132,7 @@ test("normalizePhonePeWebhookEvent marks attempt failure separately from order f
 });
 
 test("webhook event ids differ for attempt failure vs order completion on same order", () => {
+  // Distinct types must never collapse to a single transaction-id-only key (AUD-06).
   const tenantId = "tenant_abc";
   const basePayload = {
     originalMerchantOrderId: "order_1",

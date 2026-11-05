@@ -30,3 +30,45 @@ export const ACTIVE_AND_LOCKED_STATUSES = Object.freeze([
   SchemeStatus.ACTIVE,
   SchemeStatus.LOCKED,
 ]);
+
+/**
+ * Open enrollments — paying + capped + defaulted (first instalment paid or account in default).
+ * Excludes not-started, matured, and completed.
+ */
+export function openEnrollmentKpi({
+  activePaying = 0,
+  planCapped = 0,
+  defaulted = 0,
+  /** @deprecated pass activePaying + planCapped instead */
+  activeAndLocked = 0,
+} = {}) {
+  if (activePaying || planCapped) {
+    return activePaying + planCapped + defaulted;
+  }
+  return activeAndLocked + defaulted;
+}
+
+/** Mutually exclusive status buckets — parts sum to {@link total}. */
+export function enrollmentStatusBreakdown({
+  notStarted = 0,
+  activePaying = 0,
+  planCapped = 0,
+  defaulted = 0,
+  matured = 0,
+  completed = 0,
+} = {}) {
+  const open = openEnrollmentKpi({ activePaying, planCapped, defaulted });
+  const inProgress = notStarted + open;
+  const total = inProgress + matured + completed;
+  return {
+    notStarted,
+    activePaying,
+    planCapped,
+    defaulted,
+    open,
+    matured,
+    completed,
+    inProgress,
+    total,
+  };
+}

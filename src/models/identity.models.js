@@ -36,6 +36,8 @@ const integrationSecretsSchema = new mongoose.Schema({
     provider: String,
     customerId: String,
     keySealed: String,
+    /** Pre-issued VerifyNow auth JWT when no password key is supplied. */
+    authTokenSealed: String,
     email: String,
     countryCode: { type: String, default: "91" },
     flowType: { type: String, default: "SMS" },

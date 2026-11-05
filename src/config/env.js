@@ -75,7 +75,12 @@ export function parseEnv(source = process.env) {
     /** Pre-tenant merchant signup OTP (VerifyNow platform scope). */
     MESSAGE_CENTRAL_PLATFORM_CUSTOMER_ID: z.string().default(""),
     MESSAGE_CENTRAL_PLATFORM_KEY: z.string().default(""),
+    MESSAGE_CENTRAL_PLATFORM_AUTH_TOKEN: z.string().default(""),
     MESSAGE_CENTRAL_PLATFORM_EMAIL: z.string().default(""),
+    /** Aliases for ops .env (tenant bootstrap scripts). */
+    MESSAGE_CENTRAL_CUSTOMER_ID: z.string().default(""),
+    MESSAGE_CENTRAL_AUTH_TOKEN: z.string().default(""),
+    MESSAGE_CENTRAL_EMAIL: z.string().default(""),
     MESSAGE_CENTRAL_PLATFORM_COUNTRY_CODE: z.string().default("91"),
     MESSAGE_CENTRAL_PLATFORM_OTP_LENGTH: z.coerce.number().int().min(4).max(8).default(6),
     MSG91_AUTH_KEY: z.string().optional(),

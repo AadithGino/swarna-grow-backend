@@ -6,6 +6,28 @@ import { incrementOpsMetric, OpsMetric } from "../lib/ops-metrics.js";
 import { incrementWebhookMetric, WebhookMetric } from "../lib/webhook-metrics.js";
 import { WebhookEvent } from "../models/index.js";
 
+/**
+ * Persist a PhonePe webhook using canonical event id, treating legacy txn-only ids as duplicates.
+ */
+export async function persistPhonePeVerifiedWebhook(args) {
+  const { identityAliases = [], ...rest } = args;
+  const bodyDigest = rest.rawBody ? digestWebhookBody(rest.rawBody) : null;
+  if (identityAliases.length) {
+    const legacyHit = await WebhookEvent.findOne({
+      tenantId: rest.tenantId,
+      provider: rest.provider,
+      providerEventId: { $in: identityAliases },
+    })
+      .select("_id bodyDigest")
+      .lean();
+    if (legacyHit && (!bodyDigest || !legacyHit.bodyDigest || legacyHit.bodyDigest === bodyDigest)) {
+      incrementWebhookMetric(WebhookMetric.DUPLICATE);
+      return null;
+    }
+  }
+  return persistVerifiedWebhook(rest);
+}
+
 function signatureFailureRetentionDate() {
   const sec = env.WEBHOOK_SIGNATURE_FAILURE_RETENTION_SEC ?? 86_400;
   return new Date(Date.now() + sec * 1000);

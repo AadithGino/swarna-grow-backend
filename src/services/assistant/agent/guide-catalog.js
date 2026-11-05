@@ -1342,9 +1342,7 @@ export const GUIDE_CATALOG = Object.freeze([
     ],
     "steps": [
       "Open Bank verification",
-      "Accounts to verify",
-      "Open the customer",
-      "Digital metals tab"
+      "Accounts to verify"
     ]
   },
   {

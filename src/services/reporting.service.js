@@ -8,16 +8,22 @@ import {
   Redemption,
   Scheme,
 } from "../models/index.js";
-import { ExportStatus, ExportType, RedemptionStatus, isEnumValue } from "../constants/enums.js";
+import {
+  ExportStatus,
+  ExportType,
+  RedemptionStatus,
+  isEnumValue,
+} from "../constants/enums.js";
 import { storageProvider } from "../integrations/storage.provider.js";
 import { errors } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { getQueue } from "../queues/index.js";
 import { AppError } from "../lib/app-error.js";
 import { listAuditEvents } from "./audit.service.js";
+import { SchemeStatus } from "../constants/enums.js";
 import {
-  ACTIVE_AND_LOCKED_STATUSES,
-  OPEN_ENROLLMENT_STATUSES,
+  enrollmentStatusBreakdown,
+  openEnrollmentKpi,
 } from "../lib/scheme-enrollment-status.js";
 import { collectionSummary } from "./collection-summary.js";
 import { buildAdminReport } from "./report-builders/index.js";
@@ -70,34 +76,46 @@ export async function navBadges(req) {
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
-  const { countPaymentsNeedingAttention } = await import("./payments-needing-attention.service.js");
+  const { countPaymentsNeedingAttention } =
+    await import("./payments-needing-attention.service.js");
   const perms = req.auth?.permissions ?? [];
   const canCountPayments =
-    !perms.length
-    || perms.includes("*")
-    || perms.includes("ecommerce.read")
-    || perms.includes("digital-metals.read");
+    !perms.length ||
+    perms.includes("*") ||
+    perms.includes("ecommerce.read") ||
+    perms.includes("digital-metals.read");
 
-  const [dues, cashHandovers, openRedemptions, failedMessages, paymentsNeedingAttention] =
-    await Promise.all([
-      // Same rows as the Dues workboard "All" view (open enrollments only).
-      Scheme.countDocuments({
-        ...scope,
-        ...workboardSchemeFilter("dues", { kind: "ALL", today: istTodayYmd() }),
-      }),
-      CashHandover.countDocuments({ ...scope, status: "PENDING" }),
-      Redemption.countDocuments({
-        ...scope,
-        status: { $in: OPEN_REDEMPTION_STATUSES },
-      }),
-      Message.countDocuments({
-        ...messageScope,
-        status: "FAILED",
-        createdAt: { $gte: monthStart },
-      }),
-      canCountPayments ? countPaymentsNeedingAttention(req) : Promise.resolve(0),
-    ]);
-  return { dues, cashHandovers, openRedemptions, failedMessages, paymentsNeedingAttention };
+  const [
+    dues,
+    cashHandovers,
+    openRedemptions,
+    failedMessages,
+    paymentsNeedingAttention,
+  ] = await Promise.all([
+    // Same rows as the Dues workboard "All" view (open enrollments only).
+    Scheme.countDocuments({
+      ...scope,
+      ...workboardSchemeFilter("dues", { kind: "ALL", today: istTodayYmd() }),
+    }),
+    CashHandover.countDocuments({ ...scope, status: "PENDING" }),
+    Redemption.countDocuments({
+      ...scope,
+      status: { $in: OPEN_REDEMPTION_STATUSES },
+    }),
+    Message.countDocuments({
+      ...messageScope,
+      status: "FAILED",
+      createdAt: { $gte: monthStart },
+    }),
+    canCountPayments ? countPaymentsNeedingAttention(req) : Promise.resolve(0),
+  ]);
+  return {
+    dues,
+    cashHandovers,
+    openRedemptions,
+    failedMessages,
+    paymentsNeedingAttention,
+  };
 }
 
 async function scopeDisplayLabel(scope) {
@@ -114,7 +132,12 @@ async function scopeDisplayLabel(scope) {
 export async function dashboard(req) {
   const scope = effectiveScope(req);
   const period = String(req.query.period ?? "THIS_MONTH");
-  const periodLabels = { TODAY: "Today", THIS_WEEK: "This week", THIS_MONTH: "This month", LAST_MONTH: "Last month" };
+  const periodLabels = {
+    TODAY: "Today",
+    THIS_WEEK: "This week",
+    THIS_MONTH: "This month",
+    LAST_MONTH: "Last month",
+  };
   const periodRange = resolveQueryDateRange(req.query);
   const todayYmd = today();
   const todayRange = { from: todayYmd, to: todayYmd };
@@ -124,29 +147,53 @@ export async function dashboard(req) {
   ]);
   const [
     activeCustomers,
-    openSchemes,
-    activeAndLockedSchemes,
+    activePayingSchemes,
+    planCappedSchemes,
+    defaultedSchemes,
+    pendingFirstPaymentSchemes,
+    maturedSchemes,
+    redeemedSchemes,
+    closedPrematureSchemes,
     overdue,
-    maturities,
     handovers,
     grievances,
     openRedemptions,
     redemptions,
   ] = await Promise.all([
     Customer.countDocuments({ ...scope, status: "ACTIVE" }),
-    Scheme.countDocuments({ ...scope, status: { $in: OPEN_ENROLLMENT_STATUSES } }),
-    Scheme.countDocuments({ ...scope, status: { $in: ACTIVE_AND_LOCKED_STATUSES } }),
+    Scheme.countDocuments({ ...scope, status: SchemeStatus.ACTIVE }),
+    Scheme.countDocuments({ ...scope, status: SchemeStatus.LOCKED }),
+    Scheme.countDocuments({ ...scope, status: SchemeStatus.DEFAULTED }),
+    Scheme.countDocuments({ ...scope, status: SchemeStatus.PENDING_PAYMENT }),
+    Scheme.countDocuments({ ...scope, status: SchemeStatus.MATURED }),
+    Scheme.countDocuments({ ...scope, status: SchemeStatus.REDEEMED }),
+    Scheme.countDocuments({ ...scope, status: SchemeStatus.CLOSED_PREMATURE }),
     // Matches the Dues → Overdue workboard (open, non-defaulted enrollments past grace).
     Scheme.countDocuments({
       ...scope,
       ...workboardSchemeFilter("overdues", { today: todayYmd }),
     }),
-    Scheme.countDocuments({ ...scope, status: "MATURED" }),
     CashHandover.countDocuments({ ...scope, status: "PENDING" }),
-    (await import("../models/index.js")).Grievance.countDocuments({ ...scope, status: { $in: ["OPEN", "IN_PROGRESS"] } }),
-    Redemption.countDocuments({ ...scope, status: { $in: OPEN_REDEMPTION_STATUSES } }),
+    (await import("../models/index.js")).Grievance.countDocuments({
+      ...scope,
+      status: { $in: ["OPEN", "IN_PROGRESS"] },
+    }),
+    Redemption.countDocuments({
+      ...scope,
+      status: { $in: OPEN_REDEMPTION_STATUSES },
+    }),
     redemptionPeriodSummary(scope, periodRange),
   ]);
+  const activeAndLockedSchemes = activePayingSchemes + planCappedSchemes;
+  const completedSchemes = redeemedSchemes + closedPrematureSchemes;
+  const statusBreakdown = enrollmentStatusBreakdown({
+    notStarted: pendingFirstPaymentSchemes,
+    activePaying: activePayingSchemes,
+    planCapped: planCappedSchemes,
+    defaulted: defaultedSchemes,
+    matured: maturedSchemes,
+    completed: completedSchemes,
+  });
   return {
     today: {
       amountPaise: todayCollection.amountPaise,
@@ -165,23 +212,48 @@ export async function dashboard(req) {
     },
     customers: { active: activeCustomers },
     schemes: {
-      open: openSchemes,
+      open: openEnrollmentKpi({
+        activePaying: activePayingSchemes,
+        planCapped: planCappedSchemes,
+        defaulted: defaultedSchemes,
+      }),
       activeAndLocked: activeAndLockedSchemes,
+      activePaying: activePayingSchemes,
+      planCapped: planCappedSchemes,
+      defaulted: defaultedSchemes,
+      pendingFirstPayment: pendingFirstPaymentSchemes,
+      completed: completedSchemes,
+      statusBreakdown,
       /** @deprecated use schemes.open */
-      active: openSchemes,
+      active: openEnrollmentKpi({
+        activePaying: activePayingSchemes,
+        planCapped: planCappedSchemes,
+        defaulted: defaultedSchemes,
+      }),
       overdue,
-      matured: maturities,
+      matured: maturedSchemes,
     },
-    attention: { pendingCashHandovers: handovers, openGrievances: grievances, openRedemptions },
+    attention: {
+      pendingCashHandovers: handovers,
+      openGrievances: grievances,
+      openRedemptions,
+    },
     redemptions,
-    defaultCharts: ["collection-trend", "collection-by-mode", "scheme-status-distribution"],
+    defaultCharts: [
+      "collection-trend",
+      "collection-by-mode",
+      "scheme-status-distribution",
+    ],
     scope: {
       level: scope.branchId ? "BRANCH" : "TENANT",
       label: await scopeDisplayLabel(scope),
       branchId: scope.branchId ?? null,
     },
     period: {
-      key: req.query.from && req.query.to && !periodLabels[period] ? "CUSTOM" : period,
+      key:
+        req.query.from && req.query.to && !periodLabels[period]
+          ? "CUSTOM"
+          : period,
       label:
         periodLabels[period] ??
         (periodRange.from && periodRange.to
@@ -280,14 +352,14 @@ export async function chart(req, key) {
     const [openingRow, dailyRows] = await Promise.all([
       from
         ? LedgerEntry.aggregate([
-          {
-            $match: {
-              ...scope,
-              effectiveAt: { $lt: new Date(`${from}T00:00:00+05:30`) },
+            {
+              $match: {
+                ...scope,
+                effectiveAt: { $lt: new Date(`${from}T00:00:00+05:30`) },
+              },
             },
-          },
-          { $group: { _id: null, weightMg: { $sum: weightDeltaExpr } } },
-        ])
+            { $group: { _id: null, weightMg: { $sum: weightDeltaExpr } } },
+          ])
         : Promise.resolve([]),
       LedgerEntry.aggregate([
         {
@@ -312,25 +384,28 @@ export async function chart(req, key) {
       ]),
     ]);
     let cumulative = openingRow[0]?.weightMg ?? 0;
-    const trend = from && to
-      ? rollupDailyMetric(dailyRows, from, to, groupBy, "weightMg").map((bucket) => {
-          cumulative += bucket.value;
-          const y = displayNetGoldWeightMg(cumulative);
-          return {
-            x: bucket.key,
-            y,
-            yDisplay: weightRef(y).weightDisplay,
-          };
-        })
-      : dailyRows.map((row) => {
-          cumulative += row.weightMg;
-          const y = displayNetGoldWeightMg(cumulative);
-          return {
-            x: row._id,
-            y,
-            yDisplay: weightRef(y).weightDisplay,
-          };
-        });
+    const trend =
+      from && to
+        ? rollupDailyMetric(dailyRows, from, to, groupBy, "weightMg").map(
+            (bucket) => {
+              cumulative += bucket.value;
+              const y = displayNetGoldWeightMg(cumulative);
+              return {
+                x: bucket.key,
+                y,
+                yDisplay: weightRef(y).weightDisplay,
+              };
+            },
+          )
+        : dailyRows.map((row) => {
+            cumulative += row.weightMg;
+            const y = displayNetGoldWeightMg(cumulative);
+            return {
+              x: row._id,
+              y,
+              yDisplay: weightRef(y).weightDisplay,
+            };
+          });
     return {
       chartType: "line",
       title: "Gold accrual",
@@ -339,7 +414,18 @@ export async function chart(req, key) {
       series: [{ key: "GOLD", name: "Gold", data: trend }],
     };
   }
-  const group = key === "collection-by-branch" ? "$branchId" : key === "collection-by-mode" ? "$mode" : { $dateToString: { format: "%Y-%m-%d", date: "$paidAt", timezone: "Asia/Kolkata" } };
+  const group =
+    key === "collection-by-branch"
+      ? "$branchId"
+      : key === "collection-by-mode"
+        ? "$mode"
+        : {
+            $dateToString: {
+              format: "%Y-%m-%d",
+              date: "$paidAt",
+              timezone: "Asia/Kolkata",
+            },
+          };
   if (key === "collection-by-mode") {
     const period = await aggregateCollectionPeriod(
       collectionPeriodBaseMatch(scope),
@@ -370,7 +456,15 @@ export async function chart(req, key) {
       },
     },
     { $sort: { _id: 1 } },
-    { $project: { _id: 0, key: "$_id", label: "$_id", value: "$grossValue", count: 1 } },
+    {
+      $project: {
+        _id: 0,
+        key: "$_id",
+        label: "$_id",
+        value: "$grossValue",
+        count: 1,
+      },
+    },
   ]);
 }
 export async function report(req, reportKey) {
@@ -421,7 +515,11 @@ export async function createExport(req) {
   if (from && to) {
     const rangeMs = new Date(`${to}T23:59:59Z`) - new Date(`${from}T00:00:00Z`);
     if (rangeMs < 0 || rangeMs > 5 * 366 * 86_400_000) {
-      throw new AppError("EXPORT_RANGE_TOO_LARGE", "Export date range cannot exceed five years.", 422);
+      throw new AppError(
+        "EXPORT_RANGE_TOO_LARGE",
+        "Export date range cannot exceed five years.",
+        422,
+      );
     }
   }
   const { assertExportConcurrency } = await import("../lib/report-limits.js");
@@ -439,12 +537,18 @@ export async function createExport(req) {
   await queue?.add(
     "generate",
     { exportId: job._id },
-    { jobId: job._id, attempts: 3, backoff: { type: "exponential", delay: 5000 } },
+    {
+      jobId: job._id,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5000 },
+    },
   );
   return toExportJobDto(job.toObject());
 }
 export async function listExports(req) {
-  const rows = await ExportJob.find(exportJobListQuery(req)).sort({ createdAt: -1 }).lean();
+  const rows = await ExportJob.find(exportJobListQuery(req))
+    .sort({ createdAt: -1 })
+    .lean();
   return rows.map((row) => toExportJobDto(row));
 }
 
@@ -466,24 +570,41 @@ export async function downloadExportFile(req, res) {
   if (!job) throw errors.notFound("Export");
   assertExportJobAccessible(req, job);
   if (job.status !== ExportStatus.READY || !job.objectKey) {
-    throw new AppError("EXPORT_NOT_READY", "This export is not ready to download yet.", 409);
+    throw new AppError(
+      "EXPORT_NOT_READY",
+      "This export is not ready to download yet.",
+      409,
+    );
   }
   if (job.downloadExpiresAt && job.downloadExpiresAt < new Date()) {
-    throw new AppError("EXPORT_EXPIRED", "This export download link has expired.", 410);
+    throw new AppError(
+      "EXPORT_EXPIRED",
+      "This export download link has expired.",
+      410,
+    );
   }
   let body;
   try {
     body = await storageProvider.readObjectBody(job.objectKey);
   } catch {
-    throw new AppError("EXPORT_FILE_MISSING", "Export file is no longer available.", 404);
+    throw new AppError(
+      "EXPORT_FILE_MISSING",
+      "Export file is no longer available.",
+      404,
+    );
   }
   const format = (job.filters?.format ?? "CSV").toLowerCase();
   const ext = format === "pdf" ? "pdf" : "csv";
-  res.setHeader("Content-Type", format === "pdf" ? "application/pdf" : "text/csv; charset=utf-8");
+  res.setHeader(
+    "Content-Type",
+    format === "pdf" ? "application/pdf" : "text/csv; charset=utf-8",
+  );
   res.setHeader(
     "Content-Disposition",
     `attachment; filename="swarnagrow-${job.type.toLowerCase()}-${job._id}.${ext}"`,
   );
   res.send(body);
 }
-export async function auditEvents(req) { return listAuditEvents(req); }
+export async function auditEvents(req) {
+  return listAuditEvents(req);
+}

@@ -475,11 +475,8 @@ export async function getEcommercePaymentIntent(req) {
 }
 
 export async function listAdminOrderPaymentAttempts(req) {
-  const order = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-  }).lean();
-  if (!order) throw errors.notFound("Order");
+  const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
+  const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
   const items = await EcommercePaymentAttempt.find({
     tenantId: req.auth.tenantId,
     orderId: order._id,
@@ -490,11 +487,8 @@ export async function listAdminOrderPaymentAttempts(req) {
 }
 
 export async function listAdminOrderPaymentAttemptEvents(req) {
-  const order = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-  }).lean();
-  if (!order) throw errors.notFound("Order");
+  const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
+  const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
   const { EcommercePaymentAttemptEvent } = await import("../models/index.js");
   const attemptId = req.query.paymentAttemptId;
   const filter = { tenantId: req.auth.tenantId, orderId: order._id };

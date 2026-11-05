@@ -16,7 +16,14 @@ import {
   claimEcommercePaymentAttemptForReconcile,
   reconcileEcommercePaymentAttempt,
 } from "./ecommerce-payment-reconcile.service.js";
+import { loadEcommerceOrderForAdmin } from "../lib/ecommerce-admin-order-scope.js";
+
+async function assertAdminOrderScopeForPaymentOp(req) {
+  await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true, select: "_id" });
+}
+
 export async function getAdminPaymentAttemptProviderStatus(req) {
+  await assertAdminOrderScopeForPaymentOp(req);
   const attempt = await EcommercePaymentAttempt.findOne({
     _id: req.params.paymentAttemptId,
     tenantId: req.auth.tenantId,
@@ -51,6 +58,7 @@ export async function getAdminPaymentAttemptProviderStatus(req) {
 }
 
 export async function retryAdminPaymentAttemptReconcile(req) {
+  await assertAdminOrderScopeForPaymentOp(req);
   const reason = String(req.body.reason ?? "").trim();
   if (!reason || reason.length < 8) {
     throw errors.validation([
@@ -113,6 +121,7 @@ export async function retryAdminPaymentAttemptReconcile(req) {
 }
 
 export async function acknowledgeAdminPaymentAttemptOperational(req) {
+  await assertAdminOrderScopeForPaymentOp(req);
   const resolution = String(req.body.resolution ?? "").trim();
   const reason = String(req.body.reason ?? "").trim();
   const evidenceNote = String(req.body.evidenceNote ?? "").trim();

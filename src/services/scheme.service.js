@@ -1,6 +1,22 @@
 import { withDurableEnrolment } from "../lib/enrolment-operation.js";
-import { AuditEntityType, FirstInstallmentMode, FlexiblePhase, PaymentPattern, RedemptionStatus, SchemePlanStatus, SchemeStatus } from "../constants/enums.js";
-import { Branch, Customer, LedgerEntry, Payment, Redemption, Scheme, SchemePlan } from "../models/index.js";
+import {
+  AuditEntityType,
+  FirstInstallmentMode,
+  FlexiblePhase,
+  PaymentPattern,
+  RedemptionStatus,
+  SchemePlanStatus,
+  SchemeStatus,
+} from "../constants/enums.js";
+import {
+  Branch,
+  Customer,
+  LedgerEntry,
+  Payment,
+  Redemption,
+  Scheme,
+  SchemePlan,
+} from "../models/index.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
@@ -10,6 +26,7 @@ import {
   ONE_ACTIVE_SCHEME_CONFLICT_STATUSES,
   OPEN_ENROLLMENT_STATUSES,
   ACTIVE_AND_LOCKED_STATUSES,
+  enrollmentStatusBreakdown,
 } from "../lib/scheme-enrollment-status.js";
 import { buildFixedPayableQuote } from "../lib/fixed-payment-policy.js";
 import { sumActiveFixedReservationPaise } from "../lib/fixed-payment-reservation.js";
@@ -698,9 +715,13 @@ export async function validateEnrolmentResponse(req) {
   }
 }
 export async function enrol(req) {
-  return withDurableEnrolment(req, async session => {
+  return withDurableEnrolment(req, async (session) => {
     const validation = await validateEnrolment(req);
-    if (validation.installmentAmountPaise == null) throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
+    if (validation.installmentAmountPaise == null)
+      throw errors.business(
+        "INVALID_INSTALLMENT_AMOUNT",
+        "Choose an installment amount for this plan.",
+      );
     return createEnrolmentInSession(req, validation, session);
   });
 }
@@ -884,14 +905,19 @@ export async function createEnrolmentInSession(req, validation, session) {
 
 /** Customer self-enrol: scheme + local checkout reservation in one transaction; PhonePe only after commit. */
 export async function customerEnrolWithCheckout(req) {
-  const committed = await withDurableEnrolment(req, async session => {
+  const committed = await withDurableEnrolment(req, async (session) => {
     const validation = await validateEnrolment(req);
-    if (validation.installmentAmountPaise == null) throw errors.business("INVALID_INSTALLMENT_AMOUNT", "Choose an installment amount for this plan.");
+    if (validation.installmentAmountPaise == null)
+      throw errors.business(
+        "INVALID_INSTALLMENT_AMOUNT",
+        "Choose an installment amount for this plan.",
+      );
     let reservedIntent = null;
     let reservedLink = null;
     const scheme = await createEnrolmentInSession(req, validation, session);
     const needsCheckout = scheme.firstInstallmentRequired === true;
-    if (!needsCheckout) return { enrolled: scheme, reservedIntent: null, reservedLink: null };
+    if (!needsCheckout)
+      return { enrolled: scheme, reservedIntent: null, reservedLink: null };
     const schemeId = scheme._id ?? scheme.id;
     const targetCycle =
       req.query?.targetCycle ?? req.body?.targetCycle ?? monthKey();
@@ -1122,6 +1148,7 @@ export async function getPassbook(req) {
   };
 }
 const SCHEME_STATUS_LABELS = {
+  PENDING_PAYMENT: "Awaiting first payment",
   ACTIVE: "Active",
   LOCKED: "Locked / capped",
   DEFAULTED: "Defaulted",
@@ -1163,6 +1190,7 @@ export async function schemeAnalytics(req) {
     activeOnly,
     locked,
     defaulted,
+    pendingFirstPayment,
     matured,
     redeemed,
     closedPremature,
@@ -1179,6 +1207,7 @@ export async function schemeAnalytics(req) {
     Scheme.countDocuments({ ...match, status: SchemeStatus.ACTIVE }),
     Scheme.countDocuments({ ...match, status: SchemeStatus.LOCKED }),
     Scheme.countDocuments({ ...match, status: SchemeStatus.DEFAULTED }),
+    Scheme.countDocuments({ ...match, status: SchemeStatus.PENDING_PAYMENT }),
     Scheme.countDocuments({ ...match, status: SchemeStatus.MATURED }),
     Scheme.countDocuments({ ...match, status: SchemeStatus.REDEEMED }),
     Scheme.countDocuments({ ...match, status: SchemeStatus.CLOSED_PREMATURE }),
@@ -1249,6 +1278,14 @@ export async function schemeAnalytics(req) {
   const periodLabel = formatPeriodLabel(periodRange.from, periodRange.to);
   const activeEnrolments = activeOnly + locked;
   const redeemedOrClosed = redeemed + closedPremature;
+  const statusBreakdown = enrollmentStatusBreakdown({
+    notStarted: pendingFirstPayment,
+    activePaying: activeOnly,
+    planCapped: locked,
+    defaulted,
+    matured,
+    completed: redeemedOrClosed,
+  });
   const totalCommittedPaise = sumCommittedPaise(allSchemesForCommitted);
   const periodCommittedPaise = sumCommittedPaise(periodSchemes);
   const avgInstallmentPaise = newInPeriod
@@ -1433,6 +1470,11 @@ export async function schemeAnalytics(req) {
       activeEnrollments: activeEnrolments,
       activeAndLockedEnrollments: activeEnrolments,
       openEnrollments: activeEnrolments + defaulted,
+      pendingFirstPaymentEnrollments: pendingFirstPayment,
+      activePayingEnrollments: activeOnly,
+      planCappedEnrollments: locked,
+      completedEnrollments: redeemedOrClosed,
+      statusBreakdown,
       lockedEnrollments: locked,
       defaultedEnrollments: defaulted,
       maturedEnrollments: matured,
@@ -1938,7 +1980,10 @@ export async function payableRange(req, schemeInput, options = {}) {
     const paymentRules = plan.paymentRules ?? {};
     const { refreshFixedInstallmentReservationCapacity } =
       await import("../lib/fixed-payment-reservation.js");
-    await refreshFixedInstallmentReservationCapacity(scheme.tenantId, scheme._id);
+    await refreshFixedInstallmentReservationCapacity(
+      scheme.tenantId,
+      scheme._id,
+    );
     const { reservedPaise } = await sumActiveFixedReservationPaise(
       scheme.tenantId,
       scheme._id,

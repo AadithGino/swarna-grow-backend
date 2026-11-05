@@ -89,12 +89,8 @@ async function loadCustomerOrder(req, session) {
 }
 
 async function loadTenantOrder(req, session) {
-  const order = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-  }).session(session);
-  if (!order) throw errors.notFound("Order");
-  return order;
+  const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
+  return loadEcommerceOrderForAdmin(req, req.params.orderId, { session, lean: false });
 }
 
 async function attachActiveRequest(order, session) {
@@ -344,8 +340,15 @@ export async function createCustomerCancellationRequest(req) {
 }
 
 export async function listAdminCancellationRequests(req) {
+  const { buildAdminEcommerceOrderMongoScope } = await import("../lib/ecommerce-admin-order-scope.js");
+  const orderScope = await buildAdminEcommerceOrderMongoScope(req);
+  const scopedOrderIds = await EcommerceOrder.find(orderScope).select("_id").lean();
+  if (!scopedOrderIds.length) return { items: [] };
   const status = req.query.status ? String(req.query.status) : undefined;
-  const filter = { tenantId: req.auth.tenantId };
+  const filter = {
+    tenantId: req.auth.tenantId,
+    orderId: { $in: scopedOrderIds.map((o) => o._id) },
+  };
   if (status) filter.status = status;
   const rows = await EcommerceOrderCancellationRequest.find(filter)
     .sort({ createdAt: -1 })
@@ -355,11 +358,8 @@ export async function listAdminCancellationRequests(req) {
 }
 
 export async function getAdminOrderCancellation(req) {
-  const order = await EcommerceOrder.findOne({
-    _id: req.params.orderId,
-    tenantId: req.auth.tenantId,
-  }).lean();
-  if (!order) throw errors.notFound("Order");
+  const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
+  const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
   const request = order.activeCancellationRequestId
     ? await EcommerceOrderCancellationRequest.findById(order.activeCancellationRequestId).lean()
     : null;

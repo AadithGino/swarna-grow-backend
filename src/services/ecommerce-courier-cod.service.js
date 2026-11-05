@@ -10,6 +10,11 @@ import {
   resolveCodCollectionAmountPaise,
 } from "../lib/ecommerce-courier-cod.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
+import {
+  buildAdminEcommerceOrderMongoScope,
+  ecommerceAdminRoleScope,
+  filterOrderIdsInAdminBranchScope,
+} from "../lib/ecommerce-admin-order-scope.js";
 import { assertBranchScopeForMutation } from "../lib/mutation-requirements.js";
 import { rupeesToPaise } from "../lib/ui-amount-conversion.js";
 import {
@@ -95,40 +100,40 @@ export function buildManualCourierCodCollectionSet(order, req, {
 }
 
 export async function getCourierCodWorkspaceSummary(req) {
-  const tenantId = req.auth.tenantId;
+  const orderScope = await buildAdminEcommerceOrderMongoScope(req);
   const [collectionPending, collectionConfirmed, remittanceOwed, remittancePending, bankReconciled, discrepancyCount] =
     await Promise.all([
       EcommerceOrder.countDocuments({
-        tenantId,
+        ...orderScope,
         paymentMethod: EcommercePaymentMethod.COD,
         "courierCod.collectionStatus": EcommerceCourierCodCollectionStatus.PENDING,
         status: { $in: [...FULFILMENT_OK_FOR_COLLECTION, EcommerceOrderStatus.SHIPPED] },
       }),
       EcommerceOrder.countDocuments({
-        tenantId,
+        ...orderScope,
         "courierCod.collectionStatus": EcommerceCourierCodCollectionStatus.CONFIRMED,
       }),
       EcommerceOrder.countDocuments({
-        tenantId,
+        ...orderScope,
         "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.OWED,
       }),
       EcommerceOrder.countDocuments({
-        tenantId,
+        ...orderScope,
         "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BATCH_PENDING,
       }),
       EcommerceOrder.countDocuments({
-        tenantId,
+        ...orderScope,
         "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.BANK_RECONCILED,
       }),
       EcommerceOrder.countDocuments({
-        tenantId,
+        ...orderScope,
         "courierCod.remittanceStatus": EcommerceCourierCodRemittanceStatus.DISCREPANCY,
       }),
     ]);
   const owedAgg = await EcommerceOrder.aggregate([
     {
       $match: {
-        tenantId,
+        ...orderScope,
         "courierCod.remittanceStatus": {
           $in: [
             EcommerceCourierCodRemittanceStatus.OWED,
@@ -200,8 +205,9 @@ export async function listCourierCodOrders(req) {
     throw errors.validation([{ field: "queue", message: "Invalid courier COD queue." }]);
   }
   const filters = queueFilters(queue);
+  const scope = await buildAdminEcommerceOrderMongoScope(req);
   const page = await paginate(EcommerceOrder, {
-    scope: { tenantId: req.auth.tenantId },
+    scope,
     filters,
     cursor: req.query.cursor,
     limit: req.query.limit,
@@ -963,6 +969,27 @@ export async function recordCourierMoneyReceived(req) {
   });
 }
 
+async function filterRemittanceLinesForAdmin(req, lines) {
+  if (!lines.length) return [];
+  const allowed = new Set(
+    (await filterOrderIdsInAdminBranchScope(req, lines.map((l) => l.orderId))).map(String),
+  );
+  return lines.filter((line) => allowed.has(String(line.orderId)));
+}
+
+function scopedRemittanceBatchTotals(batch, lines) {
+  const grossExpectedPaise = lines.reduce((sum, line) => sum + (line.grossPaise ?? 0), 0);
+  const feePaise = lines.reduce((sum, line) => sum + (line.feePaise ?? 0), 0);
+  return {
+    ...batch,
+    grossExpectedPaise,
+    feePaise,
+    netExpectedPaise: grossExpectedPaise - feePaise,
+    lineCount: lines.length,
+    branchScopedView: true,
+  };
+}
+
 export async function getCodRemittanceBatch(req) {
   const batch = await EcommerceCodRemittanceBatch.findOne({
     _id: req.params.batchId,
@@ -973,24 +1000,54 @@ export async function getCodRemittanceBatch(req) {
     tenantId: req.auth.tenantId,
     batchId: batch._id,
   }).lean();
-  const orderIds = lines.map((l) => l.orderId);
+  const visibleLines = await filterRemittanceLinesForAdmin(req, lines);
+  if (ecommerceAdminRoleScope(req) !== "TENANT" && lines.length && !visibleLines.length) {
+    throw errors.forbidden("Remittance batch has no orders in your branch scope.");
+  }
+  const orderIds = visibleLines.map((l) => l.orderId);
   const orders = orderIds.length
     ? await EcommerceOrder.find({ tenantId: req.auth.tenantId, _id: { $in: orderIds } })
         .select("orderNumber totalPaise")
         .lean()
     : [];
   const orderById = new Map(orders.map((o) => [o._id, o]));
-  const enrichedLines = lines.map((line) => ({
+  const enrichedLines = visibleLines.map((line) => ({
     ...line,
     orderNumber: orderById.get(line.orderId)?.orderNumber ?? null,
     orderTotalPaise: orderById.get(line.orderId)?.totalPaise ?? null,
   }));
-  return { batch, lines: enrichedLines };
+  const scopedBatch =
+    ecommerceAdminRoleScope(req) === "TENANT"
+      ? batch
+      : scopedRemittanceBatchTotals(batch, enrichedLines);
+  return { batch: scopedBatch, lines: enrichedLines };
 }
 
 export async function listCodRemittanceBatches(req) {
+  const tenantId = req.auth.tenantId;
+  if (ecommerceAdminRoleScope(req) !== "TENANT") {
+    const orderScope = await buildAdminEcommerceOrderMongoScope(req);
+    const scopedOrderIds = await EcommerceOrder.find(orderScope).select("_id").lean();
+    if (!scopedOrderIds.length) {
+      return { data: [], meta: { nextCursor: null, hasMore: false, limit: 20 } };
+    }
+    const batchIds = await EcommerceCodRemittanceLine.distinct("batchId", {
+      tenantId,
+      orderId: { $in: scopedOrderIds.map((o) => o._id) },
+    });
+    if (!batchIds.length) {
+      return { data: [], meta: { nextCursor: null, hasMore: false, limit: 20 } };
+    }
+    return paginate(EcommerceCodRemittanceBatch, {
+      scope: { tenantId, _id: { $in: batchIds } },
+      filters: {},
+      cursor: req.query.cursor,
+      limit: req.query.limit,
+      sort: "createdAt:desc",
+    });
+  }
   return paginate(EcommerceCodRemittanceBatch, {
-    scope: { tenantId: req.auth.tenantId },
+    scope: { tenantId },
     filters: {},
     cursor: req.query.cursor,
     limit: req.query.limit,

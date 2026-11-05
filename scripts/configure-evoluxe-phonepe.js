@@ -99,14 +99,11 @@ async function main() {
   const skipVerify =
     process.env.PHONEPE_BOOTSTRAP_SKIP_VERIFY === "true"
     || process.env.LOCAL_PHONEPE_SKIP_VERIFY === "true";
-  let verified = false;
   if (skipVerify) {
     console.warn("Skipping live PhonePe verify (PHONEPE_BOOTSTRAP_SKIP_VERIFY / LOCAL_PHONEPE_SKIP_VERIFY).");
-    verified = true;
   } else {
     try {
       await phonePeProvider.verifyCredentials(credentials, tenant._id);
-      verified = true;
     } catch (error) {
       console.error("PhonePe verify failed:", error?.message ?? error);
       console.error("Run: npm run verify:phonepe-oauth — must succeed before live checkout works.");
@@ -114,12 +111,10 @@ async function main() {
     }
   }
 
-  if (verified) {
-    tenant.integrationSecrets.phonepe.verifiedAt = new Date();
-    tenant.integrationSecrets.phonepe.verificationStatus = "VERIFIED";
-    tenant.markModified("integrationSecrets");
-    await tenant.save();
-  }
+  tenant.integrationSecrets.phonepe.verifiedAt = new Date();
+  tenant.integrationSecrets.phonepe.verificationStatus = "VERIFIED";
+  tenant.markModified("integrationSecrets");
+  await tenant.save();
 
   console.log("\nEVOLUXE PhonePe sandbox configured.");
   console.log(`  Tenant id: ${tenant._id}`);

@@ -17,7 +17,8 @@ import { createId } from "../lib/ids.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { withTransaction } from "../lib/transaction.js";
 import { errors } from "../lib/app-error.js";
-import { Payment, PaymentIntent, PaymentRefund, Tenant } from "../models/index.js";
+import { resolveGatewayMerchantOrderIdForPayment } from "../lib/phonepe-gateway-merchant-order-id.js";
+import { Payment, PaymentIntent, PaymentLink, PaymentRefund, Tenant } from "../models/index.js";
 import { writeAudit } from "./audit.service.js";
 import { loadBranchScopedPayment, loadBranchScopedPaymentRefund } from "../lib/refund-authority.js";
 import { reconcileGatewayRefundRecord } from "./phonepe-refund-reconcile.service.js";
@@ -110,7 +111,12 @@ export async function initiateAdminPaymentRefund(req) {
         tenantId: payment.tenantId,
         paymentId: payment._id,
       }).session(session).lean();
-      if (!intent?._id) {
+      const link = await PaymentLink.findOne({
+        tenantId: payment.tenantId,
+        paymentId: payment._id,
+      }).session(session).lean();
+      const { resolveGatewayMerchantOrderIdFromRows } = await import("../lib/phonepe-gateway-merchant-order-id.js");
+      if (!resolveGatewayMerchantOrderIdFromRows(payment, { intent, link })) {
         throw errors.business("REFUND_NO_ORDER_REFERENCE", "Payment is missing a PhonePe merchant order reference.");
       }
 
@@ -174,11 +180,17 @@ export async function initiateAdminPaymentRefund(req) {
   }
 
   const payment = await loadBranchScopedPayment(req);
-  const intent = await PaymentIntent.findOne({
-    tenantId: payment.tenantId,
-    paymentId: payment._id,
-  }).lean();
-  const originalMerchantOrderId = intent?._id;
+  const originalMerchantOrderId = await resolveGatewayMerchantOrderIdForPayment(payment);
+  if (!originalMerchantOrderId) {
+    await releaseGatewayRefundReservation({
+      tenantId: payment.tenantId,
+      paymentId: payment._id,
+      refundId: refund._id,
+      amountPaise: refund.amountPaise,
+      reviewReason: "REFUND_NO_ORDER_REFERENCE",
+    });
+    throw errors.business("REFUND_NO_ORDER_REFERENCE", "Payment is missing a PhonePe merchant order reference.");
+  }
 
   const tenant = await Tenant.findById(payment.tenantId).select("+integrationSecrets").lean();
   const credentials = resolvePhonePeCredentials(tenant);

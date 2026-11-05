@@ -7,6 +7,7 @@ import {
   EcommerceOrderStatus,
 } from "../constants/enums.js";
 import { EcommerceFulfilmentSettings, EcommerceOrder, EcommerceOrderEvent } from "../models/index.js";
+import { loadEcommerceOrderForAdmin } from "../lib/ecommerce-admin-order-scope.js";
 
 const TRACKING_URL_RE = /^https:\/\/[^\s]+$/i;
 
@@ -43,11 +44,10 @@ export async function patchAdminOrderDeliveryTracking(req) {
   }
 
   return withTransaction(async (session) => {
-    const order = await EcommerceOrder.findOne({
-      _id: req.params.orderId,
-      tenantId: req.auth.tenantId,
-    }).session(session);
-    if (!order) throw errors.notFound("Order");
+    const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, {
+      session,
+      lean: false,
+    });
     if (order.fulfilmentMode !== EcommerceFulfilmentMode.DELIVERY) {
       throw errors.business("NOT_DELIVERY_ORDER", "Courier tracking applies to delivery orders only.");
     }

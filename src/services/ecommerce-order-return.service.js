@@ -22,6 +22,10 @@ import {
   EcommercePaymentAttempt,
   EcommercePaymentExceptionRefund,
 } from "../models/index.js";
+import {
+  applyAdminEcommerceOrderBranchFilter,
+  assertAdminEcommerceOrderInScope,
+} from "../lib/ecommerce-admin-order-scope.js";
 
 function pushHistory(row, entry) {
   if (!row.statusHistory) row.statusHistory = [];
@@ -84,6 +88,14 @@ async function loadReturnForAdmin(req, session) {
     tenantId: req.auth.tenantId,
   }).session(session);
   if (!row) throw errors.notFound("Return request");
+  const order = await EcommerceOrder.findOne({
+    _id: row.orderId,
+    tenantId: req.auth.tenantId,
+  })
+    .session(session)
+    .lean();
+  if (!order) throw errors.notFound("Order");
+  await assertAdminEcommerceOrderInScope(req, order);
   return row;
 }
 
@@ -239,7 +251,14 @@ export async function createCustomerReturnRequest(req) {
 }
 
 export async function listAdminReturnRequests(req) {
-  const rows = await EcommerceOrderReturnRequest.find({ tenantId: req.auth.tenantId })
+  const orderFilter = { tenantId: req.auth.tenantId };
+  await applyAdminEcommerceOrderBranchFilter(req, orderFilter);
+  const scopedOrders = await EcommerceOrder.find(orderFilter).select("_id").limit(5000).lean();
+  const orderIds = scopedOrders.map((row) => row._id);
+  const rows = await EcommerceOrderReturnRequest.find({
+    tenantId: req.auth.tenantId,
+    orderId: { $in: orderIds.length ? orderIds : ["__no_branch_returns__"] },
+  })
     .sort({ createdAt: -1 })
     .limit(100)
     .lean();

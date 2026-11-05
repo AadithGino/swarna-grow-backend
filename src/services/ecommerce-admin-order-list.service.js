@@ -5,15 +5,20 @@ import {
   OPEN_RETURN_STATUSES,
 } from "../lib/ecommerce-admin-order-list-filter.js";
 import { attachAdminOrderCustomerDisplay } from "../lib/ecommerce-admin-order-customer-display.js";
+import {
+  applyAdminEcommerceOrderBranchFilter,
+  filterOrderIdsInAdminBranchScope,
+} from "../lib/ecommerce-admin-order-scope.js";
 import { EcommerceOrder, EcommerceOrderReturnRequest } from "../models/index.js";
 
 const MAX_TOTAL_COUNT = 50_000;
 
-async function returnPendingOrderIds(tenantId) {
-  return EcommerceOrderReturnRequest.find({
+async function returnPendingOrderIds(req, tenantId) {
+  const raw = await EcommerceOrderReturnRequest.find({
     tenantId,
     status: { $in: OPEN_RETURN_STATUSES },
   }).distinct("orderId");
+  return filterOrderIdsInAdminBranchScope(req, raw);
 }
 
 export async function listAdminOrdersPaginated(req, mapRow) {
@@ -21,9 +26,10 @@ export async function listAdminOrdersPaginated(req, mapRow) {
   const normalized = normalizeAdminOrderListQuery(req.query ?? {});
   const ctx = {};
   if (normalized.returnPending) {
-    ctx.returnPendingOrderIds = await returnPendingOrderIds(tenantId);
+    ctx.returnPendingOrderIds = await returnPendingOrderIds(req, tenantId);
   }
   const scope = buildAdminOrderListMongoFilter(tenantId, normalized, ctx);
+  await applyAdminEcommerceOrderBranchFilter(req, scope);
   const sort = "createdAt:desc";
 
   const [page, totalCountRaw] = await Promise.all([

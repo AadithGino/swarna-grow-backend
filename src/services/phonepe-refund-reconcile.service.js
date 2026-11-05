@@ -2,7 +2,8 @@ import { GatewayRefundStatus } from "../constants/enums.js";
 import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import { ResourceNotFound } from "@phonepe-pg/pg-sdk-node";
 import { errors } from "../lib/app-error.js";
-import { Payment, PaymentIntent, Tenant } from "../models/index.js";
+import { resolveGatewayMerchantOrderIdForPayment } from "../lib/phonepe-gateway-merchant-order-id.js";
+import { Payment, Tenant } from "../models/index.js";
 import { loadBranchScopedPaymentRefund } from "../lib/refund-authority.js";
 import { processPhonePeRefundWebhook } from "./phonepe-refund.service.js";
 
@@ -31,8 +32,7 @@ export async function reconcileGatewayRefundRecord({ tenantId, refund }) {
   if (!credentials) {
     throw errors.business("PAYMENT_GATEWAY_NOT_CONFIGURED", "PhonePe is not configured.");
   }
-  const intent = await PaymentIntent.findOne({ tenantId, paymentId: payment._id }).lean();
-  const originalMerchantOrderId = intent?._id;
+  const originalMerchantOrderId = await resolveGatewayMerchantOrderIdForPayment(payment);
   if (!originalMerchantOrderId) {
     throw errors.business("REFUND_NO_ORDER_REFERENCE", "Payment is missing a PhonePe merchant order reference.");
   }

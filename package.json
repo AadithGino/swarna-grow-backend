@@ -37,6 +37,7 @@
     "patch:kairali-digital-metals": "node --env-file=.env scripts/patch-kairali-digital-metals-live.js --refresh-rates",
     "patch:evoluxe-rates": "node --env-file=.env scripts/patch-evoluxe-rates.js",
     "configure:evoluxe-phonepe": "node --env-file=.env scripts/configure-evoluxe-phonepe.js",
+    "configure:evoluxe-message-central": "node --env-file=.env scripts/configure-evoluxe-message-central.js",
     "verify:phonepe-oauth": "node --env-file=.env scripts/verify-phonepe-oauth.js",
     "seed:ecommerce-demo": "node --env-file=.env scripts/seed-ecommerce-demo.js",
     "diagnose:ecommerce-payments": "node --env-file=.env scripts/diagnose-ecommerce-payment-capability.js",
@@ -59,7 +60,11 @@
     "db:sync-indexes:dry-run": "node --env-file=.env scripts/sync-indexes.js --dry-run",
     "ops:inspect": "node --env-file=.env scripts/ops-inspect.js",
     "test:audit:unit": "NODE_ENV=test node --test --test-concurrency=1 tests/nov03-audit-regressions.unit.test.js tests/digital-metals-auto-accept-replay.unit.test.js tests/ecommerce-admin-orders-list-filter.test.js tests/ecommerce-return-eligibility-anchor.test.js",
-    "test:audit:integration": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit --test-reporter=spec tests/digital-metals-auto-accept.test.js tests/counter-trades.test.js tests/digital-metals-phase7-matrix.test.js tests/enrolment-phase2.test.js tests/ecommerce-return-inspection-restock.test.js tests/customer-enrol-checkout-resume.test.js tests/customer-otp-message-central-contract.test.js"
+    "test:audit:integration": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit --test-reporter=spec tests/digital-metals-auto-accept.test.js tests/counter-trades.test.js tests/digital-metals-phase7-matrix.test.js tests/enrolment-phase2.test.js tests/ecommerce-return-inspection-restock.test.js tests/customer-enrol-checkout-resume.test.js tests/customer-otp-message-central-contract.test.js",
+    "test:phase1:ecommerce-auth": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 tests/ecommerce-branch-authorization.test.js tests/ecommerce-branch-authorization.matrix.test.js",
+    "test:phase1:browser": "node scripts/run-phase1-customer-identity-browser.mjs",
+    "test:phase2:phonepe-identity": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit tests/phonepe-phase2-identity.test.js tests/phonepe-reconcile.test.js tests/phonepe-provider.test.js tests/webhook-event.test.js",
+    "record:remediation:manifest": "node scripts/record-remediation-source-manifest.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1134.0",
@@ -89,6 +94,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.49.0",
     "eslint": "^10.10.0",
     "mongodb-memory-server": "^10.2.0",
     "supertest": "^7.1.4"

@@ -28,6 +28,7 @@ import {
   Tenant,
 } from "../models/index.js";
 import { createId } from "../lib/ids.js";
+import { gatewayMerchantOrderIdForInitiation } from "../lib/phonepe-gateway-merchant-order-id.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
@@ -1374,6 +1375,7 @@ export async function reservePaymentIntentInSession(session, req) {
           schemeId: scheme._id,
           customerId: scheme.customerId,
           receiptNumber: `PENDING-${intent._id}`,
+          gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(intent._id),
           amountPaise: intent.amountPaise,
           targetCycle,
           mode: PaymentMode.ONLINE_GATEWAY,
@@ -1415,7 +1417,12 @@ export async function initiateProviderForReservedIntent(req, reserved) {
     ),
     Payment.updateOne(
       { _id: reserved.paymentId, status: PaymentStatus.PENDING },
-      { $set: { providerTransactionId: provider.providerOrderId } },
+      {
+        $set: {
+          providerTransactionId: provider.providerOrderId,
+          gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(reserved.intent._id),
+        },
+      },
     ),
   ]);
   return {
@@ -1504,7 +1511,7 @@ function isPaymentLinkClaim(paymentId) {
   return paymentId && String(paymentId).startsWith("CLAIMING-");
 }
 
-function assertRedirectUrlAllowed(redirectUrl, tenant) {
+export function assertRedirectUrlAllowed(redirectUrl, tenant) {
   const allowedOrigins = new Set(env.corsOrigins);
   const brandingUrl = tenant?.branding?.websiteUrl;
   if (brandingUrl) {
@@ -1622,6 +1629,7 @@ export async function initiatePublicPayment(req) {
       schemeId: link.schemeId,
       customerId: link.customerId,
       receiptNumber: `PENDING-${link._id}`,
+      gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(link._id),
       amountPaise: link.amountPaise,
       targetCycle: link.targetCycle,
       mode: PaymentMode.ONLINE_GATEWAY,
@@ -1753,6 +1761,7 @@ export async function createSdkPaymentIntent(req) {
             schemeId: scheme._id,
             customerId: scheme.customerId,
             receiptNumber: `PENDING-${intent._id}`,
+            gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(intent._id),
             amountPaise: intent.amountPaise,
             targetCycle,
             mode: PaymentMode.ONLINE_GATEWAY,
@@ -1792,7 +1801,12 @@ export async function createSdkPaymentIntent(req) {
       ),
       Payment.updateOne(
         { _id: reserved.paymentId, status: PaymentStatus.PENDING },
-        { $set: { providerTransactionId: provider.providerOrderId } },
+        {
+          $set: {
+            providerTransactionId: provider.providerOrderId,
+            gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(reserved.intent._id),
+          },
+        },
       ),
     ]);
     return {
@@ -1914,6 +1928,7 @@ export async function createFixedSdkPayment(req) {
       schemeId: claimed.schemeId,
       customerId: claimed.customerId,
       receiptNumber: `PENDING-${claimed._id}`,
+      gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(claimed._id),
       amountPaise: claimed.amountPaise,
       targetCycle: claimed.targetCycle,
       mode: PaymentMode.ONLINE_GATEWAY,

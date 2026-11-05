@@ -118,14 +118,33 @@ export const platformFcmIntegrationBody = z.object({
   privateKey: z.string().trim().min(32).max(8192).optional(),
 }).strict();
 
-export const platformMessageCentralIntegrationBody = z.object({
-  customerId: z.string().trim().min(2).max(120),
-  key: z.string().trim().min(8).max(2048).optional(),
-  email: z.string().email(),
-  countryCode: z.literal("91").optional(),
-  flowType: z.enum(["SMS", "WHATSAPP"]).optional(),
-  otpLength: z.coerce.number().int().min(4).max(8).optional(),
-}).strict();
+export const platformMessageCentralIntegrationBody = z
+  .object({
+    customerId: z.string().trim().min(2).max(120),
+    key: z.string().trim().min(8).max(2048).optional(),
+    authToken: z.string().trim().min(8).max(4096).optional(),
+    email: z.string().email().optional(),
+    countryCode: z.literal("91").optional(),
+    flowType: z.enum(["SMS", "WHATSAPP"]).optional(),
+    otpLength: z.coerce.number().int().min(4).max(8).optional(),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (!body.authToken?.trim() && !body.key?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Either auth token or password key is required.",
+        path: ["key"],
+      });
+    }
+    if (!body.authToken?.trim() && !body.email?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Account email is required when using a password key.",
+        path: ["email"],
+      });
+    }
+  });
 
 export const platformMessageCentralVerifyBody = z.object({
   testMobile: z.string().trim().min(10).max(16).optional(),
