@@ -34,6 +34,10 @@
     "seed": "node --env-file=.env scripts/seed.js",
     "seed:demo": "node --env-file=.env scripts/seed-demo.js",
     "seed:kairali-digital-metals": "node --env-file=.env scripts/seed-kairali-digital-metals.js",
+    "seed:kairali-webinar-bulk": "node --env-file=.env scripts/seed-kairali-webinar-bulk.js",
+    "seed:kairali-webinar-extras": "node --env-file=.env scripts/seed-kairali-webinar-bulk.js --extras-only && node --env-file=.env scripts/patch-kairali-dashboard-charts.js",
+    "patch:kairali-dashboard-charts": "node --env-file=.env scripts/patch-kairali-dashboard-charts.js",
+    "seed:kairali-webinar": "node --env-file=.env scripts/seed-kairali-webinar-bulk.js && node --env-file=.env scripts/seed-kairali-digital-metals.js",
     "patch:kairali-digital-metals": "node --env-file=.env scripts/patch-kairali-digital-metals-live.js --refresh-rates",
     "patch:evoluxe-rates": "node --env-file=.env scripts/patch-evoluxe-rates.js",
     "configure:evoluxe-phonepe": "node --env-file=.env scripts/configure-evoluxe-phonepe.js",
@@ -64,6 +68,7 @@
     "test:phase1:ecommerce-auth": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 tests/ecommerce-branch-authorization.test.js tests/ecommerce-branch-authorization.matrix.test.js",
     "test:phase1:browser": "node scripts/run-phase1-customer-identity-browser.mjs",
     "test:phase2:phonepe-identity": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit tests/phonepe-phase2-identity.test.js tests/phonepe-reconcile.test.js tests/phonepe-provider.test.js tests/webhook-event.test.js",
+    "test:review-a": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit tests/ecommerce-branch-authorization.test.js tests/ecommerce-branch-authorization.matrix.test.js tests/phonepe-phase2-identity.test.js tests/phonepe-reconcile.test.js tests/phonepe-provider.test.js tests/webhook-event.test.js",
     "record:remediation:manifest": "node scripts/record-remediation-source-manifest.mjs"
   },
   "dependencies": {

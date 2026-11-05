@@ -17,10 +17,13 @@ import {
   paymentReq,
   recomputeSchemeStatuses,
   seedCollectionPlanMatrix,
+  seedCollectionPlanHighlights,
   seedMatureFixedGold,
+  redemptionModeForPlan,
 } from "./seed-aira-gold-matrix.js";
 
 const PER_PLAN_MATRIX = 12;
+const HIGHLIGHTS_PER_PLAN = 2;
 const PLAN_COUNT = 3;
 const EXTRA_COUNT = 14;
 
@@ -31,6 +34,19 @@ function logStep(label) {
 function installmentPaise(index) {
   const tiers = [200_000, 250_000, 300_000, 350_000, 500_000];
   return tiers[index % tiers.length];
+}
+
+/** Honour jeweller-fixed / slab plans (e.g. KAIRALI SAVING11); fall back to tier rotation for Noble-style plans. */
+function installmentForPlan(plan, fallbackIndex = 0) {
+  const rules = plan.amountRules ?? {};
+  if (rules.amountMode === "JEWELLER_FIXED" && rules.fixedAmountPaise) {
+    return rules.fixedAmountPaise;
+  }
+  if (rules.amountMode === "JEWELLER_SLABS" && rules.slabsPaise?.length) {
+    const slabs = rules.slabsPaise;
+    return slabs[Math.min(1, slabs.length - 1)] ?? slabs[0];
+  }
+  return installmentPaise(fallbackIndex);
 }
 
 async function stampLatestPaymentToday(schemeId, hourOffset = 0) {
@@ -47,7 +63,7 @@ async function seedTodaysCollections(ctx, { plans, branchId, customers }) {
     const customer = customers[i];
     const plan = plans[i % plans.length];
     const n = plan.installmentCount ?? plan.durationMonths;
-    const amount = installmentPaise(i + 40);
+    const amount = installmentForPlan(plan, i + 40);
     const paidBefore = Math.max(1, Math.floor(n / 3) + (i % 2));
     const startDate = addMonthsClamped(today(), -(paidBefore + 1)).format("YYYY-MM-DD");
     let scheme = await createFixedScheme(ctx, {
@@ -86,7 +102,7 @@ async function seedApprovedRedemptionQueue(ctx, { plan, branchId, customers }) {
   const summary = [];
   const matureStart = addMonthsClamped(today(), -(plan.durationMonths + 2)).format("YYYY-MM-DD");
   for (const customer of customers) {
-    const amount = installmentPaise(customer.name.length);
+    const amount = installmentForPlan(plan);
     const scheme = await seedMatureFixedGold(ctx, {
       customer,
       plan,
@@ -94,7 +110,12 @@ async function seedApprovedRedemptionQueue(ctx, { plan, branchId, customers }) {
       startDate: matureStart,
       installmentAmountPaise: amount,
     });
-    const red = await openRedemption(ctx, scheme._id, ClosureType.MATURITY_REDEMPTION, RedemptionMode.GOLD_HANDOVER);
+    const red = await openRedemption(
+      ctx,
+      scheme._id,
+      ClosureType.MATURITY_REDEMPTION,
+      redemptionModeForPlan(plan, { preferGoldHandover: true }),
+    );
     await transitionRedemption({ ...ctx, params: { redemptionId: red._id }, body: {} }, "approve");
     summary.push({
       customer: customer.name,
@@ -108,7 +129,7 @@ async function seedApprovedRedemptionQueue(ctx, { plan, branchId, customers }) {
 async function seedBranchShowroomSamples(ctx, { plan, branchId, customers, branchLabel }) {
   const summary = [];
   const [activeCust, matureCust, overdueCust, nearCust] = customers;
-  const amount = 300_000;
+  const amount = installmentForPlan(plan, 2);
 
   let start = addMonthsClamped(today(), -3).format("YYYY-MM-DD");
   let s = await createFixedScheme(ctx, { customer: activeCust, plan, branchId, startDate: start, installmentAmountPaise: amount });
@@ -166,7 +187,7 @@ async function seedPurchaseAdjustmentCompleted(ctx, { plan, branchId, customer }
     plan,
     branchId,
     startDate: matureStart,
-    installmentAmountPaise: 400_000,
+    installmentAmountPaise: installmentForPlan(plan, 3),
   });
   const red = await openRedemption(ctx, scheme._id, ClosureType.MATURITY_REDEMPTION, RedemptionMode.PURCHASE_ADJUSTMENT);
   await transitionRedemption({ ...ctx, params: { redemptionId: red._id }, body: {} }, "approve");
@@ -202,37 +223,26 @@ async function seedPendingCashHandover(staffCtx, staffLabel) {
  *   staffLabel?: string,
  * }} deps
  */
-export async function seedNobleJewelleryDemoMatrix(ctx, deps) {
-  const { swarna, akshaya, tritiya, branchMain, branchKochi, customers, staffCtx, staffLabel = "Staff" } = deps;
-  const matrixNeed = PER_PLAN_MATRIX * PLAN_COUNT;
-  const totalNeed = matrixNeed + EXTRA_COUNT;
-  if (customers.length < totalNeed) {
-    throw new Error(`Need at least ${totalNeed} customers, got ${customers.length}`);
+/**
+ * Extras only: today's collections, redemption queue, Kochi samples, cash handover (~1–3 min).
+ */
+export async function seedNobleJewelleryExtras(ctx, deps) {
+  const {
+    swarna,
+    akshaya,
+    tritiya,
+    branchMain,
+    branchKochi,
+    customers,
+    staffCtx,
+    staffLabel = "Staff",
+  } = deps;
+  if (customers.length < EXTRA_COUNT) {
+    throw new Error(`Extras need ${EXTRA_COUNT} customers, got ${customers.length}`);
   }
-
   const summary = [];
   const plans = [swarna, akshaya, tritiya];
-
-  for (const [plan, label, sliceStart] of [
-    [swarna, "SWARNA", 0],
-    [akshaya, "AKSHAYA", PER_PLAN_MATRIX],
-    [tritiya, "TRITIYA", PER_PLAN_MATRIX * 2],
-  ]) {
-    logStep(`${label} lifecycle matrix`);
-    const t0 = Date.now();
-    summary.push(
-      ...(await seedCollectionPlanMatrix(ctx, {
-        plan,
-        planLabel: label,
-        branchId: branchMain._id,
-        customers: customers.slice(sliceStart, sliceStart + PER_PLAN_MATRIX),
-        installmentAmountPaise: installmentPaise(sliceStart),
-      })),
-    );
-    console.log(`[noble-jewellery seed] ${label} done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-  }
-
-  let offset = PER_PLAN_MATRIX * PLAN_COUNT;
+  let offset = 0;
 
   logStep("Today's collections (UPI / card / cash)");
   summary.push(
@@ -283,10 +293,6 @@ export async function seedNobleJewelleryDemoMatrix(ctx, deps) {
   );
   offset += 4;
 
-  if (offset !== totalNeed) {
-    throw new Error(`Customer allocation mismatch: used ${offset}, expected ${totalNeed}`);
-  }
-
   if (staffCtx) {
     logStep("Pending cash handover for Cash control demo");
     try {
@@ -298,6 +304,81 @@ export async function seedNobleJewelleryDemoMatrix(ctx, deps) {
       });
     }
   }
+
+  return summary;
+}
+
+export async function seedNobleJewelleryDemoMatrix(ctx, deps) {
+  const {
+    swarna,
+    akshaya,
+    tritiya,
+    branchMain,
+    branchKochi,
+    customers,
+    staffCtx,
+    staffLabel = "Staff",
+    planLabels = ["SWARNA", "AKSHAYA", "TRITIYA"],
+    matrixMode = "full",
+  } = deps;
+  const perPlan = matrixMode === "highlights" ? HIGHLIGHTS_PER_PLAN : PER_PLAN_MATRIX;
+  const matrixNeed = matrixMode === "skip" ? 0 : perPlan * PLAN_COUNT;
+  const totalNeed = matrixMode === "extras-only" ? EXTRA_COUNT : matrixNeed + EXTRA_COUNT;
+  if (customers.length < totalNeed) {
+    throw new Error(`Need at least ${totalNeed} customers, got ${customers.length}`);
+  }
+
+  const summary = [];
+  const plans = [swarna, akshaya, tritiya];
+
+  if (matrixMode === "extras-only") {
+    return seedNobleJewelleryExtras(ctx, deps);
+  }
+
+  if (matrixMode !== "skip") {
+    for (const [plan, label, sliceStart] of [
+      [swarna, planLabels[0], 0],
+      [akshaya, planLabels[1], perPlan],
+      [tritiya, planLabels[2], perPlan * 2],
+    ]) {
+      logStep(`${label} lifecycle ${matrixMode === "highlights" ? "highlights" : "matrix"}`);
+      const t0 = Date.now();
+      const slice = customers.slice(sliceStart, sliceStart + perPlan);
+      summary.push(
+        ...(matrixMode === "highlights"
+          ? await seedCollectionPlanHighlights(ctx, {
+              plan,
+              planLabel: label,
+              branchId: branchMain._id,
+              customers: slice,
+              installmentAmountPaise: installmentForPlan(plan, sliceStart),
+            })
+          : await seedCollectionPlanMatrix(ctx, {
+              plan,
+              planLabel: label,
+              branchId: branchMain._id,
+              customers: slice,
+              installmentAmountPaise: installmentForPlan(plan, sliceStart),
+            })),
+      );
+      console.log(`[noble-jewellery seed] ${label} done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    }
+  }
+
+  let offset = matrixNeed;
+
+  summary.push(
+    ...(await seedNobleJewelleryExtras(ctx, {
+      swarna,
+      akshaya,
+      tritiya,
+      branchMain,
+      branchKochi,
+      customers: customers.slice(offset, offset + EXTRA_COUNT),
+      staffCtx,
+      staffLabel,
+    })),
+  );
 
   return summary;
 }

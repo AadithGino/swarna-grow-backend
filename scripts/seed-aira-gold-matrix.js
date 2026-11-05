@@ -154,6 +154,20 @@ async function openRedemption(ctx, schemeId, closureType, mode) {
   return initiateRedemption(redemptionCtx(ctx, scheme._id, body), closureType, false);
 }
 
+function redemptionModeForPlan(plan, { preferGoldHandover = true } = {}) {
+  const allowed = plan.redemptionRules?.allowedModes ?? [RedemptionMode.CASH];
+  if (preferGoldHandover && allowed.includes(RedemptionMode.GOLD_HANDOVER)) {
+    return RedemptionMode.GOLD_HANDOVER;
+  }
+  if (allowed.includes(RedemptionMode.PURCHASE_ADJUSTMENT)) {
+    return RedemptionMode.PURCHASE_ADJUSTMENT;
+  }
+  if (allowed.includes(RedemptionMode.CASH)) {
+    return RedemptionMode.CASH;
+  }
+  return allowed[0];
+}
+
 async function seedMatureFixedGold(ctx, { customer, plan, branchId, startDate, installmentAmountPaise }) {
   const scheme = await createFixedScheme(ctx, {
     customer,
@@ -291,7 +305,12 @@ export async function seedCollectionPlanMatrix(ctx, { plan, planLabel, branchId,
     startDate: matureStart,
     installmentAmountPaise,
   });
-  const redP = await openRedemption(ctx, s._id, ClosureType.MATURITY_REDEMPTION, RedemptionMode.GOLD_HANDOVER);
+  const redP = await openRedemption(
+    ctx,
+    s._id,
+    ClosureType.MATURITY_REDEMPTION,
+    redemptionModeForPlan(plan, { preferGoldHandover: true }),
+  );
   summary.push({
     customer: redPendingCust.name,
     enrollment: s.enrollmentNumber,
@@ -306,7 +325,12 @@ export async function seedCollectionPlanMatrix(ctx, { plan, planLabel, branchId,
     startDate: matureStart,
     installmentAmountPaise,
   });
-  const redC = await openRedemption(ctx, s._id, ClosureType.MATURITY_REDEMPTION, RedemptionMode.GOLD_HANDOVER);
+  const redC = await openRedemption(
+    ctx,
+    s._id,
+    ClosureType.MATURITY_REDEMPTION,
+    redemptionModeForPlan(plan, { preferGoldHandover: true }),
+  );
   await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "approve");
   await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "complete");
   summary.push({
@@ -357,6 +381,60 @@ export async function seedCollectionPlanMatrix(ctx, { plan, planLabel, branchId,
   if (i !== customers.length) {
     throw new Error(`${planLabel}: expected ${i} customers, pool had ${customers.length}`);
   }
+
+  return summary;
+}
+
+/**
+ * Webinar-fast subset: active partial pay + one matured & redeemed row (2 customers per plan).
+ */
+export async function seedCollectionPlanHighlights(ctx, { plan, planLabel, branchId, customers, installmentAmountPaise = DEFAULT_INSTALLMENT_PAISE }) {
+  const summary = [];
+  if (customers.length !== 2) {
+    throw new Error(`${planLabel}: highlights need exactly 2 customers, got ${customers.length}`);
+  }
+  let i = 0;
+  const nextCustomer = () => customers[i++];
+  const n = plan.installmentCount ?? plan.durationMonths;
+  const matureStart = addMonthsClamped(today(), -(n + 2)).format("YYYY-MM-DD");
+
+  const activeCust = nextCustomer();
+  const start2 = addMonthsClamped(today(), -Math.min(2, n - 1)).format("YYYY-MM-DD");
+  let s = await createFixedScheme(ctx, {
+    customer: activeCust,
+    plan,
+    branchId,
+    startDate: start2,
+    installmentAmountPaise,
+  });
+  s = await payInstallments(ctx, s, Math.min(2, n), { backdateFrom: start2, amountPaise: installmentAmountPaise });
+  summary.push({
+    customer: activeCust.name,
+    enrollment: s.enrollmentNumber,
+    story: `${planLabel} · ACTIVE · partial collections (webinar highlight)`,
+  });
+
+  const redeemedCust = nextCustomer();
+  s = await seedMatureFixedGold(ctx, {
+    customer: redeemedCust,
+    plan,
+    branchId,
+    startDate: matureStart,
+    installmentAmountPaise,
+  });
+  const redC = await openRedemption(
+    ctx,
+    s._id,
+    ClosureType.MATURITY_REDEMPTION,
+    redemptionModeForPlan(plan, { preferGoldHandover: true }),
+  );
+  await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "approve");
+  await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "complete");
+  summary.push({
+    customer: redeemedCust.name,
+    enrollment: s.enrollmentNumber,
+    story: `${planLabel} · REDEEMED · maturity completed (webinar highlight)`,
+  });
 
   return summary;
 }
@@ -523,4 +601,5 @@ export {
   markMatured,
   seedMatureFixedGold,
   openRedemption,
+  redemptionModeForPlan,
 };

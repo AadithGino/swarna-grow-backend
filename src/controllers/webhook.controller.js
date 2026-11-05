@@ -40,7 +40,7 @@ export const phonepe = async (req, res) => {
   }
 
   const payload = { type: callback.type, payload: callback.payload };
-  const { primary: providerEventId, aliases: identityAliases } = phonePeWebhookEventIdentityCandidates({
+  const { primary: providerEventId, aliases: identityAliases, semanticKey } = phonePeWebhookEventIdentityCandidates({
     tenantId: req.params.tenantId,
     type: callback.type,
     payload: callback.payload,
@@ -51,6 +51,7 @@ export const phonepe = async (req, res) => {
     provider: "PHONEPE",
     providerEventId,
     identityAliases,
+    semanticKey,
     signatureHeader: authorization,
     rawBody: raw,
     payload,

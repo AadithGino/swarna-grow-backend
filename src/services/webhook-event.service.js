@@ -4,25 +4,33 @@ import { sha256 } from "../lib/crypto.js";
 import { createId } from "../lib/ids.js";
 import { incrementOpsMetric, OpsMetric } from "../lib/ops-metrics.js";
 import { incrementWebhookMetric, WebhookMetric } from "../lib/webhook-metrics.js";
+import { phonePeWebhookSemanticKeysMatch } from "../lib/phonepe-webhook-identity.js";
 import { WebhookEvent } from "../models/index.js";
 
 /**
- * Persist a PhonePe webhook using canonical event id, treating legacy txn-only ids as duplicates.
+ * Persist a PhonePe webhook. Legacy txn-only keys dedupe only on matching body digest
+ * or identical canonical semantic identity — never on alias existence alone.
  */
 export async function persistPhonePeVerifiedWebhook(args) {
-  const { identityAliases = [], ...rest } = args;
+  const { identityAliases = [], semanticKey = null, ...rest } = args;
   const bodyDigest = rest.rawBody ? digestWebhookBody(rest.rawBody) : null;
   if (identityAliases.length) {
-    const legacyHit = await WebhookEvent.findOne({
+    const legacyHits = await WebhookEvent.find({
       tenantId: rest.tenantId,
       provider: rest.provider,
       providerEventId: { $in: identityAliases },
     })
-      .select("_id bodyDigest")
+      .select("_id bodyDigest providerEventId")
       .lean();
-    if (legacyHit && (!bodyDigest || !legacyHit.bodyDigest || legacyHit.bodyDigest === bodyDigest)) {
-      incrementWebhookMetric(WebhookMetric.DUPLICATE);
-      return null;
+    for (const legacyHit of legacyHits) {
+      const digestReplay =
+        Boolean(bodyDigest && legacyHit.bodyDigest && legacyHit.bodyDigest === bodyDigest);
+      const semanticReplay =
+        Boolean(semanticKey && phonePeWebhookSemanticKeysMatch(legacyHit.providerEventId, semanticKey));
+      if (digestReplay || semanticReplay) {
+        incrementWebhookMetric(WebhookMetric.DUPLICATE);
+        return null;
+      }
     }
   }
   return persistVerifiedWebhook(rest);

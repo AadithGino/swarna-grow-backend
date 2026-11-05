@@ -6,7 +6,7 @@ import {
   reconcileGatewayPayment,
   resolveMerchantOrderIdForPayment,
 } from "../src/services/phonepe-reconcile.service.js";
-import { Customer, Payment, PaymentIntent, Scheme } from "../src/models/index.js";
+import { Customer, Payment, PaymentIntent, PaymentLink, Scheme } from "../src/models/index.js";
 import { createId } from "../src/lib/ids.js";
 import {
   armMockOrderStatusTemplate,
@@ -126,6 +126,18 @@ test("resolveMerchantOrderId prefers payment link id from receipt over instalmen
     source: "CUSTOMER_APP",
     paidAt: new Date(),
   });
+  await PaymentLink.create({
+    _id: linkId,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    schemeId: scheme._id,
+    customerId: customer._id,
+    tokenHash: `hash-${linkId}`,
+    amountPaise: 50_000,
+    expiresAt: new Date(Date.now() + 3600_000),
+    paymentId,
+    paymentIntentId: intentId,
+  });
   await PaymentIntent.create({
     _id: intentId,
     tenantId: tenant._id,
@@ -163,6 +175,18 @@ test("fixed public pay reconcile uses link merchant order id", async () => {
     status: PaymentStatus.PENDING,
     source: "CUSTOMER_APP",
     paidAt: new Date(Date.now() - 3600_000),
+  });
+  await PaymentLink.create({
+    _id: linkId,
+    tenantId: tenant._id,
+    branchId: branch._id,
+    schemeId: scheme._id,
+    customerId: customer._id,
+    tokenHash: `hash-${linkId}`,
+    amountPaise: 50_000,
+    expiresAt: new Date(Date.now() + 3600_000),
+    paymentId,
+    paymentIntentId: intentId,
   });
   await PaymentIntent.create({
     _id: intentId,

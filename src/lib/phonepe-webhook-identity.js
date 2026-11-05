@@ -13,16 +13,14 @@ function stablePayloadDigest(payload = {}, rawBody) {
   return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
+/** PhonePe documented webhook correlation ids only (not generic payload.id). */
 function documentedUniqueProviderEventId(payload = {}) {
-  const candidate =
-    payload.eventId
-    ?? payload.callbackId
-    ?? payload.id;
+  const candidate = payload.eventId ?? payload.callbackId;
   if (candidate == null || candidate === "") return null;
   return String(candidate);
 }
 
-function canonicalSemanticEventId({ tenantId, type, payload = {}, rawBody = null }) {
+export function canonicalPhonePeSemanticEventId({ tenantId, type, payload = {}, rawBody = null }) {
   const reference = phonePeCallbackReference(payload) ?? payload.orderId ?? "unknown-order";
   const transactionId = phonePeCallbackTransactionId(payload) ?? "no-txn";
   const typeKey = callbackTypeKey(type) ?? "UNKNOWN";
@@ -58,7 +56,7 @@ export function buildPhonePeWebhookEventId({
   if (documented) {
     return `pe:${tenantId}:${documented}`;
   }
-  return canonicalSemanticEventId({ tenantId, type, payload, rawBody });
+  return canonicalPhonePeSemanticEventId({ tenantId, type, payload, rawBody });
 }
 
 export function phonePeWebhookEventIdentityCandidates({
@@ -70,5 +68,10 @@ export function phonePeWebhookEventIdentityCandidates({
   const primary = buildPhonePeWebhookEventId({ tenantId, type, payload, rawBody });
   const legacy = buildPhonePeLegacyWebhookEventId({ tenantId, payload });
   const aliases = legacy && legacy !== primary ? [legacy] : [];
-  return { primary, aliases };
+  return { primary, aliases, semanticKey: canonicalPhonePeSemanticEventId({ tenantId, type, payload, rawBody }) };
+}
+
+export function phonePeWebhookSemanticKeysMatch(storedProviderEventId, semanticKey) {
+  if (!storedProviderEventId || !semanticKey) return false;
+  return storedProviderEventId === semanticKey;
 }

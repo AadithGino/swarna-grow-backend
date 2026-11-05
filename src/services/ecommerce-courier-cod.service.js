@@ -36,6 +36,12 @@ import {
   EcommerceOrderEvent,
 } from "../models/index.js";
 import { paginate } from "../lib/pagination.js";
+import {
+  assertOrderInRemittanceMutationScope,
+  assertRemittanceBatchMutationScope,
+  branchScopedRemittanceBatchDto,
+  loadRemittanceLinesForBatch,
+} from "../lib/ecommerce-courier-remittance-admin.js";
 
 function assertCodOrder(order) {
   if (!orderUsesCod(order)) {
@@ -574,6 +580,7 @@ async function addRemittanceLineInSession(session, {
 }
 
 async function reconcileRemittanceBatchInSession(session, {
+  req = null,
   tenantId,
   userId,
   batchId,
@@ -583,6 +590,9 @@ async function reconcileRemittanceBatchInSession(session, {
   idempotencyKey,
   bodyHash,
 }) {
+  if (req) {
+    await assertRemittanceBatchMutationScope(req, batchId, { session });
+  }
   const batch = await EcommerceCodRemittanceBatch.findOne({ _id: batchId, tenantId }).session(session);
   if (!batch) throw errors.notFound("Remittance batch");
   if (batch.reconcileIdempotencyKey === idempotencyKey) {
@@ -752,6 +762,8 @@ export async function addOrderToCodRemittanceBatch(req) {
       tenantId: req.auth.tenantId,
     }).session(session);
     if (!order) throw errors.notFound("Order");
+    await assertOrderInRemittanceMutationScope(req, order, { session });
+    await assertRemittanceBatchMutationScope(req, req.params.batchId, { session });
     return addRemittanceLineInSession(session, {
       tenantId: req.auth.tenantId,
       userId: req.auth.id,
@@ -787,6 +799,7 @@ export async function reconcileCodRemittanceBatch(req) {
 
   return withTransaction(async (session) => {
     const { batch } = await reconcileRemittanceBatchInSession(session, {
+      req,
       tenantId: req.auth.tenantId,
       userId: req.auth.id,
       batchId: req.params.batchId,
@@ -937,6 +950,7 @@ export async function recordCourierMoneyReceived(req) {
     }
 
     const { batch, match } = await reconcileRemittanceBatchInSession(session, {
+      req,
       tenantId: req.auth.tenantId,
       userId: req.auth.id,
       batchId,
@@ -977,19 +991,6 @@ async function filterRemittanceLinesForAdmin(req, lines) {
   return lines.filter((line) => allowed.has(String(line.orderId)));
 }
 
-function scopedRemittanceBatchTotals(batch, lines) {
-  const grossExpectedPaise = lines.reduce((sum, line) => sum + (line.grossPaise ?? 0), 0);
-  const feePaise = lines.reduce((sum, line) => sum + (line.feePaise ?? 0), 0);
-  return {
-    ...batch,
-    grossExpectedPaise,
-    feePaise,
-    netExpectedPaise: grossExpectedPaise - feePaise,
-    lineCount: lines.length,
-    branchScopedView: true,
-  };
-}
-
 export async function getCodRemittanceBatch(req) {
   const batch = await EcommerceCodRemittanceBatch.findOne({
     _id: req.params.batchId,
@@ -1001,7 +1002,8 @@ export async function getCodRemittanceBatch(req) {
     batchId: batch._id,
   }).lean();
   const visibleLines = await filterRemittanceLinesForAdmin(req, lines);
-  if (ecommerceAdminRoleScope(req) !== "TENANT" && lines.length && !visibleLines.length) {
+  const branchScoped = ecommerceAdminRoleScope(req) !== "TENANT";
+  if (branchScoped && lines.length && !visibleLines.length) {
     throw errors.forbidden("Remittance batch has no orders in your branch scope.");
   }
   const orderIds = visibleLines.map((l) => l.orderId);
@@ -1016,10 +1018,11 @@ export async function getCodRemittanceBatch(req) {
     orderNumber: orderById.get(line.orderId)?.orderNumber ?? null,
     orderTotalPaise: orderById.get(line.orderId)?.totalPaise ?? null,
   }));
-  const scopedBatch =
-    ecommerceAdminRoleScope(req) === "TENANT"
-      ? batch
-      : scopedRemittanceBatchTotals(batch, enrichedLines);
+  const scopedBatch = branchScopedRemittanceBatchDto(batch, {
+    visibleLines: enrichedLines,
+    totalLineCount: lines.length,
+    branchScoped,
+  });
   return { batch: scopedBatch, lines: enrichedLines };
 }
 
@@ -1038,13 +1041,25 @@ export async function listCodRemittanceBatches(req) {
     if (!batchIds.length) {
       return { data: [], meta: { nextCursor: null, hasMore: false, limit: 20 } };
     }
-    return paginate(EcommerceCodRemittanceBatch, {
+    const page = await paginate(EcommerceCodRemittanceBatch, {
       scope: { tenantId, _id: { $in: batchIds } },
       filters: {},
       cursor: req.query.cursor,
       limit: req.query.limit,
       sort: "createdAt:desc",
     });
+    const data = await Promise.all(
+      page.data.map(async (batch) => {
+        const allLines = await loadRemittanceLinesForBatch(tenantId, batch._id);
+        const visible = await filterRemittanceLinesForAdmin(req, allLines);
+        return branchScopedRemittanceBatchDto(batch, {
+          visibleLines: visible,
+          totalLineCount: allLines.length,
+          branchScoped: true,
+        });
+      }),
+    );
+    return { ...page, data };
   }
   return paginate(EcommerceCodRemittanceBatch, {
     scope: { tenantId },

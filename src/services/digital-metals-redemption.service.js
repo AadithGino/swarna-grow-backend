@@ -62,7 +62,36 @@ function assertNewRedemptionAllowed(tenant) {
   }
 }
 
+function flatMintingPaiseFromRule(mintingRule) {
+  if (mintingRule?.type === "FLAT_INR") {
+    return Math.max(0, Number(mintingRule.amountPaise ?? 0));
+  }
+  return 0;
+}
+
+/** Customer apps expect chargeTotalPaise + chargeLines; snapshots store totalChargePaise. */
+export function mapRedemptionChargeCustomerView(snapshot = {}) {
+  const mintingPaise = Number(snapshot.mintingPaise ?? 0);
+  const packagingPaise = Number(snapshot.packagingPaise ?? 0);
+  const deliveryPaise = Number(snapshot.deliveryPaise ?? 0);
+  const taxPaise = Number(snapshot.taxPaise ?? 0);
+  const chargeTotalPaise = Number(snapshot.totalChargePaise ?? snapshot.chargeTotalPaise ?? 0);
+  const chargeLines = [];
+  if (mintingPaise > 0) {
+    chargeLines.push({ code: "MINTING", label: "Minting", amountPaise: mintingPaise });
+  }
+  if (packagingPaise > 0) {
+    chargeLines.push({ code: "PACKAGING", label: "Packaging", amountPaise: packagingPaise });
+  }
+  if (deliveryPaise > 0) {
+    chargeLines.push({ code: "DELIVERY", label: "Delivery", amountPaise: deliveryPaise });
+  }
+  return { chargeTotalPaise, totalChargePaise: chargeTotalPaise, chargeLines, taxPaise };
+}
+
 function mapCatalogItem(row) {
+  const mintingChargePaise = flatMintingPaiseFromRule(row.mintingRule);
+  const packagingPaise = Math.max(0, Number(row.packagingPaise ?? 0));
   return {
     id: row._id,
     sku: row.sku,
@@ -72,6 +101,8 @@ function mapCatalogItem(row) {
     unitQuantityUg: String(row.unitQuantityUg),
     mintingRule: row.mintingRule,
     mintingPercentBase: row.mintingPercentBase,
+    mintingChargePaise,
+    chargeTotalPaise: mintingChargePaise + packagingPaise,
     deliveryFlatPaise: row.deliveryFlatPaise,
     deliveryWaiveAboveTotalChargePaise: row.deliveryWaiveAboveTotalChargePaise,
     packagingPaise: row.packagingPaise,
@@ -87,6 +118,10 @@ function mapCatalogItem(row) {
 
 export function mapRedemptionOrder(row, extras = {}) {
   const snap = row.snapshot ?? {};
+  const chargeView = mapRedemptionChargeCustomerView({
+    ...snap,
+    totalChargePaise: snap.totalChargePaise ?? row.chargeTotalPaise,
+  });
   return {
     id: row._id,
     status: row.status,
@@ -95,7 +130,8 @@ export function mapRedemptionOrder(row, extras = {}) {
     finenessPpm: row.finenessPpm,
     quantityUg: String(row.quantityUg),
     unitCount: row.unitCount,
-    chargeTotalPaise: row.chargeTotalPaise,
+    chargeTotalPaise: row.chargeTotalPaise ?? chargeView.chargeTotalPaise,
+    ...chargeView,
     fulfilmentMode: row.fulfilmentMode,
     pickupBranchId: row.pickupBranchId,
     pickupBranchLabel: snap.pickupBranchLabel ?? null,
@@ -331,10 +367,13 @@ export async function createCustomerRedemptionQuote(req) {
     createdBySubject: req.auth.id,
   });
 
+  const chargeView = mapRedemptionChargeCustomerView(snapshot);
   return {
     quoteId: quote._id,
     expiresAt: quote.expiresAt,
     ...snapshot,
+    ...chargeView,
+    quantityReservedUg: String(core.quantityUg),
     termsVersion: quote.termsVersion,
     termsContentHash: quote.termsContentHash,
     quantityReservedPreviewUg: String(core.quantityUg),
