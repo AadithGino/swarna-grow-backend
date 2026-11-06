@@ -13,10 +13,11 @@ import { assertOrderPaymentBoundary } from "../lib/ecommerce-order-payment-bound
 import { EcommercePaymentAttemptOperationalStatus } from "../constants/enums.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
 import { resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
+import { initiatePhonePeCustomerCheckout } from "../lib/phonepe-customer-checkout-init.js";
 import {
-  initiatePhonePeCustomerWebCheckout,
   mapPhonePeCustomerCheckoutResponse,
-  mergePhonePeCheckoutProviderPayload,
+  mergePhonePeProviderInitPayload,
+  PhonePePersistedCheckoutChannel,
   readPersistedPhonePeCheckoutRedirectUrl,
 } from "../lib/phonepe-customer-web-checkout.js";
 import {
@@ -82,7 +83,14 @@ export async function loadPaymentCapability(tenantId, tenantLite) {
   });
 }
 
-async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId, created) {
+async function initiateProviderForAttempt(
+  attempt,
+  order,
+  redirectUrl,
+  tenantId,
+  created,
+  clientPlatform,
+) {
   if (["FAILED", "SUCCEEDED"].includes(attempt.status)) {
     throw errors.business(
       "PAYMENT_ATTEMPT_TERMINAL",
@@ -94,32 +102,10 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
   if (
     attempt.status === EcommercePaymentAttemptStatus.INITIATED
     && attempt.providerOrderId
-    && persistedCheckoutUrl
     && order.status === EcommerceOrderStatus.PENDING_PAYMENT
+    && (persistedCheckoutUrl || attempt.sdkToken)
   ) {
     return { paymentIntent: mapPaymentIntent(attempt, order), created: false };
-  }
-
-  if (
-    attempt.status === EcommercePaymentAttemptStatus.INITIATED
-    && attempt.sdkToken
-    && !persistedCheckoutUrl
-    && attempt.providerOrderId
-  ) {
-    await EcommercePaymentAttempt.updateOne(
-      { _id: attempt._id },
-      {
-        $set: { status: EcommercePaymentAttemptStatus.PENDING },
-        $unset: { sdkToken: "", providerOrderId: "" },
-        $inc: { version: 1 },
-      },
-    );
-    attempt = {
-      ...attempt,
-      status: EcommercePaymentAttemptStatus.PENDING,
-      sdkToken: null,
-      providerOrderId: null,
-    };
   }
 
   const claimMarker = `CLAIM-${createId("claim")}`;
@@ -148,7 +134,10 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
   if (!claimed) {
     let fresh = await EcommercePaymentAttempt.findById(attempt._id).lean();
     for (let i = 0; i < 25; i += 1) {
-      if (fresh?.providerOrderId && readPersistedPhonePeCheckoutRedirectUrl(fresh)) {
+      if (
+        fresh?.providerOrderId
+        && (readPersistedPhonePeCheckoutRedirectUrl(fresh) || fresh.sdkToken)
+      ) {
         return { paymentIntent: mapPaymentIntent(fresh, order), created: false };
       }
       const claimActive =
@@ -161,7 +150,10 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
       });
       fresh = await EcommercePaymentAttempt.findById(attempt._id).lean();
     }
-    if (fresh?.providerOrderId && readPersistedPhonePeCheckoutRedirectUrl(fresh)) {
+    if (
+      fresh?.providerOrderId
+      && (readPersistedPhonePeCheckoutRedirectUrl(fresh) || fresh.sdkToken)
+    ) {
       return { paymentIntent: mapPaymentIntent(fresh, order), created: false };
     }
     if (
@@ -185,12 +177,13 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
   const tenant = await tenantForEcommerceCheckout(tenantId);
   const credentials = resolvePhonePeCredentials(tenant);
   try {
-    const provider = await initiatePhonePeCustomerWebCheckout({
+    const provider = await initiatePhonePeCustomerCheckout({
       merchantOrderId: claimed.merchantOrderId ?? claimed._id,
       amountPaise: claimed.amountPaise,
       redirectUrl: claimed.redirectUrl ?? redirectUrl,
       credentials,
       tenantId,
+      clientPlatform,
     });
     await EcommercePaymentAttempt.updateOne(
       {
@@ -204,11 +197,15 @@ async function initiateProviderForAttempt(attempt, order, redirectUrl, tenantId,
         $set: {
           status: EcommercePaymentAttemptStatus.INITIATED,
           providerOrderId: provider.providerOrderId,
-          sdkToken: provider.token ?? null,
-          providerPayload: mergePhonePeCheckoutProviderPayload(
-            claimed.providerPayload,
-            provider.checkoutRedirectUrl ?? provider.redirectUrl,
-          ),
+          merchantOrderId: provider.merchantOrderId ?? claimed.merchantOrderId ?? claimed._id,
+          sdkToken:
+            provider.phonePeCheckoutChannel === PhonePePersistedCheckoutChannel.SDK_ORDER
+              ? provider.token ?? null
+              : null,
+          providerPayload: mergePhonePeProviderInitPayload(claimed.providerPayload, {
+            checkoutChannel: provider.phonePeCheckoutChannel,
+            provider,
+          }),
           providerInitConfirmedAt: new Date(),
           operationalStatus: EcommercePaymentAttemptOperationalStatus.AWAITING_PROVIDER,
           gatewayReconcileNextAt: new Date(Date.now() + 60_000),
@@ -444,12 +441,14 @@ export async function createEcommercePaymentIntent(req) {
     throw errors.business("ORDER_NOT_PAYABLE", "Order is no longer awaiting payment.");
   }
 
+  const clientPlatform = String(req.headers["x-platform"] ?? req.headers["X-Platform"] ?? "").trim();
   return initiateProviderForAttempt(
     reserved.attempt,
     reserved.order,
     redirectUrl,
     req.auth.tenantId,
     reserved.kind === "NEW",
+    clientPlatform,
   );
 }
 

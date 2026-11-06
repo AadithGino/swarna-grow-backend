@@ -134,16 +134,21 @@ export const fixedSchemePay = async (req, res) => {
     const initiated = await payments.initiatePublicPayment({
       params: { linkToken: link.token },
       body: { redirectUrl: req.body.redirectUrl },
+      headers: req.headers,
     });
     const hostedUrl = initiated.redirectUrl ?? initiated.paymentUrl ?? null;
+    const sdkToken = initiated.token ?? null;
+    const checkoutKind = hostedUrl ? "HOSTED_REDIRECT" : sdkToken ? "SDK_ORDER" : base.checkoutKind;
     return sendSuccess(
       res,
       {
         ...base,
-        checkoutKind: hostedUrl ? "HOSTED_REDIRECT" : base.checkoutKind,
-        provider: hostedUrl ? "PHONEPE" : base.provider,
+        checkoutKind,
+        provider: checkoutKind ? "PHONEPE" : base.provider,
         paymentUrl: hostedUrl ?? undefined,
         gatewayUrl: hostedUrl ?? base.gatewayUrl,
+        token: sdkToken ?? undefined,
+        sdkToken: sdkToken ?? undefined,
         paymentId: initiated.paymentId ?? base.transactionId,
         statusPollUrl: `/app/payments/${link.id}/status`,
       },
@@ -160,6 +165,7 @@ export const createIntent = async (req, res) => {
     res,
     paymentIntentAppDto(created, {
       redirectUrl: created.redirectUrl,
+      token: created.token,
       paymentId: created.paymentId,
       providerOrderId: created.providerOrderId,
     }),

@@ -10,7 +10,8 @@ import {
 } from "../lib/digital-metals-checkout-init.js";
 import {
   mapPhonePeCustomerCheckoutResponse,
-  mergePhonePeCheckoutProviderPayload,
+  mergePhonePeProviderInitPayload,
+  PhonePePersistedCheckoutChannel,
   readPersistedPhonePeCheckoutRedirectUrl,
 } from "../lib/phonepe-customer-web-checkout.js";
 import { tenantForEcommerceCheckout } from "../lib/ecommerce-checkout-tenant.js";
@@ -218,13 +219,18 @@ export async function initiateRedemptionChargePayment(req) {
       {
         $set: {
           status: "INITIATED",
-          sdkToken: provider.token ?? null,
+          sdkToken:
+            provider.phonePeCheckoutChannel === PhonePePersistedCheckoutChannel.SDK_ORDER
+              ? provider.token ?? null
+              : null,
           redirectUrl: attempt.redirectUrl ?? redirectUrl,
           providerOrderId: provider.providerOrderId ?? provider.orderId ?? null,
-          providerPayload: mergePhonePeCheckoutProviderPayload(
-            attempt.providerPayload,
-            provider.checkoutRedirectUrl ?? provider.redirectUrl,
-          ),
+          merchantOrderId: provider.merchantOrderId ?? attempt.merchantOrderId ?? attempt._id,
+          providerPayload: mergePhonePeProviderInitPayload(attempt.providerPayload, {
+            checkoutChannel:
+              provider.phonePeCheckoutChannel ?? PhonePePersistedCheckoutChannel.SDK_ORDER,
+            provider,
+          }),
           checkoutMode,
         },
       },

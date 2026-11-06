@@ -40,11 +40,30 @@ function payButtonState(scheme, actions, paymentBlock) {
   return { enabled: true, reason: null, helperText: null };
 }
 
+function nextUnpaidInstallment(installments) {
+  const open = (installments ?? []).filter(
+    (r) => !["PAID", "WAIVED"].includes(r.status),
+  );
+  if (!open.length) return null;
+  open.sort((a, b) => String(a.dueDate ?? "").localeCompare(String(b.dueDate ?? "")));
+  return open[0];
+}
+
+function mapCustomerInstallmentSchedule(installments) {
+  return (installments ?? []).map((row) => ({
+    number: row.number,
+    dueDate: row.dueDate,
+    status: row.status,
+    amount: moneyRef(row.amountPaise ?? 0),
+    remaining: moneyRef(Math.max(0, (row.amountPaise ?? 0) - (row.paidPaise ?? 0))),
+  }));
+}
+
 function fixedProgress(scheme) {
   const installments = scheme.installments ?? [];
   const paid = installments.filter((r) => ["PAID", "WAIVED"].includes(r.status)).length;
   const total = installments.length || scheme.planSnapshot?.installmentCount || 0;
-  const next = installments.find((r) => !["PAID", "WAIVED"].includes(r.status));
+  const next = nextUnpaidInstallment(installments);
   return {
     installmentsPaid: paid,
     installmentsTotal: total,
@@ -538,6 +557,10 @@ export function mapCustomerSchemeDetail(raw) {
     lifecycleActions: ["DOWNLOAD_PASSBOOK", "VIEW_PLAN"],
     payableRange: raw.payableRange,
     payments,
+    installmentSchedule:
+      displayMode === "FIXED" && (raw.installments?.length ?? 0) > 0
+        ? mapCustomerInstallmentSchedule(raw.installments)
+        : undefined,
     version: raw.version ?? 1,
     positionVersion: raw.positionVersion ?? 0,
     helperText,

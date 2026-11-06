@@ -1,6 +1,5 @@
 import { AppError } from "./app-error.js";
-import { phonePeProvider } from "../integrations/phonepe.provider.js";
-import { initiatePhonePeCustomerWebCheckout } from "./phonepe-customer-web-checkout.js";
+import { initiatePhonePeCustomerCheckout } from "./phonepe-customer-checkout-init.js";
 import {
   assertPhonePeCredentialsForLiveCheckout,
   isPersistedMockCheckoutMode,
@@ -22,11 +21,6 @@ export function mapCheckoutFieldsForPaymentIntent(attempt) {
   };
 }
 
-function preferPhonePeSdkOrder(clientPlatform) {
-  const platform = String(clientPlatform ?? "").trim().toLowerCase();
-  return platform === "android" || platform === "ios";
-}
-
 /**
  * @param {{ merchantOrderId: string, amountPaise: number, redirectUrl: string, credentials: object, tenantId: string, demoProviderResult: (attempt: object) => object, attempt: object, clientPlatform?: string }}
  */
@@ -43,22 +37,13 @@ export async function initiateDigitalMetalsPhonePeCheckout({
   const policy = resolveDigitalMetalsCheckoutMode();
   if (policy === "LIVE_REQUIRED") {
     assertPhonePeCredentialsForLiveCheckout(credentials);
-    if (preferPhonePeSdkOrder(clientPlatform)) {
-      const provider = await phonePeProvider.createSdkOrder({
-        merchantOrderId,
-        amountPaise,
-        redirectUrl,
-        credentials,
-        tenantId,
-      });
-      return { provider, checkoutMode: "LIVE" };
-    }
-    const provider = await initiatePhonePeCustomerWebCheckout({
+    const provider = await initiatePhonePeCustomerCheckout({
       merchantOrderId,
       amountPaise,
       redirectUrl,
       credentials,
       tenantId,
+      clientPlatform,
     });
     return { provider, checkoutMode: "LIVE" };
   }

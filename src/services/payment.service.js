@@ -28,7 +28,10 @@ import {
   Tenant,
 } from "../models/index.js";
 import { createId } from "../lib/ids.js";
-import { gatewayMerchantOrderIdForInitiation } from "../lib/phonepe-gateway-merchant-order-id.js";
+import {
+  gatewayMerchantOrderIdForInitiation,
+  gatewayMerchantOrderIdWritePatch,
+} from "../lib/phonepe-gateway-merchant-order-id.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
@@ -51,7 +54,11 @@ import {
 } from "./scheme.service.js";
 import { currentGoldRate } from "./tenant.service.js";
 import { paginate } from "../lib/pagination.js";
-import { phonePeProvider } from "../integrations/phonepe.provider.js";
+import {
+  initiatePhonePeCustomerCheckout,
+  readClientPlatform,
+} from "../lib/phonepe-customer-checkout-init.js";
+import { mergePhonePeProviderInitPayload } from "../lib/phonepe-customer-web-checkout.js";
 import { nextSchemeLedgerSequence, nextSequence } from "./sequence.service.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import {
@@ -1402,14 +1409,16 @@ export async function initiateProviderForReservedIntent(req, reserved) {
     .lean();
   assertCustomerPaymentsEnabled(tenant);
   assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
-  const provider = await phonePeProvider.createPayment({
+  const credentials = await gatewayCredentials(reserved.tenantId);
+  const provider = await initiatePhonePeCustomerCheckout({
     merchantOrderId: reserved.intent._id,
     amountPaise: reserved.intent.amountPaise,
     redirectUrl: req.body.redirectUrl,
-    credentials: await gatewayCredentials(reserved.tenantId),
+    credentials,
     tenantId: reserved.tenantId,
-    ...customerCheckoutPreference(),
+    clientPlatform: readClientPlatform(req.headers),
   });
+  const paymentRow = await Payment.findById(reserved.paymentId).select("gatewayMerchantOrderId").lean();
   await Promise.all([
     PaymentIntent.updateOne(
       { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
@@ -1420,16 +1429,30 @@ export async function initiateProviderForReservedIntent(req, reserved) {
       {
         $set: {
           providerTransactionId: provider.providerOrderId,
-          gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(reserved.intent._id),
+          ...gatewayMerchantOrderIdWritePatch(paymentRow, reserved.intent._id),
         },
       },
     ),
   ]);
+  if (provider.providerOrderId || provider.token || provider.checkoutRedirectUrl) {
+    await Payment.updateOne(
+      { _id: reserved.paymentId, status: PaymentStatus.PENDING },
+      {
+        $set: {
+          providerPayload: mergePhonePeProviderInitPayload(undefined, {
+            checkoutChannel: provider.phonePeCheckoutChannel,
+            provider,
+          }),
+        },
+      },
+    );
+  }
   return {
     ...reserved.intent,
     paymentId: reserved.paymentId,
     providerOrderId: provider.providerOrderId,
-    redirectUrl: provider.redirectUrl,
+    redirectUrl: provider.checkoutRedirectUrl ?? provider.redirectUrl ?? null,
+    token: provider.token ?? null,
   };
 }
 export async function getPublicLink(token, markOpened = true) {
@@ -1542,14 +1565,6 @@ export function assertRedirectUrlAllowed(redirectUrl, tenant) {
   }
 }
 
-function customerCheckoutPreference() {
-  return {
-    preferUpiIntentOnly: env.PHONEPE_UPI_INTENT_ONLY === true,
-    upiApps: env.PHONEPE_UPI_APPS,
-    upiFlows: env.PHONEPE_UPI_FLOWS,
-  };
-}
-
 export async function initiatePublicPayment(req) {
   let link = await getPublicLink(req.params.linkToken, false);
   const tenant = await Tenant.findById(link.tenantId)
@@ -1614,13 +1629,13 @@ export async function initiatePublicPayment(req) {
   }
   link = claimed;
   try {
-    const provider = await phonePeProvider.createPayment({
+    const provider = await initiatePhonePeCustomerCheckout({
       merchantOrderId: link._id,
       amountPaise: link.amountPaise,
       redirectUrl: req.body.redirectUrl,
       credentials: await gatewayCredentials(link.tenantId),
       tenantId: link.tenantId,
-      ...customerCheckoutPreference(),
+      clientPlatform: readClientPlatform(req.headers),
     });
     const pending = await Payment.create({
       _id: createId("payment"),
@@ -1636,6 +1651,10 @@ export async function initiatePublicPayment(req) {
       status: PaymentStatus.PENDING,
       source: PaymentSource.CUSTOMER_APP,
       providerTransactionId: provider.providerOrderId,
+      providerPayload: mergePhonePeProviderInitPayload(undefined, {
+        checkoutChannel: provider.phonePeCheckoutChannel,
+        provider,
+      }),
       paidAt: new Date(),
     });
     const committed = await PaymentLink.updateOne(
@@ -1787,13 +1806,15 @@ export async function createSdkPaymentIntent(req) {
       .lean();
     assertCustomerPaymentsEnabled(tenant);
     assertRedirectUrlAllowed(req.body.redirectUrl, tenant);
-    const provider = await phonePeProvider.createSdkOrder({
+    const provider = await initiatePhonePeCustomerCheckout({
       merchantOrderId: reserved.intent._id,
       amountPaise: reserved.intent.amountPaise,
       redirectUrl: req.body.redirectUrl,
       credentials: await gatewayCredentials(reserved.tenantId),
       tenantId: reserved.tenantId,
+      checkoutChannel: "sdk",
     });
+    const paymentRow = await Payment.findById(reserved.paymentId).select("gatewayMerchantOrderId").lean();
     await Promise.all([
       PaymentIntent.updateOne(
         { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
@@ -1804,7 +1825,7 @@ export async function createSdkPaymentIntent(req) {
         {
           $set: {
             providerTransactionId: provider.providerOrderId,
-            gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(reserved.intent._id),
+            ...gatewayMerchantOrderIdWritePatch(paymentRow, reserved.intent._id),
           },
         },
       ),
@@ -1914,12 +1935,13 @@ export async function createFixedSdkPayment(req) {
     );
   }
   try {
-    const provider = await phonePeProvider.createSdkOrder({
+    const provider = await initiatePhonePeCustomerCheckout({
       merchantOrderId: claimed._id,
       amountPaise: claimed.amountPaise,
       redirectUrl: req.body.redirectUrl,
       credentials: await gatewayCredentials(claimed.tenantId),
       tenantId: claimed.tenantId,
+      checkoutChannel: "sdk",
     });
     const pending = await Payment.create({
       _id: createId("payment"),

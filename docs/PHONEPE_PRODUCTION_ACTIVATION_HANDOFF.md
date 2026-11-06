@@ -116,7 +116,9 @@ Enable **one product at a time** after sandbox/staging evidence. All require **l
 | Gateway | Tenant PhonePe credentials + **`environment: PRODUCTION`** |
 | Go-live | Tenant **`goLiveAt`** (boot sandbox check) |
 
-**Paths:** Payment links and SDK intents via `phonePeProvider.createPayment` / `createSdkOrder`; webhooks fall through to `PaymentIntent` / `PaymentLink` when merchant id is not ecommerce/DM-prefixed.
+**Paths:** All customer checkouts go through `initiatePhonePeCustomerCheckout()` (hosted `createPayment` or mobile `createSdkOrder`). **PhonePe merchant dashboard “Merchant Order ID”** must match our stored id: scheme `PaymentIntent._id` / `PaymentLink._id`, shop `EcommercePaymentAttempt.merchantOrderId` (defaults to `epay_*`), Digital Gold `DigitalMetal*PaymentAttempt.merchantOrderId`. **PhonePe “Order ID”** is persisted as `providerOrderId` / `providerPayload.phonePeProviderOrderId`. Webhooks and reconcile query by merchant order id — do not re-initiate the same attempt with a new id (idempotent replay returns the existing session).
+
+**Paths (legacy note):** webhooks fall through to `PaymentIntent` / `PaymentLink` when merchant id is not ecommerce/DM-prefixed.
 
 **Recovery jobs:** `phonepe-reconcile`, `expire-payments`, scheme refund reconcile services.
 

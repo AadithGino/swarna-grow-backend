@@ -20,13 +20,20 @@ export async function persistPhonePeVerifiedWebhook(args) {
       provider: rest.provider,
       providerEventId: { $in: identityAliases },
     })
-      .select("_id bodyDigest providerEventId")
+      .select("_id bodyDigest providerEventId payload")
       .lean();
     for (const legacyHit of legacyHits) {
       const digestReplay =
         Boolean(bodyDigest && legacyHit.bodyDigest && legacyHit.bodyDigest === bodyDigest);
-      const semanticReplay =
-        Boolean(semanticKey && phonePeWebhookSemanticKeysMatch(legacyHit.providerEventId, semanticKey));
+      const semanticReplay = Boolean(
+        semanticKey
+        && phonePeWebhookSemanticKeysMatch(
+          legacyHit.providerEventId,
+          semanticKey,
+          legacyHit.payload,
+          rest.tenantId,
+        ),
+      );
       if (digestReplay || semanticReplay) {
         incrementWebhookMetric(WebhookMetric.DUPLICATE);
         return null;

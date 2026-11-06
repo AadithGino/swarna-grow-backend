@@ -16,7 +16,8 @@ import { mapBuyOrderStatusDto } from "./digital-metals-buy-finalize.service.js";
 import { processWebhook } from "../workers/processors.js";
 import {
   mapPhonePeCustomerCheckoutResponse,
-  mergePhonePeCheckoutProviderPayload,
+  mergePhonePeProviderInitPayload,
+  PhonePePersistedCheckoutChannel,
   readPersistedPhonePeCheckoutRedirectUrl,
 } from "../lib/phonepe-customer-web-checkout.js";
 import { maybeReconcileLiveDigitalMetalBuyAttempt } from "./digital-metals-payment-reconcile.service.js";
@@ -338,11 +339,16 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
         $set: {
           status: "INITIATED",
           providerOrderId: provider.providerOrderId,
-          sdkToken: provider.token ?? null,
-          providerPayload: mergePhonePeCheckoutProviderPayload(
-            attempt.providerPayload,
-            provider.checkoutRedirectUrl ?? provider.redirectUrl,
-          ),
+          merchantOrderId: provider.merchantOrderId ?? attempt.merchantOrderId ?? attempt._id,
+          sdkToken:
+            provider.phonePeCheckoutChannel === PhonePePersistedCheckoutChannel.SDK_ORDER
+              ? provider.token ?? null
+              : null,
+          providerPayload: mergePhonePeProviderInitPayload(attempt.providerPayload, {
+            checkoutChannel:
+              provider.phonePeCheckoutChannel ?? PhonePePersistedCheckoutChannel.SDK_ORDER,
+            provider,
+          }),
           checkoutMode,
           gatewayReconcileNextAt: new Date(Date.now() + 60_000),
         },

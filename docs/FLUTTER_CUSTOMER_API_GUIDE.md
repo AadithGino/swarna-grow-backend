@@ -690,6 +690,7 @@ Rules:
 2. **Prefer the PhonePe Payment SDK** (Android/iOS) with `token` / `sdkToken` from the backend — do **not** open the system browser for mobile checkout.
 3. **Do not trust redirect URLs, deep links, or SDK callbacks alone for success.** Poll the backend **`statusPollUrl`** until a terminal state; webhooks + reconcile jobs are authoritative.
 4. **Reuse `X-Idempotency-Key`** when retrying the same user action after timeouts (same key + same body).
+5. **Send `X-Platform: android` or `X-Platform: ios` on every payment-intent POST** (shop, Digital Gold buy, redemption charges, flexible scheme `payment-intents`). The backend uses one initiation helper: mobile header → **`checkoutKind: SDK_ORDER`** + **`token`**; omit the header on **web** (Next.js customer portal) → **`HOSTED_REDIRECT`** + **`paymentUrl`**. Scheme **`/pay/sdk-order`** always returns SDK (no header required).
 
 Platform `.env` controls rollout only (`PROVIDER_MODE`, `PHONEPE_ENV`, ecommerce/digital-metals flags). Per-jeweller credentials are configured in **Platform → Payment gateway** and stored as `tenant.integrationSecrets.phonepe`.
 
@@ -801,6 +802,7 @@ GET /api/v1/app/payments/{paymentLinkId}/status
 ```http
 POST /api/v1/app/shop/orders/{orderId}/payment-intents
 X-Idempotency-Key: shop-pay-01
+X-Platform: android
 
 {
   "redirectUrl": "https://your.app/shop/payment-return",

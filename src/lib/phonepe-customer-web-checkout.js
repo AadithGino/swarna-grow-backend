@@ -10,7 +10,7 @@ export function customerPhonePeWebCheckoutOptions() {
   };
 }
 
-/** Standard hosted checkout for browser clients (Next.js). Flutter uses createSdkOrder instead. */
+/** Hosted PhonePe checkout (browser). Mobile SDK orders go through initiatePhonePeCustomerCheckout. */
 export async function initiatePhonePeCustomerWebCheckout({
   merchantOrderId,
   amountPaise,
@@ -32,6 +32,22 @@ export async function initiatePhonePeCustomerWebCheckout({
   };
 }
 
+export const PhonePePersistedCheckoutChannel = {
+  SDK_ORDER: "SDK_ORDER",
+  HOSTED_REDIRECT: "HOSTED_REDIRECT",
+};
+
+export function readPersistedPhonePeCheckoutChannel(row) {
+  const channel = row?.providerPayload?.phonePeCheckoutChannel;
+  if (
+    channel === PhonePePersistedCheckoutChannel.SDK_ORDER
+    || channel === PhonePePersistedCheckoutChannel.HOSTED_REDIRECT
+  ) {
+    return channel;
+  }
+  return null;
+}
+
 export function readPersistedPhonePeCheckoutRedirectUrl(attempt) {
   const fromPayload = attempt?.providerPayload?.checkoutRedirectUrl;
   if (typeof fromPayload === "string" && fromPayload.startsWith("http")) return fromPayload;
@@ -39,12 +55,22 @@ export function readPersistedPhonePeCheckoutRedirectUrl(attempt) {
 }
 
 export function mapPhonePeCustomerCheckoutResponse(row, phonePeEnvironment) {
-  const hostedUrl = readPersistedPhonePeCheckoutRedirectUrl(row);
-  const sdkToken = row.sdkToken ?? null;
+  const persistedChannel = readPersistedPhonePeCheckoutChannel(row);
+  let hostedUrl = readPersistedPhonePeCheckoutRedirectUrl(row);
+  let sdkToken = row.sdkToken ?? null;
+  if (persistedChannel === PhonePePersistedCheckoutChannel.SDK_ORDER) {
+    hostedUrl = null;
+  }
+  if (persistedChannel === PhonePePersistedCheckoutChannel.HOSTED_REDIRECT) {
+    sdkToken = null;
+  }
   const peEnv = phonePeEnvironment ?? env.PHONEPE_ENV;
   const paymentUrl =
     hostedUrl ?? (sdkToken ? phonePeSdkWebGatewayUrl(sdkToken, peEnv) : null);
-  const checkoutKind = hostedUrl ? "HOSTED_REDIRECT" : sdkToken ? "SDK_ORDER" : null;
+  const checkoutKind =
+    persistedChannel
+    ?? (hostedUrl ? PhonePePersistedCheckoutChannel.HOSTED_REDIRECT : null)
+    ?? (sdkToken ? PhonePePersistedCheckoutChannel.SDK_ORDER : null);
   return {
     checkoutKind,
     provider: checkoutKind ? "PHONEPE" : null,
@@ -52,10 +78,43 @@ export function mapPhonePeCustomerCheckoutResponse(row, phonePeEnvironment) {
     sdkToken,
     gatewayUrl: paymentUrl,
     paymentUrl,
+    providerOrderId:
+      row.providerOrderId
+      ?? row?.providerPayload?.phonePeProviderOrderId
+      ?? null,
   };
 }
 
+/** @deprecated Prefer mergePhonePeProviderInitPayload */
 export function mergePhonePeCheckoutProviderPayload(existing, checkoutRedirectUrl) {
   if (!checkoutRedirectUrl) return existing ?? undefined;
-  return { ...(existing && typeof existing === "object" ? existing : {}), checkoutRedirectUrl };
+  return mergePhonePeProviderInitPayload(existing, {
+    checkoutChannel: PhonePePersistedCheckoutChannel.HOSTED_REDIRECT,
+    provider: { checkoutRedirectUrl, redirectUrl: checkoutRedirectUrl },
+  });
+}
+
+/**
+ * Persist PhonePe initiation snapshot for dashboard support + stable client mapping.
+ * `merchantOrderId` sent to PhonePe must equal `phonePeProviderOrderId`'s order sibling field
+ * on the attempt/payment row — reconcile uses merchantOrderId, dashboard search uses the same.
+ */
+export function mergePhonePeProviderInitPayload(existing, { checkoutChannel, provider }) {
+  const base = existing && typeof existing === "object" ? { ...existing } : {};
+  const hostedUrl =
+    checkoutChannel === PhonePePersistedCheckoutChannel.HOSTED_REDIRECT
+      ? provider?.checkoutRedirectUrl ?? provider?.redirectUrl ?? null
+      : null;
+  if (checkoutChannel === PhonePePersistedCheckoutChannel.SDK_ORDER) {
+    delete base.checkoutRedirectUrl;
+  }
+  const next = {
+    ...base,
+    phonePeCheckoutChannel: checkoutChannel,
+    phonePeProviderOrderId: provider?.providerOrderId ?? base.phonePeProviderOrderId ?? null,
+    phonePeExpireAt: provider?.expireAt ?? base.phonePeExpireAt ?? null,
+    phonePeInitiatedAt: base.phonePeInitiatedAt ?? new Date().toISOString(),
+  };
+  if (hostedUrl) next.checkoutRedirectUrl = hostedUrl;
+  return next;
 }

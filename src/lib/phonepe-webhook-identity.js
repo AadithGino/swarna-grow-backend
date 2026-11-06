@@ -5,22 +5,30 @@ import {
   phonePeCallbackTransactionId,
 } from "../integrations/phonepe.provider.js";
 
-function stablePayloadDigest(payload = {}, rawBody) {
-  if (rawBody?.length) {
-    return crypto.createHash("sha256").update(rawBody).digest("hex");
-  }
+/** Audit-only digest of raw bytes (not used for event identity). */
+export function phonePeWebhookRawBodyAuditDigest(rawBody) {
+  if (!rawBody?.length) return null;
+  const buf = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody), "utf8");
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+function stablePayloadDigest(payload = {}) {
   const canonical = JSON.stringify(payload ?? {});
   return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
-/** PhonePe documented webhook correlation ids only (not generic payload.id). */
+/**
+ * PhonePe may supply eventId/callbackId on some callbacks; scope is provider-defined and not
+ * assumed globally unique across event types or lifecycle states.
+ */
 function documentedUniqueProviderEventId(payload = {}) {
   const candidate = payload.eventId ?? payload.callbackId;
   if (candidate == null || candidate === "") return null;
   return String(candidate);
 }
 
-export function canonicalPhonePeSemanticEventId({ tenantId, type, payload = {}, rawBody = null }) {
+/** Deterministic identity from normalized callback fields (whitespace/key order insensitive). */
+export function canonicalPhonePeSemanticEventId({ tenantId, type, payload = {} }) {
   const reference = phonePeCallbackReference(payload) ?? payload.orderId ?? "unknown-order";
   const transactionId = phonePeCallbackTransactionId(payload) ?? "no-txn";
   const typeKey = callbackTypeKey(type) ?? "UNKNOWN";
@@ -29,8 +37,7 @@ export function canonicalPhonePeSemanticEventId({ tenantId, type, payload = {}, 
     ?? payload.paymentDetails?.[0]?.state
     ?? payload.status
     ?? "unknown-state";
-  const digest = stablePayloadDigest(payload, rawBody).slice(0, 32);
-  return `pe:${tenantId}:${typeKey}:${reference}:${transactionId}:${state}:${digest}`;
+  return `pe:${tenantId}:${typeKey}:${reference}:${transactionId}:${state}`;
 }
 
 /**
@@ -50,13 +57,13 @@ export function buildPhonePeWebhookEventId({
   tenantId,
   type,
   payload = {},
-  rawBody = null,
+  rawBody: _rawBody = null,
 }) {
   const documented = documentedUniqueProviderEventId(payload);
   if (documented) {
     return `pe:${tenantId}:${documented}`;
   }
-  return canonicalPhonePeSemanticEventId({ tenantId, type, payload, rawBody });
+  return canonicalPhonePeSemanticEventId({ tenantId, type, payload });
 }
 
 export function phonePeWebhookEventIdentityCandidates({
@@ -68,10 +75,28 @@ export function phonePeWebhookEventIdentityCandidates({
   const primary = buildPhonePeWebhookEventId({ tenantId, type, payload, rawBody });
   const legacy = buildPhonePeLegacyWebhookEventId({ tenantId, payload });
   const aliases = legacy && legacy !== primary ? [legacy] : [];
-  return { primary, aliases, semanticKey: canonicalPhonePeSemanticEventId({ tenantId, type, payload, rawBody }) };
+  return {
+    primary,
+    aliases,
+    semanticKey: canonicalPhonePeSemanticEventId({ tenantId, type, payload }),
+    bodyDigest: phonePeWebhookRawBodyAuditDigest(rawBody) ?? stablePayloadDigest(payload).slice(0, 64),
+  };
 }
 
-export function phonePeWebhookSemanticKeysMatch(storedProviderEventId, semanticKey) {
-  if (!storedProviderEventId || !semanticKey) return false;
-  return storedProviderEventId === semanticKey;
+export function phonePeSemanticEventIdFromStoredPayload(tenantId, storedPayload) {
+  if (!storedPayload || typeof storedPayload !== "object") return null;
+  const inner = storedPayload.payload && typeof storedPayload.payload === "object"
+    ? storedPayload.payload
+    : storedPayload;
+  const type = storedPayload.type ?? inner.type;
+  if (!type) return null;
+  return canonicalPhonePeSemanticEventId({ tenantId, type, payload: inner });
+}
+
+export function phonePeWebhookSemanticKeysMatch(storedProviderEventId, semanticKey, storedPayload, tenantId) {
+  if (!semanticKey) return false;
+  if (storedProviderEventId === semanticKey) return true;
+  const fromPayload = phonePeSemanticEventIdFromStoredPayload(tenantId, storedPayload);
+  if (fromPayload && fromPayload === semanticKey) return true;
+  return false;
 }
