@@ -1,6 +1,6 @@
 import { createId } from "../lib/ids.js";
 import { errors } from "../lib/app-error.js";
-import { storageProvider } from "../integrations/storage.provider.js";
+import { prefixStorageObjectKey, storageProvider } from "../integrations/storage.provider.js";
 import {
   renderDigitalMetalBuyInvoicePdfBuffer,
   streamDigitalMetalBuyInvoicePdf,
@@ -96,7 +96,7 @@ export async function processDigitalMetalPurchaseInvoiceRequest({ tenantId, orde
   try {
     const pdf = await renderDigitalMetalBuyInvoicePdfBuffer({ order, tenant, customer });
     const uploadId = createId("upload");
-    const objectKey = `${tenantId}/digital_metal_invoice/${uploadId}/invoice.pdf`;
+    const objectKey = prefixStorageObjectKey(`${tenantId}/digital_metal_invoice/${uploadId}/invoice.pdf`);
     await storageProvider.uploadFile({
       objectKey,
       body: pdf,

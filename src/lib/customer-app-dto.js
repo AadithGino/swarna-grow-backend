@@ -54,6 +54,8 @@ export function tenantBrandingDto(tenant) {
   const branding = tenant.branding ?? {};
   const primary = branding.primaryColor ?? "#730321";
   const accent = branding.accentColor ?? "#C9A227";
+  const mc = tenant.integrationSecrets?.messageCentral;
+  const mcVerified = Boolean(mc?.verifiedAt);
   return {
     tenantCode: tenant.code,
     displayName: branding.displayName ?? tenant.name,
@@ -63,8 +65,9 @@ export function tenantBrandingDto(tenant) {
     accentColor: accent,
     foregroundColor: branding.foregroundColor ?? "#FFFFFF",
     contrastColor: branding.contrastColor ?? primary,
-    otpLength: tenant.integrationSecrets?.messageCentral?.verifiedAt ? Number(tenant.integrationSecrets.messageCentral.otpLength ?? 6) : 6,
-    authCountryCode: "91",
+    otpLength: mcVerified ? Number(mc.otpLength ?? 6) : 6,
+    /** Indian SMS only unless Message Central is verified (UAE selection is not implied). */
+    authCountryCode: mcVerified ? String(mc.countryCode ?? "91").replace(/\D/g, "") || "91" : "91",
     supportNumber: tenant.supportNumber ?? tenant.mobile ?? null,
     city: tenant.city ?? branding.city ?? null,
     ...tenantPortalCapabilitiesDto(tenant),
@@ -89,6 +92,8 @@ export function otpRequestDto(payload) {
     attemptsAllowed: payload.attemptsAllowed ?? 5,
     isRegistered: Boolean(payload.isRegistered),
     expiresInSeconds: payload.expiresInSeconds,
+    otpLength: payload.otpLength != null ? Number(payload.otpLength) : undefined,
+    authCountryCode: payload.authCountryCode != null ? String(payload.authCountryCode) : undefined,
   };
 }
 

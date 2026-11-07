@@ -31,7 +31,8 @@ This guide was derived from the current route registrations, Zod validators, DTO
 Content-Type: application/json
 Authorization: Bearer <accessToken>       # authenticated routes
 X-Idempotency-Key: <8-to-128-char-key>    # state-changing routes marked idempotent
-X-Platform: android                        # recommended: android | ios
+X-Platform: android                        # recommended: android | ios (payment-intent routes)
+X-Checkout-Channel: auto                   # optional: auto | sdk | hosted — see §8.1
 X-App-Version: 1.0.0                       # recommended
 ```
 
@@ -690,7 +691,8 @@ Rules:
 2. **Prefer the PhonePe Payment SDK** (Android/iOS) with `token` / `sdkToken` from the backend — do **not** open the system browser for mobile checkout.
 3. **Do not trust redirect URLs, deep links, or SDK callbacks alone for success.** Poll the backend **`statusPollUrl`** until a terminal state; webhooks + reconcile jobs are authoritative.
 4. **Reuse `X-Idempotency-Key`** when retrying the same user action after timeouts (same key + same body).
-5. **Send `X-Platform: android` or `X-Platform: ios` on every payment-intent POST** (shop, Digital Gold buy, redemption charges, flexible scheme `payment-intents`). The backend uses one initiation helper: mobile header → **`checkoutKind: SDK_ORDER`** + **`token`**; omit the header on **web** (Next.js customer portal) → **`HOSTED_REDIRECT`** + **`paymentUrl`**. Scheme **`/pay/sdk-order`** always returns SDK (no header required).
+5. **Checkout routing:** On payment-intent style routes (shop `…/payment-intents`, Digital Gold buy/redemption charges, flexible scheme `…/payment-intents`), send **`X-Platform: android`** or **`X-Platform: ios`** so the default is native SDK (**`checkoutKind: SDK_ORDER`**, **`token`**). Omit **`X-Platform`** on **web** (browser) so the default is hosted (**`HOSTED_REDIRECT`**, **`paymentUrl`**). **Optional `X-Checkout-Channel`** (case-insensitive): omit or **`auto`** = same as above; **`sdk`** = always SDK token path; **`hosted`** = always browser redirect (useful on mobile when you must open hosted checkout before native SDK is wired, e.g. iOS bridge). Invalid values → **`400`** validation on field **`x-checkout-channel`**. **Dedicated SDK routes** (`POST …/pay/sdk-order`, `createSdkPaymentIntent`, fixed-link SDK pay) **always** use SDK — the header is ignored there.
+6. **Return URL:** Hosted flows require body **`redirectUrl`** (https origin allowed per tenant/CORS). After PhonePe redirects the user back, **poll `statusPollUrl`** until a terminal state; do not trust the return URL alone.
 
 Platform `.env` controls rollout only (`PROVIDER_MODE`, `PHONEPE_ENV`, ecommerce/digital-metals flags). Per-jeweller credentials are configured in **Platform → Payment gateway** and stored as `tenant.integrationSecrets.phonepe`.
 

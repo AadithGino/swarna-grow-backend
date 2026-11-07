@@ -221,11 +221,12 @@ test('R20: provider validation uses the delivered OTP length and rejects wrong-l
       return JSON.stringify({responseCode:200,data:{verificationId:'length-test'}});
     }})};
   const sent=await otpProvider.send(params,deps);
-  assert.equal(await otpProvider.validate({...params,otp:'123456',otpId:sent.otpId},deps),false);
+  assert.equal((await otpProvider.validate({...params,otp:'123456',otpId:sent.otpId},deps)).ok,false);
   assert.equal(validations,0);
-  assert.equal(await otpProvider.validate({...params,otp:'1234',otpId:sent.otpId},deps),true);
+  assert.equal((await otpProvider.validate({...params,otp:'1234',otpId:sent.otpId},deps)).ok,true);
   assert.equal(validations,1);
-  await otpProvider.consume(params);
+  assert.equal(await otpProvider.verify({...params,otp:'1234',otpId:sent.otpId},deps),true);
+  assert.ok(validations >= 1);
 });
 
 test('R15: defaulting sweep fences a selected financial version too',async t=>{

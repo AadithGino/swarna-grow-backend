@@ -16,8 +16,11 @@ Every section below includes **example requests and responses** as returned by t
 GET /api/v1/app/...
 Authorization: Bearer eyJ...
 X-Platform: android
+X-Checkout-Channel: auto
 X-App-Version: 1.2.0
 ```
+
+Payment-intent POSTs may set **`X-Checkout-Channel`** to `auto` (default), `sdk`, or `hosted` to override SDK vs browser checkout; see **`docs/FLUTTER_CUSTOMER_API_GUIDE.md` §8** and **`docs/FLUTTER_PHONEPE_INTEGRATION.md` §1.1**. The browser customer portal sends **`X-Checkout-Channel: hosted`** so checkout stays redirect-based even if `X-Platform` is present.
 
 ### Mutations (required)
 

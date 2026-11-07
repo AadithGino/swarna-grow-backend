@@ -291,7 +291,6 @@ export async function seedNobleJewelleryExtras(ctx, deps) {
       customers: customers.slice(offset, offset + 4),
     })),
   );
-  offset += 4;
 
   if (staffCtx) {
     logStep("Pending cash handover for Cash control demo");
@@ -329,7 +328,6 @@ export async function seedNobleJewelleryDemoMatrix(ctx, deps) {
   }
 
   const summary = [];
-  const plans = [swarna, akshaya, tritiya];
 
   if (matrixMode === "extras-only") {
     return seedNobleJewelleryExtras(ctx, deps);

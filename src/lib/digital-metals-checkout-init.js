@@ -33,6 +33,7 @@ export async function initiateDigitalMetalsPhonePeCheckout({
   demoProviderResult,
   attempt,
   clientPlatform,
+  checkoutChannel = "auto",
 }) {
   const policy = resolveDigitalMetalsCheckoutMode();
   if (policy === "LIVE_REQUIRED") {
@@ -44,6 +45,7 @@ export async function initiateDigitalMetalsPhonePeCheckout({
       credentials,
       tenantId,
       clientPlatform,
+      checkoutChannel,
     });
     return { provider, checkoutMode: "LIVE" };
   }

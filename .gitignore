@@ -1,4 +1,5 @@
 node_modules
+.phase1-isolated/
 .mock-storage/
 .env
 .env.*

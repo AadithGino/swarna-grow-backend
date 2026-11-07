@@ -13,7 +13,10 @@ import { assertOrderPaymentBoundary } from "../lib/ecommerce-order-payment-bound
 import { EcommercePaymentAttemptOperationalStatus } from "../constants/enums.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
 import { resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
-import { initiatePhonePeCustomerCheckout } from "../lib/phonepe-customer-checkout-init.js";
+import {
+  initiatePhonePeCustomerCheckout,
+  readCheckoutChannel,
+} from "../lib/phonepe-customer-checkout-init.js";
 import {
   mapPhonePeCustomerCheckoutResponse,
   mergePhonePeProviderInitPayload,
@@ -90,6 +93,7 @@ async function initiateProviderForAttempt(
   tenantId,
   created,
   clientPlatform,
+  checkoutChannel,
 ) {
   if (["FAILED", "SUCCEEDED"].includes(attempt.status)) {
     throw errors.business(
@@ -184,6 +188,7 @@ async function initiateProviderForAttempt(
       credentials,
       tenantId,
       clientPlatform,
+      checkoutChannel,
     });
     await EcommercePaymentAttempt.updateOne(
       {
@@ -442,6 +447,7 @@ export async function createEcommercePaymentIntent(req) {
   }
 
   const clientPlatform = String(req.headers["x-platform"] ?? req.headers["X-Platform"] ?? "").trim();
+  const checkoutChannel = readCheckoutChannel(req.headers);
   return initiateProviderForAttempt(
     reserved.attempt,
     reserved.order,
@@ -449,6 +455,7 @@ export async function createEcommercePaymentIntent(req) {
     req.auth.tenantId,
     reserved.kind === "NEW",
     clientPlatform,
+    checkoutChannel,
   );
 }
 

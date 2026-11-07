@@ -522,10 +522,12 @@ async function refreshFixedSchemeGatewayPoll(link, payment, { pollSource = "CUST
   }
   let refreshed = await Payment.findById(payment._id).lean();
   if (refreshed?.status === "PENDING") {
-    const { detachStalePendingFixedHoldsAfterReconcile } =
-      await import("../lib/fixed-payment-reservation.js");
+    const {
+      detachStalePendingFixedHoldsAfterReconcile,
+      FIXED_GATEWAY_CHECKOUT_GRACE_MS,
+    } = await import("../lib/fixed-payment-reservation.js");
     await detachStalePendingFixedHoldsAfterReconcile(link.tenantId, link.schemeId, {
-      graceMs: 0,
+      graceMs: FIXED_GATEWAY_CHECKOUT_GRACE_MS,
     });
     refreshed = await Payment.findById(payment._id).lean();
   }

@@ -40,7 +40,29 @@ export const SECRET_DEFAULTS = Object.freeze({
 
 const REQUIRED_PRODUCTION_SECRETS = Object.keys(SECRET_DEFAULTS);
 
+/** Map common AWS_* ops names onto S3_* fields expected by the app. */
+export function normalizeStorageEnvAliases(source = process.env) {
+  const env = { ...source };
+  const apply = (target, ...aliases) => {
+    if (String(env[target] ?? "").trim()) return;
+    for (const key of aliases) {
+      const value = String(env[key] ?? "").trim();
+      if (value) {
+        env[target] = value;
+        return;
+      }
+    }
+  };
+  apply("S3_REGION", "AWS_REGION");
+  apply("S3_BUCKET", "AWS_S3_BUCKET", "AWS_BUCKET");
+  apply("S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID");
+  apply("S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY");
+  apply("S3_KEY_PREFIX", "AWS_S3_PREFIX", "S3_PREFIX");
+  return env;
+}
+
 export function parseEnv(source = process.env) {
+  const normalized = normalizeStorageEnvAliases(source);
   return z.object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     PORT: z.coerce.number().int().positive().default(4000),
@@ -69,7 +91,22 @@ export function parseEnv(source = process.env) {
     PHONEPE_UPI_APPS: csvString,
     PHONEPE_UPI_FLOWS: upiFlowsString,
     WHATSAPP_BASE_URL: z.string().default(""), WHATSAPP_ACCESS_TOKEN: z.string().default(""), WHATSAPP_APP_SECRET: z.string().default(""),
-    OTP_PROVIDER: z.enum(["mock", "msg91", "message_central"]).default("mock"), OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+    OTP_PROVIDER: z.enum(["mock", "msg91", "message_central"]).default("mock"),
+    OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+    OTP_RESEND_COOLDOWN_SECONDS: boundedInt(5, 600, 30),
+    OTP_MAX_ATTEMPTS: boundedInt(1, 20, 5),
+    /** Exclusive verify lease for Message Central (slow path must not block resend/replace). */
+    OTP_MC_VERIFY_LEASE_MS: boundedInt(5_000, 120_000, 45_000),
+    /** Exclusive lease while issuing customer/session after OTP validation (AUD-04). */
+    OTP_SESSION_ISSUE_LEASE_MS: boundedInt(5_000, 300_000, 120_000),
+    /** In-flight lock for concurrent send to same scope (cooldown path + new challenge gate). */
+    OTP_SEND_INFLIGHT_LEASE_MS: boundedInt(1_000, 120_000, 30_000),
+    /** Sliding window (seconds) for aggregate send budgets (AUD-05). */
+    OTP_BUDGET_WINDOW_SECONDS: boundedInt(60, 3_600, 900),
+    OTP_BUDGET_MAX_PER_DESTINATION: boundedInt(1, 500, 30),
+    OTP_BUDGET_MAX_PER_IP: boundedInt(1, 5_000, 120),
+    OTP_BUDGET_MAX_PER_TENANT: boundedInt(1, 5_000, 200),
+    OTP_BUDGET_MAX_PER_PROVIDER: boundedInt(1, 50_000, 2_000),
     MESSAGE_CENTRAL_BASE_URL: z.string().default("https://cpaas.messagecentral.com"),
     MESSAGE_CENTRAL_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
     /** Pre-tenant merchant signup OTP (VerifyNow platform scope). */
@@ -90,6 +127,7 @@ export function parseEnv(source = process.env) {
     MSG91_DEFAULT_COUNTRY_CODE: z.string().default("91"),
     MSG91_SMS_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
+    S3_KEY_PREFIX: z.string().default(""),
     S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""),     FCM_PROJECT_ID: z.string().default(""),
     FCM_SERVICE_ACCOUNT_JSON: z.string().default(""),
     FCM_SHARED_PROJECT_ENABLED: booleanString,
@@ -192,45 +230,45 @@ export function parseEnv(source = process.env) {
     ASSISTANT_PRICE_OUTPUT_PER_M: z.string().default(""),
     ASSISTANT_PRICE_CACHED_PER_M: z.string().default(""),
   }).superRefine((_value, context) => {
-    const nodeEnv = source.NODE_ENV ?? "development";
+    const nodeEnv = normalized.NODE_ENV ?? "development";
     if (nodeEnv !== "production") return;
     const offending = [];
     for (const key of REQUIRED_PRODUCTION_SECRETS) {
-      const raw = source[key];
+      const raw = normalized[key];
       if (raw == null || String(raw).trim() === "" || raw === SECRET_DEFAULTS[key]) offending.push(key);
     }
-    const redisRequired = source.REDIS_REQUIRED ?? "false";
+    const redisRequired = normalized.REDIS_REQUIRED ?? "false";
     if (redisRequired !== "true") offending.push("REDIS_REQUIRED");
-    const rateLimitEnabled = source.RATE_LIMIT_ENABLED ?? "true";
+    const rateLimitEnabled = normalized.RATE_LIMIT_ENABLED ?? "true";
     if (rateLimitEnabled !== "true") offending.push("RATE_LIMIT_ENABLED");
-    const providerMode = source.PROVIDER_MODE ?? "mock";
+    const providerMode = normalized.PROVIDER_MODE ?? "mock";
     if (providerMode !== "live") offending.push("PROVIDER_MODE");
-    const otpProvider = source.OTP_PROVIDER ?? "mock";
+    const otpProvider = normalized.OTP_PROVIDER ?? "mock";
     if (otpProvider === "mock") offending.push("OTP_PROVIDER");
     if (otpProvider === "msg91") {
       for (const key of ["MSG91_AUTH_KEY", "MSG91_OTP_TEMPLATE_ID", "MSG91_SENDER_ID"]) {
-        const raw = source[key];
+        const raw = normalized[key];
         if (raw == null || String(raw).trim() === "") offending.push(key);
       }
     }
     if (otpProvider === "message_central") {
       /* Per-tenant Message Central credentials; no platform-wide MSG91 keys required. */
     }
-    const phonePeEnv = source.PHONEPE_ENV ?? "SANDBOX";
+    const phonePeEnv = normalized.PHONEPE_ENV ?? "SANDBOX";
     if (phonePeEnv !== "PRODUCTION") offending.push("PHONEPE_ENV");
-    const sharedFcm = source.FCM_SHARED_PROJECT_ENABLED ?? "false";
-    if (sharedFcm === "true" && !fcmEnvConfigured(source)) {
+    const sharedFcm = normalized.FCM_SHARED_PROJECT_ENABLED ?? "false";
+    if (sharedFcm === "true" && !fcmEnvConfigured(normalized)) {
       offending.push("FCM_PROJECT_ID", "FCM_SERVICE_ACCOUNT_JSON");
     }
     for (const key of ["S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]) {
-      const raw = source[key];
+      const raw = normalized[key];
       if (raw == null || String(raw).trim() === "") offending.push(key);
     }
-    if (!source.MALWARE_SCAN_URL) offending.push("MALWARE_SCAN_URL");
-    const corsOrigins = source.CORS_ORIGINS ?? "http://localhost:3000,http://localhost:5173,http://localhost:5174";
+    if (!normalized.MALWARE_SCAN_URL) offending.push("MALWARE_SCAN_URL");
+    const corsOrigins = normalized.CORS_ORIGINS ?? "http://localhost:3000,http://localhost:5173,http://localhost:5174";
     if (corsOrigins === "http://localhost:3000,http://localhost:5173,http://localhost:5174") offending.push("CORS_ORIGINS");
     for (const key of ["PUBLIC_BASE_URL", "EXPORT_BASE_URL"]) {
-      const raw = source[key];
+      const raw = normalized[key];
       try {
         const url = new URL(raw);
         if (url.protocol !== "https:" || ["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname)) offending.push(key);
@@ -245,7 +283,7 @@ export function parseEnv(source = process.env) {
         path: offending,
       });
     }
-  }).safeParse(source);
+  }).safeParse(normalized);
 }
 
 const parsed = parseEnv(process.env);

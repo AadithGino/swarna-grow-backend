@@ -18,13 +18,14 @@ export const logout = async (req, res) => { await auth.logout(req.auth, req.body
 export const logoutAll = async (req, res) => { await auth.logoutAll(req.auth); sendSuccess(res, { loggedOut: true }); };
 export const devices = async (req, res) => sendSuccess(res, await Session.find({ tenantId: req.auth.tenantId ?? null, $or: [{ userId: req.auth.id }, { customerId: req.auth.id }], revokedAt: null }).select("deviceId platform appVersion lastUsedAt createdAt expiresAt").lean());
 export const revokeDevice = async (req, res) => { await Session.updateMany({ tenantId: req.auth.tenantId ?? null, $or: [{ userId: req.auth.id }, { customerId: req.auth.id }], deviceId: req.params.deviceId }, { $set: { revokedAt: new Date() } }); sendSuccess(res, { revoked: true }); };
-export const requestOtp = async (req, res) => sendSuccess(res, await auth.requestOtp(req.body), {}, 202);
-export const forgotPassword = async (req, res) => sendSuccess(res, await auth.forgotPassword(req.body), {}, 202);
+export const requestOtp = async (req, res) => sendSuccess(res, await auth.requestOtp(req.body, req), {}, 202);
+export const forgotPassword = async (req, res) => sendSuccess(res, await auth.forgotPassword(req.body, req), {}, 202);
 export const verifyOtp = async (req, res) => sendSuccess(res, await auth.verifyCustomerOtp(req.body, req));
 export const loginCustomerPassword = async (req, res) =>
   sendSuccess(res, await auth.loginCustomerPassword(req.body, req));
-export const signupStart = async (req, res) => sendSuccess(res, await signup.startSignup(req.body), {}, 201);
-export const signupVerify = async (req, res) => sendSuccess(res, await signup.verifySignupOtp(req.body.signupId, req.body.otp));
+export const signupStart = async (req, res) => sendSuccess(res, await signup.startSignup(req.body, req), {}, 201);
+export const signupVerify = async (req, res) =>
+  sendSuccess(res, await signup.verifySignupOtp(req.body.signupId, req.body.otp, req.body.otpId));
 export const signupPlans = async (_req, res) => sendSuccess(res, await signup.listPublicSignupPlans());
 export const selectSignupPlan = async (req, res) => sendSuccess(res, await signup.selectSignupPlan(req.params.signupId, req.body));
 export const signupPayment = async (req, res) => sendSuccess(res, await signup.initiateSignupPayment(req.params.signupId, req.body));

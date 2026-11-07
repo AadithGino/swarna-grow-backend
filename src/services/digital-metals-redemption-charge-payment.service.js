@@ -8,6 +8,7 @@ import {
   isMockDigitalMetalsPaymentAttempt,
   mapCheckoutFieldsForPaymentIntent,
 } from "../lib/digital-metals-checkout-init.js";
+import { readCheckoutChannel } from "../lib/phonepe-customer-checkout-init.js";
 import {
   mapPhonePeCustomerCheckoutResponse,
   mergePhonePeProviderInitPayload,
@@ -178,6 +179,7 @@ export async function initiateRedemptionChargePayment(req) {
   const credentials = resolvePhonePeCredentials(tenant);
   const phonePeEnvironment = credentials?.environment ?? undefined;
   const clientPlatform = String(req.headers["x-platform"] ?? "").trim();
+  const checkoutChannel = readCheckoutChannel(req.headers);
   const attempt = result.attempt;
 
   const persistedCheckoutUrl = readPersistedPhonePeCheckoutRedirectUrl(attempt);
@@ -213,6 +215,7 @@ export async function initiateRedemptionChargePayment(req) {
       demoProviderResult: demoRedemptionCheckoutProviderResult,
       attempt,
       clientPlatform,
+      checkoutChannel,
     });
     await DigitalMetalRedemptionPaymentAttempt.updateOne(
       { _id: attempt._id, status: { $in: ["PENDING", "INITIATED"] } },

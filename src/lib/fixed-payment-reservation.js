@@ -25,7 +25,8 @@ import { resolveGatewayMerchantOrderIdFromRows } from "./phonepe-gateway-merchan
 
 export const FIXED_RESERVATION_TTL_MS = 30 * 60_000;
 /** While a customer is still on PhonePe, keep the instalment hold briefly. */
-export const FIXED_GATEWAY_CHECKOUT_GRACE_MS = 45_000;
+/** Hosted PhonePe checkout window (~5 min on merchant page); do not fail PENDING before this. */
+export const FIXED_GATEWAY_CHECKOUT_GRACE_MS = 5 * 60_000;
 
 function merchantOrderIdForGatewayPayment(payment, intent, link = null) {
   return resolveGatewayMerchantOrderIdFromRows(payment, { intent, link }) ?? null;

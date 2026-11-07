@@ -28,8 +28,15 @@ function boundIntent(intent, payment) {
 export function inferGatewayMerchantOrderIdFromCheckoutFlow(payment, { intent = null, link = null } = {}) {
   const bl = boundLink(link, payment);
   const bi = boundIntent(intent, payment);
+  const stored = payment?.gatewayMerchantOrderId ? String(payment.gatewayMerchantOrderId) : null;
   if (bl) return String(bl._id);
-  if (bi) return String(bi._id);
+  if (bi) {
+    if (isFixedReservationIntent(bi)) {
+      if (stored && stored === String(bi._id)) return stored;
+      return null;
+    }
+    return String(bi._id);
+  }
   return null;
 }
 
@@ -40,7 +47,10 @@ function verifiedPendingReceiptRef(payment, { intent = null, link = null } = {})
   const bi = boundIntent(intent, payment);
   if (bl && String(bl._id) === receiptRef) return receiptRef;
   if (bi && String(bi._id) === receiptRef) {
-    if (bl && isFixedReservationIntent(bi)) return null;
+    if (isFixedReservationIntent(bi)) {
+      const stored = payment?.gatewayMerchantOrderId ? String(payment.gatewayMerchantOrderId) : null;
+      return stored === receiptRef ? receiptRef : null;
+    }
     return receiptRef;
   }
   return null;
@@ -63,6 +73,26 @@ export function collectGatewayMerchantOrderIdCandidates(payment, { intent = null
   if (receiptVerified) candidates.add(receiptVerified);
 
   const list = [...candidates];
+  const receiptRef = pendingReceiptMerchantRef(payment.receiptNumber);
+  const bi = boundIntent(intent, payment);
+  if (
+    list.length === 0
+    && receiptRef
+    && bi
+    && isFixedReservationIntent(bi)
+    && String(bi._id) === receiptRef
+    && !stored
+  ) {
+    return {
+      candidates: [],
+      ambiguous: true,
+      review: {
+        reason: "UNVERIFIED_FIXED_RESERVATION_RECEIPT",
+        receiptRef,
+        intentId: String(bi._id),
+      },
+    };
+  }
   if (list.length <= 1) {
     return { candidates: list, ambiguous: false, review: null };
   }

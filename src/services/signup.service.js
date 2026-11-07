@@ -46,7 +46,7 @@ export async function checkSignupAvailability(query) {
   return { available: true };
 }
 
-export async function startSignup(body) {
+export async function startSignup(body, request) {
   const mobileTaken = await Tenant.exists({ mobile: body.mobile });
   if (mobileTaken) throw new AppError("SIGNUP_ALREADY_EXISTS", "This mobile number is already registered.", 409);
   const tenantCode = await ensureUniqueTenantCode(deriveTenantCodeFromName(body.businessName));
@@ -61,21 +61,24 @@ export async function startSignup(body) {
     status: SignupStatus.OTP_PENDING,
     expiresAt: new Date(Date.now() + 30 * 60_000),
   });
-  const otpResult = await otpProvider.send({ tenantCode, mobile: body.mobile, purpose: "SIGNUP" });
+  const otpResult = await otpProvider.send({ tenantCode, mobile: body.mobile, purpose: "SIGNUP" }, { request });
   return {
     signupId: signup._id,
     otpSent: true,
     otpChannel: "SMS",
     maskedMobile: maskMobile(body.mobile),
-    expiresInSeconds: otpResult.expiresIn ?? env.OTP_TTL_SECONDS,
-    resendAvailableInSeconds: RESEND_COOLDOWN_SECONDS,
+    expiresInSeconds: otpResult.expiresInSeconds ?? env.OTP_TTL_SECONDS,
+    otpId: otpResult.otpId,
+    resendAvailableInSeconds: otpResult.resendAvailableInSeconds ?? RESEND_COOLDOWN_SECONDS,
+    otpLength: otpResult.otpLength,
+    authCountryCode: otpResult.authCountryCode,
   };
 }
 
-export async function verifySignupOtp(signupId, otp) {
+export async function verifySignupOtp(signupId, otp, otpId) {
   const signup = await Signup.findById(signupId);
   if (!signup || signup.expiresAt < new Date()) throw new AppError("SIGNUP_EXPIRED", "This signup session has expired.", 410);
-  if (!(await otpProvider.verify({ tenantCode: signup.tenantCode, mobile: signup.mobile, purpose: "SIGNUP", otp }))) {
+  if (!(await otpProvider.verify({ tenantCode: signup.tenantCode, mobile: signup.mobile, purpose: "SIGNUP", otp, otpId }))) {
     throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
   }
   const signupToken = `${createId("signupToken")}_${randomToken(8)}`;

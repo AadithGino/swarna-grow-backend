@@ -87,6 +87,17 @@ test("export manifest rejects file larger than scan limit", () => {
   }
 });
 
+test("export manifest scans Next.js bracket catch-all route paths", () => {
+  const dir = tmpDir();
+  try {
+    const route = "app/(portal)/[[...slug]]/page.tsx";
+    const zip = zipAt(dir, "t.zip", [[route, 'export default function Page(){return null}\n']]);
+    assert.equal(runVerifier(zip).exit, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("export manifest allows .env.example", () => {
   const dir = tmpDir();
   try {

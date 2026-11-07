@@ -158,15 +158,32 @@ function assertLiveCredentials(credentials) {
   }
 }
 
+const PHONEPE_UPI_FLOW_SET = new Set(["INTENT", "COLLECT", "QR"]);
+
+function normalizeUpiFlows(flows) {
+  if (!Array.isArray(flows)) return [];
+  return flows
+    .map((item) => String(item).trim().toUpperCase())
+    .filter((item) => PHONEPE_UPI_FLOW_SET.has(item));
+}
+
+/**
+ * Hosted standard checkout: PhonePe’s unrestricted `pay()` often surfaces **intent-only**
+ * (app tiles) in **WebViews** and omits **COLLECT** (enter UPI ID / VPA).
+ * Merging **INTENT + COLLECT + QR** in `paymentModeConfig` nudges the hosted page to
+ * include VPA entry where the merchant supports it. Unknown / legacy merchants: fall back.
+ */
+function hostedStandardUpiFlows(upiFlowsFromEnv) {
+  const fromEnv = normalizeUpiFlows(upiFlowsFromEnv);
+  const merged = [...new Set([...fromEnv, "INTENT", "COLLECT", "QR"])];
+  return merged.length ? merged : ["INTENT", "COLLECT", "QR"];
+}
+
 function withRestrictedUpiModes(request, { upiApps = [], upiFlows = ["INTENT"] } = {}) {
   const apps = Array.isArray(upiApps)
     ? upiApps.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
     : [];
-  const flows = Array.isArray(upiFlows)
-    ? upiFlows
-      .map((item) => String(item).trim().toUpperCase())
-      .filter((item) => ["INTENT", "COLLECT", "QR"].includes(item))
-    : [];
+  const flows = normalizeUpiFlows(upiFlows);
   request.paymentFlow ??= {};
   request.paymentFlow.paymentModeConfig = {
     version: "V2",
@@ -198,7 +215,21 @@ export async function submitPhonePeCheckoutPayment(
     .redirectUrl(redirectUrl)
     .build();
   if (!preferUpiIntentOnly) {
-    return client.pay(standardRequest);
+    const hostedFlows = hostedStandardUpiFlows(upiFlows);
+    const hostedRequest = withRestrictedUpiModes(
+      StandardCheckoutPayRequest.builder()
+        .merchantOrderId(merchantOrderId)
+        .amount(amountPaise)
+        .redirectUrl(redirectUrl)
+        .build(),
+      { upiApps, upiFlows: hostedFlows },
+    );
+    try {
+      return await client.pay(hostedRequest);
+    } catch (error) {
+      if (!isRestrictedModeValidationError(error)) throw error;
+      return client.pay(standardRequest);
+    }
   }
   const intentRequest = withRestrictedUpiModes(
     StandardCheckoutPayRequest.builder()

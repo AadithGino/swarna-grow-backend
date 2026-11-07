@@ -40,7 +40,7 @@ import {
   assertOrderInRemittanceMutationScope,
   assertRemittanceBatchMutationScope,
   branchScopedRemittanceBatchDto,
-  loadRemittanceLinesForBatch,
+  loadAllRemittanceLinesForBatch,
 } from "../lib/ecommerce-courier-remittance-admin.js";
 
 function assertCodOrder(order) {
@@ -1050,7 +1050,7 @@ export async function listCodRemittanceBatches(req) {
     });
     const data = await Promise.all(
       page.data.map(async (batch) => {
-        const allLines = await loadRemittanceLinesForBatch(tenantId, batch._id);
+        const allLines = await loadAllRemittanceLinesForBatch(tenantId, batch._id);
         const visible = await filterRemittanceLinesForAdmin(req, allLines);
         return branchScopedRemittanceBatchDto(batch, {
           visibleLines: visible,

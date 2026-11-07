@@ -17,7 +17,7 @@ Vercel cannot run long-lived BullMQ worker processes. The API enqueues jobs when
 - `PUBLIC_BASE_URL` / `EXPORT_BASE_URL` — `https://swarnagrow-backend.vercel.app`
 - `REDIS_URL` — Upstash **TLS** URL (not `127.0.0.1`)
 - `REDIS_REQUIRED` — `true` if you rely on queues
-- `CRON_SECRET` — optional; protects manual `GET /api/cron/queue-tick`
+- `CRON_SECRET` — **required** for `GET/POST /api/cron/queue-tick` (nonempty; use `Authorization: Bearer <CRON_SECRET>`). On Vercel production, `GET/POST /api/cron/keep-warm` also requires this secret unless you rely on local-dev-only open warm (never deploy without `CRON_SECRET` in production).
 
 ## Upstash Redis
 

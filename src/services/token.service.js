@@ -26,16 +26,42 @@ export function verifyAccessToken(token) {
   try { return jwt.verify(token, env.JWT_ACCESS_SECRET, { issuer: "swarnagrow", audience: "swarnagrow-clients" }); }
   catch (error) { if (error.name === "TokenExpiredError") throw new AppError("TOKEN_EXPIRED", "Your session has expired.", 401); throw errors.unauthenticated("The access token is invalid."); }
 }
-export async function issueSession(subject, device, request) {
-  const refreshToken = randomToken(48); const familyId = createId("session");
+export async function issueSessionDefault(subject, device, request) {
+  const refreshToken = randomToken(48);
+  const familyId = createId("session");
   const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_DAYS * 86_400_000);
-  const session = await Session.create({ userId: subject.type === "CUSTOMER" ? undefined : subject.id, customerId: subject.type === "CUSTOMER" ? subject.id : undefined, tenantId: subject.tenantId, deviceId: device.deviceId, familyId, refreshTokenHash: sha256(refreshToken), platform: device.platform, appVersion: device.appVersion, userAgent: request?.headers?.["user-agent"], ip: request?.ip, expiresAt });
+  const session = await Session.create({
+    userId: subject.type === "CUSTOMER" ? undefined : subject.id,
+    customerId: subject.type === "CUSTOMER" ? subject.id : undefined,
+    tenantId: subject.tenantId,
+    deviceId: device.deviceId,
+    familyId,
+    refreshTokenHash: sha256(refreshToken),
+    platform: device.platform,
+    appVersion: device.appVersion,
+    userAgent: request?.headers?.["user-agent"],
+    ip: request?.ip,
+    expiresAt,
+  });
   return {
     accessToken: signAccessToken({ ...subject, deviceId: device.deviceId, sessionId: session._id }),
     refreshToken,
     expiresAt,
+    sessionId: session._id,
     mobileClient: subject.mobileClient ?? device.platform !== "web",
   };
+}
+
+/** @type {typeof issueSessionDefault} */
+let issueSessionImpl = issueSessionDefault;
+
+/** Test-only: replace issueSession (restore with null). */
+export function setIssueSessionImplForTests(impl) {
+  issueSessionImpl = impl ?? issueSessionDefault;
+}
+
+export async function issueSession(subject, device, request) {
+  return issueSessionImpl(subject, device, request);
 }
 async function resolveConsumedRefresh(existing, subjectLoader, mongoSession) {
   const consumedAgeMs = Date.now() - new Date(existing.consumedAt).getTime();

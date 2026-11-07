@@ -93,6 +93,7 @@ export const signupStartBody = z.object({
 export const signupVerifyBody = z.object({
   signupId: z.string().min(4),
   otp: z.string().regex(/^\d{4,8}$/),
+  otpId: z.string().uuid().optional(),
 });
 export const signupSelectPlanBody = z.object({
   subscriptionPlanId: z.string().min(4),

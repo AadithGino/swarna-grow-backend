@@ -56,6 +56,7 @@ import { currentGoldRate } from "./tenant.service.js";
 import { paginate } from "../lib/pagination.js";
 import {
   initiatePhonePeCustomerCheckout,
+  readCheckoutChannel,
   readClientPlatform,
 } from "../lib/phonepe-customer-checkout-init.js";
 import { mergePhonePeProviderInitPayload } from "../lib/phonepe-customer-web-checkout.js";
@@ -1417,6 +1418,7 @@ export async function initiateProviderForReservedIntent(req, reserved) {
     credentials,
     tenantId: reserved.tenantId,
     clientPlatform: readClientPlatform(req.headers),
+    checkoutChannel: readCheckoutChannel(req.headers),
   });
   const paymentRow = await Payment.findById(reserved.paymentId).select("gatewayMerchantOrderId").lean();
   await Promise.all([
@@ -1636,6 +1638,7 @@ export async function initiatePublicPayment(req) {
       credentials: await gatewayCredentials(link.tenantId),
       tenantId: link.tenantId,
       clientPlatform: readClientPlatform(req.headers),
+      checkoutChannel: readCheckoutChannel(req.headers),
     });
     const pending = await Payment.create({
       _id: createId("payment"),

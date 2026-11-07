@@ -5,7 +5,7 @@ import { EcommerceProductStatus, UploadPurpose, UploadStatus } from "../constant
 import { isEcommerceOperational } from "../lib/ecommerce-access.js";
 import { createId } from "../lib/ids.js";
 import { AppError, errors } from "../lib/app-error.js";
-import { storageProvider } from "../integrations/storage.provider.js";
+import { prefixStorageObjectKey, storageProvider } from "../integrations/storage.provider.js";
 import { env } from "../config/env.js";
 import { malwareScanProvider } from "../integrations/malware-scan.provider.js";
 
@@ -37,7 +37,9 @@ export async function presignUpload(req) {
   }
   const id = createId("upload");
   const safeName = path.basename(req.body.fileName).replace(/[^a-zA-Z0-9._-]/g, "_");
-  const objectKey = `${req.auth.tenantId}/${req.body.purpose.toLowerCase()}/${id}/${safeName}`;
+  const objectKey = prefixStorageObjectKey(
+    `${req.auth.tenantId}/${req.body.purpose.toLowerCase()}/${id}/${safeName}`,
+  );
   const expiresAt = new Date(Date.now() + 15 * 60_000);
   const upload = await Upload.create({
     _id: id,

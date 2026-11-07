@@ -14,6 +14,7 @@ import {
   phonePeClientCacheKey,
   phonePeProvider,
   resolvePhonePeCredentials,
+  submitPhonePeCheckoutPayment,
 } from "../src/integrations/phonepe.provider.js";
 import {
   classifyPhonePeCallback,
@@ -81,6 +82,52 @@ test("createPayment mock mode does not require SDK credentials", async () => {
   });
   assert.equal(result.status, "PENDING");
   assert.match(result.redirectUrl, /mock=success/);
+});
+
+test("submitPhonePeCheckoutPayment standard path sends merged UPI flows including COLLECT", async () => {
+  let received = null;
+  const client = {
+    pay: async (req) => {
+      received = req;
+      return { orderId: "ord1", redirectUrl: "https://pg.test/pay", state: "PENDING" };
+    },
+  };
+  const result = await submitPhonePeCheckoutPayment(client, {
+    merchantOrderId: "mo_1",
+    amountPaise: 50_000,
+    redirectUrl: "https://example.com/return",
+    preferUpiIntentOnly: false,
+    upiApps: [],
+    upiFlows: ["INTENT"],
+  });
+  assert.equal(result.orderId, "ord1");
+  const flows =
+    received?.paymentFlow?.paymentModeConfig?.enabledPaymentModes?.[0]?.flows ?? [];
+  assert.ok(flows.includes("INTENT"));
+  assert.ok(flows.includes("COLLECT"));
+  assert.ok(flows.includes("QR"));
+});
+
+test("submitPhonePeCheckoutPayment falls back to unrestricted pay when merged modes rejected", async () => {
+  let calls = 0;
+  const client = {
+    pay: async (req) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("restricted payment mode not supported");
+      }
+      assert.equal(req?.paymentFlow?.paymentModeConfig, undefined);
+      return { orderId: "ord2", redirectUrl: "https://pg.test/pay2", state: "PENDING" };
+    },
+  };
+  const result = await submitPhonePeCheckoutPayment(client, {
+    merchantOrderId: "mo_2",
+    amountPaise: 50_000,
+    redirectUrl: "https://example.com/return",
+    preferUpiIntentOnly: false,
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.orderId, "ord2");
 });
 
 test("createSdkOrder mock mode returns token", async () => {

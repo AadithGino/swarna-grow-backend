@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
-import { callbackTypeKey } from "../integrations/phonepe.provider.js";
 import {
+  callbackTypeKey,
+  isPhonePeRefundCallback,
   phonePeCallbackReference,
   phonePeCallbackTransactionId,
 } from "../integrations/phonepe.provider.js";
@@ -17,11 +18,23 @@ function stablePayloadDigest(payload = {}) {
   return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
+/** Provider refund correlation (merchantRefundId / refundId), not checkout merchant order id. */
+export function phonePeRefundMerchantIdentity(payload = {}) {
+  const candidate =
+    payload.merchantRefundId
+    ?? payload.refundId
+    ?? payload.providerRefundId
+    ?? payload.refundDetails?.[0]?.refundId
+    ?? payload.refundDetails?.[0]?.merchantRefundId;
+  if (candidate == null || candidate === "") return null;
+  return String(candidate);
+}
+
 /**
- * PhonePe may supply eventId/callbackId on some callbacks; scope is provider-defined and not
- * assumed globally unique across event types or lifecycle states.
+ * PhonePe may supply eventId/callbackId on some callbacks. We do not treat them as globally
+ * unique across event types, lifecycle states, or partial refunds (no verified uniqueness contract).
  */
-function documentedUniqueProviderEventId(payload = {}) {
+export function phonePeDocumentedCallbackCorrelationId(payload = {}) {
   const candidate = payload.eventId ?? payload.callbackId;
   if (candidate == null || candidate === "") return null;
   return String(candidate);
@@ -37,7 +50,11 @@ export function canonicalPhonePeSemanticEventId({ tenantId, type, payload = {} }
     ?? payload.paymentDetails?.[0]?.state
     ?? payload.status
     ?? "unknown-state";
-  return `pe:${tenantId}:${typeKey}:${reference}:${transactionId}:${state}`;
+  const refundIdentity = isPhonePeRefundCallback(type)
+    ? (phonePeRefundMerchantIdentity(payload) ?? "no-refund-id")
+    : null;
+  const refundSegment = refundIdentity ? `:ref:${refundIdentity}` : "";
+  return `pe:${tenantId}:${typeKey}:${reference}:${transactionId}:${state}${refundSegment}`;
 }
 
 /**
@@ -59,10 +76,6 @@ export function buildPhonePeWebhookEventId({
   payload = {},
   rawBody: _rawBody = null,
 }) {
-  const documented = documentedUniqueProviderEventId(payload);
-  if (documented) {
-    return `pe:${tenantId}:${documented}`;
-  }
   return canonicalPhonePeSemanticEventId({ tenantId, type, payload });
 }
 
@@ -74,7 +87,12 @@ export function phonePeWebhookEventIdentityCandidates({
 }) {
   const primary = buildPhonePeWebhookEventId({ tenantId, type, payload, rawBody });
   const legacy = buildPhonePeLegacyWebhookEventId({ tenantId, payload });
-  const aliases = legacy && legacy !== primary ? [legacy] : [];
+  const documented = phonePeDocumentedCallbackCorrelationId(payload);
+  const documentedAlias = documented ? `pe:${tenantId}:doc:${documented}` : null;
+  const aliases = [
+    ...(legacy && legacy !== primary ? [legacy] : []),
+    ...(documentedAlias && documentedAlias !== primary ? [documentedAlias] : []),
+  ];
   return {
     primary,
     aliases,

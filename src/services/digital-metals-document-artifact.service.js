@@ -15,7 +15,7 @@ import {
 } from "../lib/digital-metals-outbox.js";
 import { withTransaction } from "../lib/transaction.js";
 import { ensureDocumentReadyNotificationIntent } from "./digital-metals-notification-intent-reconcile.service.js";
-import { storageProvider } from "../integrations/storage.provider.js";
+import { prefixStorageObjectKey, storageProvider } from "../integrations/storage.provider.js";
 import {
   Counter,
   Customer,
@@ -548,7 +548,7 @@ export async function processDigitalMetalDocumentArtifactRequest({ tenantId, art
     const withNumber = await DigitalMetalDocumentArtifact.findOne({ _id: artifactId, tenantId }).lean();
     const pdf = await renderPdfFromSnapshot(withNumber);
     const uploadId = withNumber.uploadId ?? createId("upload");
-    const objectKey = `${tenantId}/digital_metal_doc/${uploadId}/${withNumber.docType}.pdf`;
+    const objectKey = prefixStorageObjectKey(`${tenantId}/digital_metal_doc/${uploadId}/${withNumber.docType}.pdf`);
     await storageProvider.uploadFile({
       objectKey,
       body: pdf,

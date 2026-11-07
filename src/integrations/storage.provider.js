@@ -9,8 +9,26 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env.js";
+import { AppError } from "../lib/app-error.js";
 
 const MOCK_ROOT = path.join(process.cwd(), ".mock-storage");
+
+/** Optional folder prefix inside the bucket (e.g. jewellers/tenantId/...). */
+export function prefixStorageObjectKey(relativeKey) {
+  const prefix = String(env.S3_KEY_PREFIX ?? "").trim().replace(/^\/+|\/+$/g, "");
+  if (!prefix) return relativeKey;
+  return `${prefix}/${relativeKey}`;
+}
+
+function assertLiveStorageConfigured() {
+  if (env.PROVIDER_MODE === "mock") return;
+  if (!String(env.S3_BUCKET ?? "").trim()) {
+    throw new AppError("STORAGE_NOT_CONFIGURED", "Object storage is not configured (S3_BUCKET / AWS_S3_BUCKET).", 503);
+  }
+  if (!String(env.S3_ACCESS_KEY_ID ?? "").trim() || !String(env.S3_SECRET_ACCESS_KEY ?? "").trim()) {
+    throw new AppError("STORAGE_NOT_CONFIGURED", "Object storage credentials are not configured.", 503);
+  }
+}
 
 function resolveMockPath(objectKey) {
   const normalized = path.normalize(objectKey).replace(/^(\.\.(\/|\\|$))+/, "");
@@ -26,10 +44,12 @@ const client = new S3Client({ region: env.S3_REGION, endpoint: env.S3_ENDPOINT |
 export const storageProvider = {
   async presignUpload({ objectKey, contentType }) {
     if (env.PROVIDER_MODE === "mock") return `http://localhost:${env.PORT}/mock-storage/${encodeURIComponent(objectKey)}`;
+    assertLiveStorageConfigured();
     return getSignedUrl(client, new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: objectKey, ContentType: contentType }), { expiresIn: 900 });
   },
   async presignDownload(objectKey) {
     if (env.PROVIDER_MODE === "mock") return `http://localhost:${env.PORT}/mock-storage/${encodeURIComponent(objectKey)}`;
+    assertLiveStorageConfigured();
     return getSignedUrl(client, new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: objectKey }), { expiresIn: 900 });
   },
   async uploadFile({ objectKey, body, contentType = "application/octet-stream" }) {

@@ -1,3 +1,4 @@
+import { errors } from "./app-error.js";
 import { phonePeProvider } from "../integrations/phonepe.provider.js";
 import { normalizePhonePeMerchantOrderId } from "./phonepe-gateway-merchant-order-id.js";
 import {
@@ -11,6 +12,23 @@ export function readClientPlatform(headers = {}) {
   return String(raw).trim();
 }
 
+/**
+ * Optional override for payment-intent style routes. Omit or `auto` = use `X-Platform`
+ * (android|ios → SDK; else hosted). `sdk` / `hosted` force that path regardless of platform.
+ */
+export function readCheckoutChannel(headers = {}) {
+  const raw = headers["x-checkout-channel"] ?? headers["X-Checkout-Channel"] ?? "";
+  const v = String(raw).trim().toLowerCase();
+  if (!v || v === "auto") return "auto";
+  if (v === "sdk" || v === "hosted") return v;
+  throw errors.validation([
+    {
+      field: "x-checkout-channel",
+      message: "Must be omitted, auto, sdk, or hosted.",
+    },
+  ]);
+}
+
 export function preferPhonePeSdkOrder(clientPlatform) {
   const platform = String(clientPlatform ?? "").trim().toLowerCase();
   return platform === "android" || platform === "ios";
@@ -18,9 +36,10 @@ export function preferPhonePeSdkOrder(clientPlatform) {
 
 /**
  * Single PhonePe initiation path for all customer checkouts.
- * - Web (no X-Platform): hosted redirect (`createPayment`).
- * - Flutter (`X-Platform: android|ios`): SDK order (`createSdkOrder` + token).
- * - `checkoutChannel: "sdk"` forces SDK (scheme `/pay/sdk-order` routes).
+ * - `checkoutChannel` `auto`: SDK when `X-Platform` is android|ios, else hosted (browser).
+ * - `checkoutChannel` `hosted`: always hosted (`createPayment` + paymentUrl), e.g. Flutter bridge before iOS PhonePeAppId.
+ * - `checkoutChannel` `sdk`: always SDK (`createSdkOrder` + token).
+ * Scheme routes that force SDK pass `checkoutChannel: "sdk"` explicitly.
  */
 export async function initiatePhonePeCustomerCheckout({
   merchantOrderId,
@@ -29,6 +48,7 @@ export async function initiatePhonePeCustomerCheckout({
   credentials,
   tenantId,
   clientPlatform,
+  /** @type {"auto" | "sdk" | "hosted"} */
   checkoutChannel = "auto",
 }) {
   const merchantRef = normalizePhonePeMerchantOrderId(merchantOrderId);

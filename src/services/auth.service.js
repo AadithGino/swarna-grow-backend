@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import { randomUUID } from "node:crypto";
 import { Branch, Customer, PasswordResetToken, Session, Tenant, User } from "../models/index.js";
 import { createId } from "../lib/ids.js";
 import { appErrorFromDuplicateKey } from "../lib/mongo-duplicate.js";
@@ -128,7 +129,7 @@ export async function refresh(refreshToken) {
 export async function logout(auth, refreshToken) { if (refreshToken) await Session.updateOne({ refreshTokenHash: sha256(refreshToken), tenantId: auth.tenantId ?? null, $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
 export async function logoutAll(auth) { await Session.updateMany({ tenantId: auth.tenantId ?? null, $or: [{ userId: auth.id }, { customerId: auth.id }] }, { $set: { revokedAt: new Date() } }); }
 export async function revokeSessionsForUser(userId) { await Session.updateMany({ userId }, { $set: { revokedAt: new Date() } }); }
-export async function requestOtp(body) {
+export async function requestOtp(body, request) {
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
   if (!tenant) throw errors.notFound("Jewellery");
   if (
@@ -156,16 +157,19 @@ export async function requestOtp(body) {
   if (body.purpose === "LOGIN" && !isRegistered) {
     throw new AppError("CUSTOMER_NOT_REGISTERED", "No account found for this mobile. Sign up to continue.", 404);
   }
-  const sent = await otpProvider.send({ ...body, mobile, tenantId: tenant._id });
+  const sent = await otpProvider.send({ ...body, mobile, tenantId: tenant._id }, { request });
   return { ...sent, isRegistered };
 }
-export async function forgotPassword(body) {
+export async function forgotPassword(body, request) {
   const response = { accepted: true, expiresIn: env.OTP_TTL_SECONDS };
   const tenant = await Tenant.findOne({ code: body.tenantCode }).lean();
   if (!tenant) return response;
   const user = await User.findOne({ type: UserType.TENANT_USER, tenantId: tenant._id, mobile: body.mobile }).lean();
   if (!user) return response;
-  await otpProvider.send({ tenantId: tenant._id, tenantCode: body.tenantCode, mobile: body.mobile, purpose: "PASSWORD_RESET", deviceId: body.deviceId });
+  await otpProvider.send(
+    { tenantId: tenant._id, tenantCode: body.tenantCode, mobile: body.mobile, purpose: "PASSWORD_RESET", deviceId: body.deviceId },
+    { request },
+  );
   return response;
 }
 function tenantCapabilities(tenant) {
@@ -276,8 +280,13 @@ export async function verifyCustomerOtp(body, request) {
   };
   const mobile = canonicalMobile(body.mobile);
   const otpContext = { tenantId: tenant._id, tenantCode: body.tenantCode, mobile, purpose: body.purpose };
-  const verified = await otpProvider.validate({ ...otpContext, otp: body.otp, otpId: body.otpId });
-  if (!verified) {
+  const sessionToken = randomUUID();
+  const bound = await otpProvider.validateAndClaimSessionLease(
+    { ...otpContext, otp: body.otp, otpId: body.otpId },
+    {},
+    sessionToken,
+  );
+  if (!bound.ok) {
     const issuedFor = await otpProvider.findMatchingPurpose({
       ...otpContext,
       otpId: body.otpId,
@@ -298,24 +307,81 @@ export async function verifyCustomerOtp(body, request) {
     }
     throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
   }
-  const { customer, isNewCustomer } = await ensureCustomerAfterOtp(tenant, body.mobile, body.purpose);
+  const validatedAt = bound.validatedAt;
+  let customer;
+  let isNewCustomer;
+  try {
+    const ensured = await ensureCustomerAfterOtp(tenant, body.mobile, body.purpose);
+    customer = ensured.customer;
+    isNewCustomer = ensured.isNewCustomer;
+  } catch (err) {
+    await otpProvider.rollbackValidated({ ...otpContext, otpId: body.otpId, validatedAt, sessionToken });
+    throw err;
+  }
   const branch = customer.branchId
     ? await Branch.findOne({ _id: customer.branchId }).select("_id name code passbookPrefix").lean()
     : null;
-  const tokens = await issueSession(
-    {
-      id: customer._id,
-      type: UserType.CUSTOMER,
-      tenantId: customer.tenantId,
-      branchId: customer.branchId,
-      role: "CUSTOMER",
-      permissions: [],
-      mobileClient: true,
-    },
-    device,
-    request,
-  );
-  await otpProvider.consume(otpContext);
+  let tokens;
+  try {
+    tokens = await issueSession(
+      {
+        id: customer._id,
+        type: UserType.CUSTOMER,
+        tenantId: customer.tenantId,
+        branchId: customer.branchId,
+        role: "CUSTOMER",
+        permissions: [],
+        mobileClient: true,
+      },
+      device,
+      request,
+    );
+  } catch (err) {
+    await otpProvider.rollbackValidated({ ...otpContext, otpId: body.otpId, validatedAt, sessionToken });
+    throw err;
+  }
+  try {
+    let consumed;
+    if (process.env.NODE_ENV === "test" && globalThis.__swarnaOtpTestConsumeFailOnce) {
+      globalThis.__swarnaOtpTestConsumeFailOnce = false;
+      consumed = { status: "gone" };
+    } else if (process.env.NODE_ENV === "test" && globalThis.__swarnaOtpTestConsumeThrowOnce) {
+      globalThis.__swarnaOtpTestConsumeThrowOnce = false;
+      throw new AppError("TEST_OTP_CONSUME_THROW", "Test: consume threw.", 500);
+    } else {
+      consumed = await otpProvider.consume({ ...otpContext, otpId: body.otpId, sessionToken });
+    }
+    if (consumed.status !== "ok") {
+      throw new AppError("OTP_INVALID", "The OTP is invalid or expired.", 401);
+    }
+  } catch (err) {
+    if (tokens?.sessionId) {
+      let rev;
+      if (process.env.NODE_ENV === "test" && globalThis.__swarnaOtpTestSessionRevokeNoMatchOnce) {
+        globalThis.__swarnaOtpTestSessionRevokeNoMatchOnce = false;
+        rev = { matchedCount: 0 };
+      } else {
+        rev = await Session.updateOne(
+          {
+            _id: tokens.sessionId,
+            customerId: customer._id,
+            tenantId: customer.tenantId,
+            revokedAt: null,
+          },
+          { $set: { revokedAt: new Date() } },
+        );
+      }
+      if (rev.matchedCount !== 1) {
+        throw new AppError(
+          "SESSION_REVOKE_FAILED",
+          "Could not revoke the provisional sign-in session.",
+          500,
+        );
+      }
+    }
+    await otpProvider.rollbackValidated({ ...otpContext, otpId: body.otpId, validatedAt, sessionToken });
+    throw err;
+  }
   return {
     isNewCustomer,
     profileComplete: isCustomerProfileComplete(customer),

@@ -87,10 +87,17 @@ const CONTENT_PATTERNS = [
   { id: "pem_block", re: /-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----/i },
 ];
 
+const ZIP_READ_PY = `
+import sys, zipfile
+zp, name = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zp) as zf:
+    sys.stdout.buffer.write(zf.read(name))
+`;
+
+/** Info-ZIP treats [ ] as wildcards; use literal zipfile reads for bracket paths. */
 function readZipEntryBuffer(entry) {
-  const result = spawnSync("unzip", ["-p", zipPath, entry], {
+  const result = spawnSync("python3", ["-c", ZIP_READ_PY, zipPath, entry], {
     encoding: "buffer",
-    // Read fully so oversize entries fail as unverified, not as spawn maxBuffer overflow.
     maxBuffer: 64 * 1024 * 1024,
   });
   if (result.error) {
@@ -100,6 +107,10 @@ function readZipEntryBuffer(entry) {
     return { ok: false, reason: "content:read_error" };
   }
   if (result.status !== 0) {
+    const errText = (result.stderr ?? Buffer.alloc(0)).toString("utf8");
+    if (/KeyError|BadZipFile|not find/i.test(errText)) {
+      return { ok: false, reason: "content:zip_entry_missing" };
+    }
     return { ok: false, reason: "content:unzip_failed" };
   }
   if (!result.stdout?.length) {

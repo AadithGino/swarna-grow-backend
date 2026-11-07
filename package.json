@@ -18,7 +18,7 @@
     "audit:outbox-session": "node scripts/audit-outbox-transaction-session.js",
     "package:export": "node scripts/package-source-export.mjs",
     "package:verify": "node scripts/verify-source-export-manifest.mjs",
-    "lint": "eslint src tests scripts",
+    "lint": "eslint src tests scripts api",
     "test": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit --test-reporter=spec",
     "test:release": "bash scripts/run-test-release.sh",
     "test:hardening": "node scripts/run-hardening-tests.js",
@@ -37,6 +37,7 @@
     "seed:kairali-webinar-bulk": "node --env-file=.env scripts/seed-kairali-webinar-bulk.js",
     "seed:kairali-webinar-extras": "node --env-file=.env scripts/seed-kairali-webinar-bulk.js --extras-only && node --env-file=.env scripts/patch-kairali-dashboard-charts.js",
     "patch:kairali-dashboard-charts": "node --env-file=.env scripts/patch-kairali-dashboard-charts.js",
+    "seed:kairali-scheme-samples": "node --env-file=.env scripts/seed-kairali-scheme-sample-customers.js",
     "seed:kairali-webinar": "node --env-file=.env scripts/seed-kairali-webinar-bulk.js && node --env-file=.env scripts/seed-kairali-digital-metals.js",
     "patch:kairali-digital-metals": "node --env-file=.env scripts/patch-kairali-digital-metals-live.js --refresh-rates",
     "patch:evoluxe-rates": "node --env-file=.env scripts/patch-evoluxe-rates.js",
@@ -68,7 +69,9 @@
     "test:phase1:ecommerce-auth": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 tests/ecommerce-branch-authorization.test.js tests/ecommerce-branch-authorization.matrix.test.js",
     "test:phase1:browser": "node scripts/run-phase1-customer-identity-browser.mjs",
     "test:phase2:phonepe-identity": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit tests/phonepe-phase2-identity.test.js tests/phonepe-reconcile.test.js tests/phonepe-provider.test.js tests/webhook-event.test.js",
-    "test:review-a": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit tests/ecommerce-branch-authorization.test.js tests/ecommerce-branch-authorization.matrix.test.js tests/phonepe-phase2-identity.test.js tests/phonepe-reconcile.test.js tests/phonepe-provider.test.js tests/webhook-event.test.js",
+    "test:review-a": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit tests/ecommerce-branch-authorization.test.js tests/ecommerce-branch-authorization.matrix.test.js tests/phonepe-phase2-identity.test.js tests/phonepe-webhook-refund-identity.test.js tests/phonepe-reconcile.test.js tests/phonepe-provider.test.js tests/webhook-event.test.js tests/export-source-manifest.test.js",
+    "test:phase3:otp": "NODE_ENV=test node --import ./tests/global-test-db-serial.js --test --test-concurrency=1 --test-force-exit tests/otp-phase3-concurrency.test.js tests/otp-phase3-gap-regressions.test.js tests/otp-provider.test.js tests/msg91-otp-delivery.test.js tests/message-central-otp.test.js tests/customer-otp-message-central-contract.test.js tests/auth-security.test.js",
+    "test:phase4": "NODE_ENV=test node --test --test-concurrency=1 --test-force-exit tests/phase4-cron-auth.test.js",
     "record:remediation:manifest": "node scripts/record-remediation-source-manifest.mjs"
   },
   "dependencies": {

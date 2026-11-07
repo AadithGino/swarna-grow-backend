@@ -14,6 +14,7 @@ import { hashIdempotencyBody } from "./idempotency.service.js";
 import { DigitalMetalBuyOrder, DigitalMetalBuyPaymentAttempt, WebhookEvent } from "../models/index.js";
 import { mapBuyOrderStatusDto } from "./digital-metals-buy-finalize.service.js";
 import { processWebhook } from "../workers/processors.js";
+import { readCheckoutChannel } from "../lib/phonepe-customer-checkout-init.js";
 import {
   mapPhonePeCustomerCheckoutResponse,
   mergePhonePeProviderInitPayload,
@@ -270,6 +271,7 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
   const credentials = resolvePhonePeCredentials(tenant);
   const phonePeEnvironment = credentials?.environment ?? undefined;
   const clientPlatform = String(req.headers["x-platform"] ?? "").trim();
+  const checkoutChannel = readCheckoutChannel(req.headers);
   let attempt = reserved.attempt;
   if (["FAILED", "SUCCEEDED"].includes(attempt.status)) {
     throw errors.business(
@@ -332,6 +334,7 @@ export async function initiateDigitalMetalBuyPaymentAttempt(req) {
       demoProviderResult: demoBuyCheckoutProviderResult,
       attempt,
       clientPlatform,
+      checkoutChannel,
     });
     await DigitalMetalBuyPaymentAttempt.updateOne(
       { _id: attempt._id, status: { $in: ["PENDING", "INITIATED"] } },

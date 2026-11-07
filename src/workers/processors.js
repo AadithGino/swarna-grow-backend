@@ -6,7 +6,7 @@ import { PushOutcomeKind } from "../lib/fcm-outcomes.js";
 import { Customer, ExportJob, Message, OutboxEvent, PaymentIntent, PaymentLink, Scheme, Tenant, WebhookEvent } from "../models/index.js";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
-import { storageProvider } from "../integrations/storage.provider.js";
+import { prefixStorageObjectKey, storageProvider } from "../integrations/storage.provider.js";
 import { AppError } from "../lib/app-error.js";
 import { AlertType } from "../constants/enums.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
@@ -932,7 +932,7 @@ export async function processExport(job) {
         422,
       );
     }
-    const objectKey = `exports/${record.tenantId}/${record._id}.${extension}`;
+    const objectKey = prefixStorageObjectKey(`exports/${record.tenantId}/${record._id}.${extension}`);
     const body = await fs.readFile(tempFile);
     await storageProvider.uploadFile({ objectKey, body, contentType: format === "PDF" ? "application/pdf" : "text/csv; charset=utf-8" });
     await fs.unlink(tempFile).catch(() => {});
