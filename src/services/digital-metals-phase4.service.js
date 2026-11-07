@@ -29,6 +29,7 @@ import {
 } from "./digital-metals-phase2.service.js";
 import { assertTenantOwnsCustomerScope } from "./digital-metals.service.js";
 import { applyAdminBuyOrderBranchFilter } from "../lib/digital-metals-admin-scope.js";
+import { mapAdminCustomerBrief } from "../lib/digital-metals-admin-customer-brief.js";
 import { paginateByIdCursor } from "../lib/digital-metals-customer-order-access.js";
 import {
   hashDigitalMetalsOrderBody,
@@ -350,7 +351,18 @@ export async function listAdminBuyOrders(req) {
   else if (idClauses.length > 1) filter.$and = idClauses;
   const rows = await DigitalMetalBuyOrder.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
   const { items, meta } = paginateByIdCursor(rows, limit);
-  return { items: items.map((o) => mapBuyOrderStatusDto(o, [])), meta };
+  const customerIds = [...new Set(items.map((o) => o.customerId).filter(Boolean))];
+  const customers = customerIds.length
+    ? await Customer.find({ tenantId: req.auth.tenantId, _id: { $in: customerIds } }).lean()
+    : [];
+  const customerById = new Map(customers.map((c) => [c._id, c]));
+  return {
+    items: items.map((o) => ({
+      ...mapBuyOrderStatusDto(o, []),
+      customer: mapAdminCustomerBrief(customerById.get(o.customerId)),
+    })),
+    meta,
+  };
 }
 
 export async function getAdminBuyOrder(req) {
@@ -365,5 +377,8 @@ export async function getAdminBuyOrder(req) {
     tenantId: req.auth.tenantId,
     orderId: order._id,
   }).lean();
-  return mapBuyOrderStatusDto(order, attempts);
+  return {
+    ...mapBuyOrderStatusDto(order, attempts),
+    customer: mapAdminCustomerBrief(customer),
+  };
 }
