@@ -1,6 +1,11 @@
 import { withTransaction } from "../lib/transaction.js";
+import { logger } from "../config/logger.js";
 import { DigitalMetalReservation, DigitalMetalSellOrder } from "../models/index.js";
 import { releaseReservation } from "./digital-metals-ledger.service.js";
+
+function isAmbiguousReservation(error) {
+  return error?.code === "RESERVATION_ACCOUNTING_AMBIGUOUS";
+}
 
 async function releaseSellReservationIfActive(session, tenantId, reserveKey, releaseKey) {
   const reservation = await DigitalMetalReservation.findOne({ tenantId, idempotencyKey: reserveKey })
@@ -21,7 +26,16 @@ export async function expireStaleSellOrdersForTenant(tenantId, orderId = null) {
   const rows = await DigitalMetalSellOrder.find(filter).limit(20).lean();
   const outcomes = [];
   for (const row of rows) {
-    outcomes.push(await expireAndReleaseSellOrder(row));
+    try {
+      outcomes.push(await expireAndReleaseSellOrder(row));
+    } catch (error) {
+      if (!isAmbiguousReservation(error)) throw error;
+      logger.warn(
+        { orderId: row._id, tenantId, code: error.code },
+        "Skipped sell expiry; reservation accounting needs review",
+      );
+      outcomes.push({ outcome: "REVIEW_REQUIRED", orderId: row._id });
+    }
   }
   return { scanned: rows.length, outcomes };
 }

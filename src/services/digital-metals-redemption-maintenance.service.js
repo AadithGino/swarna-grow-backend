@@ -1,6 +1,11 @@
 import { withTransaction } from "../lib/transaction.js";
+import { logger } from "../config/logger.js";
 import { DigitalMetalRedemptionOrder, DigitalMetalRedemptionPaymentAttempt } from "../models/index.js";
 import { releaseReservation } from "./digital-metals-ledger.service.js";
+
+function isAmbiguousReservation(error) {
+  return error?.code === "RESERVATION_ACCOUNTING_AMBIGUOUS";
+}
 
 export async function expireAndReleaseRedemptionOrder(order, now = new Date()) {
   return withTransaction(async session => {
@@ -22,5 +27,15 @@ export async function expireStaleRedemptionOrdersForTenant(tenantId, orderId = n
   const now = new Date();
   const stale = await DigitalMetalRedemptionOrder.find({ tenantId, status: "CHARGE_PENDING", chargePaymentExpiresAt: { $lt: now },
     ...(orderId ? { _id: orderId } : {}) }).limit(20).lean();
-  for (const order of stale) await expireAndReleaseRedemptionOrder(order, now);
+  for (const order of stale) {
+    try {
+      await expireAndReleaseRedemptionOrder(order, now);
+    } catch (error) {
+      if (!isAmbiguousReservation(error)) throw error;
+      logger.warn(
+        { orderId: order._id, tenantId, code: error.code },
+        "Skipped redemption expiry; reservation accounting needs review",
+      );
+    }
+  }
 }
