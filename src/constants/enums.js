@@ -675,6 +675,55 @@ export const PostSettlementRefundDisposition = makeEnum(
 );
 export const CashAdjustmentDirection = makeEnum("CREDIT", "DEBIT");
 
+// --- Demo Builder ---
+/** DemoTemplate lifecycle. A template is the registered KAIRALI-style master; versions under it are what gets published. */
+export const DemoTemplateStatus = makeEnum("DRAFT", "ACTIVE", "RETIRED");
+/** DemoTemplateVersion is immutable once PUBLISHED; FAILED versions are kept for audit, never selectable. */
+export const DemoTemplateVersionStatus = makeEnum(
+  "SNAPSHOTTING",
+  "VALIDATING",
+  "PUBLISHED",
+  "FAILED",
+);
+/** DemoInstance lifecycle — see plan section 11 for the full transition table. */
+export const DemoInstanceStatus = makeEnum(
+  "PROVISIONING",
+  "READY",
+  "RESETTING",
+  "FAILED",
+  "EXPIRED",
+  "DISABLED",
+  "DELETING",
+  "DELETED",
+);
+export const DemoProvisionJobKind = makeEnum("CREATE", "RESET", "UPGRADE", "PURGE");
+export const DemoProvisionJobStatus = makeEnum(
+  "QUEUED",
+  "RUNNING",
+  "VERIFYING",
+  "SUCCEEDED",
+  "FAILED",
+);
+/** Per-model decision in src/lib/demo-clone-registry.js. See plan section 5.2. */
+export const DemoClonePolicy = makeEnum("COPY", "REBUILD", "SYNTHETIC", "EXCLUDE");
+export const DemoEventType = makeEnum(
+  "TEMPLATE_PUBLISHED",
+  "INSTANCE_CREATED",
+  "INSTANCE_OPENED",
+  "INSTANCE_RESET",
+  "INSTANCE_UPGRADED",
+  "LINK_ROTATED",
+  "SIMULATION_RUN",
+  "INSTANCE_EXTENDED",
+  "INSTANCE_DISABLED",
+  "INSTANCE_REACTIVATED",
+  "INSTANCE_EXPIRED",
+  "INSTANCE_PURGED",
+  "PROVISION_FAILED",
+);
+/** Checkout mode persisted on payment-attempt-like records once the tenant-demo adapter lands (plan section 6.3). TENANT_DEMO is distinct from the pre-existing dev-only DIGITAL_METALS_DEMO/MOCK_PROVIDER modes in digital-metals-demo-policy.js — it is keyed off a platform-created demo tenant, never off NODE_ENV/PROVIDER_MODE. */
+export const DemoCheckoutMode = makeEnum("TENANT_DEMO");
+
 export const enumValues = (enumeration) => Object.values(enumeration);
 export const isEnumValue = (enumeration, value) =>
   enumValues(enumeration).includes(value);

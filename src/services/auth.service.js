@@ -22,6 +22,7 @@ import { randomToken, sha256 } from "../lib/crypto.js";
 import { withTransaction } from "../lib/transaction.js";
 import { ttlToSeconds } from "../lib/jwt-ttl.js";
 import { reserveActiveCustomerSeat } from "../lib/tenant-customer-capacity.js";
+import { assertDemoSessionStillValid } from "../lib/demo-session-guard.js";
 
 const toSubject = (record, type, mobileClient = false) => ({ id: record._id, type, tenantId: record.tenantId, branchId: record.branchId, role: record.role, permissions: [...new Set([...(ROLE_PERMISSIONS[record.role] ?? []), ...(record.permissions ?? []), ...(record.permissionOverrides ?? [])])], mobileClient, securityVersion: record.securityVersion ?? 0 });
 function sessionPayload(tokens, mobileClient = false) {
@@ -122,7 +123,34 @@ export async function refresh(refreshToken) {
   const rotated = await rotateSession(refreshToken, async (session) => {
     const record = session.customerId ? await Customer.findById(session.customerId).lean() : await User.findById(session.userId).lean();
     if (!record) return null;
-    return session.customerId ? { id: record._id, type: UserType.CUSTOMER, tenantId: record.tenantId, branchId: record.branchId, role: "CUSTOMER", permissions: [], securityVersion: record.securityVersion ?? 0 } : toSubject(record, record.type, session.platform !== "web");
+    if (session.customerId) {
+      // Demo Builder (plan section 6.1): "Refresh checks these against current server state."
+      // authenticate() re-checks this on every access-token use, but refresh mints a fresh
+      // access token too, so it needs the same re-check — otherwise a demo whose instance was
+      // reset/disabled/expired between access-token expiries could refresh its way past that.
+      if (session.demoSession) {
+        await assertDemoSessionStillValid({
+          demoInstanceId: session.demoInstanceId,
+          demoGenerationId: session.demoGenerationId,
+          demoLinkVersion: session.demoLinkVersion,
+          tenantId: session.tenantId,
+        });
+      }
+      return {
+        id: record._id,
+        type: UserType.CUSTOMER,
+        tenantId: record.tenantId,
+        branchId: record.branchId,
+        role: "CUSTOMER",
+        permissions: [],
+        securityVersion: record.securityVersion ?? 0,
+        demoSession: session.demoSession ?? false,
+        demoInstanceId: session.demoInstanceId ?? null,
+        demoGenerationId: session.demoGenerationId ?? null,
+        demoLinkVersion: session.demoLinkVersion ?? null,
+      };
+    }
+    return toSubject(record, record.type, session.platform !== "web");
   });
   return { ...sessionPayload(rotated, rotated.mobileClient), ...rotated };
 }

@@ -69,6 +69,10 @@ const customerSchema = new mongoose.Schema(
     },
     profileCompletedAt: Date,
     createdBy: String,
+    // Demo Builder (plan section 4.1): inherited from the owning tenant at creation time by
+    // every creation/import path once demo-provision.service.js lands (phase 3). Not yet set
+    // by anything in this codebase.
+    isDemo: { type: Boolean, default: false },
     securityVersion: { type: Number, default: 0, validate: { validator: (value) => value == null || Number.isSafeInteger(value), message: "{PATH} must be a safe integer" } },
     /** Internal mutex for one-active-scheme enrolment — not customer profile version. */
     enrolmentSerializationVersion: {

@@ -110,10 +110,30 @@ const tenantOperationsSchema = new mongoose.Schema(
 
 const tenantSchema = new mongoose.Schema({
   _id: stringId("tnt"), code: { type: String, required: true, uppercase: true, trim: true }, name: { type: String, required: true, trim: true },
-  status: enumField(TenantStatus, { default: TenantStatus.PENDING_SETUP }), mobile: { type: String, required: true }, email: String, gstin: String,
+  status: enumField(TenantStatus, { default: TenantStatus.PENDING_SETUP }),
+  // Demo tenants never have a real mobile (it would collide with the global unique index
+  // below and is meaningless for a tenant nobody signs into as an owner). Live tenants are
+  // unaffected. See docs/demo-builder-phase-1-2-foundation.md for the two-phase index rollout.
+  mobile: { type: String, required: function requiredTenantMobile() { return !this.isDemo; } },
+  email: String, gstin: String,
   displayName: String, supportNumber: String,
   address: { type: tenantAddressSchema, default: undefined },
-  branding: { logoUploadId: String, primaryColor: String, accentColor: String, displayName: String },
+  branding: {
+    logoUploadId: String, primaryColor: String, accentColor: String, displayName: String,
+    // Demo Builder splash config (plan section 4.1). Unused by live tenants.
+    splashBackgroundColor: String, splashTagline: String,
+    splashEnabled: { type: Boolean, default: true },
+    /** Bumped on any branding change so clients can invalidate cached branding/CSS vars. */
+    revision: integerField({ min: 0, default: 1 }),
+  },
+  // --- Demo Builder (plan section 4.1) ---
+  /** True only for a tenant created by Demo Builder provisioning. Never settable through any public/customer/ordinary tenant update schema — only controlled platform provisioning sets this. */
+  isDemo: { type: Boolean, default: false },
+  demoInstanceId: { type: String, default: null },
+  demoGenerationId: { type: String, default: null },
+  demoTemplateVersionId: { type: String, default: null },
+  /** Prospect's own contact number for Platform Manager display. Never used as a demo customer login identity. */
+  prospectContactMobile: { type: String, default: null },
   settings: {
     timezone: { type: String, default: "Asia/Kolkata" },
     currency: { type: String, default: "INR" },
@@ -135,7 +155,26 @@ const tenantSchema = new mongoose.Schema({
   suspendReason: String,
   version: versionField,
 }, baseOptions);
-tenantSchema.index({ code: 1 }, { unique: true }); tenantSchema.index({ mobile: 1 }, { unique: true });
+tenantSchema.index({ code: 1 }, { unique: true });
+// Target state (plan section 4.1): mobile is unique only among live tenants. This partial
+// index is declared now but is NOT yet the live index — scripts/sync-indexes.js is the only
+// thing that applies it, and only after scripts/migrate-tenant-demo-mobile-index.mjs has
+// backfilled isDemo:false on every existing tenant and an operator has audited that no live
+// tenant is missing a mobile. The old unconditional unique index below must keep running
+// until that rollout is verified; dropping it is a separate, explicit --confirm-drop step.
+tenantSchema.index(
+  { mobile: 1 },
+  {
+    name: "mobile_1_live_only",
+    unique: true,
+    partialFilterExpression: { isDemo: false, mobile: { $type: "string" } },
+  },
+);
+// TODO(demo-builder-rollout): remove this line once mobile_1_live_only is live and this
+// old unconditional unique index has been dropped via scripts/sync-indexes.js --apply-drops
+// --confirm-drop mobile_1.
+tenantSchema.index({ mobile: 1 }, { name: "mobile_1", unique: true });
+tenantSchema.index({ isDemo: 1, status: 1, demoInstanceId: 1 });
 
 const branchAddressSchema = new mongoose.Schema(
   { line1: String, city: String, pincode: String },
@@ -162,8 +201,18 @@ const sessionSchema = new mongoose.Schema({
   _id: stringId("ses"), userId: { type: String, index: true }, customerId: { type: String, index: true }, tenantId: { type: String, index: true },
   deviceId: { type: String, required: true }, familyId: { type: String, required: true, index: true }, refreshTokenHash: { type: String, required: true, unique: true, select: false },
   platform: String, appVersion: String, userAgent: String, ip: String, expiresAt: { type: Date, required: true }, consumedAt: Date, revokedAt: Date, lastUsedAt: Date,
+  // --- Demo Builder (plan section 4.1 / 6.1) ---
+  // NOT YET ENFORCED: authenticate()/refresh() in auth.middleware.js and token.service.js do
+  // not read these fields yet. They exist so a future session/token change has a stable shape
+  // to write into; see docs/demo-builder-phase-1-2-foundation.md for exactly what phase 3/5
+  // still needs to wire up (signed-claim scope, generation-change rejection, link-version checks).
+  demoSession: { type: Boolean, default: false },
+  demoInstanceId: { type: String, default: null },
+  demoGenerationId: { type: String, default: null },
+  demoLinkVersion: { type: Number, default: null },
 }, baseOptions);
 sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+sessionSchema.index({ demoInstanceId: 1, demoSession: 1 });
 
 const signupSchema = new mongoose.Schema({
   _id: stringId("sgn"), mobile: { type: String, required: true }, businessName: String, ownerName: String, email: String, city: String,

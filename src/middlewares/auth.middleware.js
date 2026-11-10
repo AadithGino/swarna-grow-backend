@@ -9,6 +9,10 @@ import {
 } from "../constants/permissions.js";
 import { assertSubscriptionActive } from "../lib/tenant-limits.js";
 import { attachSubscriptionCatalogPlan } from "../lib/subscription-plan-for-tenant.js";
+import {
+  assertDemoSessionStillValid,
+  assertDemoSessionTenantMatch,
+} from "../lib/demo-session-guard.js";
 
 export const authenticate = asyncHandler(async (req, _res, next) => {
   const [scheme, token] = (req.headers.authorization ?? "").split(" ");
@@ -82,6 +86,21 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
     }
     assertSubscriptionActive(tenant);
     req.tenant = await attachSubscriptionCatalogPlan(tenant);
+    // Demo Builder (plan section 6.1): an ordinary session must never resolve against a demo
+    // tenant, and a demo session must never resolve against a live tenant. Only CUSTOMER
+    // sessions ever carry demo claims — demo tenants have no staff/platform login.
+    if (claims.typ === "CUSTOMER") {
+      const isDemoSession = Boolean(claims.dem);
+      assertDemoSessionTenantMatch({ isDemoSession, tenantIsDemo: Boolean(tenant.isDemo) });
+      if (isDemoSession) {
+        await assertDemoSessionStillValid({
+          demoInstanceId: claims.din,
+          demoGenerationId: claims.dgn,
+          demoLinkVersion: claims.dlv,
+          tenantId: claims.tid,
+        });
+      }
+    }
   }
   if (req.auth.role === "COLLECTION_AGENT") {
     req.auth.permissions = collectionAgentPermissions(req.tenant, {

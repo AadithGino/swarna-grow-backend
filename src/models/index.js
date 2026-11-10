@@ -16,3 +16,4 @@ export * from "./digital-metals.models.js";
 export * from "./assistant.models.js";
 
 export * from "./enrolment-operation.model.js";
+export * from "./demo.models.js";

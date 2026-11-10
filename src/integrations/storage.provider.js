@@ -40,12 +40,26 @@ function resolveMockPath(objectKey) {
   return { normalized, filePath };
 }
 
-const client = new S3Client({ region: env.S3_REGION, endpoint: env.S3_ENDPOINT || undefined, forcePathStyle: Boolean(env.S3_ENDPOINT), credentials: env.S3_ACCESS_KEY_ID ? { accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY } : undefined });
+const client = new S3Client({
+  region: env.S3_REGION,
+  endpoint: env.S3_ENDPOINT || undefined,
+  forcePathStyle: Boolean(env.S3_ENDPOINT),
+  credentials: env.S3_ACCESS_KEY_ID
+    ? { accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY }
+    : undefined,
+  // Avoid flexible checksum query params that force browser CORS preflights on presigned PUTs.
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
+});
 export const storageProvider = {
   async presignUpload({ objectKey, contentType }) {
     if (env.PROVIDER_MODE === "mock") return `http://localhost:${env.PORT}/mock-storage/${encodeURIComponent(objectKey)}`;
     assertLiveStorageConfigured();
-    return getSignedUrl(client, new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: objectKey, ContentType: contentType }), { expiresIn: 900 });
+    return getSignedUrl(
+      client,
+      new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: objectKey, ContentType: contentType }),
+      { expiresIn: 900 },
+    );
   },
   async presignDownload(objectKey) {
     if (env.PROVIDER_MODE === "mock") return `http://localhost:${env.PORT}/mock-storage/${encodeURIComponent(objectKey)}`;

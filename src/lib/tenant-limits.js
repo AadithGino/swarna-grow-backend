@@ -4,6 +4,14 @@ import { assertFeatureEntitled as assertPlanFeatureEntitled } from "./feature-en
 
 /** Block authenticated access when subscription is cancelled or grace has expired. */
 export function assertSubscriptionActive(tenant) {
+  // Demo tenants (plan section 3: "Demo tenants do not receive platform invoices or count
+  // toward paid tenant... subscription revenue") have no real subscription at all. Today this
+  // happens to pass anyway because tenantSchema.subscription defaults to { status: "TRIAL" }
+  // with no trialEndsAt, so the TRIAL-expiry branch below never fires — but that is an
+  // accident of defaults, not a guarantee, and this function is specifically the "single
+  // trusted source" this module's checks run through. Make the exemption explicit instead of
+  // relying on that accident.
+  if (tenant?.isDemo) return;
   const sub = tenant?.subscription;
   if (!sub) return;
   if (sub.status === SubscriptionStatus.CANCELLED) {

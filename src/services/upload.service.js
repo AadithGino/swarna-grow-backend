@@ -26,6 +26,9 @@ const RULES = Object.freeze({
 
 const ATTACHABLE_STATUSES = new Set([UploadStatus.UPLOADED, UploadStatus.ATTACHED]);
 
+/** Synthetic tenant scope for Demo Builder logos uploaded by platform users (no live tenant yet). */
+export const PLATFORM_DEMO_UPLOAD_TENANT_ID = "platform";
+
 export function uploadViewPath(uploadId) {
   return `/uploads/${uploadId}`;
 }
@@ -58,6 +61,122 @@ export async function presignUpload(req) {
     expiresAt,
     completeUrl: `${req.baseUrl}/uploads/${id}/complete`,
   };
+}
+
+/**
+ * Platform Demo Builder logos: platform users have no tenantId, so we park TENANT_LOGO uploads
+ * under PLATFORM_DEMO_UPLOAD_TENANT_ID. Public download only checks purpose/status, so splash +
+ * customer portal can still resolve these via /public/uploads/:id.
+ */
+export async function presignPlatformDemoLogo(req) {
+  const purpose = UploadPurpose.TENANT_LOGO;
+  const rule = RULES[purpose];
+  const contentType = req.body.contentType;
+  const sizeBytes = req.body.sizeBytes;
+  if (!rule?.types.includes(contentType) || sizeBytes > rule.max) {
+    throw errors.validation([{ field: "file", message: "The file type or size is not allowed for this purpose." }]);
+  }
+  const id = createId("upload");
+  const safeName = path.basename(req.body.fileName).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const objectKey = prefixStorageObjectKey(
+    `${PLATFORM_DEMO_UPLOAD_TENANT_ID}/${purpose.toLowerCase()}/${id}/${safeName}`,
+  );
+  const expiresAt = new Date(Date.now() + 15 * 60_000);
+  await Upload.create({
+    _id: id,
+    tenantId: PLATFORM_DEMO_UPLOAD_TENANT_ID,
+    ownerId: req.auth.id,
+    purpose,
+    fileName: req.body.fileName,
+    contentType,
+    sizeBytes,
+    objectKey,
+    expiresAt,
+  });
+  // Prefer a same-origin PUT target: browser→S3 is blocked when the bucket CORS does not
+  // allow the frontend origin (localhost). The frontend still does a normal presign→PUT→complete.
+  const uploadUrl = `${env.PUBLIC_BASE_URL}${env.API_PREFIX}/platform/demo/uploads/${id}/content`;
+  return {
+    uploadId: id,
+    uploadUrl,
+    method: "PUT",
+    headers: { "Content-Type": contentType },
+    expiresAt,
+    completeUrl: `${req.baseUrl}/demo/uploads/${id}/complete`,
+  };
+}
+
+export async function completePlatformDemoLogo(req) {
+  const uploadId = req.params.uploadId ?? req.body.uploadId;
+  const upload = await Upload.findOne({
+    _id: uploadId,
+    tenantId: PLATFORM_DEMO_UPLOAD_TENANT_ID,
+    purpose: UploadPurpose.TENANT_LOGO,
+  });
+  if (!upload) throw errors.notFound("Upload");
+  if (upload.ownerId !== req.auth.id) throw errors.forbidden("You can only complete your own uploads.");
+  if (upload.status === UploadStatus.UPLOADED || upload.status === UploadStatus.ATTACHED) {
+    return { uploadId: upload._id, status: upload.status, viewUrl: uploadViewPath(upload._id) };
+  }
+  if (upload.status === UploadStatus.EXPIRED) {
+    throw errors.business("UPLOAD_EXPIRED", "This upload reservation has expired.", { uploadId: upload._id });
+  }
+  if (upload.expiresAt && upload.expiresAt < new Date()) {
+    upload.status = UploadStatus.EXPIRED;
+    await upload.save();
+    throw errors.business("UPLOAD_EXPIRED", "This upload reservation has expired.", { uploadId: upload._id });
+  }
+  // Verify the object landed in storage; skip malware scan (not configured in local/dev).
+  const head = await storageProvider.headObject(upload.objectKey);
+  if (upload.sizeBytes != null && head.contentLength != null && head.contentLength !== upload.sizeBytes) {
+    throw errors.business("UPLOAD_SIZE_MISMATCH", "The uploaded file size does not match what was declared.", {
+      expectedBytes: upload.sizeBytes,
+      actualBytes: head.contentLength,
+    });
+  }
+  upload.status = UploadStatus.UPLOADED;
+  await upload.save();
+  return { uploadId: upload._id, status: upload.status, viewUrl: uploadViewPath(upload._id) };
+}
+
+/**
+ * Browser PUTs the raw file body here (same flow as S3 presign). The API streams it to S3 so
+ * localhost does not depend on bucket CORS. Used as `uploadUrl` from presignPlatformDemoLogo.
+ */
+export async function putPlatformDemoLogoContent(req) {
+  const uploadId = req.params.uploadId;
+  const upload = await Upload.findOne({
+    _id: uploadId,
+    tenantId: PLATFORM_DEMO_UPLOAD_TENANT_ID,
+    purpose: UploadPurpose.TENANT_LOGO,
+  });
+  if (!upload) throw errors.notFound("Upload");
+  if (upload.ownerId !== req.auth.id) throw errors.forbidden("You can only upload to your own reservation.");
+  if (upload.status === UploadStatus.UPLOADED || upload.status === UploadStatus.ATTACHED) {
+    return { uploadId: upload._id, status: upload.status, viewUrl: uploadViewPath(upload._id) };
+  }
+  if (upload.status === UploadStatus.EXPIRED || (upload.expiresAt && upload.expiresAt < new Date())) {
+    upload.status = UploadStatus.EXPIRED;
+    await upload.save();
+    throw errors.business("UPLOAD_EXPIRED", "This upload reservation has expired.", { uploadId: upload._id });
+  }
+  const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? "");
+  if (!body.length) {
+    throw errors.validation([{ field: "body", message: "Upload body is empty." }]);
+  }
+  if (upload.sizeBytes != null && body.length !== upload.sizeBytes) {
+    throw errors.validation([{ field: "body", message: "Uploaded byte length does not match the declared size." }]);
+  }
+  const detectedType = sniffContentType(body);
+  if (!detectedType || detectedType !== upload.contentType) {
+    throw errors.validation([{ field: "body", message: "File signature does not match the declared content type." }]);
+  }
+  await storageProvider.uploadFile({
+    objectKey: upload.objectKey,
+    body,
+    contentType: upload.contentType,
+  });
+  return { uploadId: upload._id, receivedBytes: body.length };
 }
 
 function sniffContentType(body) {

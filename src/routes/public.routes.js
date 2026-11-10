@@ -19,6 +19,8 @@ import {
 import { sendSuccess } from "../lib/response.js";
 import { getAppConfig } from "../services/platform.service.js";
 import { requireSignupToken, requireSignupTokenForStatus } from "../middlewares/signup-auth.middleware.js";
+import * as demoController from "../controllers/demo.controller.js";
+import { demoExchangeSessionBody, demoPublicIdParam } from "../validators/demo.validators.js";
 
 export const publicRouter = Router(); publicRouter.use(publicRateLimit);
 publicRouter.get("/app-config", asyncHandler(async (_req, res) => sendSuccess(res, await getAppConfig())));
@@ -40,3 +42,10 @@ publicRouter.get("/pay/:linkToken", asyncHandler(payment.publicLink));
 publicRouter.post("/pay/:linkToken/initiate", validate({ body: publicPaymentInitiateBody }), idempotent, asyncHandler(payment.initiatePublic));
 publicRouter.get("/pay/:linkToken/status", asyncHandler(payment.publicStatus));
 publicRouter.get("/uploads/:uploadId", asyncHandler(upload.publicDownload));
+
+// --- Demo Builder: public share-link entry (plan section 6.2). No auth — gated by the link's
+// own secret, not a session; demoPublicEntryEnabled()/demoBuilderEnabled() are read inside the
+// services, not enforced as route-level flags, so an operator-created demo keeps working even
+// if the flag that gates self-service creation is later toggled off.
+publicRouter.get("/demo/:publicId/branding", publicRateLimit, validate({ params: demoPublicIdParam }), asyncHandler(demoController.publicBranding));
+publicRouter.post("/demo/:publicId/session", loginRateLimit, validate({ params: demoPublicIdParam, body: demoExchangeSessionBody }), asyncHandler(demoController.exchangeSession));

@@ -7,7 +7,7 @@ import { idempotent } from "../middlewares/idempotency.middleware.js";
 import { WebhookEvent } from "../models/index.js";
 import { sendSuccess } from "../lib/response.js";
 import { validate } from "../middlewares/validation.middleware.js";
-import { platformAppConfigBody, platformLoginBody } from "../validators/common.validators.js";
+import { platformAppConfigBody, platformLoginBody, uploadBody } from "../validators/common.validators.js";
 import {
   platformDigitalMetalsTaxApproveBody,
   platformDigitalMetalsTermsBody,
@@ -15,12 +15,24 @@ import {
 import { platformCreatePlanBody, platformCreateTenantBody, platformDeprecatePlanBody, platformDigitalMetalsPauseBody, platformFcmIntegrationBody, platformFlagsBody, platformInvoiceCreateBody, platformMarkInvoicePaidBody, platformLogoutBody, platformOwnerCredentialsBody, platformPhonePeIntegrationBody, platformSubscriptionCancelBody, platformSubscriptionChangeBody, platformSubscriptionExtendBody, platformSubscriptionLimitsBody, platformTenantActionBody, platformTenantListQuery, platformUpdatePlanBody, platformUpdateTenantBody, platformWebhookRetryBody, platformMessageCentralIntegrationBody, platformMessageCentralVerifyBody } from "../validators/platform.validators.js";
 import { loginRateLimit } from "../middlewares/security.middleware.js";
 import { z } from "zod";
+import * as demoController from "../controllers/demo.controller.js";
+import {
+  demoCreateInstanceBody,
+  demoInstanceIdParam as demoInstanceIdParamSchema,
+  demoListInstancesQuery,
+  demoPublishVersionBody,
+  demoRegisterTemplateBody,
+  demoTemplateIdParam as demoTemplateIdParamSchema,
+  demoUpdateInstanceBody,
+} from "../validators/demo.validators.js";
 
 const tenantIdParam = validate({ params: z.object({ tenantId: z.string().min(4).max(80) }) });
 const planIdParam = validate({ params: z.object({ planId: z.string().min(4).max(80) }) });
 const invoiceIdParam = validate({ params: z.object({ invoiceId: z.string().min(4).max(80) }) });
 
 const webhookRetryParams = validate({ params: z.object({ id: z.string().min(4).max(80) }) });
+const demoTemplateIdParam = validate({ params: demoTemplateIdParamSchema });
+const demoInstanceIdParam = validate({ params: demoInstanceIdParamSchema });
 
 export const platformRouter = Router();
 platformRouter.post("/auth/login", loginRateLimit, validate({ body: platformLoginBody }), asyncHandler(auth.login(true)));
@@ -97,3 +109,35 @@ platformRouter.post("/webhook-failures/:id/retry", webhookRetryParams, validate(
   return sendSuccess(res, { id: row?._id, queued: Boolean(row) }, {}, 202);
 }));
 platformRouter.get("/error-logs", asyncHandler(controller.errorLogs));
+
+// --- Demo Builder (plan sections 8.1-8.4) ---
+platformRouter.post("/demo/templates", validate({ body: demoRegisterTemplateBody }), idempotent, asyncHandler(demoController.registerTemplate));
+platformRouter.get("/demo/templates", asyncHandler(demoController.listTemplates));
+platformRouter.get("/demo/templates/:templateId", demoTemplateIdParam, asyncHandler(demoController.getTemplate));
+platformRouter.get("/demo/templates/:templateId/versions", demoTemplateIdParam, asyncHandler(demoController.listTemplateVersions));
+platformRouter.post("/demo/templates/:templateId/publish", demoTemplateIdParam, validate({ body: demoPublishVersionBody }), idempotent, asyncHandler(demoController.publishTemplateVersion));
+platformRouter.post("/demo/instances", validate({ body: demoCreateInstanceBody }), idempotent, asyncHandler(demoController.createDemo));
+platformRouter.get("/demo/instances", validate({ query: demoListInstancesQuery }), asyncHandler(demoController.listDemos));
+platformRouter.get("/demo/instances/:instanceId", demoInstanceIdParam, asyncHandler(demoController.getDemo));
+platformRouter.patch("/demo/instances/:instanceId", demoInstanceIdParam, validate({ body: demoUpdateInstanceBody }), idempotent, asyncHandler(demoController.updateDemo));
+platformRouter.post("/demo/instances/:instanceId/rotate-link", demoInstanceIdParam, idempotent, asyncHandler(demoController.rotateLink));
+platformRouter.get("/demo/instances/:instanceId/link", demoInstanceIdParam, asyncHandler(demoController.copyLink));
+platformRouter.post("/demo/instances/:instanceId/disable", demoInstanceIdParam, idempotent, asyncHandler(demoController.disableDemo));
+platformRouter.post("/demo/instances/:instanceId/reactivate", demoInstanceIdParam, idempotent, asyncHandler(demoController.reactivateDemo));
+platformRouter.post(
+  "/demo/uploads/presign",
+  validate({ body: uploadBody }),
+  idempotent,
+  asyncHandler(demoController.presignDemoLogo),
+);
+platformRouter.put(
+  "/demo/uploads/:uploadId/content",
+  validate({ params: z.object({ uploadId: z.string().min(4).max(80) }) }),
+  asyncHandler(demoController.putDemoLogoContent),
+);
+platformRouter.post(
+  "/demo/uploads/:uploadId/complete",
+  validate({ params: z.object({ uploadId: z.string().min(4).max(80) }) }),
+  idempotent,
+  asyncHandler(demoController.completeDemoLogo),
+);

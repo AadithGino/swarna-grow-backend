@@ -68,6 +68,7 @@ import {
 } from "../lib/customer-app-access.js";
 import { sendSuccess } from "../lib/response.js";
 import * as schemes from "../services/scheme.service.js";
+import * as demoController from "../controllers/demo.controller.js";
 export const appRouter = Router();
 const requireCustomerAppAvailable = (req, _res, next) => {
   try {
@@ -107,6 +108,7 @@ const requireCustomerEnrolAccess = (req, _res, next) => {
 appRouter.get("/auth/devices", asyncHandler(auth.devices));
 appRouter.delete("/auth/devices/:deviceId", asyncHandler(auth.revokeDevice));
 
+appRouter.get("/demo/context", asyncHandler(demoController.demoContext));
 appRouter.get("/home", asyncHandler(appCustomer.home));
 appRouter.get("/profile", asyncHandler(appCustomer.profile));
 appRouter.patch(

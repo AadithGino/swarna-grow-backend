@@ -20,6 +20,17 @@ export function signAccessToken(subject) {
     did: subject.deviceId,
     sv: subject.securityVersion ?? 0,
     sid: subject.sessionId ?? undefined,
+    // Demo Builder (plan section 6.1/6.2). Only ever set for a CUSTOMER subject issued by
+    // demo-session.service.js; every other caller omits subject.demoSession, so `dem` is
+    // `false` and the other three claims are `undefined` — identical token shape to before.
+    ...(subject.demoSession
+      ? {
+          dem: true,
+          din: subject.demoInstanceId,
+          dgn: subject.demoGenerationId,
+          dlv: subject.demoLinkVersion,
+        }
+      : {}),
   }, env.JWT_ACCESS_SECRET, { subject: subject.id, expiresIn: accessTtl(subject), issuer: "swarnagrow", audience: "swarnagrow-clients", jwtid: crypto.randomUUID() });
 }
 export function verifyAccessToken(token) {
@@ -42,6 +53,10 @@ export async function issueSessionDefault(subject, device, request) {
     userAgent: request?.headers?.["user-agent"],
     ip: request?.ip,
     expiresAt,
+    demoSession: subject.demoSession ?? false,
+    demoInstanceId: subject.demoInstanceId ?? null,
+    demoGenerationId: subject.demoGenerationId ?? null,
+    demoLinkVersion: subject.demoLinkVersion ?? null,
   });
   return {
     accessToken: signAccessToken({ ...subject, deviceId: device.deviceId, sessionId: session._id }),
@@ -122,6 +137,12 @@ export async function rotateSession(refreshToken, subjectLoader) {
         platform: claimed.platform,
         appVersion: claimed.appVersion,
         expiresAt,
+        // Carried over from the consumed session so a refresh can never silently drop a demo
+        // session's scope (plan section 6.1). Non-demo rotations just copy false/null through.
+        demoSession: claimed.demoSession ?? false,
+        demoInstanceId: claimed.demoInstanceId ?? null,
+        demoGenerationId: claimed.demoGenerationId ?? null,
+        demoLinkVersion: claimed.demoLinkVersion ?? null,
       }], { session: mongoSession });
       return { subject, next, expiresAt, sessionId: nextSession._id, existing: claimed };
     }

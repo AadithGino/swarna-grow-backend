@@ -229,6 +229,20 @@ export function parseEnv(source = process.env) {
     ASSISTANT_PRICE_INPUT_PER_M: z.string().default(""),
     ASSISTANT_PRICE_OUTPUT_PER_M: z.string().default(""),
     ASSISTANT_PRICE_CACHED_PER_M: z.string().default(""),
+
+    // --- Demo Builder (platform prospect demos) ---
+    /** Master switch for the Platform Manager Demo Builder APIs/UI. */
+    DEMO_BUILDER_ENABLED: booleanString,
+    /** Public /demo/:publicId entry + session-exchange routes. Can be enabled independently so a demo can be built and reviewed before it is shareable. */
+    DEMO_PUBLIC_ENTRY_ENABLED: booleanString,
+    /** Allows the tenant-demo payment/side-effect adapter to simulate outcomes for isDemo tenants, including in production. Never enables global mock mode. */
+    TENANT_DEMO_SIMULATION_ENABLED: booleanString,
+    DEMO_DEFAULT_EXPIRY_DAYS: boundedInt(1, 365, 14),
+    DEMO_MAX_EXPIRY_DAYS: boundedInt(1, 365, 60),
+    /** Days an expired/disabled demo generation is retained before DemoCleanup purges it. */
+    DEMO_PURGE_RETENTION_DAYS: boundedInt(1, 90, 7),
+    /** Platform-wide ceiling on concurrently READY demo instances; provisioning is refused above this. */
+    DEMO_MAX_ACTIVE_INSTANCES: boundedInt(1, 10_000, 200),
   }).superRefine((_value, context) => {
     const nodeEnv = normalized.NODE_ENV ?? "development";
     if (nodeEnv !== "production") return;

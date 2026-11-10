@@ -65,6 +65,9 @@ export function tenantBrandingDto(tenant) {
     accentColor: accent,
     foregroundColor: branding.foregroundColor ?? "#FFFFFF",
     contrastColor: branding.contrastColor ?? primary,
+    splashBackgroundColor: branding.splashBackgroundColor ?? null,
+    splashTagline: branding.splashTagline ?? null,
+    splashEnabled: branding.splashEnabled !== false,
     otpLength: mcVerified ? Number(mc.otpLength ?? 6) : 6,
     /** Indian SMS only unless Message Central is verified (UAE selection is not implied). */
     authCountryCode: mcVerified ? String(mc.countryCode ?? "91").replace(/\D/g, "") || "91" : "91",
