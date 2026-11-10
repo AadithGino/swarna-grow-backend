@@ -289,12 +289,32 @@ Same product shape as list item (single object in `data`).
 
 ### `PATCH /app/shop/addresses/{addressId}`
 
-**Request**
+**Request** (all fields optional; `expectedVersion` recommended for optimistic concurrency)
 
 ```json
 {
   "expectedVersion": 1,
-  "pincode": "682016"
+  "pincode": "682016",
+  "line1": "Rose Villa",
+  "isDefault": true
+}
+```
+
+**Response:** single address object (same fields as list item).
+
+### `DELETE /app/shop/addresses/{addressId}`
+
+Removes the address. If it was the default, another remaining address (most recently updated) is promoted to default when present.
+
+**Response**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "eaddr_01",
+    "deleted": true
+  }
 }
 ```
 
@@ -755,7 +775,7 @@ GET  /shop/orders/{id}             (confirm PAID / fulfilment)
 | GET | `/app/shop/products` |
 | GET | `/app/shop/products/:productIdOrSlug` |
 | GET/POST | `/app/shop/addresses` |
-| PATCH | `/app/shop/addresses/:addressId` |
+| PATCH/DELETE | `/app/shop/addresses/:addressId` |
 | GET/PUT | `/app/shop/cart` |
 | GET | `/app/shop/fulfilment-options` |
 | POST | `/app/shop/quotes` |

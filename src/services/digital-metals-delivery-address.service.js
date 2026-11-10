@@ -1,5 +1,5 @@
 import { presentDigitalMetalsAccessState } from "../lib/digital-metals-access.js";
-import { AppError } from "../lib/app-error.js";
+import { AppError, errors } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { withTransaction } from "../lib/transaction.js";
 import {
@@ -68,6 +68,62 @@ export async function createCustomerDigitalMetalsDeliveryAddress(req) {
       )
     )[0];
     return mapCustomerDeliveryAddress(row.toObject());
+  });
+}
+
+export async function patchCustomerDigitalMetalsDeliveryAddress(req) {
+  assertDigitalMetalsCustomerActive(await loadTenant(req));
+  return withTransaction(async (session) => {
+    const row = await EcommerceCustomerAddress.findOne({
+      _id: req.params.addressId,
+      tenantId: req.auth.tenantId,
+      customerId: req.auth.id,
+    }).session(session);
+    if (!row) throw errors.notFound("Address");
+    if (req.body.expectedVersion != null && row.version !== Number(req.body.expectedVersion)) {
+      throw errors.conflict("VERSION_CONFLICT", "Address changed elsewhere.");
+    }
+    if (req.body.isDefault === true) {
+      await EcommerceCustomerAddress.updateMany(
+        { tenantId: req.auth.tenantId, customerId: req.auth.id, _id: { $ne: row._id } },
+        { $set: { isDefault: false } },
+        { session },
+      );
+    }
+    const patch = { ...req.body };
+    delete patch.expectedVersion;
+    Object.assign(row, patch);
+    row.version += 1;
+    await row.save({ session });
+    return mapCustomerDeliveryAddress(row.toObject());
+  });
+}
+
+export async function deleteCustomerDigitalMetalsDeliveryAddress(req) {
+  assertDigitalMetalsCustomerActive(await loadTenant(req));
+  return withTransaction(async (session) => {
+    const row = await EcommerceCustomerAddress.findOne({
+      _id: req.params.addressId,
+      tenantId: req.auth.tenantId,
+      customerId: req.auth.id,
+    }).session(session);
+    if (!row) throw errors.notFound("Address");
+    const wasDefault = row.isDefault === true;
+    await row.deleteOne({ session });
+    if (wasDefault) {
+      const nextDefault = await EcommerceCustomerAddress.findOne({
+        tenantId: req.auth.tenantId,
+        customerId: req.auth.id,
+      })
+        .sort({ updatedAt: -1 })
+        .session(session);
+      if (nextDefault) {
+        nextDefault.isDefault = true;
+        nextDefault.version += 1;
+        await nextDefault.save({ session });
+      }
+    }
+    return { id: req.params.addressId, deleted: true };
   });
 }
 

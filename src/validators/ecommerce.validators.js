@@ -219,7 +219,7 @@ export const ecommerceAddressCreateBody = z
 
 export const ecommerceAddressPatchBody = ecommerceAddressCreateBody
   .partial()
-  .extend({ expectedVersion: z.number().int().min(0) })
+  .extend({ expectedVersion: z.number().int().min(0).optional() })
   .strict();
 
 export const ecommerceCartPutBody = z

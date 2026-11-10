@@ -117,6 +117,12 @@ appRouter.patch(
   validate({ body: appProfilePatchBody }),
   asyncHandler(appCustomer.completeProfile),
 );
+appRouter.put(
+  "/profile",
+  requireCustomerAppWrite,
+  validate({ body: appProfilePatchBody }),
+  asyncHandler(appCustomer.completeProfile),
+);
 appRouter.post(
   "/profile/complete",
   requireCustomerAppWrite,
@@ -448,6 +454,15 @@ appRouter.post(
   idempotent,
   asyncHandler(digitalMetals.customerCreateDigitalMetalsDeliveryAddress),
 );
+appRouter.patch(
+  "/digital-metals/delivery-addresses/:addressId",
+  validate({ body: ecommerceAddressPatchBody }),
+  asyncHandler(digitalMetals.customerPatchDigitalMetalsDeliveryAddress),
+);
+appRouter.delete(
+  "/digital-metals/delivery-addresses/:addressId",
+  asyncHandler(digitalMetals.customerDeleteDigitalMetalsDeliveryAddress),
+);
 appRouter.get(
   "/digital-metals/redemption/catalogue",
   asyncHandler(digitalMetals.customerRedemptionCatalogue),
@@ -535,6 +550,10 @@ appRouter.patch(
   "/shop/addresses/:addressId",
   validate({ body: ecommerceAddressPatchBody }),
   asyncHandler(ecommerce.shopPatchAddress),
+);
+appRouter.delete(
+  "/shop/addresses/:addressId",
+  asyncHandler(ecommerce.shopDeleteAddress),
 );
 appRouter.get("/shop/cart", asyncHandler(ecommerce.shopGetCart));
 appRouter.put(

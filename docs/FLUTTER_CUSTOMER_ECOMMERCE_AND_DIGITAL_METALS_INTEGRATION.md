@@ -329,6 +329,12 @@ X-Idempotency-Key: addr-001
 
 **Response `201`:** address object with `id`, `version`, etc.
 
+Edit: `PATCH /api/v1/app/shop/addresses/{addressId}` with any subset of address fields (`expectedVersion` optional).
+
+Delete: `DELETE /api/v1/app/shop/addresses/{addressId}` → `{ "id", "deleted": true }`.
+
+Digital metals uses the same address book at `/app/digital-metals/delivery-addresses` with matching `GET|POST|PATCH|DELETE`.
+
 ### 2.5 Fulfilment options
 
 ```http
@@ -1247,3 +1253,6 @@ Deep links (examples): `/shop`, `/shop/products/{slug}`, `/shop/order/{orderId}`
 | DM redemption quote / order / pay | `POST .../quotes/redemption`, `redemption/orders`, `.../payment-intents` |
 | Bank account add | `POST /app/digital-metals/bank-destinations` |
 | Shop address add | `POST /app/shop/addresses` |
+| Shop address edit/delete | `PATCH|DELETE /app/shop/addresses/:addressId` |
+| DM delivery address edit/delete | `PATCH|DELETE /app/digital-metals/delivery-addresses/:addressId` |
+| Profile edit | `PATCH|PUT /app/profile` |

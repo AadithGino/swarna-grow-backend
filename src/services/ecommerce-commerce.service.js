@@ -111,6 +111,34 @@ export async function patchCustomerAddress(req) {
   });
 }
 
+export async function deleteCustomerAddress(req) {
+  assertEcommerceOperational(req.tenant);
+  return withTransaction(async (session) => {
+    const row = await EcommerceCustomerAddress.findOne({
+      _id: req.params.addressId,
+      tenantId: req.auth.tenantId,
+      customerId: req.auth.id,
+    }).session(session);
+    if (!row) throw errors.notFound("Address");
+    const wasDefault = row.isDefault === true;
+    await row.deleteOne({ session });
+    if (wasDefault) {
+      const nextDefault = await EcommerceCustomerAddress.findOne({
+        tenantId: req.auth.tenantId,
+        customerId: req.auth.id,
+      })
+        .sort({ updatedAt: -1 })
+        .session(session);
+      if (nextDefault) {
+        nextDefault.isDefault = true;
+        nextDefault.version += 1;
+        await nextDefault.save({ session });
+      }
+    }
+    return { id: req.params.addressId, deleted: true };
+  });
+}
+
 async function loadOrCreateCart(tenantId, customerId, session) {
   let cart = await EcommerceCart.findOne({ tenantId, customerId }).session(session);
   if (!cart) {

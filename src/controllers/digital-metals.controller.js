@@ -286,6 +286,16 @@ export const customerCreateDigitalMetalsDeliveryAddress = async (req, res) => {
   return sendSuccess(res, await svc.createCustomerDigitalMetalsDeliveryAddress(req), {}, 201);
 };
 
+export const customerPatchDigitalMetalsDeliveryAddress = async (req, res) => {
+  const svc = await import("../services/digital-metals-delivery-address.service.js");
+  return sendSuccess(res, await svc.patchCustomerDigitalMetalsDeliveryAddress(req));
+};
+
+export const customerDeleteDigitalMetalsDeliveryAddress = async (req, res) => {
+  const svc = await import("../services/digital-metals-delivery-address.service.js");
+  return sendSuccess(res, await svc.deleteCustomerDigitalMetalsDeliveryAddress(req));
+};
+
 export const customerRedemptionCatalogue = async (req, res) => {
   const svc = await import("../services/digital-metals-redemption.service.js");
   return sendSuccess(res, await svc.listCustomerRedemptionCatalogue(req));

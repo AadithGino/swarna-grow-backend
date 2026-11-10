@@ -145,7 +145,12 @@ export const appProfilePatchBody = z
       .transform((value) => (value === "" ? undefined : value)),
     address: customerAddressValue.optional(),
   })
-  .strict();
+  .passthrough()
+  .transform((value) => ({
+    ...(value.name !== undefined ? { name: value.name } : {}),
+    ...(value.email !== undefined ? { email: value.email } : {}),
+    ...(value.address !== undefined ? { address: value.address } : {}),
+  }));
 export const customerGrievanceMessageBody = z.object({
   body: z.string().min(1).max(4000),
   attachmentUploadIds: z.array(z.string()).max(5).default([]),

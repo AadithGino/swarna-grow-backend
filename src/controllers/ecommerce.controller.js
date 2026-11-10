@@ -146,6 +146,9 @@ export const shopCreateAddress = async (req, res) =>
 export const shopPatchAddress = async (req, res) =>
   sendSuccess(res, await ecommerceCommerce.patchCustomerAddress(req));
 
+export const shopDeleteAddress = async (req, res) =>
+  sendSuccess(res, await ecommerceCommerce.deleteCustomerAddress(req));
+
 export const shopGetCart = async (req, res) =>
   sendSuccess(res, await ecommerceCommerce.getCustomerCart(req));
 

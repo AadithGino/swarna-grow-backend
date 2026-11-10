@@ -368,7 +368,7 @@ X-Idempotency-Key: profile-complete-01
 }
 ```
 
-Patch uses `PATCH /api/v1/app/profile` with any of the same fields. Mobile and branch cannot be changed by the customer.
+Edit profile with `PATCH` or `PUT /api/v1/app/profile` using any subset of `name`, `email`, and `address`. Extra fields are ignored. Mobile and branch cannot be changed by the customer.
 
 ### Upload KYC/support attachments
 
@@ -1271,6 +1271,12 @@ X-Idempotency-Key: cart-sync-01
 GET /api/v1/app/shop/addresses
 POST /api/v1/app/shop/addresses
 PATCH /api/v1/app/shop/addresses/{addressId}
+DELETE /api/v1/app/shop/addresses/{addressId}
+
+GET /api/v1/app/digital-metals/delivery-addresses
+POST /api/v1/app/digital-metals/delivery-addresses
+PATCH /api/v1/app/digital-metals/delivery-addresses/{addressId}
+DELETE /api/v1/app/digital-metals/delivery-addresses/{addressId}
 ```
 
 3. **Fulfilment options** — pickup branches vs delivery pincodes, COD eligibility:
@@ -1648,7 +1654,7 @@ Drive UI availability from `tenantCapabilities`, `tenant` capability fields, and
 - `DELETE /app/auth/devices/{deviceId}`
 - `GET /app/home`
 - `GET /app/home/banners`
-- `GET|PATCH /app/profile`
+- `GET|PATCH|PUT /app/profile`
 - `POST /app/profile/complete`
 - `PUT /app/profile/kyc`
 - `PUT|DELETE /app/profile/nominee`
@@ -1688,7 +1694,9 @@ Drive UI availability from `tenantCapabilities`, `tenant` capability fields, and
 - `GET /app/shop/products`
 - `GET /app/shop/products/:productIdOrSlug`
 - `GET|POST /app/shop/addresses`
-- `PATCH /app/shop/addresses/:addressId`
+- `PATCH|DELETE /app/shop/addresses/:addressId`
+- `GET|POST /app/digital-metals/delivery-addresses`
+- `PATCH|DELETE /app/digital-metals/delivery-addresses/:addressId`
 - `GET|PUT /app/shop/cart`
 - `GET /app/shop/fulfilment-options`
 - `POST /app/shop/quotes`
