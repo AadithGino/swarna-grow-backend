@@ -4,7 +4,7 @@ import * as scheme from "../controllers/scheme.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import * as operations from "../controllers/operations.controller.js";
 import * as analytics from "../controllers/analytics.controller.js";
-import { HandoverInitiator, MessageType } from "../constants/enums.js";
+import { DevicePrincipalType, HandoverInitiator, MessageType, UploadPurpose } from "../constants/enums.js";
 import { Permission } from "../constants/permissions.js";
 import { Message, User } from "../models/index.js";
 import { sendList, sendSuccess } from "../lib/response.js";
@@ -25,10 +25,14 @@ import {
   nomineeBody,
   paymentBody,
   paymentLinkBody,
+  uploadBody,
 } from "../validators/common.validators.js";
-import { DevicePrincipalType } from "../constants/enums.js";
+import { uploadCompleteBody } from "../validators/admin-mutation.validators.js";
 import { registerFcmDevice, revokeFcmDevice } from "../services/device-registration.service.js";
 import * as audit from "../services/audit.service.js";
+import * as upload from "../controllers/upload.controller.js";
+import { AppError } from "../lib/app-error.js";
+import { presignUpload } from "../services/upload.service.js";
 
 /** Staff-facing operational reminders — not customer WhatsApp receipts or branch-wide message feed. */
 const STAFF_NOTIFICATION_TYPES = [
@@ -76,6 +80,34 @@ staffRouter.put(
     validate({ body: kycSubmitBody }),
     idempotent,
     asyncHandler(customer.kyc(false)),
+  ),
+);
+/** Field agents / staff capture KYC document images before enrolment when KYC is mandatory. */
+staffRouter.post(
+  "/uploads/presign",
+  ...guarded(
+    Permission.CUSTOMER_KYC,
+    validate({ body: uploadBody }),
+    idempotent,
+    asyncHandler(async (req, res) => {
+      if (req.body.purpose !== UploadPurpose.KYC_DOCUMENT) {
+        throw new AppError(
+          "UPLOAD_PURPOSE_FORBIDDEN",
+          "Staff uploads are limited to KYC documents.",
+          403,
+        );
+      }
+      return sendSuccess(res, await presignUpload(req), {}, 201);
+    }),
+  ),
+);
+staffRouter.post(
+  "/uploads/:uploadId/complete",
+  ...guarded(
+    Permission.CUSTOMER_KYC,
+    validate({ body: uploadCompleteBody }),
+    idempotent,
+    asyncHandler(upload.complete),
   ),
 );
 staffRouter.get(

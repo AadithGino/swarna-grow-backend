@@ -65,15 +65,22 @@ export const ROLE_PERMISSIONS = Object.freeze({
 
 /** Extra permissions a jeweller can switch on for collection agents (tenant.operations flags). Only honoured on /staff routes. */
 export const AGENT_CAPABILITY_GRANTS = Object.freeze({
-  agentCanRegisterCustomers: [Permission.CUSTOMER_WRITE],
+  // Register includes KYC submit so agents can capture docs when KYC-before-enrol is mandatory.
+  agentCanRegisterCustomers: [Permission.CUSTOMER_WRITE, Permission.CUSTOMER_KYC],
   agentCanEnrolSchemes: [Permission.PLAN_READ, Permission.SCHEME_WRITE],
 });
 
 export function agentCapabilities(tenant) {
   const operations = tenant?.operations ?? {};
+  const settings = tenant?.settings ?? {};
+  const kycMandatory =
+    operations.kycMandatory != null
+      ? operations.kycMandatory === true
+      : settings.requireKycForEnrolment === true;
   return {
     registerCustomers: operations.agentCanRegisterCustomers === true,
     enrolSchemes: operations.agentCanEnrolSchemes === true,
+    kycMandatory,
   };
 }
 
