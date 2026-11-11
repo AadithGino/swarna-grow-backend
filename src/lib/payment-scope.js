@@ -1,5 +1,5 @@
-import { Customer } from "../models/index.js";
-import { TenantRole } from "../constants/enums.js";
+import { Customer, Payment, PaymentLink } from "../models/index.js";
+import { PaymentSource, TenantRole } from "../constants/enums.js";
 import { effectiveScope } from "./query-filters.js";
 
 /** Branch staff/agents: include legacy payments with null branchId when the customer belongs to the branch. */
@@ -19,6 +19,45 @@ export async function paymentListScope(req) {
       { branchId: null, customerId: { $in: customerIds } },
       { branchId: { $exists: false }, customerId: { $in: customerIds } },
     ],
+  };
+}
+
+/**
+ * Collection agents own: (1) payments with collectedBy = them, and
+ * (2) gateway payments from payment-links they created (QR / share link) even if
+ * collectedBy was never stamped (legacy PhonePe initiate path).
+ */
+export async function agentCollectedPaymentMatch(req) {
+  if (req.auth?.role !== TenantRole.COLLECTION_AGENT) return {};
+  const staffId = req.auth.id;
+  const tenantId = req.auth.tenantId;
+  const linkRows = await PaymentLink.find({
+    tenantId,
+    createdBy: staffId,
+    paymentId: { $exists: true, $nin: [null, ""] },
+  })
+    .select("paymentId")
+    .lean();
+  const linkPaymentIds = [
+    ...new Set(
+      linkRows
+        .map((row) => row.paymentId)
+        .filter((id) => id && !String(id).startsWith("CLAIMING-")),
+    ),
+  ];
+  if (linkPaymentIds.length) {
+    await Payment.updateMany(
+      {
+        _id: { $in: linkPaymentIds },
+        tenantId,
+        $or: [{ collectedBy: null }, { collectedBy: { $exists: false } }],
+      },
+      { $set: { collectedBy: staffId, source: PaymentSource.STAFF_APP } },
+    );
+  }
+  if (!linkPaymentIds.length) return { collectedBy: staffId };
+  return {
+    $or: [{ collectedBy: staffId }, { _id: { $in: linkPaymentIds } }],
   };
 }
 

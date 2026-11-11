@@ -63,6 +63,7 @@ import { mergePhonePeProviderInitPayload } from "../lib/phonepe-customer-web-che
 import { nextSchemeLedgerSequence, nextSequence } from "./sequence.service.js";
 import { dateMatch, searchRegex } from "../lib/query-filters.js";
 import {
+  agentCollectedPaymentMatch,
   paymentListScope,
   resolvePaymentBranchId,
 } from "../lib/payment-scope.js";
@@ -858,7 +859,7 @@ export async function listPayments(req) {
   ])
     if (req.query[key]) filters[key] = req.query[key];
   if (req.auth?.role === TenantRole.COLLECTION_AGENT && !filters.collectedBy) {
-    filters.collectedBy = req.auth.id;
+    Object.assign(filters, await agentCollectedPaymentMatch(req));
   }
   if (
     String(req.originalUrl ?? "").includes("/cash/collections") &&
@@ -884,10 +885,16 @@ export async function listPayments(req) {
     })
       .select("_id")
       .lean();
-    filters.$or = [
+    const searchOr = [
       { receiptNumber: pattern },
       { customerId: { $in: matchedCustomers.map((row) => row._id) } },
     ];
+    if (filters.$or) {
+      filters.$and = [{ $or: filters.$or }, { $or: searchOr }];
+      delete filters.$or;
+    } else {
+      filters.$or = searchOr;
+    }
   }
 
   const result = await paginate(Payment, {
@@ -981,12 +988,16 @@ async function enrichPaymentRows(tenantId, rows) {
 }
 
 export async function getPayment(req) {
-  const filters = { _id: req.params.paymentId };
-  if (req.auth?.role === TenantRole.COLLECTION_AGENT) {
-    filters.collectedBy = req.auth.id;
-  }
   const scope = await paymentListScope(req);
-  const row = await Payment.findOne({ ...scope, ...filters }).lean();
+  const attribution =
+    req.auth?.role === TenantRole.COLLECTION_AGENT
+      ? await agentCollectedPaymentMatch(req)
+      : {};
+  const row = await Payment.findOne({
+    ...scope,
+    _id: req.params.paymentId,
+    ...attribution,
+  }).lean();
   if (!row) throw errors.notFound("Payment");
   const [payment] = await enrichPaymentRows(req.auth.tenantId, [row]);
   return payment;
@@ -1310,6 +1321,121 @@ export async function createPaymentLink(req) {
   );
 }
 
+function resolveStaffQrOrigin(req) {
+  const candidates = [];
+  if (req.body?.redirectUrl) {
+    try {
+      candidates.push(new URL(req.body.redirectUrl).origin);
+    } catch {
+      /* validated later */
+    }
+  }
+  if (req.headers?.origin) candidates.push(String(req.headers.origin));
+  if (req.headers?.referer) {
+    try {
+      candidates.push(new URL(String(req.headers.referer)).origin);
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const origin of candidates) {
+    if (env.corsOrigins.includes(origin)) return origin;
+  }
+  return env.corsOrigins[0] ?? null;
+}
+
+/**
+ * Agent / staff “Show QR”: reserve a payment link, start hosted PhonePe checkout,
+ * return a scannable gateway URL. Customer pays on their phone; agent polls status.
+ */
+export async function createStaffPaymentQrSession(req) {
+  const link = await createPaymentLink(req);
+  const origin = resolveStaffQrOrigin(req);
+  const redirectUrl =
+    req.body.redirectUrl
+    ?? (origin ? `${origin}/pay/${link.token}` : null);
+  if (!redirectUrl) {
+    throw errors.validation([
+      {
+        field: "redirectUrl",
+        message: "redirectUrl is required when the request origin is not allowlisted.",
+      },
+    ]);
+  }
+  const initiated = await initiatePublicPayment({
+    ...req,
+    params: { ...(req.params ?? {}), linkToken: link.token },
+    body: { ...(req.body ?? {}), redirectUrl },
+    headers: {
+      ...(req.headers ?? {}),
+      "x-checkout-channel": "hosted",
+      "X-Checkout-Channel": "hosted",
+    },
+  });
+  const gatewayUrl =
+    initiated.checkoutRedirectUrl
+    ?? initiated.redirectUrl
+    ?? initiated.paymentUrl
+    ?? initiated.gatewayUrl
+    ?? null;
+  const payPageUrl = origin
+    ? `${origin}/pay/${link.token}`
+    : link.url;
+  const qrPayload = gatewayUrl || payPageUrl;
+  if (!qrPayload) {
+    throw errors.dependency(
+      "Payment provider did not return a checkout URL for QR display.",
+    );
+  }
+  if (initiated.paymentId && req.auth?.id) {
+    await Payment.updateOne(
+      {
+        _id: initiated.paymentId,
+        $or: [{ collectedBy: null }, { collectedBy: { $exists: false } }],
+      },
+      { $set: { collectedBy: req.auth.id, source: PaymentSource.STAFF_APP } },
+    );
+  }
+  return {
+    id: link.id,
+    token: link.token,
+    url: link.url,
+    status: link.status,
+    expiresAt: link.expiresAt,
+    paymentIntentId: link.paymentIntentId ?? null,
+    positionVersion: link.positionVersion,
+    amountPaise: req.body.amountPaise,
+    paymentId: initiated.paymentId ?? null,
+    gatewayUrl,
+    qrPayload,
+    providerOrderId: initiated.providerOrderId ?? null,
+  };
+}
+
+export async function getStaffPaymentQrStatus(req) {
+  const token = req.params.linkToken ?? req.params.token;
+  if (!token) throw errors.notFound("Payment link");
+  const link = await PaymentLink.findOne({
+    tokenHash: sha256(token),
+    tenantId: req.auth.tenantId,
+  })
+    .select("_id")
+    .lean();
+  if (!link) throw errors.notFound("Payment link");
+  if (req.scope?.branchId) {
+    const scoped = await PaymentLink.findOne({
+      _id: link._id,
+      ...req.scope,
+    })
+      .select("_id")
+      .lean();
+    if (!scoped) throw errors.notFound("Payment link");
+  }
+  const { publicPayStatus } = await import("./customer-app.service.js");
+  const payload = await publicPayStatus(token);
+  return payload.poll ?? payload;
+}
+
 export async function reservePaymentIntentInSession(session, req) {
   const tenant = await Tenant.findById(req.auth.tenantId)
     .select("featureFlags subscription")
@@ -1582,12 +1708,20 @@ export async function initiatePublicPayment(req) {
         PaymentStatus.SUCCESS,
         PaymentStatus.UNALLOCATED_PENDING_REVIEW,
       ].includes(existing?.status)
-    )
+    ) {
+      const staffCollectorId = link.createdBy || req.auth?.id || null;
+      if (staffCollectorId && existing && !existing.collectedBy) {
+        await Payment.updateOne(
+          { _id: existing._id, $or: [{ collectedBy: null }, { collectedBy: { $exists: false } }] },
+          { $set: { collectedBy: staffCollectorId, source: PaymentSource.STAFF_APP } },
+        );
+      }
       return {
         paymentLinkId: link._id,
         paymentId: existing?._id,
         status: existing?.status,
       };
+    }
     if (link.paymentIntentId) link = await renewFlexibleLinkReservation(link);
   }
   const claimMarker = `CLAIMING-${createId("payment")}`;
@@ -1640,6 +1774,7 @@ export async function initiatePublicPayment(req) {
       clientPlatform: readClientPlatform(req.headers),
       checkoutChannel: readCheckoutChannel(req.headers),
     });
+    const staffCollectorId = link.createdBy || req.auth?.id || null;
     const pending = await Payment.create({
       _id: createId("payment"),
       tenantId: link.tenantId,
@@ -1652,7 +1787,10 @@ export async function initiatePublicPayment(req) {
       targetCycle: link.targetCycle,
       mode: PaymentMode.ONLINE_GATEWAY,
       status: PaymentStatus.PENDING,
-      source: PaymentSource.CUSTOMER_APP,
+      source: staffCollectorId
+        ? PaymentSource.STAFF_APP
+        : PaymentSource.CUSTOMER_APP,
+      ...(staffCollectorId ? { collectedBy: staffCollectorId } : {}),
       providerTransactionId: provider.providerOrderId,
       providerPayload: mergePhonePeProviderInitPayload(undefined, {
         checkoutChannel: provider.phonePeCheckoutChannel,

@@ -4,40 +4,43 @@
 
 **Base:** `http://localhost:4000` · **Prefix:** `/api/v1` (except `/health*`)
 
+> **Flutter developers:** use the full updated guide → [`FLUTTER_STAFF_AGENT_API_GUIDE.md`](./FLUTTER_STAFF_AGENT_API_GUIDE.md) (auth, multi-mode collect, payment links, PhonePe QR, KYC/enrol capabilities, report, examples). This file remains a contract appendix; the Flutter guide is the integration source of truth.
+
 > Money = integer **paise**. Weight = integer **mg**. List/detail payloads may use Mongo **`_id`**; map to **`id`** in UI if your design system prefers it ([Appendix B](#appendix-b--dto-notes)).
 
-Full **`BRANCH_STAFF`** / counter staff surface (enrol, KYC, grievances, dues, payment links, etc.) lives on the same **`/staff/*`** handlers but is **out of scope** for this document — see [API_CONTRACT.md](./API_CONTRACT.md) staff sections.
+Full **`BRANCH_STAFF`** / counter staff surface (enrol, KYC, grievances, dues, etc.) lives on the same **`/staff/*`** handlers — see [API_CONTRACT.md](./API_CONTRACT.md) staff sections.
 
 ## Scope
 
 - **`/auth/*`** — tenant login, refresh, logout, profile, password, devices
-- **`/staff/*`** — **read-only customer lookup**, **read scheme + collect cash**, **cash balance & handover**, **gold rate**, **profile** (branch-scoped)
+- **`/staff/*`** — customers, schemes, **manual collect (CASH/UPI/CARD/BANK_TRANSFER)**, **payment links**, **PhonePe QR sessions**, cash handover, gold rate, optional register/KYC/enrol via tenant capabilities
 - Health checks (shared)
 
-**Route count (this app):** **25** (see [Appendix C](#appendix-c--route-inventory-collection-agent-app)). Request/response examples: [Appendix D](#appendix-d--complete-request--response-reference).
+**Route count:** see [Appendix C](#appendix-c--route-inventory-collection-agent-app) + Flutter guide §15 (includes QR / KYC / enrol). Request/response examples: [Appendix D](#appendix-d--complete-request--response-reference) and the Flutter guide.
 
-See also: [Full contract](./API_CONTRACT.md) · [Admin portal](./API_CONTRACT_ADMIN.md) · [Customer](./API_CONTRACT_CUSTOMER.md) · [Panels index](./API_CONTRACT_PANELS.md)
+See also: [Flutter staff/agent guide](./FLUTTER_STAFF_AGENT_API_GUIDE.md) · [Full contract](./API_CONTRACT.md) · [Admin portal](./API_CONTRACT_ADMIN.md) · [Customer](./API_CONTRACT_CUSTOMER.md) · [Panels index](./API_CONTRACT_PANELS.md)
 
-## Locked product rules (V1)
+## Locked product rules
 
 - **Role:** Login user must be **`COLLECTION_AGENT`** with a non-null **`branchId`**. Reject or hide the app for other tenant roles (they should use admin or full staff builds).
 - **Branch scope:** Every `/staff/*` call is scoped to the authenticated user’s **branch** and tenant. Do **not** send `branchId` to override scope.
-- **Online-only:** No offline queue, sync, or geo-stamping in V1.
-- **Cash-only collection UI:** The collect screen records **`mode: "CASH"`** only. Do not expose UPI/card/bank transfer or payment links in this app (backend may accept other modes for other roles — ignore here).
+- **Online-only:** No offline queue, sync, or geo-stamping required for V1.
+- **Payment modes:** Collect UI may record **`CASH`**, **`UPI`**, **`CARD`**, **`BANK_TRANSFER`**. Only **`CASH`** increases **cash in hand**. Online QR / payment-link success appears as **`ONLINE_GATEWAY`** and is attributed to the creating agent.
 - **Cash in hand:** Successful **`CASH`** collections (minus reversals), minus **accepted** handovers and cash adjustments — **pending** handovers do **not** reduce **`cashInHandPaise`** ([Cash & handover](#cash--handover)).
 - **Available to submit:** **`availableForHandoverPaise`** = **`cashInHandPaise`** − **`cashPendingAcceptancePaise`** (floor 0). Handover amount must not exceed this.
-- **Flexible schemes:** Always **`GET .../payable-range`** immediately before **`POST /staff/payments`**; send **`expectedPositionVersion`** (or fixed **`expectedVersion`**) from that response.
+- **Flexible schemes:** Always **`GET .../payable-range`** immediately before **`POST /staff/payments`**, payment-links, or payment-qr-sessions; send **`expectedPositionVersion`** (or fixed **`expectedVersion`**) from that response.
 - **Gold-weight schemes:** Call **`GET /staff/gold-rate/current`** before showing the collect form; block submit if rate missing (**`GOLD_RATE_NOT_SET`**).
-- **Payment source:** Successful collections return **`source: "STAFF_APP"`**.
+- **Payment source:** Staff-attributed collections use **`source: "STAFF_APP"`** (including QR/link once credited to the agent).
 - **Handover acceptance:** Agents submit cash; **branch manager / admin** accepts on **`/admin/cash/handovers/*`** (not in this app).
+- **Capabilities:** Register / KYC / enrol only when `user.agentCapabilities` (from login / me / profile) enables them.
 
-**Permissions** (`ROLE_PERMISSIONS.COLLECTION_AGENT`): `customer.read`, `scheme.read`, `payment.read`, `payment.record`, `cash.read`, `cash.handover`, `gold-rate.read`.
+**Permissions** (base `COLLECTION_AGENT`): `CUSTOMER_READ`, `SCHEME_READ`, `PAYMENT_READ`, `PAYMENT_RECORD`, `CASH_READ`, `CASH_HANDOVER`, `GOLD_RATE_READ`. Extra grants via `operations.agentCanRegisterCustomers` / `agentCanEnrolSchemes`.
 
-**Demo (KAIRALI):** tenant code **`KAIRALI`**, mobile **`9847012352`**, password **`Swarna@2026`** (Kochi branch).
+**Demo (KAIRALI):** tenant code **`KAIRALI`**, mobile **`9847012352`**, password **`2026`** (Kochi branch, after `seed:demo`).
 
-## App UI (V1)
+## App UI
 
-Mobile-first layout. **Do not** implement staff home, enrol, customer create/edit, dues lists, grievances, WhatsApp share, payment links, or push in this build.
+Mobile-first layout. Implement collect modes, payment link share, PhonePe QR, history (all methods), report, and capability-gated register/KYC/enrol as documented in the Flutter guide.
 
 ### Navigation
 
@@ -225,7 +228,7 @@ Collection agent app authenticates as **`TENANT_USER`** via **`/auth/*`** (not c
 {
   "tenantCode": "KAIRALI",
   "mobile": "9847012352",
-  "password": "Swarna@2026",
+  "password": "2026",
   "deviceId": "collector-pixel-8-001",
   "platform": "android",
   "appVersion": "1.0.0"
@@ -887,8 +890,8 @@ See [Auth logout](#post-apiv1authlogout).
 
 ```json
 {
-  "currentPassword": "Swarna@2026",
-  "newPassword": "Swarna@2027!"
+  "currentPassword": "2026",
+  "newPassword": "SwarnaGrow@2027!"
 }
 ```
 

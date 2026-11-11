@@ -1,5 +1,5 @@
 import { UploadPurpose, UploadStatus } from "../../src/constants/enums.js";
-import { storageProvider } from "../../src/integrations/storage.provider.js";
+import { prefixStorageObjectKey, storageProvider } from "../../src/integrations/storage.provider.js";
 import { createId } from "../../src/lib/ids.js";
 import { Upload } from "../../src/models/index.js";
 
@@ -27,7 +27,9 @@ export async function ensureDemoProductImageUpload({ tenantId, ownerUserId, prod
 
   const fileBody = demoPngBuffer();
   const uploadId = createId("upload");
-  const objectKey = `${tenantId}/ecommerce_product_image/${uploadId}/demo.png`;
+  const objectKey = prefixStorageObjectKey(
+    `${tenantId}/ecommerce_product_image/${uploadId}/demo.png`,
+  );
   await storageProvider.uploadFile({
     objectKey,
     body: fileBody,
@@ -60,7 +62,9 @@ export async function ensureDemoBannerImageUpload({ tenantId, ownerUserId, banne
 
   const fileBody = demoPngBuffer();
   const uploadId = createId("upload");
-  const objectKey = `${tenantId}/ecommerce_banner_image/${uploadId}/demo.png`;
+  const objectKey = prefixStorageObjectKey(
+    `${tenantId}/ecommerce_banner_image/${uploadId}/demo.png`,
+  );
   await storageProvider.uploadFile({
     objectKey,
     body: fileBody,

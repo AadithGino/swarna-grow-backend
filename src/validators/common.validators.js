@@ -874,6 +874,10 @@ export const paymentLinkBody = z.object({
   positionVersion: z.number().int().nonnegative().nullish(),
   expiresInMinutes: z.number().int().positive().max(30).nullish(),
 });
+/** Staff PhonePe QR collect: payment-link fields + optional redirect after pay. */
+export const paymentQrSessionBody = paymentLinkBody.extend({
+  redirectUrl: z.string().url().nullish(),
+});
 export const customerNoteBody = z.object({
   note: z.string().trim().min(1).max(4000),
 });

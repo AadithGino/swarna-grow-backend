@@ -738,7 +738,7 @@ export const PAYMENT_MODE_ORDER = Object.freeze([
 ]);
 
 export const PAYMENT_MODE_LABELS = Object.freeze({
-  CASH: "Cash",
+  CASH: "Cash in hand",
   CARD: "Card / POS",
   UPI: "UPI",
   BANK_TRANSFER: "Bank transfer",

@@ -25,6 +25,7 @@ import {
   nomineeBody,
   paymentBody,
   paymentLinkBody,
+  paymentQrSessionBody,
   uploadBody,
 } from "../validators/common.validators.js";
 import { uploadCompleteBody } from "../validators/admin-mutation.validators.js";
@@ -176,6 +177,19 @@ staffRouter.post(
     idempotent,
     asyncHandler(payment.createLink),
   ),
+);
+staffRouter.post(
+  "/payment-qr-sessions",
+  ...guarded(
+    Permission.PAYMENT_RECORD,
+    validate({ body: paymentQrSessionBody }),
+    idempotent,
+    asyncHandler(payment.createQrSession),
+  ),
+);
+staffRouter.get(
+  "/payment-qr-sessions/:linkToken/status",
+  ...guarded(Permission.PAYMENT_READ, asyncHandler(payment.qrSessionStatus)),
 );
 staffRouter.get(
   "/collections/summary",

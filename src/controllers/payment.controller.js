@@ -17,6 +17,10 @@ export const reverse = async (req, res) =>
   sendSuccess(res, await payments.reversePayment(req));
 export const createLink = async (req, res) =>
   sendSuccess(res, await payments.createPaymentLink(req), {}, 201);
+export const createQrSession = async (req, res) =>
+  sendSuccess(res, await payments.createStaffPaymentQrSession(req), {}, 201);
+export const qrSessionStatus = async (req, res) =>
+  sendSuccess(res, await payments.getStaffPaymentQrStatus(req));
 export const publicLink = async (req, res) => {
   const { publicPayStatus } =
     await import("../services/customer-app.service.js");
