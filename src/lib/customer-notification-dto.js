@@ -19,6 +19,7 @@ function uiTypeForMessageType(type) {
     case "SCHEME_JOINED":
     case "SCHEME_MATURED":
     case "SCHEME_CLOSED":
+    case "SCHEME_REDEMPTION_HANDOVER_OTP":
     case "FLEXI_LOCK_APPLIED":
       return "SCHEME";
     case "GRIEVANCE":
@@ -28,6 +29,7 @@ function uiTypeForMessageType(type) {
     case "ECOMMERCE_PAYMENT_EXPIRED":
     case "ECOMMERCE_REFUND_COMPLETED":
     case "ECOMMERCE_FULFILMENT_UPDATE":
+    case "ECOMMERCE_PICKUP_CODE_RELEASED":
     case "ECOMMERCE_CANCELLATION_UPDATE":
     case "ECOMMERCE_COD_UPDATE":
     case "ECOMMERCE_PRODUCT_PROMOTION":
@@ -74,6 +76,9 @@ function titleForRow(row) {
       return "Scheme matured";
     case "SCHEME_CLOSED":
       return "Scheme closed";
+    case "SCHEME_REDEMPTION_HANDOVER_OTP":
+      if (row.templateParams?.title) return String(row.templateParams.title);
+      return "Redemption code ready";
     case "FLEXI_LOCK_APPLIED":
       return "Monthly cap locked";
     case "OTP":
@@ -83,6 +88,7 @@ function titleForRow(row) {
     case "ECOMMERCE_PAYMENT_EXPIRED":
     case "ECOMMERCE_REFUND_COMPLETED":
     case "ECOMMERCE_FULFILMENT_UPDATE":
+    case "ECOMMERCE_PICKUP_CODE_RELEASED":
     case "ECOMMERCE_CANCELLATION_UPDATE":
     case "ECOMMERCE_COD_UPDATE":
       if (row.templateParams?.title) return String(row.templateParams.title);
@@ -150,6 +156,9 @@ function bodyForRow(row, ctx) {
       return `${label} has reached maturity. View your scheme for redemption options.`;
     case "SCHEME_CLOSED":
       return `${label} is now closed. Your passbook and receipts remain available in the app.`;
+    case "SCHEME_REDEMPTION_HANDOVER_OTP":
+      if (row.templateParams?.body) return String(row.templateParams.body);
+      return "Your handover code is ready. Show it at the counter to complete redemption.";
     case "FLEXI_LOCK_APPLIED":
       return `Your flexible phase has ended and your monthly cap for ${label} is now locked.`;
     case "ECOMMERCE_ORDER_CONFIRMED":
@@ -157,6 +166,7 @@ function bodyForRow(row, ctx) {
     case "ECOMMERCE_PAYMENT_EXPIRED":
     case "ECOMMERCE_REFUND_COMPLETED":
     case "ECOMMERCE_FULFILMENT_UPDATE":
+    case "ECOMMERCE_PICKUP_CODE_RELEASED":
     case "ECOMMERCE_CANCELLATION_UPDATE":
     case "ECOMMERCE_COD_UPDATE":
       if (row.templateParams?.body) return String(row.templateParams.body);

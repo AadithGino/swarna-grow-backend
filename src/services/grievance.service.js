@@ -78,15 +78,21 @@ function actorDisplayName(message, customerMap, userMap) {
   return userMap.get(message.actorId)?.name ?? "Staff";
 }
 
-function mapGrievanceMessages(row, customerMap, userMap) {
-  return (row.messages ?? []).map((message) => ({
-    ...message,
-    messageType: message.type,
-    author: {
-      actorType: message.actorType,
-      name: actorDisplayName(message, customerMap, userMap),
-    },
-  }));
+function mapGrievanceMessages(row, customerMap, userMap, { forCustomer = false } = {}) {
+  return (row.messages ?? [])
+    .filter((message) => {
+      if (!forCustomer) return true;
+      // Customers never see staff-only notes or system events.
+      return message.type === GrievanceMessageType.PUBLIC_REPLY;
+    })
+    .map((message) => ({
+      ...message,
+      messageType: message.type,
+      author: {
+        actorType: message.actorType,
+        name: actorDisplayName(message, customerMap, userMap),
+      },
+    }));
 }
 
 async function enrichGrievanceList(tenantId, rows) {
@@ -105,7 +111,7 @@ async function enrichGrievanceList(tenantId, rows) {
   }));
 }
 
-async function enrichGrievanceDetail(tenantId, row) {
+async function enrichGrievanceDetail(tenantId, row, { forCustomer = false } = {}) {
   const { presentGrievanceRelatedEntity } = await import("../lib/grievance-related-entity.js");
   const [customerMap, branchMap, userMap, relatedEntity] = await Promise.all([
     loadCustomerMap(tenantId, [row.customerId]),
@@ -124,7 +130,7 @@ async function enrichGrievanceDetail(tenantId, row) {
     branch: branchDto(branchMap.get(row.branchId)),
     assignee: userDto(userMap.get(row.assigneeId)),
     firstResponseOverdue: !row.firstResponseAt && row.firstResponseDueAt < new Date(),
-    messages: mapGrievanceMessages(row, customerMap, userMap),
+    messages: mapGrievanceMessages(row, customerMap, userMap, { forCustomer }),
     relatedEntity: relatedEntity ?? row.relatedEntity ?? null,
   };
 }
@@ -203,7 +209,9 @@ export async function listGrievances(req) {
 export async function getGrievance(req) {
   const row = await Grievance.findOne({ _id: req.params.grievanceId ?? req.params.id, ...grievanceScope(req) }).lean();
   if (!row) throw errors.notFound("Grievance");
-  return enrichGrievanceDetail(req.auth.tenantId, row);
+  return enrichGrievanceDetail(req.auth.tenantId, row, {
+    forCustomer: req.auth.type === "CUSTOMER",
+  });
 }
 export async function addGrievanceMessage(req) {
   return withTransaction(async (session) => {
@@ -225,8 +233,23 @@ export async function addGrievanceMessage(req) {
       createdAt: new Date(),
     };
     row.messages.push(message);
-    if (req.auth.type !== "CUSTOMER" && message.type === GrievanceMessageType.PUBLIC_REPLY && !row.firstResponseAt) {
-      row.firstResponseAt = new Date();
+    if (req.auth.type !== "CUSTOMER" && message.type === GrievanceMessageType.PUBLIC_REPLY) {
+      if (!row.firstResponseAt) row.firstResponseAt = new Date();
+      // Surface the reply in the customer app: move into "awaiting customer" when allowed.
+      if (row.status === GrievanceStatus.OPEN && TRANSITIONS.OPEN.includes(GrievanceStatus.IN_PROGRESS)) {
+        row.status = GrievanceStatus.IN_PROGRESS;
+      }
+      if (
+        row.status === GrievanceStatus.IN_PROGRESS
+        && TRANSITIONS.IN_PROGRESS.includes(GrievanceStatus.WAITING_FOR_CUSTOMER)
+      ) {
+        row.status = GrievanceStatus.WAITING_FOR_CUSTOMER;
+      }
+    }
+    if (req.auth.type === "CUSTOMER" && row.status === GrievanceStatus.WAITING_FOR_CUSTOMER) {
+      if (TRANSITIONS.WAITING_FOR_CUSTOMER.includes(GrievanceStatus.IN_PROGRESS)) {
+        row.status = GrievanceStatus.IN_PROGRESS;
+      }
     }
     row.version += 1;
     await row.save({ session });
@@ -235,10 +258,10 @@ export async function addGrievanceMessage(req) {
       action: message.type === GrievanceMessageType.INTERNAL_NOTE ? "GRIEVANCE_NOTE_ADDED" : "GRIEVANCE_REPLIED",
       entityType: AuditEntityType.GRIEVANCE,
       entityId: row._id,
-      metadata: { messageType: message.type },
+      metadata: { messageType: message.type, status: row.status },
       session,
     });
-    return { message: row.messages.at(-1), version: row.version, auditEventId };
+    return { message: row.messages.at(-1), version: row.version, status: row.status, auditEventId };
   });
 }
 export async function mutateGrievance(req, action) {

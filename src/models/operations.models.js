@@ -26,6 +26,13 @@ const redemptionSchema = new mongoose.Schema({
   /** Cash-value gold handover: settlementPaise − handoverValuePaise (rounding at weight precision). Disclosure only. */
   roundingDeltaPaise: integerField(),
   modeDetails: mongoose.Schema.Types.Mixed,
+  /** Counter handover OTP — customer receives code; staff enters it to complete. */
+  handoverOtpHash: { type: String, trim: true, maxlength: 128 },
+  handoverOtpSealed: { type: String, trim: true, maxlength: 512 },
+  handoverOtpExpiresAt: Date,
+  handoverOtpFailedAttempts: { type: Number, default: 0, min: 0 },
+  handoverOtpReleasedAt: Date,
+  handoverOtpReleasedBy: String,
   requestedBy: String, approvedBy: String, completedBy: String, requestedAt: Date, approvedAt: Date, completedAt: Date, rejectionReason: String, version: versionField,
 }, baseOptions);
 redemptionSchema.index(

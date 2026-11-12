@@ -542,3 +542,11 @@ adminSchemeRouter.post(
     asyncHandler(operations.transitionRedemption("complete")),
   ),
 );
+adminSchemeRouter.post(
+  "/redemptions/:redemptionId/release-handover-otp",
+  ...guarded(
+    Permission.REDEMPTION_APPROVE,
+    idempotent,
+    asyncHandler(operations.releaseRedemptionHandoverOtp),
+  ),
+);

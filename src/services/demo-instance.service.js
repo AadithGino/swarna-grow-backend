@@ -57,6 +57,9 @@ export async function createDemo({
   const policy = demoExpiryPolicy();
   const requestedDays = Math.min(Number(expiryDays) || policy.defaultDays, policy.maxDays);
   const { secret, hash } = newLinkCredential();
+  // Default ON so "Copy existing link" works after create. Opt out only when
+  // rememberLinkSecret is explicitly false (hash-only / non-recoverable links).
+  const persistRecoverableSecret = rememberLinkSecret !== false;
 
   const instance = await DemoInstance.create({
     _id: createId("dins"),
@@ -69,7 +72,7 @@ export async function createDemo({
     expiresAt: dayjs().add(requestedDays, "day").toDate(),
     createdBy: actorId,
     linkSecretHash: hash,
-    sealedLinkSecret: rememberLinkSecret ? seal(secret) : null,
+    sealedLinkSecret: persistRecoverableSecret ? seal(secret) : null,
   });
 
   setImmediate(() => {
@@ -141,12 +144,17 @@ export async function updateDemo({ instanceId, patch, expectedVersion }) {
   return result;
 }
 
-export async function rotateLink(instanceId) {
+export async function rotateLink(instanceId, { rememberLinkSecret } = {}) {
   const { secret, hash } = newLinkCredential();
+  // Keep the new secret recoverable by default (same rule as create).
+  const persistRecoverableSecret = rememberLinkSecret !== false;
   const instance = await DemoInstance.findByIdAndUpdate(
     instanceId,
     {
-      $set: { linkSecretHash: hash, sealedLinkSecret: null },
+      $set: {
+        linkSecretHash: hash,
+        sealedLinkSecret: persistRecoverableSecret ? seal(secret) : null,
+      },
       $inc: { linkVersion: 1 },
     },
     { new: true },

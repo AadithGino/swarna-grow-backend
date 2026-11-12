@@ -660,3 +660,7 @@ appRouter.post(
   idempotent,
   asyncHandler(operations.requestCustomerRedemption),
 );
+appRouter.get(
+  "/redemptions/:redemptionId/handover-otp",
+  asyncHandler(operations.revealCustomerRedemptionHandoverOtp),
+);

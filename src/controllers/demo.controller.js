@@ -59,7 +59,14 @@ export const updateDemo = async (req, res) => {
   );
 };
 export const rotateLink = async (req, res) =>
-  sendSuccess(res, withDemoInstanceResult(await demoInstance.rotateLink(req.params.instanceId)));
+  sendSuccess(
+    res,
+    withDemoInstanceResult(
+      await demoInstance.rotateLink(req.params.instanceId, {
+        rememberLinkSecret: req.body?.rememberLinkSecret,
+      }),
+    ),
+  );
 export const copyLink = async (req, res) => sendSuccess(res, await demoInstance.copyLink(req.params.instanceId));
 export const disableDemo = async (req, res) =>
   sendSuccess(res, demoPublicDoc(await demoInstance.disableDemo(req.params.instanceId, req.auth.id)));

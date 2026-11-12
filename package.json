@@ -45,6 +45,7 @@
     "configure:evoluxe-message-central": "node --env-file=.env scripts/configure-evoluxe-message-central.js",
     "verify:phonepe-oauth": "node --env-file=.env scripts/verify-phonepe-oauth.js",
     "seed:ecommerce-demo": "node --env-file=.env scripts/seed-ecommerce-demo.js",
+    "seed:kairali-jewellery-collage": "node --env-file=.env scripts/seed-kairali-jewellery-collage.js",
     "diagnose:ecommerce-payments": "node --env-file=.env scripts/diagnose-ecommerce-payment-capability.js",
     "ecommerce:payment-test-ui": "node scripts/run-ecommerce-payment-test-ui.js",
     "ecommerce:payment-test-ui:smoke": "node scripts/run-ecommerce-payment-test-ui.js --smoke",
@@ -97,6 +98,7 @@
     "pino-http": "^10.5.0",
     "rate-limit-redis": "^6.0.1",
     "sharp": "^0.35.4",
+    "socket.io": "^4.8.4",
     "ulid": "^3.0.1",
     "zod": "^4.1.5"
   },

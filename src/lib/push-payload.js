@@ -83,6 +83,7 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
     case MessageType.ECOMMERCE_PAYMENT_EXPIRED:
     case MessageType.ECOMMERCE_REFUND_COMPLETED:
     case MessageType.ECOMMERCE_FULFILMENT_UPDATE:
+    case MessageType.ECOMMERCE_PICKUP_CODE_RELEASED:
     case MessageType.ECOMMERCE_CANCELLATION_UPDATE:
     case MessageType.ECOMMERCE_COD_UPDATE:
       title = String(message.templateParams?.title ?? "Shop order update");
@@ -92,6 +93,19 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
           ?? (message.templateParams?.orderId
             ? `/shop/order/${message.templateParams.orderId}`
             : "/shop/orders"),
+      );
+      break;
+    case MessageType.SCHEME_REDEMPTION_HANDOVER_OTP:
+      title = String(message.templateParams?.title ?? "Redemption code ready");
+      body = String(
+        message.templateParams?.body
+          ?? "Your handover code is ready. Show it at the counter to complete redemption.",
+      );
+      deepLink = String(
+        message.templateParams?.deepLink
+          ?? (message.templateParams?.redemptionId
+            ? `/schemes/redemptions/${message.templateParams.redemptionId}/handover-otp`
+            : "/schemes"),
       );
       break;
     case MessageType.DIGITAL_METAL_PURCHASE_CREDITED:

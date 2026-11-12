@@ -16,6 +16,8 @@ await connectDatabase();
 await assertProductionTenantPhonePe();
 const queueAvailable = await connectRedis(); if (queueAvailable) startDispatcher();
 const server = createServer(createApp()); server.keepAliveTimeout = 65_000; server.headersTimeout = 66_000; server.requestTimeout = 30_000;
+const { attachCustomerSocket } = await import("./realtime/customer-socket.js");
+attachCustomerSocket(server);
 server.listen(env.PORT, () => logger.info({ port: env.PORT, apiPrefix: env.API_PREFIX, queueAvailable }, "SwarnaGrow API listening"));
 let shuttingDown = false;
 async function shutdown(signal) { if (shuttingDown) return; shuttingDown = true; logger.info({ signal }, "Graceful shutdown started"); stopDispatcher(); server.close(async () => { await closeQueues(); await disconnectRedis(); await disconnectDatabase(); logger.info("Graceful shutdown complete"); process.exit(0); }); setTimeout(() => process.exit(1), 20_000).unref(); }

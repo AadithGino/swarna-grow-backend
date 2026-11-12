@@ -20,8 +20,10 @@ This guide was derived from the current route registrations, Zod validators, DTO
 | **FCM / inbox** | Ecommerce order lifecycle pushes, product/category/offer promotions, **scheme** and **shop** gold-rate announcements; richer `data` payload (rate metadata, `productId`, `deepLink`). |
 | **Gold rates** | Scheme `/app/gold-rate/*` unchanged for 22K scheme math; shop uses separate ecommerce purity rates inside product pricing (server-computed). |
 | **Deep links** | Route map must handle `/shop`, `/shop/order/{id}`, `/shop/products/{slug}`, `/gold-rate/current`, `/digital-metals`, plus existing `/payments`, `/schemes`. |
+| **Handover / pickup OTP + Socket.IO** | Staff-released 6-digit codes for scheme redemption handover and shop branch pickup. Connect Socket.IO `path=/realtime`; events `redemption.handover_otp_released` / `shop.pickup_code_released` (**no code in payload**). Reveal via `GET /app/redemptions/{id}/handover-otp` or order `pickupCode`. See [`FLUTTER_CUSTOMER_HANDOVER_OTP_AND_SUPPORT.md`](./FLUTTER_CUSTOMER_HANDOVER_OTP_AND_SUPPORT.md). |
+| **Support staff replies** | Customer `GET /app/grievances/{id}` returns staff **`PUBLIC_REPLY`** only (internal notes hidden). Refetch/poll detail — no socket event for grievances yet. Same handover doc §6. |
 
-**Related backend docs:** [`docs/FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md`](docs/FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md) (**ecommerce + Digital Gold — every shop/DM route with example JSON**), [`docs/FLUTTER_PHONEPE_INTEGRATION.md`](docs/FLUTTER_PHONEPE_INTEGRATION.md) (**PhonePe SDK checklist**), [`docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md`](docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md) (**shop payloads**), `docs/DIGITAL_METALS_API_CONTRACT.md`, `docs/ECOMMERCE_API_CONTRACT.md`, `docs/FCM_CUSTOMER_APP_INTEGRATION.md`, `docs/ECOMMERCE_PROMOTION_FCM.md`, `docs/PHONEPE_PRODUCTION_ACTIVATION_HANDOFF.md`.
+**Related backend docs:** [`docs/FLUTTER_CUSTOMER_HANDOVER_OTP_AND_SUPPORT.md`](docs/FLUTTER_CUSTOMER_HANDOVER_OTP_AND_SUPPORT.md) (**OTP drawer + Socket.IO + support replies**), [`docs/FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md`](docs/FLUTTER_CUSTOMER_ECOMMERCE_AND_DIGITAL_METALS_INTEGRATION.md) (**ecommerce + Digital Gold — every shop/DM route with example JSON**), [`docs/FLUTTER_PHONEPE_INTEGRATION.md`](docs/FLUTTER_PHONEPE_INTEGRATION.md) (**PhonePe SDK checklist**), [`docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md`](docs/ECOMMERCE_CUSTOMER_APP_GUIDE.md) (**shop payloads**), `docs/DIGITAL_METALS_API_CONTRACT.md`, `docs/ECOMMERCE_API_CONTRACT.md`, `docs/FCM_CUSTOMER_APP_INTEGRATION.md`, `docs/ECOMMERCE_PROMOTION_FCM.md`, `docs/PHONEPE_PRODUCTION_ACTIVATION_HANDOFF.md`.
 
 ## 1. Transport conventions
 
@@ -1550,6 +1552,8 @@ Non-production test harness only: `POST .../test-harness/complete-payment` on bu
 ## 13. Grievances/support
 
 Categories: `PAYMENT`, `RECEIPT`, `SCHEME_RULE`, `GOLD_CREDIT`, `MATURITY`, `REDEMPTION`, `KYC`, `WHATSAPP`, `STAFF_SERVICE`, `OTHER`.
+
+**Staff replies:** Tenant admin public replies appear in `GET /app/grievances/{id}` as `messages[]` with `author.actorType: "USER"` and `type` / `messageType: "PUBLIC_REPLY"`. **Internal notes are not returned to the customer.** There is no Socket.IO event for grievance replies — refetch on resume and optionally poll while the thread is open. Full UX notes: [`FLUTTER_CUSTOMER_HANDOVER_OTP_AND_SUPPORT.md`](./FLUTTER_CUSTOMER_HANDOVER_OTP_AND_SUPPORT.md) §6.
 
 Create:
 

@@ -182,6 +182,10 @@ export const initiateRedemption =
     );
 export const transitionRedemption = (action) => async (req, res) =>
   sendSuccess(res, await redemption.transitionRedemption(req, action));
+export const releaseRedemptionHandoverOtp = async (req, res) =>
+  sendSuccess(res, await redemption.releaseHandoverOtp(req));
+export const revealCustomerRedemptionHandoverOtp = async (req, res) =>
+  sendSuccess(res, await redemption.revealCustomerHandoverOtp(req));
 export const redemptions = async (req, res) =>
   sendList(res, await redemption.listRedemptions(req));
 export const redemptionDetail = async (req, res) =>

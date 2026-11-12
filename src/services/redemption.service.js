@@ -51,6 +51,21 @@ import {
   enrichRedemptionBenefitForRead,
   normalizeSettlementSnapshotForValidation,
 } from "../lib/redemption-benefit-accounting.js";
+import {
+  generatePickupCode,
+  hashPickupCode,
+  pickupCodeMatches,
+  PICKUP_CODE_MAX_ATTEMPTS,
+} from "../lib/ecommerce-pickup-code.js";
+import { seal, unseal } from "../lib/crypto.js";
+import {
+  notifyHandoverCodeReleased,
+  tenantDisplayName,
+} from "./handover-code-notify.service.js";
+
+/** Counter OTP TTL — shorter than shop pickup (customer is at the counter). */
+export const REDEMPTION_HANDOVER_OTP_TTL_MS = 30 * 60 * 1000;
+export const REDEMPTION_HANDOVER_OTP_MAX_ATTEMPTS = PICKUP_CODE_MAX_ATTEMPTS;
 
 const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.REQUESTED,
@@ -1035,6 +1050,7 @@ export async function transitionRedemption(req, action) {
     }
     if (action === "complete") {
       await assertRedemptionKyc(req, row.customerId, { session });
+      await assertAndConsumeHandoverOtp(row, req.body?.handoverOtp, session);
       row.completedBy = req.auth.id;
       row.completedAt = new Date();
       if (req.body?.mode != null && req.body.mode !== row.mode) {
@@ -1386,6 +1402,157 @@ export async function transitionRedemption(req, action) {
     return { ...row.toObject(), auditEventId };
   });
 }
+async function assertAndConsumeHandoverOtp(row, submittedCode, session) {
+  const code = String(submittedCode ?? "").trim();
+  if (!row.handoverOtpHash || !row.handoverOtpExpiresAt) {
+    throw errors.business(
+      "REDEMPTION_OTP_REQUIRED",
+      "Release the customer handover OTP first, then enter the code the customer shows you.",
+    );
+  }
+  if ((row.handoverOtpFailedAttempts ?? 0) >= REDEMPTION_HANDOVER_OTP_MAX_ATTEMPTS) {
+    throw errors.business(
+      "REDEMPTION_OTP_LOCKED",
+      "Too many incorrect OTP attempts. Release a new handover OTP.",
+    );
+  }
+  if (new Date(row.handoverOtpExpiresAt).getTime() <= Date.now()) {
+    throw errors.business(
+      "REDEMPTION_OTP_EXPIRED",
+      "The handover OTP expired. Release a new code for the customer.",
+    );
+  }
+  if (!/^\d{6}$/.test(code) || !pickupCodeMatches(row.handoverOtpHash, code)) {
+    await Redemption.updateOne(
+      { _id: row._id, tenantId: row.tenantId },
+      { $inc: { handoverOtpFailedAttempts: 1 } },
+      { session },
+    );
+    throw errors.business(
+      "REDEMPTION_OTP_INVALID",
+      "That handover OTP is incorrect.",
+    );
+  }
+  row.handoverOtpHash = undefined;
+  row.handoverOtpSealed = undefined;
+  row.handoverOtpExpiresAt = undefined;
+  row.handoverOtpFailedAttempts = 0;
+}
+
+function handoverOtpPublicState(row) {
+  const active = Boolean(
+    row.handoverOtpHash
+      && row.handoverOtpExpiresAt
+      && new Date(row.handoverOtpExpiresAt).getTime() > Date.now()
+      && (row.handoverOtpFailedAttempts ?? 0) < REDEMPTION_HANDOVER_OTP_MAX_ATTEMPTS,
+  );
+  return {
+    handoverOtpActive: active,
+    handoverOtpExpiresAt: row.handoverOtpExpiresAt ?? null,
+    handoverOtpFailedAttempts: row.handoverOtpFailedAttempts ?? 0,
+    handoverOtpReleasedAt: row.handoverOtpReleasedAt ?? null,
+    handoverOtpMaxAttempts: REDEMPTION_HANDOVER_OTP_MAX_ATTEMPTS,
+  };
+}
+
+/**
+ * Staff: generate/reissue customer handover OTP, push + socket notify (code not in push).
+ */
+export async function releaseHandoverOtp(req) {
+  const row = await Redemption.findOne({
+    _id: req.params.redemptionId ?? req.params.id,
+    ...req.scope,
+  });
+  if (!row) throw errors.notFound("Redemption");
+  if (row.status !== RedemptionStatus.APPROVED) {
+    throw errors.business(
+      "REDEMPTION_STATUS_INVALID",
+      "Handover OTP can only be released for an approved redemption.",
+      { status: row.status },
+    );
+  }
+  const code = generatePickupCode();
+  const expiresAt = new Date(Date.now() + REDEMPTION_HANDOVER_OTP_TTL_MS);
+  const releasedAt = new Date();
+  row.handoverOtpHash = hashPickupCode(code);
+  row.handoverOtpSealed = seal(code);
+  row.handoverOtpExpiresAt = expiresAt;
+  row.handoverOtpFailedAttempts = 0;
+  row.handoverOtpReleasedAt = releasedAt;
+  row.handoverOtpReleasedBy = req.auth.id;
+  row.version = (row.version ?? 0) + 1;
+  await row.save();
+
+  const jeweller = await tenantDisplayName(row.tenantId);
+  const notify = await notifyHandoverCodeReleased({
+    kind: "REDEMPTION_OTP",
+    tenantId: row.tenantId,
+    branchId: row.branchId,
+    customerId: row.customerId,
+    title: "Redemption code ready",
+    body: `Your handover code from ${jeweller} is ready. Show it at the counter to complete redemption.`,
+    deepLink: `/schemes/redemptions/${row._id}/handover-otp`,
+    entity: {
+      redemptionId: row._id,
+      schemeId: row.schemeId,
+      expiresAt,
+      releasedAtIso: releasedAt.toISOString(),
+    },
+  });
+
+  await writeAudit({
+    req,
+    action: "REDEMPTION_HANDOVER_OTP_RELEASED",
+    entityType: AuditEntityType.REDEMPTION,
+    entityId: row._id,
+    after: {
+      expiresAt,
+      notify,
+    },
+  });
+
+  return {
+    redemptionId: row._id,
+    version: row.version,
+    expiresAt,
+    ...handoverOtpPublicState(row.toObject()),
+    notify,
+    // Staff does not receive plaintext — customer reveals via app.
+    shareHint: "Ask the customer to open their app for the handover code.",
+  };
+}
+
+/** Customer: reveal active handover OTP for this redemption. */
+export async function revealCustomerHandoverOtp(req) {
+  const row = await Redemption.findOne({
+    _id: req.params.redemptionId ?? req.params.id,
+    tenantId: req.auth.tenantId,
+    customerId: req.auth.id,
+  }).lean();
+  if (!row) throw errors.notFound("Redemption");
+  if (row.status !== RedemptionStatus.APPROVED) {
+    throw errors.business(
+      "REDEMPTION_STATUS_INVALID",
+      "No handover code is available for this redemption.",
+      { status: row.status },
+    );
+  }
+  const state = handoverOtpPublicState(row);
+  if (!state.handoverOtpActive || !row.handoverOtpSealed) {
+    throw errors.business(
+      "REDEMPTION_OTP_NOT_ACTIVE",
+      "No active handover code. Ask store staff to release one.",
+    );
+  }
+  return {
+    redemptionId: row._id,
+    schemeId: row.schemeId,
+    handoverOtp: unseal(row.handoverOtpSealed),
+    expiresAt: row.handoverOtpExpiresAt,
+    ...state,
+  };
+}
+
 export async function getRedemptionForAdmin(req) {
   const row = await Redemption.findOne({
     _id: req.params.redemptionId,
@@ -1413,6 +1580,7 @@ export async function getRedemptionForAdmin(req) {
     ...row,
     ...enrichRedemptionBenefitForRead(row),
     id: row._id,
+    ...handoverOtpPublicState(row),
     customer: customer
       ? {
           _id: customer._id,

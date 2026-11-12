@@ -85,12 +85,34 @@ export async function issueAdminPickupCode(req) {
       ],
       { session },
     );
+    const releasedAt = new Date();
+    const { notifyHandoverCodeReleased, tenantDisplayName } = await import(
+      "./handover-code-notify.service.js"
+    );
+    const jeweller = await tenantDisplayName(req.auth.tenantId);
+    const notify = await notifyHandoverCodeReleased({
+      kind: "SHOP_PICKUP",
+      tenantId: req.auth.tenantId,
+      branchId: updated.pickupBranchId ?? order.pickupBranchId ?? null,
+      customerId: updated.customerId,
+      title: "Pickup code ready",
+      body: `Your pickup code from ${jeweller} for order ${updated.orderNumber} is ready. Show it at the store.`,
+      deepLink: `/shop/order/${updated._id}`,
+      entity: {
+        orderId: updated._id,
+        orderNumber: updated.orderNumber,
+        expiresAt,
+        releasedAtIso: releasedAt.toISOString(),
+      },
+    });
     return {
       orderId: updated._id,
       version: updated.version,
-      pickupCode: code,
       expiresAt,
-      shareHint: "Share this code with the customer at pickup. It is not shown again.",
+      releasedToCustomer: true,
+      notify,
+      // Plaintext stays with the customer app (order detail / reveal). Staff enter what the customer shows.
+      shareHint: "Pickup code sent to the customer app (push + live). Ask them to open the order screen.",
     };
   });
 }
