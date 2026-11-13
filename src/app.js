@@ -14,7 +14,9 @@ import { getReadinessState } from "./lib/readiness.js";
 import { mockStorageRouter } from "./routes/mock-storage.routes.js";
 
 export function createApp() {
-  const app = express(); app.disable("x-powered-by"); app.set("trust proxy", env.TRUST_PROXY);
+  const app = express(); app.disable("x-powered-by"); app.disable("etag"); app.set("trust proxy", env.TRUST_PROXY);
+  // 410 responses are heuristically cacheable. A rotated demo session was being replayed from the browser disk cache.
+  app.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
   app.use(traceMiddleware); app.use(pinoHttp({ logger, genReqId: (req) => req.traceId })); app.use(helmet()); app.use(cors({ origin(origin, callback) { if (!origin || env.corsOrigins.includes(origin)) return callback(null, true); callback(new Error("CORS origin denied")); }, credentials: true, maxAge: 86400 })); app.use(compression());
   app.get("/health", (_req, res) => sendSuccess(res, { status: "ok", timestamp: new Date().toISOString() }));
   app.get("/health/ready", async (_req, res) => {
