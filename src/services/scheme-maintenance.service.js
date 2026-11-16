@@ -1,3 +1,6 @@
+import { updateOneTimeGoldPeriods } from "./one-time-gold-benefit.service.js";
+import { maturityGoldRules } from "../lib/maturity-gold-benefit.js";
+import { calculateCollectionMaturityBonus, postCollectionMaturityBonus } from "../lib/collection-maturity-bonus.js";
 import { withTransaction } from "../lib/transaction.js";
 import { queueCustomerNotification } from "./customer-notification.service.js";
 import { AuditEntityType, SchemeStatus } from "../constants/enums.js";
@@ -10,6 +13,7 @@ import { logger } from "../config/logger.js";
 import {
   MaintenanceScanStream,
   runRotatingMaintenanceScan,
+  runMaintenanceScanWithLocalFallback,
 } from "../lib/maintenance-scan-cursor.js";
 import { assessNormalMaturityTransitionEligibility } from "../lib/maturity-eligibility.js";
 
@@ -27,18 +31,21 @@ function recordBatch(processed, skipped = 0, conflict = 0) {
   if (conflict) incrementOpsMetric(OpsMetric.SCHEDULER_BATCH_CONFLICT, conflict);
 }
 
-export async function runMaturityTransitionBatch({ today, cursor = null }) {
-  const limit = batchSize();
+export async function runMaturityTransitionBatch({ today, cursor = null, limit = batchSize() }) {
   const query = {
     status: { $in: [SchemeStatus.ACTIVE, SchemeStatus.LOCKED, SchemeStatus.DEFAULTED] },
-    maturityDate: { $lt: today },
+    $or: [
+      { maturityDate: { $lt: today } },
+      { "oneTimeGold.nextCreditDate": { $lte: today } },
+      { maturityDate: today, collectionFrequency: { $exists: true } },
+    ],
     ...(cursor ? { _id: { $gt: cursor } } : {}),
   };
   const rows = await Scheme.find(query)
     .sort({ _id: 1 })
     .limit(limit)
     .select(
-      "_id tenantId branchId customerId enrollmentNumber maturityDate status paymentPattern planSnapshot installments cycles version positionVersion",
+      "_id tenantId branchId customerId enrollmentNumber maturityDate status paymentPattern planSnapshot installments cycles version positionVersion collectionFrequency collectionBonus oneTimeGold",
     )
     .lean();
 
@@ -48,21 +55,48 @@ export async function runMaturityTransitionBatch({ today, cursor = null }) {
     const result = await withTransaction(async (session) => {
       const transition = assessNormalMaturityTransitionEligibility(scheme, today);
       const filter = { _id: scheme._id, tenantId: scheme.tenantId, status: scheme.status, maturityDate: scheme.maturityDate, version: scheme.version, ...(scheme.positionVersion != null ? { positionVersion: scheme.positionVersion } : {}) };
-      if (!transition.eligible) {
-        if (transition.calendarEligible && !transition.paymentEligible && [SchemeStatus.ACTIVE, SchemeStatus.LOCKED].includes(scheme.status)) {
+      if (scheme.oneTimeGold) {
+        const doc = await Scheme.findOne(filter).session(session);
+        if (!doc) return { processed: 0, notifications: 0 };
+        const { resolved, funded } = await updateOneTimeGoldPeriods(doc, { today, session });
+        const ready = resolved && funded && doc.maturityDate <= today;
+        if (ready) doc.status = SchemeStatus.MATURED;
+        if (doc.isModified()) {
+          doc.version += 1;
+          doc.positionVersion += 1;
+          await doc.save({ session });
+        }
+        if (!ready) return { processed: 0, notifications: 0 };
+      } else if (!transition.eligible) {
+        const shouldDefault = transition.calendarEligible && !transition.gracePending && !transition.paymentEligible && [SchemeStatus.ACTIVE, SchemeStatus.LOCKED].includes(scheme.status);
+        const clearPendingRate = scheme.collectionBonus?.status === "PENDING_RATE";
+        if (shouldDefault) {
           const defaulted = await Scheme.findOneAndUpdate(filter,
-            { $set: { status: SchemeStatus.DEFAULTED }, $inc: { version: 1 } }, { new: true, session });
+            { $set: { status: SchemeStatus.DEFAULTED }, $inc: { version: 1 }, ...(clearPendingRate ? { $unset: { collectionBonus: 1 } } : {}) }, { new: true, session });
           if (defaulted) await writeAudit({
             req: { auth: { id: "scheduler", tenantId: scheme.tenantId, type: "SYSTEM" }, headers: {}, ip: "scheduler" },
             action: "SCHEME_DEFAULTED", entityType: AuditEntityType.SCHEME, entityId: scheme._id,
             before: scheme, after: defaulted.toObject(), actorType: "SYSTEM", session,
           });
+        } else if (clearPendingRate) {
+          await Scheme.updateOne(filter, { $unset: { collectionBonus: 1 }, $inc: { version: 1 } }, { session });
         }
         return { processed: 0, notifications: 0 };
       }
-      const updated = await Scheme.findOneAndUpdate(filter,
-        { $set: { status: SchemeStatus.MATURED }, $inc: { version: 1 } }, { new: true, session });
+      const bonus = maturityGoldRules(scheme.planSnapshot) ? await calculateCollectionMaturityBonus(scheme, session) : null;
+      if (bonus?.status === "PENDING_RATE") {
+        if (scheme.collectionBonus?.status !== "PENDING_RATE") {
+          await Scheme.updateOne(filter, { $set: { collectionBonus: bonus }, $inc: { version: 1 } }, { session });
+        }
+        return { processed: 0, notifications: 0 };
+      }
+      const updated = scheme.oneTimeGold ? scheme : await Scheme.findOneAndUpdate(filter,
+        { $set: { status: SchemeStatus.MATURED }, $inc: { version: 1, ...(bonus ? { positionVersion: 1 } : {}) } }, { new: true, session });
       if (!updated) return { processed: 0, notifications: 0 };
+      if (bonus) {
+        const collectionBonus = bonus.status === "CREDITED" ? await postCollectionMaturityBonus(updated, bonus, session) : bonus;
+        await Scheme.updateOne({ _id: updated._id, tenantId: updated.tenantId }, { $set: { collectionBonus } }, { session });
+      }
       const exists = await Message.exists({ tenantId: scheme.tenantId, schemeId: scheme._id, type: "SCHEME_MATURED", "templateParams.event": "MATURITY_DAY" }).session(session);
       if (exists) return { processed: 1, notifications: 0 };
       const customer = await Customer.findOne({ _id: scheme.customerId, tenantId: scheme.tenantId }).select("mobile").session(session).lean();
@@ -80,21 +114,19 @@ export async function runMaturityTransitionBatch({ today, cursor = null }) {
   return {
     processed,
     notifications,
+    scanned: rows.length,
     cursor: rows.length ? rows[rows.length - 1]._id : cursor,
     hasMore: rows.length === limit,
   };
 }
 
-export async function runMaturityMaintenance({ today }) {
-  let cursor = null;
-  let total = 0;
-  for (let i = 0; i < maxBatchesPerRun(); i += 1) {
-    const batch = await runMaturityTransitionBatch({ today, cursor });
-    total += batch.processed;
-    if (!batch.hasMore) break;
-    cursor = batch.cursor;
-  }
-  return { processed: total };
+export async function runMaturityMaintenance({ today, maxBatches = maxBatchesPerRun(), limit = batchSize() }) {
+  const { processed } = await runMaintenanceScanWithLocalFallback({
+    stream: MaintenanceScanStream.MATURITY,
+    maxBatches,
+    runBatch: (cursor) => runMaturityTransitionBatch({ today, cursor, limit }),
+  });
+  return { processed };
 }
 
 export async function runDueInstallmentBatch({ today, cursor = null }) {
@@ -217,7 +249,8 @@ export async function runDefaultingBatch({ cursor = null, limit: limitOverride =
   let conflicted = 0;
   for (const scheme of schemes) {
     const threshold = scheme.planSnapshot?.benefit?.eligibility?.maxAllowedDefaults;
-    if (threshold == null) {
+    if (threshold == null || (scheme.planSnapshot?.benefit?.type === "MATURITY_GOLD_CREDIT" &&
+      maturityGoldRules(scheme.planSnapshot)?.requireAllCollections === false)) {
       skipped += 1;
       continue;
     }

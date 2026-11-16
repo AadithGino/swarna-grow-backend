@@ -52,7 +52,7 @@ function applyReservationToQuote(baseQuote, reservedPaise, paymentRules) {
 
 export function computeFixedPaymentQuote(scheme, paymentRules = {}, options = {}) {
   const installments = scheme.installments ?? [];
-  const due = installments.find((row) => !["PAID", "WAIVED"].includes(row.status));
+  const due = scheme.oneTimeGold ? undefined : installments.find((row) => !["PAID", "WAIVED"].includes(row.status));
   if (!due) {
     return {
       payable: false,
@@ -67,7 +67,7 @@ export function computeFixedPaymentQuote(scheme, paymentRules = {}, options = {}
     };
   }
   const partialAllowed = paymentRules.partialPaymentAllowed === true;
-  const maxCount = advanceInstallmentWindowCount(paymentRules);
+  const maxCount = waitsForCollectionAnchor(scheme) ? 1 : advanceInstallmentWindowCount(paymentRules);
   const consecutive = consecutiveUnpaidInstallments(installments, maxCount);
   const currentRemaining = due.amountPaise - due.paidPaise;
   const consecutivePayableInstallments = consecutive.map((row) => row.number);
@@ -119,6 +119,11 @@ export function computeFixedPaymentQuote(scheme, paymentRules = {}, options = {}
   }
 
   return applyReservationToQuote(base, options.reservedPaise ?? 0, paymentRules);
+}
+
+function waitsForCollectionAnchor(scheme) {
+  return Boolean(scheme.collectionFrequency) && scheme.status === "PENDING_PAYMENT" &&
+    scheme.planSnapshot?.collectionRules?.maturityRule === "FIRST_PAYMENT_ANNIVERSARY";
 }
 
 export function buildFixedPayableQuote(scheme, paymentRules = {}, options = {}) {

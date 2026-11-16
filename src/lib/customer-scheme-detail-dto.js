@@ -1,3 +1,5 @@
+import { oneTimeGoldProgress } from "./one-time-gold-schedule.js";
+import { isMaturityGoldResolved, maturityGoldLabel, maturityGoldRules, maturityGoldStatus } from "./maturity-gold-benefit.js";
 import { moneyRef, weightRef } from "./money.js";
 import { paymentGoldAccrualDto } from "./payment-gold-dto.js";
 import { paymentNetFieldsFromDoc } from "./payment-net-aggregation.js";
@@ -218,6 +220,23 @@ function describePenalty(penalty) {
 }
 
 function buildMaturityBenefit(planSnapshot) {
+  if (planSnapshot?.oneTimeRules) return {
+    type: "GOLD_BENEFIT", title: planSnapshot.benefit?.displayLabel ?? "Scheduled gold bonus",
+    summary: "Bonus gold is held until maturity.", details: [], eligibility: [],
+  };
+  const goldBonus = maturityGoldRules(planSnapshot);
+  if (goldBonus) {
+    const { bonusBasis, requireAllCollections } = goldBonus;
+    return {
+      type: "GOLD_BENEFIT",
+      title: maturityGoldLabel(goldBonus),
+      summary: bonusBasis === "NET_GOLD_WEIGHT" ? "Based on net gold accumulated." : "Based on net rupees paid, converted using the maturity rate.",
+      details: ["Gold is credited to your scheme ledger when your plan meets the maturity conditions."],
+      eligibility: [planSnapshot.paymentPattern === "FLEXIBLE"
+        ? "Meet the required contribution cycles for your plan."
+        : requireAllCollections ? "All scheduled collections must be completed." : "The bonus is based on eligible contributions received."],
+    };
+  }
   const benefit = planSnapshot?.benefit;
   if (!benefit?.type) {
     return {
@@ -515,19 +534,23 @@ export function mapCustomerSchemeDetail(raw) {
 
   const pending = raw.pendingRedemption;
   const allowedRedemptionModes = raw.planSnapshot?.redemptionRules?.allowedModes ?? ["CASH"];
+  const hasGoldBonus = Boolean(maturityGoldRules(raw.planSnapshot));
+  const bonusPending = hasGoldBonus && (card.collectionBonus?.status === "PENDING_RATE" ||
+    (raw.status === "MATURED" && !isMaturityGoldResolved(raw.collectionBonus)));
+  const nothingToRedeem = hasGoldBonus && raw.status === "MATURED" && !(totals.amountPaidPaise > 0 && totals.goldWeightMg > 0);
+  let redemptionBlocker;
+  if (pending) redemptionBlocker = "Redemption request already in progress";
+  else if (bonusPending) redemptionBlocker = "Available once the maturity gold bonus is resolved";
+  else if (nothingToRedeem) redemptionBlocker = "No gold remains to redeem";
+  else if (raw.status !== "MATURED") redemptionBlocker = "Available after contractual maturity";
   const redemptionUi = {
-    eligible: raw.status === "MATURED" && !pending,
+    eligible: raw.status === "MATURED" && !redemptionBlocker,
     status: pending?.status ?? raw.completedRedemption?.status ?? "NOT_ELIGIBLE",
     preferredModes: allowedRedemptionModes.map((mode) => ({
       mode,
       label: REDEMPTION_MODE_LABELS[mode] ?? String(mode).replaceAll("_", " ").toLowerCase(),
     })),
-    blocker:
-      pending != null
-        ? "Redemption request already in progress"
-        : raw.status !== "MATURED"
-          ? "Available after contractual maturity"
-          : undefined,
+    blocker: redemptionBlocker,
   };
 
   const helperText =
@@ -542,6 +565,7 @@ export function mapCustomerSchemeDetail(raw) {
 
   return {
     ...card,
+    ...(raw.planSnapshot?.oneTimeRules ? { oneTimeProgress: oneTimeGoldProgress(raw) } : {}),
     planId: raw.planId,
     passbookNumber: raw.passbookNumber ?? undefined,
     valueBasis: raw.valueBasis,
@@ -589,6 +613,8 @@ function amountPaidPaise(scheme) {
 }
 
 function benefitLabel(planSnapshot) {
+  const goldBonus = maturityGoldRules(planSnapshot);
+  if (goldBonus) return maturityGoldLabel(goldBonus);
   const benefit = planSnapshot?.benefit;
   if (!benefit?.type) return "";
   if (benefit.displayLabel) return benefit.displayLabel;
@@ -690,6 +716,7 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
 
   const isGoldWeight = schemeValueBasis(scheme) === "GOLD_WEIGHT";
   const goldMg = scheme.totals?.goldWeightMg ?? 0;
+  const collectionBonus = maturityGoldStatus(scheme);
   const goldAccumulated = isGoldWeight ? weightRef(goldMg) : undefined;
 
   return {
@@ -710,6 +737,8 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     progressDetail,
     totalPaid: moneyRef(paidPaise),
     maturityDate: scheme.maturityDate,
+    ...(scheme.collectionFrequency ? { collectionFrequency: scheme.collectionFrequency } : {}),
+    ...(collectionBonus ? { collectionBonus } : {}),
     nextActionLabel,
     nextActionAmount: nextActionAmount ?? undefined,
     canPay,

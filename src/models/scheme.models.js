@@ -1,6 +1,10 @@
 import mongoose from "mongoose";
 import {
   AmountMode,
+  CollectionFrequency,
+  CollectionAmountBasis,
+  CollectionMaturityRule,
+  CollectionBonusBasis,
   AuditActorType,
   BelowMinimumTotalAction,
   BenefitTreatment,
@@ -41,6 +45,29 @@ import {
   versionField,
 } from "./schema-helpers.js";
 
+const collectionRulesSchema = new mongoose.Schema({
+  frequencies: [{ type: String, enum: Object.values(CollectionFrequency) }],
+  amountBasis: enumField(CollectionAmountBasis),
+  maturityRule: enumField(CollectionMaturityRule),
+  bonusBasis: enumField(CollectionBonusBasis),
+  bonusPercent: { type: Number, min: 1, max: 100, validate: Number.isInteger },
+  requireAllCollections: Boolean,
+}, { _id: false });
+
+const maturityGoldRulesSchema = new mongoose.Schema({
+  bonusBasis: enumField(CollectionBonusBasis),
+  bonusPercent: integerField({ min: 1, max: 100 }),
+  requireAllCollections: Boolean,
+}, { _id: false });
+
+const collectionBonusSchema = new mongoose.Schema({
+  status: { type: String, enum: ["PENDING_RATE", "CREDITED", "INELIGIBLE"] },
+  weightMg: integerField(),
+  postedAt: Date,
+  ledgerEntryId: String,
+  ratePerGramPaise: integerField(),
+}, { _id: false });
+
 const schemePlanSchema = new mongoose.Schema(
   {
     _id: stringId("spl"),
@@ -54,6 +81,8 @@ const schemePlanSchema = new mongoose.Schema(
     paymentPattern: enumField(PaymentPattern, { required: true }),
     durationMonths: integerField({ required: true, min: 1 }),
     installmentCount: integerField({ required: true, min: 1 }),
+    oneTimeRules: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    collectionRules: { type: collectionRulesSchema, default: undefined },
     amountRules: {
       amountMode: enumField(AmountMode),
       fixedAmountPaise: integerField(),
@@ -118,6 +147,7 @@ const schemePlanSchema = new mongoose.Schema(
     benefit: {
       type: enumField(BenefitType),
       bonusBasis: enumField(BonusBasis),
+      goldBonus: { type: maturityGoldRulesSchema, default: undefined },
       bonusValue: integerField(),
       maxBonusPaise: integerField(),
       textBenefit: String,
@@ -191,6 +221,10 @@ const schemeSchema = new mongoose.Schema(
     planId: { type: String, required: true, index: true },
     enrollmentNumber: { type: String, required: true },
     planSnapshot: { type: mongoose.Schema.Types.Mixed, required: true },
+    collectionFrequency: enumField(CollectionFrequency),
+    collectionAmountPaise: integerField({ default: undefined }),
+    oneTimeGold: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    collectionBonus: { type: collectionBonusSchema, default: undefined },
     valueBasis: enumField(ValueBasis, { required: true }),
     paymentPattern: enumField(PaymentPattern, { required: true }),
     status: enumField(SchemeStatus, { default: SchemeStatus.ACTIVE }),
@@ -259,6 +293,7 @@ const ledgerEntrySchema = new mongoose.Schema(
     actorId: String,
     effectiveAt: { type: Date, default: Date.now, index: true },
     reversalOf: String,
+    maturityEventKey: String,
     metadata: mongoose.Schema.Types.Mixed,
   },
   baseOptions,
@@ -268,6 +303,10 @@ ledgerEntrySchema.index(
   { unique: true },
 );
 ledgerEntrySchema.index({ paymentId: 1, type: 1 }, { sparse: true });
+ledgerEntrySchema.index(
+  { tenantId: 1, schemeId: 1, maturityEventKey: 1 },
+  { unique: true, partialFilterExpression: { maturityEventKey: { $type: "string" } } },
+);
 ledgerEntrySchema.plugin(immutablePlugin);
 
 export const SchemePlan = mongoose.model("SchemePlan", schemePlanSchema);

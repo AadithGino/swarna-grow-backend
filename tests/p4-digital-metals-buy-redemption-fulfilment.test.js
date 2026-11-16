@@ -182,7 +182,7 @@ test("P4 buy: quote payment credits wallet (harness)", async () => {
     .post(`/api/v1/app/digital-metals/buy-orders/${order.body.data.id}/payment-intents`)
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
   assert.equal(pay.status, 201, JSON.stringify(pay.body));
   const { completeTestHarnessBuyPayment } = await import(
     "../src/services/digital-metals-buy-payment.service.js"

@@ -1,3 +1,4 @@
+import { buildOneTimeGoldSchedule } from "../lib/one-time-gold-schedule.js";
 import { AuditEntityType, PaymentPattern, SchemePlanStatus } from "../constants/enums.js";
 import { Branch, LedgerEntry, Payment, Scheme, SchemePlan, Tenant } from "../models/index.js";
 import { assertFeatureEntitled, assertWithinLimit } from "../lib/tenant-limits.js";
@@ -9,7 +10,10 @@ import { paginate } from "../lib/pagination.js";
 import { effectiveScope, searchRegex } from "../lib/query-filters.js";
 import { addMonthsClamped, today } from "../lib/date.js";
 import { iteratePeriodBuckets } from "../lib/analytics-period.js";
-import { moneyRef, weightRef } from "../lib/money.js";
+import { moneyPaiseFromWeightMg, moneyRef, weightRef } from "../lib/money.js";
+import { maturityGoldRules, maturityGoldLabel } from "../lib/maturity-gold-benefit.js";
+import { collectionBonusWeight, postedCollectionBonusWeight } from "../lib/collection-maturity-bonus.js";
+import { latestGoldRate22KOnOrBefore, currentGoldRate22K } from "../lib/gold-rate-lookup.js";
 import { computeConfiguredBenefitPaise } from "../lib/scheme-benefit.js";
 import {
   buildIllustrativeFreeWindowNetSummary,
@@ -22,6 +26,7 @@ import {
   buildCalendarMonthCycles,
   maturityDateFromCalendarCycles,
 } from "../lib/calendar-cycle.js";
+import { assertCollectionAmountsAtRate, buildCollectionSchedule } from "../lib/collection-schedule.js";
 import { buildSchedulePreview, resolveFixedSchemeMaturityDate } from "./schedule.service.js";
 import {
   netCollectionStatusFilter,
@@ -31,8 +36,54 @@ import {
 const ACTIVE_SCHEME_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED"];
 const PLAN_BENEFIT_LIABILITY_STATUSES = ["ACTIVE", "LOCKED", "DEFAULTED", "MATURED"];
 
+async function computeCollectionPlanLiability(tenantId, plan) {
+  const schemes = await Scheme.find({
+    tenantId, planId: plan._id,
+    status: { $in: PLAN_BENEFIT_LIABILITY_STATUSES },
+  }).select("_id tenantId branchId collectionFrequency collectionBonus maturityDate planSnapshot").lean();
+  const entries = schemes.length ? await LedgerEntry.find({
+    tenantId, schemeId: { $in: schemes.map((scheme) => scheme._id) },
+  }).select("schemeId type amountPaise weightMg").lean() : [];
+  const byScheme = new Map();
+  for (const entry of entries) {
+    const group = byScheme.get(entry.schemeId) ?? [];
+    group.push(entry);
+    byScheme.set(entry.schemeId, group);
+  }
+  const { schemeLedgerTotals } = await import("./scheme.service.js");
+  const asOf = today();
+  const rateCache = new Map();
+  function getRate(scheme, date) {
+    const key = JSON.stringify([scheme.branchId, date]);
+    if (!rateCache.has(key)) rateCache.set(key, latestGoldRate22KOnOrBefore(scheme, date));
+    return rateCache.get(key);
+  }
+  let valuePaise = 0;
+  let weightMg = 0;
+  let awaitingRate = 0;
+  for (const scheme of schemes) {
+    const rules = maturityGoldRules(scheme.planSnapshot);
+    if (!rules) continue;
+    const group = byScheme.get(scheme._id) ?? [];
+    const totals = schemeLedgerTotals(scheme, group);
+    const currentRate = await getRate(scheme, asOf);
+    let bonusMg = postedCollectionBonusWeight(group);
+    if (!scheme.collectionBonus?.ledgerEntryId && scheme.collectionBonus?.status !== "INELIGIBLE" && totals.amountPaidPaise > 0) {
+      const rateDate = scheme.maturityDate < asOf ? scheme.maturityDate : asOf;
+      const awardRate = rules.bonusBasis === "NET_PAID_AT_MATURITY_RATE" ? await getRate(scheme, rateDate) : null;
+      if (rules.bonusBasis === "NET_PAID_AT_MATURITY_RATE" && !awardRate?.ratePerGramPaise) awaitingRate += 1;
+      else bonusMg = collectionBonusWeight(rules, totals, scheme.planSnapshot.goldRules, awardRate?.ratePerGramPaise);
+    }
+    weightMg += bonusMg;
+    if (bonusMg && !currentRate?.ratePerGramPaise) awaitingRate += 1;
+    if (currentRate?.ratePerGramPaise) valuePaise += moneyPaiseFromWeightMg(bonusMg, currentRate.ratePerGramPaise);
+  }
+  return { weightMg, valuePaise, awaitingRate };
+}
+
 /** Outstanding configured benefit across live and matured-unredeemed schemes (per-scheme cap, net paid). */
 export async function computePlanBenefitLiabilityPaise(tenantId, plan) {
+  if (maturityGoldRules(plan)) return (await computeCollectionPlanLiability(tenantId, plan)).valuePaise;
   const benefit = plan.benefit;
   if (!benefit || benefit.type === "TEXT_ONLY") return 0;
   const schemes = await Scheme.find({
@@ -260,7 +311,8 @@ async function buildPlanStatsPayload(tenantId, plan) {
       { $limit: 12 },
     ]),
   ]);
-  const benefitLiabilityPaise = await computePlanBenefitLiabilityPaise(tenantId, plan);
+  const collectionLiability = maturityGoldRules(plan) ? await computeCollectionPlanLiability(tenantId, plan) : null;
+  const benefitLiabilityPaise = collectionLiability?.valuePaise ?? await computePlanBenefitLiabilityPaise(tenantId, plan);
   const trendEnd = today();
   const trendStart = addMonthsClamped(trendEnd, -11)
     .startOf("month")
@@ -295,7 +347,11 @@ async function buildPlanStatsPayload(tenantId, plan) {
         plan.valueBasis === "GOLD_WEIGHT"
           ? weightRef(0)
           : weightRef(0),
-      benefitLiability: moneyRef(benefitLiabilityPaise),
+      benefitLiability: collectionLiability?.awaitingRate ? null : moneyRef(benefitLiabilityPaise),
+      ...(collectionLiability ? {
+        benefitLiabilityGold: weightRef(collectionLiability.weightMg),
+        benefitLiabilityAwaitingRate: collectionLiability.awaitingRate,
+      } : {}),
     },
     charts: {
       enrolmentTrend: {
@@ -409,6 +465,9 @@ function buildFlexiblePreviewSummary(body, startDate, firstInstallmentMode = "ST
   const freeMonths = flex.flexiblePhaseCycles ?? 6;
   const cappedCycles = flex.cappedPhaseCycles ?? 5;
   const benefit = body.benefit ?? {};
+  const capDivisor = flex.capComputation?.formula === "FLEXIBLE_PHASE_TOTAL_DIV_PAYMENT_COUNT"
+    ? "number of payments in the free phase"
+    : String(flex.averagingDivisor ?? freeMonths);
   const calendarCycles = buildCalendarMonthCycles({
     startDate,
     cycleCount: body.durationMonths,
@@ -419,7 +478,7 @@ function buildFlexiblePreviewSummary(body, startDate, firstInstallmentMode = "ST
   return {
     freeWindow: {
       months: freeMonths,
-      from: startDate,
+      from: firstInstallmentMode === "COLLECT_NOW" ? startDate : freeCal[0]?.cycleStart ?? startDate,
       to: freeCal.length ? freeCal[freeCal.length - 1].cycleEnd : startDate,
       minPerPayment: moneyRef(Number(flexPhase.minimumPaymentPaise ?? 0)),
       maxPerPayment: moneyRef(Number(flexPhase.maximumPaymentPaise ?? 0)),
@@ -428,17 +487,17 @@ function buildFlexiblePreviewSummary(body, startDate, firstInstallmentMode = "ST
       cycles: cappedCycles,
       from: cappedCal.length ? cappedCal[0].cycleStart : startDate,
       to: cappedCal.length ? cappedCal[cappedCal.length - 1].cycleEnd : startDate,
-      note: `Each of these ${cappedCycles} cycles is capped at the average of your first ${freeMonths} cycles' payments.`,
+      note: `Monthly cap is based on free-phase contributions divided by ${capDivisor}, then adjusted by the plan’s rounding and limits.`,
     },
     maturityDate: maturityDateFromCalendarCycles(calendarCycles),
     benefit: {
       type: benefit.type,
-      displayLabel: benefit.displayLabel,
+      displayLabel: maturityGoldRules(body) ? maturityGoldLabel(maturityGoldRules(body)) : benefit.displayLabel,
     },
   };
 }
 
-function buildFixedPreviewResponse(body) {
+function buildFixedPreviewResponse(body, rate) {
   const startDate = body.startDate ?? today();
   const amountRules = body.amountRules ?? {};
   const installmentAmountPaise = Number(
@@ -450,11 +509,17 @@ function buildFixedPreviewResponse(body) {
   const count = Number(body.installmentCount ?? body.durationMonths ?? 0);
   const scheduleRules = body.scheduleRules ?? {};
   const firstInstallmentMode =
-    body.firstInstallmentMode
+    (body.oneTimeRules ? "COLLECT_NOW" : body.firstInstallmentMode)
     ?? scheduleRules.firstInstallmentModeDefault
     ?? "START_NEXT_CYCLE";
   const benefit = body.benefit ?? {};
-  const rows = buildSchedulePreview({
+  const oneTimeSchedule = body.oneTimeRules ? buildOneTimeGoldSchedule(body, startDate) : null;
+  const collection = body.collectionRules ? buildCollectionSchedule({
+    plan: body, startDate, collectionFrequency: body.collectionFrequency ?? body.collectionRules.frequencies[0],
+    collectionAmountPaise: installmentAmountPaise, firstInstallmentMode,
+  }) : null;
+  if (collection && rate) assertCollectionAmountsAtRate(collection.installments, rate, body.goldRules);
+  const rows = collection?.installments ?? buildSchedulePreview({
     startDate,
     installmentAmountPaise,
     durationMonths: body.durationMonths,
@@ -471,17 +536,21 @@ function buildFixedPreviewResponse(body) {
         ? "Collected at enrolment"
         : null,
   }));
-  const totalPaise = installmentAmountPaise * count;
-  const benefitPaise =
-    benefit.type === "ONE_FREE_INSTALLMENT" ? installmentAmountPaise : 0;
+  const totalPaise = collection?.totalPaise ?? installmentAmountPaise * count;
+  const benefitPaise = computeConfiguredBenefitPaise(
+    { paymentPattern: body.paymentPattern, installmentAmountPaise },
+    { amountPaidPaise: totalPaise },
+    benefit,
+  );
   return {
     summary: {
-      installmentCount: count,
-      installmentAmount: moneyRef(installmentAmountPaise),
+      installmentCount: rows.length,
+      installmentAmount: moneyRef(rows[0]?.amountPaise ?? installmentAmountPaise),
+      ...(collection ? { collectionFrequency: collection.collectionFrequency, collectionRules: body.collectionRules } : {}),
       totalPayable: moneyRef(totalPaise),
       firstDueDate: schedule[0]?.dueDate,
       maturityDate:
-        resolveFixedSchemeMaturityDate({
+        oneTimeSchedule?.at(-1)?.dueDate ?? collection?.maturityDate ?? resolveFixedSchemeMaturityDate({
           startDate,
           durationMonths: body.durationMonths,
           firstInstallmentMode,
@@ -489,10 +558,11 @@ function buildFixedPreviewResponse(body) {
         ?? null,
       benefit: {
         type: benefit.type,
-        displayLabel: benefit.displayLabel,
+        displayLabel: maturityGoldRules(body) ? maturityGoldLabel(maturityGoldRules(body)) : benefit.displayLabel,
         ...(benefitPaise ? { estimatedValue: moneyRef(benefitPaise) } : {}),
       },
-      estimatedMaturityValue: moneyRef(totalPaise + benefitPaise),
+      ...(oneTimeSchedule ? { oneTimeSchedule, oneTimeRules: body.oneTimeRules } : {}),
+      estimatedMaturityValue: body.valueBasis === "GOLD_WEIGHT" ? null : moneyRef(totalPaise + benefitPaise),
       estimatedGoldAtCurrentRate: null,
     },
     schedule,
@@ -673,7 +743,7 @@ export async function updatePlan(req) {
       planId: plan._id,
       status: { $in: ENROLMENT_CAPACITY_STATUSES },
     }).session(session);
-    const immutable = ["valueBasis", "paymentPattern", "durationMonths", "installmentCount", "amountRules", "scheduleRules", "paymentRules", "flexibleRules", "benefit", "redemptionRules"];
+    const immutable = ["valueBasis", "paymentPattern", "durationMonths", "installmentCount", "collectionRules", "oneTimeRules", "amountRules", "scheduleRules", "paymentRules", "flexibleRules", "benefit", "redemptionRules"];
     if (activeCount && immutable.some((key) => req.body[key] !== undefined)) throw new AppError("PLAN_HAS_ACTIVE_ENROLMENTS", "Financial rules cannot be changed while the plan has active enrolments.", 409);
     const before = plan.toObject();
     const patch = { ...req.body };
@@ -729,6 +799,8 @@ function pickPlanDuplicateBody(source) {
     paymentPattern: source.paymentPattern,
     durationMonths: source.durationMonths,
     installmentCount: source.installmentCount,
+    collectionRules: source.collectionRules,
+    oneTimeRules: source.oneTimeRules,
     amountRules: source.amountRules,
     scheduleRules: source.scheduleRules,
     paymentRules: source.paymentRules,
@@ -751,7 +823,7 @@ export async function planStats(req) {
   const plan = await findPlanRaw(req);
   return buildPlanStatsPayload(req.auth.tenantId, plan);
 }
-export async function previewSchedule(body, tenantId) {
+export async function previewSchedule(body, tenantId, branchId) {
   let merged = { ...body };
   if (body.planId && tenantId) {
     const saved = await SchemePlan.findOne({ _id: body.planId, tenantId }).lean();
@@ -764,14 +836,19 @@ export async function previewSchedule(body, tenantId) {
         flexibleRules: body.flexibleRules ?? saved.flexibleRules,
         benefit: body.benefit ?? saved.benefit,
       };
+    } else {
+      throw errors.notFound("Scheme plan");
     }
   }
   const startDate = merged.startDate ?? today();
   if (merged.paymentPattern === PaymentPattern.FLEXIBLE) {
     return {
-      summary: buildFlexiblePreviewSummary(merged, startDate),
+      summary: buildFlexiblePreviewSummary(merged, startDate, merged.firstInstallmentMode ?? merged.scheduleRules?.firstInstallmentModeDefault),
       schedule: [],
     };
   }
-  return buildFixedPreviewResponse({ ...merged, startDate });
+  const rate = merged.collectionRules && tenantId
+    ? await currentGoldRate22K({ tenantId, branchId }, today())
+    : null;
+  return buildFixedPreviewResponse({ ...merged, startDate }, rate);
 }

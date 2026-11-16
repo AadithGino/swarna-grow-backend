@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import mongoose from "mongoose";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DigitalMetalRedemptionOrder, EcommercePaymentExceptionRefund } from "../src/models/index.js";
+import { DigitalMetalRedemptionOrder, EcommercePaymentExceptionRefund, LedgerEntry } from "../src/models/index.js";
 import { assertFinancialIndexesReady, applyFinancialIndexRollout } from "../src/lib/financial-index-rollout.js";
 import { resetTestDb } from "./helpers/db.js";
 
@@ -15,6 +15,21 @@ test("financial index rollout replaces obsolete refund uniqueness and is idempot
   await applyFinancialIndexRollout({ writesPaused: true });
   await assertFinancialIndexesReady();
 });
+test("financial index rollout requires and restores maturity credit uniqueness", async () => {
+  const indexName = "tenantId_1_schemeId_1_maturityEventKey_1";
+  await LedgerEntry.collection.dropIndex(indexName);
+  try {
+    await assert.rejects(assertFinancialIndexesReady(), /MIGRATION_REQUIRED/);
+    await applyFinancialIndexRollout({ writesPaused: true });
+    await assertFinancialIndexesReady();
+    const index = (await LedgerEntry.collection.indexes()).find((row) => row.name === indexName);
+    assert.equal(index.unique, true);
+    assert.deepEqual(index.partialFilterExpression, { maturityEventKey: { $type: "string" } });
+  } finally {
+    await LedgerEntry.createIndexes();
+  }
+});
+
 test("financial index rollout refuses duplicate quotes before removing legacy protection", async () => {
   await DigitalMetalRedemptionOrder.collection.dropIndex("tenantId_1_quoteId_1");
   try {

@@ -422,3 +422,63 @@ test("maintenance batches converge maturity, defaulting, and flexible expiry", a
   const def = await runDefaultingBatch({});
   assert.ok(def.processed >= 0);
 });
+
+test("scheduled pushes cover first payments and capped balances and suppress a paid installment", async () => {
+  const { tenant, branch } = await seedTenantUser();
+  const customer = await Customer.create({
+    _id: createId("customer"), tenantId: tenant._id, branchId: branch._id,
+    name: "Reminder customer", mobile: "+919876543210", customerNumber: "CUST-REMINDER", status: "ACTIVE",
+  });
+  const common = {
+    tenantId: tenant._id, branchId: branch._id, customerId: customer._id,
+    planId: createId("schemePlan"), planSnapshot: {}, valueBasis: "CASH",
+    startDate: "2026-05-31", maturityDate: "2026-12-31",
+  };
+  const pending = await Scheme.create({
+    ...common, enrollmentNumber: "ENR-FIRST", status: "PENDING_PAYMENT", paymentPattern: "FIXED",
+    installments: [1, 2].map((number) => ({
+      number, dueDate: "2026-05-31", status: "DUE", amountPaise: 100_000, paidPaise: 0,
+    })),
+  });
+  const capped = await Scheme.create({
+    ...common, enrollmentNumber: "ENR-CAPPED", status: "LOCKED", paymentPattern: "FLEXIBLE", flexiblePhase: "CAPPED",
+    cycles: [{ cycle: "2026-05", expiresAt: "2026-05-31", status: "PARTIALLY_PAID", capPaise: 200_000, paidPaise: 100_000 }],
+  });
+  await Scheme.create({
+    ...common, enrollmentNumber: "ENR-FLEX-FIRST", status: "PENDING_PAYMENT", paymentPattern: "FLEXIBLE", flexiblePhase: "FLEXIBLE",
+  });
+  const runAt = new Date("2026-05-31T10:30:00+05:30");
+  await runReminderScheduler(runAt);
+  await runReminderScheduler(runAt);
+  const messages = await Message.find({ tenantId: tenant._id, type: "PAYMENT_DUE" }).lean();
+  assert.equal(messages.length, 3);
+  const first = messages.find((row) => row.schemeId === pending._id);
+  assert.equal(first.templateParams.installmentNumber, 1);
+  assert.equal(first.templateParams.firstPayment, true);
+  assert.equal(messages.find((row) => row.schemeId === capped._id).templateParams.cycleKey, "2026-05");
+  assert.ok(messages.some((row) => row.templateParams.firstPayment && row.templateParams.installmentNumber == null));
+  await Scheme.updateOne({ _id: pending._id }, { $set: { status: "ACTIVE", "installments.0.status": "PAID", "installments.0.paidPaise": 100_000 } });
+  const { processMessage } = await import("../src/workers/processors.js");
+  await processMessage({ data: { messageId: first._id } });
+  await processMessage({ data: { messageId: first._id } });
+  assert.equal((await Message.findById(first._id)).failureCode, "REMINDER_SUPERSEDED");
+});
+
+test("maturity resumes past a full batch of unresolved schemes on the next run", async () => {
+  const { runMaturityMaintenance } = await import("../src/services/scheme-maintenance.service.js");
+  const { tenant, branch } = await seedTenantUser();
+  const common = { tenantId: tenant._id, branchId: branch._id, customerId: createId("customer"),
+    planId: createId("schemePlan"), planSnapshot: {}, paymentPattern: "FIXED", valueBasis: "CASH",
+    startDate: "2026-01-01", maturityDate: "2026-03-31" };
+  const row = { number: 1, dueDate: "2026-03-15", amountPaise: 100 };
+  const first = await Scheme.create({ ...common, _id: "sch_a00000001", enrollmentNumber: "ENR-CURSOR-A",
+    status: "DEFAULTED", installments: [{ ...row, status: "OVERDUE", paidPaise: 0 }] });
+  const second = await Scheme.create({ ...common, _id: "sch_z00000001", enrollmentNumber: "ENR-CURSOR-Z",
+    status: "ACTIVE", installments: [{ ...row, status: "PAID", paidPaise: 100 }] });
+  const options = { today: "2026-04-01", maxBatches: 1, limit: 1 };
+  assert.equal((await runMaturityMaintenance(options)).processed, 0);
+  assert.equal((await runMaturityMaintenance(options)).processed, 1);
+  assert.equal((await Scheme.findById(first._id)).status, "DEFAULTED");
+  assert.equal((await Scheme.findById(second._id)).status, "MATURED");
+  await runMaturityMaintenance(options);
+});

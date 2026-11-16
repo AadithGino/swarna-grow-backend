@@ -125,6 +125,7 @@ const paymentIntentSchema = new mongoose.Schema(
     }),
     providerOrderId: String,
     paymentId: String,
+    collectionRatePerGramPaise: integerField({ min: 1, default: undefined }),
     fixedFromInstallment: integerField({ min: 1, default: undefined }),
     fixedThroughInstallment: integerField({ min: 1, default: undefined }),
     version: versionField,

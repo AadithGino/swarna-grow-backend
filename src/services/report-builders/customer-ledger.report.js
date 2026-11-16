@@ -1,6 +1,6 @@
 import { Customer, LedgerEntry } from "../../models/index.js";
 import { AppError } from "../../lib/app-error.js";
-import { moneyRef } from "../../lib/money.js";
+import { moneyRef, weightRef } from "../../lib/money.js";
 import { dateMatch } from "../../lib/query-filters.js";
 import { paginate } from "../../lib/pagination.js";
 import { baseEnvelope } from "./report-envelope.js";
@@ -71,6 +71,7 @@ export async function buildCustomerLedgerDetail(
     sort: "effectiveAt:asc",
   });
 
+  const showsGoldBonus = page.data.some((entry) => ["MATURITY_GOLD_CREDIT", "MATURITY_GOLD_ADJUSTMENT"].includes(entry.type));
   let creditsInPeriod = 0;
   const rows = page.data.map((entry) => {
     const delta = signedAmount(entry);
@@ -85,6 +86,9 @@ export async function buildCustomerLedgerDetail(
       debit: moneyRef(debit),
       credit: moneyRef(credit),
       balance: moneyRef(running),
+      ...(["MATURITY_GOLD_CREDIT", "MATURITY_GOLD_ADJUSTMENT"].includes(entry.type) ? {
+        maturityBonusGold: weightRef(entry.weightMg ?? 0),
+      } : {}),
     };
   });
 
@@ -101,7 +105,7 @@ export async function buildCustomerLedgerDetail(
       { key: "CLOSING", label: "Closing balance", value: moneyRef(Math.max(0, running)), valueType: "currency" },
     ],
     charts: {},
-    columns: COLUMNS,
+    columns: showsGoldBonus ? [...COLUMNS, { key: "maturityBonusGold", label: "Bonus gold (g)", type: "weight", align: "right" }] : COLUMNS,
     rows,
     meta: page.meta,
   };

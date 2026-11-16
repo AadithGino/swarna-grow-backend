@@ -259,7 +259,7 @@ test("buy payment attempt idempotency is customer-bound on duplicate key", async
     provider: "PHONEPE",
     merchantOrderId: createId("dmpay"),
     idempotencyKey: sharedKey,
-    redirectUrl: "https://example.com/return",
+    redirectUrl: "http://localhost:3000/return",
   });
   const { initiateDigitalMetalBuyPaymentAttempt } = await import(
     "../src/services/digital-metals-buy-payment.service.js"
@@ -270,7 +270,7 @@ test("buy payment attempt idempotency is customer-bound on duplicate key", async
         auth: { id: customerB._id, tenantId: tenant._id, type: "CUSTOMER" },
         params: { orderId: orderB },
         headers: { "x-idempotency-key": sharedKey },
-        body: { redirectUrl: "https://example.com/return" },
+        body: { redirectUrl: "http://localhost:3000/return" },
       }),
     (err) => err.statusCode === 404,
   );

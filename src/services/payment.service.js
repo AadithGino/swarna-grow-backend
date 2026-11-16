@@ -1,3 +1,7 @@
+import { updateOneTimeGoldPeriods } from "./one-time-gold-benefit.service.js";
+import { collectionPaymentWeightMg } from "../lib/collection-schedule.js";
+import { maturityGoldRules } from "../lib/maturity-gold-benefit.js";
+import { adjustCollectionBonusAfterRefund } from "../lib/collection-maturity-bonus.js";
 import {
   AuditEntityType,
   CashAdjustmentDirection,
@@ -37,11 +41,6 @@ import { errors, AppError } from "../lib/app-error.js";
 import { paymentGoldAccrualDto } from "../lib/payment-gold-dto.js";
 import { gatewayTxFaultCheckpoint } from "../lib/gateway-tx-faults.js";
 import { withTransaction } from "../lib/transaction.js";
-import {
-  applyWeightPrecisionMg,
-  decimalRoundingMode,
-  moneyToWeightMg,
-} from "../lib/money.js";
 import { today } from "../lib/date.js";
 import { assertPlatformCapability } from "../lib/feature-entitlements.js";
 import { env } from "../config/env.js";
@@ -591,41 +590,37 @@ async function recordPaymentInSession(session, req, override) {
       targetCycle: req.body.targetCycle,
       session,
     });
+  const scheduledGoldFunding = Boolean(scheme.planSnapshot?.oneTimeRules);
   let rate;
   let weightMg = 0;
   if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
     const goldRules = scheme.planSnapshot?.goldRules ?? {};
-    rate = await currentGoldRate(
+    const reservedRate = (scheme.collectionFrequency || scheduledGoldFunding) && override.gateway
+      ? override.fixedReservationIntent?.collectionRatePerGramPaise : undefined;
+    rate = reservedRate ? { ratePerGramPaise: reservedRate } : await currentGoldRate(
       {
         tenantId: scheme.tenantId,
         branchId: paymentBranchId ?? scheme.branchId,
       },
       today(),
     );
-    if (!rate) {
+    if (!rate && (!(scheme.collectionFrequency || scheduledGoldFunding) || !override.gateway)) {
       throw errors.business(
         "GOLD_RATE_NOT_SET",
         "Today's 22K gold rate must be set before accepting this payment.",
       );
     }
-    if (rate.purity && rate.purity !== "22K") {
+    if (rate?.purity && rate.purity !== "22K") {
       throw errors.business(
         "GOLD_PURITY_NOT_SUPPORTED",
         "Only 22K gold rates can be used for payments.",
       );
     }
-    const rounding = decimalRoundingMode(goldRules.weightRoundingMode);
-    weightMg = moneyToWeightMg(
-      req.body.amountPaise,
-      rate.ratePerGramPaise,
-      rounding,
-    );
-    weightMg = applyWeightPrecisionMg(
-      weightMg,
-      goldRules.weightPrecisionMg,
-      rounding,
-    );
-    if (!(weightMg > 0)) {
+    if (rate) weightMg = collectionPaymentWeightMg(req.body.amountPaise, rate.ratePerGramPaise, goldRules);
+    if (!(weightMg > 0) && (scheme.collectionFrequency || scheduledGoldFunding) && override.gateway) {
+      override._forceUnallocatedFixedGateway ??= { reason: rate ? "GOLD_WEIGHT_ROUNDS_TO_ZERO" : "GOLD_RATE_NOT_SET" };
+      quote = null;
+    } else if (!(weightMg > 0)) {
       throw errors.business(
         "GOLD_WEIGHT_ROUNDS_TO_ZERO",
         "This payment amount rounds to zero gold weight at the current rate.",
@@ -674,10 +669,11 @@ async function recordPaymentInSession(session, req, override) {
         )
       : 0;
     payment.requiresReview = !quote;
-    payment.reviewReason = !quote ? "NO_PAYABLE_POSITION_AVAILABLE" : undefined;
+    payment.reviewReason = !quote ? (scheme.collectionFrequency ? override._forceUnallocatedFixedGateway?.reason : undefined) ?? "NO_PAYABLE_POSITION_AVAILABLE" : undefined;
     await payment.save({ session });
     gatewayTxFaultCheckpoint("recordPayment:payment-saved");
   } else {
+    const unallocatedCollection = Boolean((scheme.collectionFrequency || scheduledGoldFunding) && override.gateway && !quote);
     const paymentDoc = {
       _id: createId("payment"),
       tenantId: scheme.tenantId,
@@ -686,11 +682,12 @@ async function recordPaymentInSession(session, req, override) {
       customerId: scheme.customerId,
       receiptNumber: await nextReceipt(scheme.tenantId, session),
       amountPaise: req.body.amountPaise,
-      allocatedAmountPaise: req.body.amountPaise,
+      allocatedAmountPaise: unallocatedCollection ? 0 : req.body.amountPaise,
       weightMg,
       ratePerGramPaise: rate?.ratePerGramPaise ?? 0,
       mode: override.gateway ? PaymentMode.ONLINE_GATEWAY : req.body.mode,
-      status: PaymentStatus.SUCCESS,
+      status: unallocatedCollection ? PaymentStatus.UNALLOCATED_PENDING_REVIEW : PaymentStatus.SUCCESS,
+      ...(unallocatedCollection ? { requiresReview: true, reviewReason: override._forceUnallocatedFixedGateway?.reason ?? "NO_PAYABLE_POSITION_AVAILABLE" } : {}),
       source: override.source ?? sourceFor(req),
       reference: req.body.reference ?? undefined,
       remarks: req.body.remarks ?? undefined,
@@ -1045,7 +1042,7 @@ export async function reversePayment(req) {
     if (
       scheme.status === SchemeStatus.REDEEMED ||
       scheme.status === SchemeStatus.CLOSED_PREMATURE ||
-      scheme.status === SchemeStatus.MATURED
+      (scheme.status === SchemeStatus.MATURED && !scheme.oneTimeGold && !maturityGoldRules(scheme.planSnapshot))
     ) {
       throw errors.business(
         "REVERSAL_SCHEME_TERMINAL",
@@ -1120,6 +1117,13 @@ export async function reversePayment(req) {
       .session(session)
       .lean();
     rebuildSchemeProjection(scheme, entries);
+    if (scheme.oneTimeGold) {
+      await updateOneTimeGoldPeriods(scheme, { entries, session, adjustmentKey: `ONE_TIME_REVERSAL:${payment._id}` });
+      scheme.positionVersion += 1;
+    } else if (maturityGoldRules(scheme.planSnapshot) && scheme.status === SchemeStatus.MATURED) {
+      await adjustCollectionBonusAfterRefund(scheme, entries, `REVERSAL:${payment._id}`, session);
+      scheme.positionVersion += 1;
+    }
     scheme.version += 1;
     await scheme.save({ session });
     let cashAdjustmentId;

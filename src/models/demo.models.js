@@ -1,6 +1,5 @@
 import mongoose from "mongoose";
 import {
-  DemoClonePolicy,
   DemoEventType,
   DemoInstanceStatus,
   DemoProvisionJobKind,

@@ -1,3 +1,4 @@
+import { withRedemptionHandoverOtp } from "./helpers/maturity-fixtures.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AppError } from "../src/lib/app-error.js";
@@ -110,8 +111,7 @@ test("failed redemption complete rolls back all redemption ledger rows", async (
   };
 
   try {
-    await assert.rejects(
-      () => transitionRedemption({
+    const completion = await withRedemptionHandoverOtp({
         auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
         scope: { tenantId: tenant._id, branchId: branch._id },
         params: { redemptionId: requested.id },
@@ -119,7 +119,9 @@ test("failed redemption complete rolls back all redemption ledger rows", async (
         query: {},
         headers: {},
         ip: "127.0.0.1",
-      }, "complete"),
+      }, customer._id);
+    await assert.rejects(
+      () => transitionRedemption(completion, "complete"),
       (error) => error.code === "SIMULATED_LEDGER_FAILURE",
     );
   } finally {

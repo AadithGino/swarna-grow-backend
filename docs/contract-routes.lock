@@ -1,6 +1,7 @@
 DELETE /admin/assistant/conversations/:id
 DELETE /admin/customers/:customerId/nominee
 DELETE /app/devices/fcm-token
+DELETE /app/digital-metals/delivery-addresses/:addressId
 DELETE /auth/devices/:deviceId
 DELETE /staff/customers/:customerId/nominee
 DELETE /staff/devices/fcm-token
@@ -257,6 +258,7 @@ PATCH /admin/settings/operations
 PATCH /admin/settings/profile
 PATCH /admin/staff/:staffId
 PATCH /app/digital-metals/bank-destinations/:destinationId
+PATCH /app/digital-metals/delivery-addresses/:addressId
 PATCH /app/profile
 PATCH /platform/subscription-plans/:planId
 PATCH /platform/tenants/:tenantId
@@ -413,6 +415,7 @@ POST /app/schemes/:schemeId/pay
 POST /app/schemes/:schemeId/payment-intents
 POST /app/schemes/:schemeId/redemption-request
 POST /app/schemes/enrol
+POST /app/schemes/enrol/validate
 POST /auth/change-password
 POST /auth/forgot-password
 POST /auth/login

@@ -12,6 +12,9 @@ import {
   phonePeProvider,
   resolvePhonePeCredentials,
 } from "../integrations/phonepe.provider.js";
+import { assertCollectionAmountsAtRate } from "./collection-schedule.js";
+import { currentGoldRate22K } from "./gold-rate-lookup.js";
+import { today } from "./date.js";
 import { AppError } from "./app-error.js";
 import { errors } from "./app-error.js";
 import {
@@ -358,6 +361,12 @@ export async function reserveFixedPaymentIntentInSession(
   }
   const schemeObj = typeof scheme.toObject === "function" ? scheme.toObject() : scheme;
   const paymentRules = schemeObj.planSnapshot?.paymentRules ?? {};
+  let collectionRatePerGramPaise;
+  if (schemeObj.collectionFrequency || schemeObj.planSnapshot?.oneTimeRules) {
+    const rate = await currentGoldRate22K({ tenantId, branchId: schemeObj.branchId }, today(), session);
+    assertCollectionAmountsAtRate([{ amountPaise }], rate, schemeObj.planSnapshot?.goldRules);
+    collectionRatePerGramPaise = rate.ratePerGramPaise;
+  }
   await expireCompetingFixedReservations(tenantId, schemeObj._id, session);
   const blocking = await sumActiveFixedReservationPaise(tenantId, schemeObj._id, session);
   if (excludeIntentId) {
@@ -414,6 +423,7 @@ export async function reserveFixedPaymentIntentInSession(
           amountPaise,
           positionVersion: bumped.version,
           reservationExpiresAt: expiresAt,
+          collectionRatePerGramPaise,
           fixedFromInstallment: allocation.fromInstallment,
           fixedThroughInstallment: allocation.throughInstallment,
         },

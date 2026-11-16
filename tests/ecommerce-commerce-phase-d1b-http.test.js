@@ -289,3 +289,33 @@ test("store downgrade blocks new quotes", async () => {
     });
   assert.equal(res.status, 403);
 });
+
+test("expiry reports committed orders only and advances past a recurring rollback", async () => {
+  const { EcommerceOrderEvent } = await import("../src/models/index.js");
+  const { tenant, user, branch } = await seedTenantUser({});
+  const { product } = await seedReady({ tenant, user, branch });
+  const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+  const first = await quoteAndOrder({ tenant, branch, product, customer });
+  const secondCustomer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id, mobile: "+918800000002" });
+  const second = await quoteAndOrder({ tenant, branch, product, customer: secondCustomer });
+  const [failedId, validId] = [first.orderId, second.orderId].sort();
+  await EcommerceOrder.updateMany({ _id: { $in: [failedId, validId] } }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+  const originalCreate = EcommerceOrderEvent.create;
+  EcommerceOrderEvent.create = function (docs, ...args) {
+    if (Array.isArray(docs) && docs.some((row) => row.orderId === failedId && row.type === "PAYMENT_EXPIRED")) {
+      throw new Error("Injected expiry event failure");
+    }
+    return originalCreate.call(this, docs, ...args);
+  };
+  try {
+    const options = { limit: 1, maxBatches: 1 };
+    assert.equal((await runEcommerceOrderPaymentExpiry(new Date(), options)).expiredOrders, 0);
+    assert.equal((await runEcommerceOrderPaymentExpiry(new Date(), options)).expiredOrders, 1);
+    assert.equal((await EcommerceOrder.findById(failedId)).status, EcommerceOrderStatus.PENDING_PAYMENT);
+    assert.equal((await EcommerceOrder.findById(validId)).status, EcommerceOrderStatus.PAYMENT_EXPIRED);
+    await runEcommerceOrderPaymentExpiry(new Date(), options);
+  } finally {
+    EcommerceOrderEvent.create = originalCreate;
+  }
+  assert.equal((await runEcommerceOrderPaymentExpiry(new Date())).expiredOrders, 1);
+});

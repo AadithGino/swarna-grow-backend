@@ -1,3 +1,5 @@
+import { UNAWARDED_TERMINAL_GOLD_BONUS_STATUSES } from "./maturity-gold-benefit.js";
+import { BenefitType, CollectionFrequency } from "../constants/enums.js";
 import { now as istNow } from "./date.js";
 
 /** Escape a string for safe RegExp use. */
@@ -161,10 +163,42 @@ export function resolveQueryDateRange(query = {}) {
   return resolveDatePreset(preset, query);
 }
 
+export function collectionListFilters(query = {}) {
+  const filters = {};
+  if (typeof query.planId === "string" && query.planId) filters.planId = query.planId;
+  if (Object.values(CollectionFrequency).includes(query.collectionFrequency)) filters.collectionFrequency = query.collectionFrequency;
+  const automaticGoldBonus = { $or: [
+    { "planSnapshot.benefit.type": BenefitType.MATURITY_GOLD_CREDIT },
+    { "planSnapshot.collectionRules.bonusBasis": { $exists: true } },
+  ] };
+  if (query.bonusStatus === "PENDING") {
+    filters["collectionBonus.status"] = { $exists: false };
+    filters.$and = [
+      { status: { $nin: UNAWARDED_TERMINAL_GOLD_BONUS_STATUSES } },
+      automaticGoldBonus,
+    ];
+  } else if (query.bonusStatus === "PENDING_RATE") {
+    filters["collectionBonus.status"] = "PENDING_RATE";
+    filters.$and = [{ status: { $nin: UNAWARDED_TERMINAL_GOLD_BONUS_STATUSES } }];
+  } else if (query.bonusStatus === "INELIGIBLE") {
+    filters.$and = [{ $or: [
+      { "collectionBonus.status": "INELIGIBLE" },
+      {
+        status: { $in: UNAWARDED_TERMINAL_GOLD_BONUS_STATUSES },
+        "collectionBonus.status": { $nin: ["CREDITED", "INELIGIBLE"] },
+        ...automaticGoldBonus,
+      },
+    ] }];
+  } else if (query.bonusStatus === "CREDITED") {
+    filters["collectionBonus.status"] = "CREDITED";
+  }
+  return filters;
+}
+
 /** Maturity list: schemes maturing in range (not only status MATURED). */
 export function maturityListFilter(query = {}) {
   const dates = resolveDatePreset(query.preset, query);
-  const filter = { ...calendarDateMatch("maturityDate", dates) };
+  const filter = { ...collectionListFilters(query), ...calendarDateMatch("maturityDate", dates) };
   const state = String(query.maturityState ?? "ALL").toUpperCase();
   const now = new Date();
   const ist = new Date(

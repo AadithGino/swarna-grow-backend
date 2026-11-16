@@ -121,8 +121,11 @@ export const otpVerifyBody = otpRequestBody.extend({
 });
 export const appEnrolBody = z.object({
   planId: z.string(),
+  collectionFrequency: enumSchema(E.CollectionFrequency).optional(),
   installmentAmountPaise: positivePaise.optional(),
   payNow: z.boolean().optional(),
+  expectedFirstCollectionPaise: z.number().int().positive().safe().optional(),
+  expectedMaturityDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   redirectUrl: z.string().url().optional(),
 });
 export const appProfileCompleteBody = z
@@ -145,12 +148,7 @@ export const appProfilePatchBody = z
       .transform((value) => (value === "" ? undefined : value)),
     address: customerAddressValue.optional(),
   })
-  .passthrough()
-  .transform((value) => ({
-    ...(value.name !== undefined ? { name: value.name } : {}),
-    ...(value.email !== undefined ? { email: value.email } : {}),
-    ...(value.address !== undefined ? { address: value.address } : {}),
-  }));
+  .strict();
 export const customerGrievanceMessageBody = z.object({
   body: z.string().min(1).max(4000),
   attachmentUploadIds: z.array(z.string()).max(5).default([]),
@@ -350,10 +348,17 @@ const benefitEligibility = z.object({
   maxAllowedDefaults: z.number().int().min(0),
   minMonthsCompleted: z.number().int().min(0),
 });
+const maturityGoldRules = z.object({
+  bonusBasis: enumSchema(E.CollectionBonusBasis),
+  bonusPercent: z.number().int().min(1).max(100),
+  requireAllCollections: z.boolean(),
+}).strict();
+
 const benefit = z
   .object({
     type: enumSchema(E.BenefitType),
     bonusBasis: enumSchema(E.BonusBasis).nullable().optional(),
+    goldBonus: maturityGoldRules.nullable().optional(),
     bonusValue: z.number().int().nonnegative().nullable().optional(),
     maxBonusPaise: nullablePaise,
     textBenefit: z.string().max(4000).nullable().optional(),
@@ -467,7 +472,7 @@ function refinePlanCrossFields(
       message: "Fixed plans must not define flexibleRules.",
     });
   }
-  if (value.durationMonths != null && value.installmentCount != null) {
+  if (!value.collectionRules && value.durationMonths != null && value.installmentCount != null) {
     if (value.installmentCount > value.durationMonths) {
       context.addIssue({
         code: "custom",
@@ -714,7 +719,23 @@ function refinePlanCrossFields(
   refinePlanCashSettlementRules(value, context);
 }
 
+const collectionRules = z.object({
+  frequencies: z.array(enumSchema(E.CollectionFrequency)).min(1).max(3)
+    .refine((items) => new Set(items).size === items.length, "Collection frequencies must be unique."),
+  amountBasis: enumSchema(E.CollectionAmountBasis),
+  maturityRule: enumSchema(E.CollectionMaturityRule),
+  ...maturityGoldRules.partial().shape,
+}).strict();
+
+const oneTimeRules = z.object({
+  timing: z.enum(["MONTHLY", "AT_MATURITY"]),
+  basis: z.enum(["PRINCIPAL_PERCENT", "FIXED_WEIGHT_MG", "RUPEE_PAISE"]),
+  value: z.number().int().positive().safe(),
+  amountPeriod: z.enum(["TERM_TOTAL", "PER_PERIOD"]),
+}).strict();
+
 const planFields = {
+  oneTimeRules: oneTimeRules.nullable().optional(),
   name: z.string().min(2).max(120),
   code: z.string().regex(/^[A-Z0-9_-]{2,20}$/),
   displayName: z.string().max(120).optional(),
@@ -724,6 +745,7 @@ const planFields = {
   paymentPattern: enumSchema(E.PaymentPattern),
   durationMonths: z.number().int().min(1).max(120),
   installmentCount: z.number().int().min(1).max(120),
+  collectionRules: collectionRules.nullable().optional(),
   amountRules,
   scheduleRules,
   paymentRules,
@@ -737,14 +759,63 @@ const planFields = {
 
 export const planBody = z
   .object(planFields)
-  .superRefine((value, context) =>
-    refinePlanCrossFields(value, context, { requireComplete: true }),
-  );
+  .superRefine((value, context) => {
+    refinePlanCrossFields(value, context, { requireComplete: true });
+    const issue = (field, message) => context.addIssue({ code: "custom", path: [field], message });
+    if (value.oneTimeRules) {
+      const rule = value.oneTimeRules;
+      if (value.valueBasis !== "GOLD_WEIGHT" || value.paymentPattern !== "FIXED" || value.installmentCount !== 1 ||
+          value.collectionRules || (value.benefit && value.benefit.type !== "TEXT_ONLY") ||
+          value.scheduleRules.firstInstallmentModeDefault !== "COLLECT_NOW" || value.scheduleRules.firstInstallmentModeEditable ||
+          value.paymentRules.partialPaymentAllowed || value.paymentRules.advancePaymentAllowed) {
+        issue("oneTimeRules", "One-time gold requires exactly one full initial gold payment and its own bonus rules.");
+      }
+      if (rule.basis === "PRINCIPAL_PERCENT" && rule.value > 100 ||
+          rule.timing === "AT_MATURITY" && rule.amountPeriod !== "TERM_TOTAL") {
+        issue("oneTimeRules", "Use a valid percentage and a term total for maturity-only credit.");
+      }
+      if (value.redemptionRules.allowedModes.includes("CASH") && value.redemptionRules.cashSettlementBasis === "PAID_AMOUNT") {
+        issue("redemptionRules", "One-time gold cash settlement must use gold value.");
+      }
+    }
+    const newGoldBonus = value.benefit?.type === E.BenefitType.MATURITY_GOLD_CREDIT;
+    if (newGoldBonus && (!value.benefit.goldBonus || value.valueBasis !== E.ValueBasis.GOLD_WEIGHT)) {
+      issue("benefit", "Gold bonus at maturity requires a gold-weight plan and complete bonus rules.");
+    }
+    if (newGoldBonus && value.paymentPattern === E.PaymentPattern.FLEXIBLE && value.benefit.goldBonus?.requireAllCollections === false) {
+      issue("benefit", "Flexible gold plans use their required contribution cycles for maturity eligibility.");
+    }
+    if (!newGoldBonus && value.benefit?.goldBonus) {
+      issue("benefit", "Gold bonus rules require the Gold bonus at maturity benefit type.");
+    }
+    if ((value.collectionRules || newGoldBonus) && (
+      value.redemptionRules.prematurePenalty?.benefitTreatment === E.BenefitTreatment.FULL ||
+      (value.redemptionRules.allowedModes.includes(E.RedemptionMode.CASH) && value.redemptionRules.cashSettlementBasis === E.CashSettlementBasis.PAID_AMOUNT)
+    )) {
+      issue("redemptionRules", "Maturity gold requires bonus forfeiture on early closure and gold-value cash settlement.");
+    }
+    if (!value.collectionRules) return;
+    if (value.paymentPattern !== E.PaymentPattern.FIXED || value.valueBasis !== E.ValueBasis.GOLD_WEIGHT) {
+      issue("collectionRules", "Collection schedules require a fixed gold-weight plan.");
+    }
+    const { bonusBasis, bonusPercent, requireAllCollections } = value.collectionRules;
+    const hasLegacyFields = bonusBasis != null || bonusPercent != null || requireAllCollections != null;
+    const legacyValid = bonusBasis != null && bonusPercent != null && requireAllCollections != null;
+    if (newGoldBonus ? hasLegacyFields : !legacyValid || (value.benefit && value.benefit.type !== E.BenefitType.TEXT_ONLY)) {
+      issue("benefit", "Collection plans require one complete maturity gold bonus configuration.");
+    }
+    if (value.collectionRules.maturityRule === "FIRST_PAYMENT_ANNIVERSARY" &&
+      (value.scheduleRules.firstInstallmentModeDefault !== "COLLECT_NOW" ||
+      value.scheduleRules.firstInstallmentModeEditable || value.paymentRules.partialPaymentAllowed)) {
+      issue("scheduleRules", "First-payment maturity requires a full first collection at enrollment.");
+    }
+  });
 
 const benefitPatch = z
   .object({
     type: enumSchema(E.BenefitType).optional(),
     bonusBasis: enumSchema(E.BonusBasis).nullable().optional(),
+    goldBonus: maturityGoldRules.nullable().optional(),
     bonusValue: z.number().int().nonnegative().nullable().optional(),
     maxBonusPaise: nullablePaise,
     textBenefit: z.string().max(4000).nullable().optional(),
@@ -785,6 +856,8 @@ export const planPatchBody = z.object({
   paymentPattern: planFields.paymentPattern.optional(),
   durationMonths: planFields.durationMonths.optional(),
   installmentCount: planFields.installmentCount.optional(),
+  oneTimeRules: planFields.oneTimeRules,
+  collectionRules: planFields.collectionRules,
   amountRules: amountRules.optional(),
   scheduleRules: scheduleRules.optional(),
   paymentRules: paymentRules.optional(),
@@ -798,6 +871,7 @@ export const planPatchBody = z.object({
 });
 
 const previewScheduleExtras = {
+  collectionFrequency: enumSchema(E.CollectionFrequency).optional(),
   planId: z.string().min(4).max(80).optional(),
   installmentAmountPaise: positivePaise,
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -828,6 +902,7 @@ export const previewScheduleBody = z
     }
   });
 export const enrolBody = z.object({
+  collectionFrequency: enumSchema(E.CollectionFrequency).optional(),
   customerId: z.string(),
   planId: z.string(),
   branchId: z.string().optional(),

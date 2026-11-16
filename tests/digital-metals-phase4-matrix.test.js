@@ -119,7 +119,7 @@ async function seedPayableBuyOrder({ tenant, branch, customer, token, adminToken
     .post(`/api/v1/app/digital-metals/buy-orders/${order.body.data.id}/payment-intents`)
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
   assert.equal(pay.status, 201);
   const attempt = await DigitalMetalBuyPaymentAttempt.findOne({ orderId: order.body.data.id }).lean();
   return { order: order.body.data, attempt, token, customer, tenant, branch };
@@ -127,7 +127,7 @@ async function seedPayableBuyOrder({ tenant, branch, customer, token, adminToken
 
 function mockCompletedStatus(attempt, amountPaise) {
   const providerOrderId = attempt.providerOrderId ?? attempt._id;
-  armMockOrderStatus(providerOrderId, {
+  armMockOrderStatus(attempt.merchantOrderId ?? attempt._id, {
     state: "COMPLETED",
     merchantOrderId: attempt.merchantOrderId ?? attempt._id,
     amount: amountPaise,

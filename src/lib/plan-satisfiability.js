@@ -57,7 +57,8 @@ export function refinePlanSatisfiability(value, context) {
     const partialOff = paymentRules.partialPaymentAllowed === false;
     if (partialOff) {
       if (
-        amountRules.amountMode === E.AmountMode.JEWELLER_FIXED
+        value.collectionRules?.amountBasis !== "TOTAL_TARGET"
+        && amountRules.amountMode === E.AmountMode.JEWELLER_FIXED
         && amountRules.fixedAmountPaise != null
         && amountRules.fixedAmountPaise > maxTxn
       ) {
@@ -68,7 +69,8 @@ export function refinePlanSatisfiability(value, context) {
         );
       }
       if (
-        amountRules.amountMode === E.AmountMode.CUSTOMER_CHOSEN
+        value.collectionRules?.amountBasis !== "TOTAL_TARGET"
+        && amountRules.amountMode === E.AmountMode.CUSTOMER_CHOSEN
         && amountRules.maxInstallmentPaise != null
         && amountRules.maxInstallmentPaise > maxTxn
       ) {

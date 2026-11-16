@@ -4,7 +4,7 @@
 export function demoPublicDoc(doc) {
   if (!doc) return doc;
   const plain = typeof doc.toObject === "function" ? doc.toObject({ depopulate: true }) : { ...doc };
-  const { _id, __v, linkSecretHash, sealedLinkSecret, ...rest } = plain;
+  const { _id, __v, linkSecretHash: _linkSecretHash, sealedLinkSecret: _sealedLinkSecret, ...rest } = plain;
   return { id: String(_id), ...rest };
 }
 

@@ -85,3 +85,32 @@ export const STANDARD_COLLECTION_PLAN_DEFS = [
   { code: "AKSHAYA", name: "Akshaya Collection", displayName: "Akshaya", lockInMonths: 6, bonusPercent: 7 },
   { code: "TRITIYA", name: "Tritiya Collection", displayName: "Tritiya", lockInMonths: 12, bonusPercent: 15 },
 ];
+
+
+// Aira uses real collection schedules and credits a percentage of net gold.
+export function buildAiraCollectionPlan(definition) {
+  const legacy = buildCollectionGoldPlan(definition);
+  const { lockInMonths, bonusPercent } = definition;
+  return {
+    ...legacy,
+    collectionRules: {
+      frequencies: ["DAILY", "WEEKLY", "MONTHLY"],
+      amountBasis: "PER_COLLECTION",
+      maturityRule: "FIRST_PAYMENT_ANNIVERSARY",
+    },
+    scheduleRules: { ...legacy.scheduleRules, firstInstallmentModeDefault: "COLLECT_NOW", firstInstallmentModeEditable: false },
+    paymentRules: { ...legacy.paymentRules, partialPaymentAllowed: false },
+    benefit: {
+      type: "MATURITY_GOLD_CREDIT",
+      goldBonus: { bonusBasis: "NET_GOLD_WEIGHT", bonusPercent, requireAllCollections: true },
+      displayLabel: `${bonusPercent}% additional gold at maturity`,
+      eligibility: { requireAllInstallmentsPaid: true, maxAllowedDefaults: 0, minMonthsCompleted: 0 },
+    },
+    termsText: [
+      "Choose Daily, Weekly or Monthly at enrolment. The chosen amount applies to each scheduled collection.",
+      `The ${lockInMonths}-month lock-in starts on the first verified payment.`,
+      `Complete all scheduled collections to receive ${bonusPercent}% of your net accumulated gold at maturity.`,
+      "Early closure forfeits the bonus. Redemption is available through gold handover or purchase adjustment.",
+    ].join("\n"),
+  };
+}

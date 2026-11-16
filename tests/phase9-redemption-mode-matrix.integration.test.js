@@ -158,10 +158,19 @@ describe("redemption mode matrix HTTP", { concurrency: false }, () => {
       .send({})
       .expect(200);
     assert.equal(await LedgerEntry.countDocuments({ schemeId: ctx.scheme._id }), beforeLedger);
-    const completeBody =
-      mode === RedemptionMode.PURCHASE_ADJUSTMENT
-        ? { modeDetails: { billNumber: billNumber ?? "BILL-001" } }
-        : {};
+    await request(app)
+      .post(`/api/v1/admin/redemptions/${redemptionId}/release-handover-otp`)
+      .set("authorization", `Bearer ${ctx.adminToken}`)
+      .set("x-idempotency-key", `otp-${redemptionId}`)
+      .expect(200);
+    const otp = await request(app)
+      .get(`/api/v1/app/redemptions/${redemptionId}/handover-otp`)
+      .set("authorization", `Bearer ${ctx.custToken}`)
+      .expect(200);
+    const completeBody = {
+      handoverOtp: otp.body.data.handoverOtp,
+      ...(mode === RedemptionMode.PURCHASE_ADJUSTMENT ? { modeDetails: { billNumber: billNumber ?? "BILL-001" } } : {}),
+    };
     await request(app)
       .post(`/api/v1/admin/redemptions/${redemptionId}/complete`)
       .set("authorization", `Bearer ${ctx.adminToken}`)

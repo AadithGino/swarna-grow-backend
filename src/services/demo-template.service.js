@@ -11,7 +11,6 @@ import {
   Tenant,
 } from "../models/index.js";
 import { AppError, errors } from "../lib/app-error.js";
-import { createId } from "../lib/ids.js";
 import { DemoTemplateStatus, DemoTemplateVersionStatus } from "../constants/enums.js";
 import { DEMO_SLICE_COLLECTIONS } from "../lib/demo-clone-fields.js";
 
@@ -34,7 +33,7 @@ function chunk(array, size) {
 /** Strip the handful of fields that must never sit in the snapshot at rest, even briefly. */
 function stripBeforeSnapshot(collectionName, doc) {
   if (collectionName === "Customer") {
-    const { passwordHash, fcmTokens, ...rest } = doc;
+    const { passwordHash: _passwordHash, fcmTokens: _fcmTokens, ...rest } = doc;
     return rest;
   }
   return doc;

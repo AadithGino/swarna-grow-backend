@@ -1,3 +1,4 @@
+import { withRedemptionHandoverOtp } from "./helpers/maturity-fixtures.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildFlexibleSchemeCycleRows } from "../src/lib/calendar-cycle.js";
@@ -310,14 +311,8 @@ test("staff redemption completion clears settlementRequired", async () => {
       "approve",
     );
   }
-  await transitionRedemption(
-    {
-      ...staffReq,
-      params: { redemptionId },
-      body: {},
-    },
-    "complete",
-  );
+  const completion = await withRedemptionHandoverOtp({ ...staffReq, params: { redemptionId }, body: {} }, scheme.customerId);
+  await transitionRedemption(completion, "complete");
   const after = await Scheme.findById(scheme._id).lean();
   assert.equal(after.settlementRequired, false);
   assert.ok(after.settlementCompletedAt);

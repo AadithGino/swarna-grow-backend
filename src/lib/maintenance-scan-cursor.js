@@ -5,6 +5,8 @@ import { incrementOpsMetric, OpsMetric } from "./ops-metrics.js";
 
 /** Versioned stream ids — do not reuse reminder cursor keys. */
 export const MaintenanceScanStream = Object.freeze({
+  MATURITY: "maturity",
+  ECOMMERCE_PAYMENT_EXPIRY: "ecommerce_payment_expiry",
   DEFAULTING: "defaulting",
   FLEXIBLE_LOCK: "flexible_lock",
   PAYMENT_EXPIRY_INTENT: "payment_expiry_intent",
@@ -286,4 +288,35 @@ export async function runRotatingMaintenanceScan({ stream, maxBatches, runBatch 
   }
 
   return stats;
+}
+
+
+// Preserve bounded progress within this worker when Redis is unavailable.
+const localCursors = new Map();
+const localRuns = new Set();
+
+export async function runMaintenanceScanWithLocalFallback({ stream, maxBatches, runBatch }) {
+  if (redisReady()) return runRotatingMaintenanceScan({ stream, maxBatches, runBatch });
+  if (localRuns.has(stream)) return { ...emptyRotationStats(), leaseBusy: true };
+  localRuns.add(stream);
+  let cursor = localCursors.get(stream) ?? null;
+  const stats = emptyRotationStats(cursor);
+  try {
+    for (let i = 0; i < maxBatches; i += 1) {
+      const batch = await runBatch(cursor);
+      stats.processed += batch.processed;
+      stats.scanned += batch.scanned;
+      stats.failed += batch.failed ?? 0;
+      stats.batchesRun += 1;
+      if (!batch.hasMore) {
+        localCursors.delete(stream);
+        break;
+      }
+      cursor = batch.cursor;
+      localCursors.set(stream, cursor);
+    }
+    return stats;
+  } finally {
+    localRuns.delete(stream);
+  }
 }

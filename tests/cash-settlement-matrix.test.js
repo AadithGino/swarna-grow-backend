@@ -1,3 +1,4 @@
+import { withRedemptionHandoverOtp } from "./helpers/maturity-fixtures.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -199,7 +200,7 @@ test("PAID_AMOUNT premature FORFEIT: penalty paise, zero benefit paid, full weig
   if (initiated.status !== RedemptionStatus.APPROVED) {
     await transitionRedemption(completeReq, "approve");
   }
-  await transitionRedemption(completeReq, "complete");
+  await transitionRedemption(await withRedemptionHandoverOtp(completeReq, scheme.customerId), "complete");
   const debit = await LedgerEntry.findOne({
     schemeId: scheme._id,
     type: LedgerEntryType.REDEMPTION_DEBIT,
@@ -286,19 +287,17 @@ test("approved redemption rejects completion after extra installment changes pri
     actorId: user._id,
     description: "Late payment",
   });
+  const completeReq = await withRedemptionHandoverOtp({
+    auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
+    scope: { tenantId: tenant._id, branchId: branch._id },
+    params: { redemptionId },
+    body: {},
+    query: {},
+    headers: {},
+    ip: "127.0.0.1",
+  }, customer._id);
   await assert.rejects(
-    () => transitionRedemption(
-      {
-        auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
-        scope: { tenantId: tenant._id, branchId: branch._id },
-        params: { redemptionId },
-        body: {},
-        query: {},
-        headers: {},
-        ip: "127.0.0.1",
-      },
-      "complete",
-    ),
+    () => transitionRedemption(completeReq, "complete"),
     (err) => err.code === "SETTLEMENT_VALUE_CHANGED",
   );
 });
@@ -394,19 +393,17 @@ test("legacy in-flight snapshot with tampered principal still rejected at comple
     version: 1,
     modeDetails: { settlementSnapshot: snapshot },
   });
+  const completeReq = await withRedemptionHandoverOtp({
+    auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
+    scope: { tenantId: tenant._id, branchId: branch._id },
+    params: { redemptionId },
+    body: {},
+    query: {},
+    headers: {},
+    ip: "127.0.0.1",
+  }, customer._id);
   await assert.rejects(
-    () => transitionRedemption(
-      {
-        auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
-        scope: { tenantId: tenant._id, branchId: branch._id },
-        params: { redemptionId },
-        body: {},
-        query: {},
-        headers: {},
-        ip: "127.0.0.1",
-      },
-      "complete",
-    ),
+    () => transitionRedemption(completeReq, "complete"),
     (err) => err.code === "SETTLEMENT_VALUE_CHANGED",
   );
 });

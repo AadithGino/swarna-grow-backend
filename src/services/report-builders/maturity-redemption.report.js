@@ -1,3 +1,4 @@
+import { maturityGoldRules } from "../../lib/maturity-gold-benefit.js";
 import { Customer, Redemption, Scheme } from "../../models/index.js";
 import { moneyRef, weightRef } from "../../lib/money.js";
 import { dateMatch } from "../../lib/query-filters.js";
@@ -66,7 +67,7 @@ export async function buildMaturityRedemptionReport(req) {
   const branchIds = [...new Set(page.data.map((r) => r.branchId).filter(Boolean))];
 
   const [schemes, customers, branchNames, periodTotals, byMode, byWeek] = await Promise.all([
-    Scheme.find({ _id: { $in: schemeIds } }).select("_id enrollmentNumber").lean(),
+    Scheme.find({ _id: { $in: schemeIds }, tenantId: req.auth.tenantId }).select("_id enrollmentNumber collectionFrequency planSnapshot.benefit planSnapshot.collectionRules").lean(),
     Customer.find({ _id: { $in: customerIds } }).select("_id name").lean(),
     branchNameMap(req.auth.tenantId, branchIds),
     redemptionPeriodSummary(scope, { from, to }),
@@ -153,6 +154,7 @@ export async function buildMaturityRedemptionReport(req) {
     const customer = customerMap.get(red.customerId);
     return {
       key: red._id,
+      ...(maturityGoldRules(scheme?.planSnapshot) ? { maturityBonusGold: weightRef(red.benefitWeightMg ?? 0) } : {}),
       schemeNumber: scheme?.enrollmentNumber ?? red.schemeId,
       customer: customer ? { id: customer._id, name: customer.name } : { name: "—" },
       branch: branchNames.get(red.branchId) ?? "—",
@@ -276,7 +278,7 @@ export async function buildMaturityRedemptionReport(req) {
         ],
       },
     },
-    columns: COLUMNS,
+    columns: schemes.some((scheme) => maturityGoldRules(scheme.planSnapshot)) ? [...COLUMNS, { key: "maturityBonusGold", label: "Bonus gold (g)", type: "weight", align: "right" }] : COLUMNS,
     rows,
     meta: page.meta,
   };

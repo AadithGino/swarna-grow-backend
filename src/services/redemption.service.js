@@ -1,3 +1,6 @@
+import { PaymentRefund } from "../models/index.js";
+import { updateOneTimeGoldPeriods } from "./one-time-gold-benefit.service.js";
+import { maturityGoldLabel, maturityGoldRules } from "../lib/maturity-gold-benefit.js";
 import {
   AuditEntityType,
   ClosureType,
@@ -45,7 +48,7 @@ import { addMonthsClamped, elapsedSchemeMonths, today } from "../lib/date.js";
 import { assertFeatureEntitled } from "../lib/tenant-limits.js";
 import { isKycRequiredForRedemption } from "../lib/kyc-policy.js";
 import { isSystemPolicyClosureSettlement } from "../lib/system-policy-closure.js";
-import { assessMaturityContributionEligibility } from "../lib/maturity-eligibility.js";
+import { assessMaturityContributionEligibility, assessNormalMaturityTransitionEligibility } from "../lib/maturity-eligibility.js";
 import {
   benefitFieldsFromSettlementPreview,
   enrichRedemptionBenefitForRead,
@@ -296,10 +299,20 @@ export async function settlementPreview(req, closureType) {
       .lean(),
   ]);
   const rules = scheme.planSnapshot?.redemptionRules ?? {};
-  const benefitDef = scheme.planSnapshot?.benefit ?? null;
+  const maturityGold = maturityGoldRules(scheme.planSnapshot);
+  const oneTime = scheme.planSnapshot?.oneTimeRules;
+  const benefitDef = oneTime ? { type: "MATURITY_GOLD_CREDIT", displayLabel: "Scheduled gold bonus" } : maturityGold
+    ? { type: "MATURITY_GOLD_CREDIT", displayLabel: maturityGoldLabel(maturityGold) }
+    : scheme.planSnapshot?.benefit ?? null;
   const isPremature = closureType === ClosureType.PREMATURE_CLOSURE;
   const systemPolicyClosure = isSystemPolicyClosureSettlement(scheme);
   const blockers = [];
+  if (oneTime && scheme.oneTimeGold?.paymentId && await PaymentRefund.exists({
+    tenantId: scheme.tenantId, paymentId: scheme.oneTimeGold.paymentId,
+    status: { $in: ["PENDING", "PENDING_RECONCILIATION", "ACCEPTED"] },
+  })) {
+    blockers.push({ code: "PAYMENT_REFUND_PENDING", message: "Resolve the payment refund before settlement." });
+  }
 
   if (systemPolicyClosure) {
     if (req.auth?.type === "CUSTOMER") {
@@ -328,6 +341,15 @@ export async function settlementPreview(req, closureType) {
   const lockInEligibleFrom = addMonthsClamped(scheme.startDate, lockInMonths).format("YYYY-MM-DD");
   const lockInMet = lockInMonths === 0 || monthsCompleted >= lockInMonths;
   if (isPremature && !systemPolicyClosure) {
+    if (oneTime && scheme.oneTimeGold && today() >= scheme.maturityDate) {
+      blockers.push({ code: "MATURITY_GOLD_AWAITING_POST", message: "Wait for the scheduled gold credits to resolve before redeeming." });
+    }
+    if (maturityGold && assessNormalMaturityTransitionEligibility(scheme, today()).eligible) {
+      blockers.push({
+        code: "MATURITY_GOLD_AWAITING_POST",
+        message: "This scheme has reached maturity. Wait for the maturity gold calculation before redeeming.",
+      });
+    }
     if (!rules.prematureClosureAllowed) {
       blockers.push({
         code: "PREMATURE_CLOSURE_NOT_ALLOWED",
@@ -358,7 +380,8 @@ export async function settlementPreview(req, closureType) {
   } else if (
     !isPremature &&
     !systemPolicyClosure &&
-    scheme.status === SchemeStatus.MATURED
+    scheme.status === SchemeStatus.MATURED &&
+    !maturityGold && !oneTime
   ) {
     const maturityContributions = assessMaturityContributionEligibility(scheme);
     if (!maturityContributions.paymentEligible) {
@@ -394,14 +417,24 @@ export async function settlementPreview(req, closureType) {
   ).length;
   const eligibility = benefitDef?.eligibility;
   const minMonthsCompleted = eligibility?.minMonthsCompleted ?? 0;
-  const benefitEligible =
-    !systemPolicyClosure &&
-    !isPremature &&
-    benefitDef &&
-    benefitDef.type !== "TEXT_ONLY" &&
-    monthsCompleted >= minMonthsCompleted &&
-    ((!eligibility?.requireAllInstallmentsPaid || requiredPaid) &&
-      defaultCount <= (eligibility?.maxAllowedDefaults ?? Number.MAX_SAFE_INTEGER));
+  const paymentsQualifyForBenefit = Boolean(
+    benefitDef && benefitDef.type !== "TEXT_ONLY" &&
+    (!eligibility?.requireAllInstallmentsPaid || requiredPaid) &&
+    defaultCount <= (eligibility?.maxAllowedDefaults ?? Number.MAX_SAFE_INTEGER),
+  );
+  const configuredBenefitEligible = paymentsQualifyForBenefit && monthsCompleted >= minMonthsCompleted;
+  if (!isPremature && !systemPolicyClosure && !maturityGold && scheme.status === SchemeStatus.MATURED &&
+    paymentsQualifyForBenefit && !configuredBenefitEligible) {
+    const eligibleFrom = addMonthsClamped(scheme.startDate, minMonthsCompleted).format("YYYY-MM-DD");
+    blockers.push({
+      code: "MATURITY_BENEFIT_WAITING_PERIOD",
+      message: `The configured maturity benefit becomes available on ${eligibleFrom}. Redeem on or after that date to receive it.`,
+      eligibleFrom,
+    });
+  }
+  const benefitEligible = !systemPolicyClosure && !isPremature && (
+    oneTime ? (scheme.oneTimeGold?.periods.some((row) => row.weightMg > 0) ?? false) : maturityGold ? scheme.collectionBonus?.status === "CREDITED" : configuredBenefitEligible
+  );
 
   const [excludedPaymentIds, tenant] = await Promise.all([
     loadExcludedPaymentIdsForLedgerEntries(entries, scheme.tenantId),
@@ -1249,7 +1282,12 @@ export async function transitionRedemption(req, action) {
       const benefitCreditRate = paidAmountCashComplete
         ? 0
         : (row.benefitRatePerGramPaise ?? 0);
-      if (benefitCreditPaise > 0 || benefitCreditWeightMg > 0) {
+      if (scheme.oneTimeGold && row.closureType === ClosureType.PREMATURE_CLOSURE &&
+        scheme.planSnapshot?.redemptionRules?.prematurePenalty?.benefitTreatment !== "FULL") {
+        await updateOneTimeGoldPeriods(scheme, { session, adjustmentKey: `ONE_TIME_FORFEIT:${row._id}`, forfeit: true });
+        sequence = await nextLedgerSequence();
+      }
+      if (!scheme.planSnapshot?.oneTimeRules && !maturityGoldRules(scheme.planSnapshot) && (benefitCreditPaise > 0 || benefitCreditWeightMg > 0)) {
         await LedgerEntry.create(
           [
             {

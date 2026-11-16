@@ -99,7 +99,7 @@ test("full buy flow credits wallet without physical stock (test harness)", async
     .post(`/api/v1/app/digital-metals/buy-orders/${order.body.data.id}/payment-intents`)
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
   assert.equal(pay.status, 201);
   const { completeTestHarnessBuyPayment } = await import(
     "../src/services/digital-metals-buy-payment.service.js"
@@ -174,7 +174,7 @@ test("duplicate webhook finalization credits once", async () => {
     .post(`/api/v1/app/digital-metals/buy-orders/${order.body.data.id}/payment-intents`)
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
   const { completeTestHarnessBuyPayment } = await import(
     "../src/services/digital-metals-buy-payment.service.js"
   );
@@ -329,7 +329,7 @@ test("verified payment with wrong amount does not credit", async () => {
     .post(`/api/v1/app/digital-metals/buy-orders/${order.body.data.id}/payment-intents`)
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
   const attempt = await import("../src/models/index.js").then((m) =>
     m.DigitalMetalBuyPaymentAttempt.findOne({ orderId: order.body.data.id }).lean(),
   );

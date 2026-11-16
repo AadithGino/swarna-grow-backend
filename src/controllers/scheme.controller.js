@@ -10,7 +10,7 @@ export const updatePlan = async (req, res) => sendSuccess(res, await plans.updat
 export const setPlanStatus = (status) => async (req, res) => sendSuccess(res, await plans.setPlanStatus(req, status));
 export const duplicatePlan = async (req, res) => sendSuccess(res, await plans.duplicatePlan(req), {}, 201);
 export const previewSchedule = async (req, res) =>
-  sendSuccess(res, await plans.previewSchedule(req.body, req.auth.tenantId));
+  sendSuccess(res, await plans.previewSchedule(req.body, req.auth.tenantId, req.scope?.branchId));
 export const planStats = async (req, res) => sendSuccess(res, await plans.planStats(req));
 export const validateEnrolment = async (req, res) => sendSuccess(res, await schemes.validateEnrolmentResponse(req));
 export const enrol = async (req, res) => sendSuccess(res, await schemes.enrol(req), {}, 201);

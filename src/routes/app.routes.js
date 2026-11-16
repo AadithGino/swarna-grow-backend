@@ -180,6 +180,13 @@ appRouter.get(
 appRouter.get("/schemes/:schemeId", asyncHandler(appCustomer.getScheme));
 
 appRouter.post(
+  "/schemes/enrol/validate",
+  requireCustomerEnrolAccess,
+  validate({ body: appEnrolBody }),
+  asyncHandler(appCustomer.validateEnrollment),
+);
+
+appRouter.post(
   "/schemes/enrol",
   requireCustomerEnrolAccess,
   validate({ body: appEnrolBody }),

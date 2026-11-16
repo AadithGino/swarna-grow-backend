@@ -1,3 +1,5 @@
+import { releaseHandoverOtp, revealCustomerHandoverOtp } from "../../src/services/redemption.service.js";
+
 /**
  * Fixed-scheme maturity / redemption test fixtures aligned with v1 contribution rules.
  */
@@ -96,4 +98,14 @@ export function buildIncompleteMaturedFixedSchemeFields({
       },
     ],
   };
+}
+
+/** Put a real staff-issued, customer-revealed handover code on the completion request. */
+export async function withRedemptionHandoverOtp(req, customerId) {
+  await releaseHandoverOtp(req);
+  const { handoverOtp } = await revealCustomerHandoverOtp({
+    ...req,
+    auth: { id: customerId, tenantId: req.auth.tenantId, type: "CUSTOMER" },
+  });
+  return { ...req, body: { ...req.body, handoverOtp } };
 }

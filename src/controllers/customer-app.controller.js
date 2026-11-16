@@ -48,6 +48,10 @@ export const listActivity = async (req, res) =>
 export const getPayment = async (req, res) =>
   sendSuccess(res, await customerApp.getPaymentForApp(req));
 
+export const validateEnrollment = async (req, res) => sendSuccess(res,
+  await validateEnrolmentResponse({ ...req, body: { ...req.body, customerId: req.auth.id } }),
+);
+
 export const listPlans = async (req, res) => {
   if (req.tenant?.operations?.customerSelfEnrolEnabled === false) {
     return sendList(res, { data: [], meta: { total: 0, limit: 0, offset: 0 } });
@@ -57,7 +61,7 @@ export const listPlans = async (req, res) => {
     result.data.map(async (plan) => {
       const fakeReq = {
         ...req,
-        body: { customerId: req.auth.id, planId: plan._id },
+        body: { customerId: req.auth.id, planId: plan._id, collectionFrequency: plan.collectionRules?.frequencies[0] },
       };
       let enrolCheck;
       try {
@@ -82,7 +86,7 @@ export const getPlan = async (req, res) => {
   const plan = await plans.getPlan(req);
   const enrolCheck = await validateEnrolmentResponse({
     ...req,
-    body: { customerId: req.auth.id, planId: plan._id ?? plan.id },
+    body: { customerId: req.auth.id, planId: plan._id ?? plan.id, collectionFrequency: plan.collectionRules?.frequencies[0] },
   });
   return sendSuccess(res, mapCustomerPlanListItem(plan, enrolCheck));
 };

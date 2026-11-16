@@ -13,6 +13,8 @@ const PLAN_CONFIG_KEYS = [
   "paymentPattern",
   "durationMonths",
   "installmentCount",
+  "collectionRules",
+  "oneTimeRules",
   "amountRules",
   "scheduleRules",
   "paymentRules",
@@ -73,6 +75,7 @@ function isMeaningfulGoldRules(rules) {
 /** Strip Mongoose integer defaults (0) and empty subdocs before Zod complete-plan parse. */
 export function preparePlanForCompleteValidation(planLike) {
   const config = pickPlanConfig(cloneJson(planLike));
+  if ((config.collectionRules || config.oneTimeRules) && !config.benefit?.type) delete config.benefit;
   if (config.paymentPattern !== PaymentPattern.FLEXIBLE) {
     if (!isMeaningfulFlexibleRules(config.flexibleRules)) {
       config.flexibleRules = null;

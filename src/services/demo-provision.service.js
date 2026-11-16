@@ -69,7 +69,6 @@ async function uniqueTenantCode(businessName) {
   const base = deriveTenantCodeFromName(businessName);
   let code = base;
   let n = 0;
-  // eslint-disable-next-line no-await-in-loop
   while (await Tenant.exists({ code })) {
     n += 1;
     code = `${base.slice(0, 10)}${n}`;
@@ -80,7 +79,6 @@ async function uniqueTenantCode(businessName) {
 async function insertInBatches(Model, docs) {
   for (let i = 0; i < docs.length; i += INSERT_BATCH_SIZE) {
     const batch = docs.slice(i, i + INSERT_BATCH_SIZE);
-    // eslint-disable-next-line no-await-in-loop
     await Model.insertMany(batch, { ordered: true });
   }
 }
@@ -136,7 +134,6 @@ export async function provisionDemoInstance({ instanceId, actorId }) {
     const snapshotByCollection = {};
     let totalDocs = 0;
     for (const collectionName of DEMO_SLICE_COLLECTIONS) {
-      // eslint-disable-next-line no-await-in-loop
       const docs = await loadSnapshotDocs(templateVersion._id, collectionName);
       snapshotByCollection[collectionName] = docs;
       totalDocs += docs.length;
@@ -222,16 +219,13 @@ export async function provisionDemoInstance({ instanceId, actorId }) {
       }
 
       if (toInsert.length) {
-        // eslint-disable-next-line no-await-in-loop
         await insertInBatches(Model, toInsert);
       }
       if (cloneMapRows.length) {
-        // eslint-disable-next-line no-await-in-loop
         await insertInBatches(DemoCloneMap, cloneMapRows);
       }
       counts[collectionName] = toInsert.length;
       inserted += toInsert.length;
-      // eslint-disable-next-line no-await-in-loop
       await DemoProvisionJob.findByIdAndUpdate(job._id, {
         $set: {
           progress: Math.min(95, 5 + Math.round((inserted / Math.max(totalDocs, 1)) * 90)),

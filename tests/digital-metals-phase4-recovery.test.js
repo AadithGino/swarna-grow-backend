@@ -98,7 +98,7 @@ test("credit recovery after simulated finalize pause credits exactly once", asyn
     .post(`/api/v1/app/digital-metals/buy-orders/${order.body.data.id}/payment-intents`)
     .set("Authorization", `Bearer ${token}`)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
 
   const { armPauseBeforeDigitalMetalBuyCreditForTests, clearDigitalMetalBuyFinalizeTestHooksForTests } =
     await import("../src/lib/digital-metals-buy-finalize-test-hooks.js");

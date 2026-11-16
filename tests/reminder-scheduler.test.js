@@ -59,3 +59,25 @@ test("scheduler lease key includes tenant date and window", () => {
     "swarnagrow:reminder:lease:tnt_a:2026-09-18:09:00-20:00",
   );
 });
+
+test("payment reminders stop when the installment or capped contribution is resolved", async () => {
+  const { isPaymentReminderCurrent, paymentReminderTargets } = await import("../src/lib/reminder-payment-target.js");
+  const fixed = { status: "ACTIVE", paymentPattern: "FIXED", installments: [
+    { number: 1, dueDate: "2026-05-31", status: "DUE", amountPaise: 1500, paidPaise: 500 },
+  ] };
+  const reminder = { templateParams: { installmentNumber: 1, dueDate: "2026-05-31" } };
+  assert.equal(isPaymentReminderCurrent(reminder, fixed, "2026-05-31"), true);
+  for (const status of ["PAID", "WAIVED"]) {
+    fixed.installments[0].status = status;
+    assert.equal(isPaymentReminderCurrent(reminder, fixed, "2026-05-31"), false);
+  }
+  const capped = { status: "LOCKED", paymentPattern: "FLEXIBLE", flexiblePhase: "CAPPED", cycles: [
+    { cycle: "2026-05", expiresAt: "2026-05-31", status: "PARTIALLY_PAID", capPaise: 1500, paidPaise: 500 },
+  ] };
+  assert.deepEqual(paymentReminderTargets(capped, "2026-05-31"), [{ cycleKey: "2026-05", dueDate: "2026-05-31" }]);
+  const cycleReminder = { templateParams: { cycleKey: "2026-05", dueDate: "2026-05-31" } };
+  assert.equal(isPaymentReminderCurrent(cycleReminder, capped, "2026-05-31"), true);
+  assert.equal(isPaymentReminderCurrent(cycleReminder, capped, "2026-06-01"), false);
+  capped.cycles[0].paidPaise = 1500;
+  assert.equal(isPaymentReminderCurrent(cycleReminder, capped, "2026-05-31"), false);
+});

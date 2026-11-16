@@ -67,8 +67,9 @@ export function mapAdminLedgerEntry(entry, payment) {
   const weightMg = Number(entry?.weightMg ?? payment?.weightMg ?? 0);
   const ratePerGramPaise = Number(entry?.ratePerGramPaise ?? payment?.ratePerGramPaise ?? 0);
   const bookedAt = payment?.paidAt ?? entry?.createdAt ?? entry?.effectiveAt;
+  const maturityAdjustment = entry?.type === "MATURITY_GOLD_ADJUSTMENT";
   const goldAccrual = buildGoldAccrualBlock(
-    weightMg,
+    maturityAdjustment ? Math.abs(weightMg) : weightMg,
     ratePerGramPaise,
     bookedAt ?? entry?.createdAt,
   );
@@ -85,6 +86,8 @@ export function mapAdminLedgerEntry(entry, payment) {
     receiptNumber: payment?.receiptNumber ?? null,
     paymentId: entry.paymentId ?? payment?._id ?? null,
     mode: payment?.mode ?? null,
-    goldAccrual,
+    goldAccrual: maturityAdjustment && goldAccrual ? {
+      ...goldAccrual, weightMg, weight: weightRef(weightMg), weightDisplay: weightRef(weightMg).weightDisplay,
+    } : goldAccrual,
   };
 }

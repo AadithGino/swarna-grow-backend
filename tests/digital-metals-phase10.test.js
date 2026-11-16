@@ -111,7 +111,7 @@ async function creditBuyOrderViaHarness() {
     .post(`/api/v1/app/digital-metals/buy-orders/${orderId}/payment-intents`)
     .set("Authorization", token)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
   const { completeTestHarnessBuyPayment } = await import(
     "../src/services/digital-metals-buy-payment.service.js"
   );
@@ -191,7 +191,7 @@ test("separate buy orders produce separate inbox events", async () => {
     .post(`/api/v1/app/digital-metals/buy-orders/${order2.body.data.id}/payment-intents`)
     .set("Authorization", ctx.token)
     .set("X-Idempotency-Key", randomUUID())
-    .send({ redirectUrl: "https://example.com/return" });
+    .send({ redirectUrl: "http://localhost:3000/return" });
   const { completeTestHarnessBuyPayment } = await import(
     "../src/services/digital-metals-buy-payment.service.js"
   );

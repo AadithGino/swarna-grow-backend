@@ -1,10 +1,15 @@
 import {
   DigitalMetalRedemptionOrder, DigitalMetalPayout,
-  DigitalMetalPaymentExceptionRefund, EcommercePaymentExceptionRefund,
+  DigitalMetalPaymentExceptionRefund, EcommercePaymentExceptionRefund, LedgerEntry,
 } from "../models/index.js";
 
 const active = ["PENDING_APPROVAL", "APPROVED", "SUBMITTED", "UNKNOWN"];
 const definitions = [
+  {
+    model: LedgerEntry,
+    key: { tenantId: 1, schemeId: 1, maturityEventKey: 1 },
+    partial: { maturityEventKey: { $type: "string" } },
+  },
   { model: DigitalMetalRedemptionOrder, key: { tenantId: 1, quoteId: 1 } },
   { model: DigitalMetalPayout, key: { tenantId: 1, payableId: 1 }, partial: { status: { $in: active } } },
   { model: DigitalMetalPaymentExceptionRefund, key: { tenantId: 1, orderId: 1, paymentAttemptId: 1 }, legacyOrderIndex: true },

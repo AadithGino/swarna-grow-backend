@@ -1,3 +1,4 @@
+import { maturityGoldLabel, maturityGoldRules } from "./maturity-gold-benefit.js";
 import { PaymentPattern } from "../constants/enums.js";
 import { moneyRef } from "./money.js";
 import { normalizePlanFinancialRules, paiseOrNull } from "./plan-amount-normalize.js";
@@ -17,6 +18,7 @@ export function buildAmountSummary(plan) {
     paiseOrNull(rules.maxInstallmentPaise) ??
     (mode === "JEWELLER_FIXED" ? fixedPaise : null);
   const multiplePaise = paiseOrNull(rules.multipleOfPaise);
+  const amountUnit = plan.collectionRules?.amountBasis === "TOTAL_TARGET" ? "total target" : "per installment";
   let label = "—";
   if (plan.paymentPattern === PaymentPattern.FLEXIBLE) {
     const flex = plan.flexibleRules ?? {};
@@ -31,10 +33,10 @@ export function buildAmountSummary(plan) {
   } else if (mode === "CUSTOMER_CHOSEN" && minPaise != null && maxPaise != null) {
     label = `Customers can choose ${moneyRef(minPaise).amountDisplay} – ${moneyRef(maxPaise).amountDisplay}, in multiples of ${moneyRef(multiplePaise ?? 100).amountDisplay}.`;
   } else if (mode === "JEWELLER_FIXED" && rules.fixedAmountPaise != null) {
-    label = `Fixed ${moneyRef(rules.fixedAmountPaise).amountDisplay} per installment.`;
+    label = `Fixed ${moneyRef(rules.fixedAmountPaise).amountDisplay} ${amountUnit}.`;
   } else if (mode === "JEWELLER_SLABS" && rules.slabsPaise?.length) {
     const slabs = rules.slabsPaise.map((p) => moneyRef(p).amountDisplay).join(" · ");
-    label = `Slabs ${slabs} per installment.`;
+    label = `Slabs ${slabs} ${amountUnit}.`;
   }
   return {
     amountMode: mode,
@@ -46,6 +48,8 @@ export function buildAmountSummary(plan) {
 }
 
 export function planBenefitLabel(plan) {
+  const goldBonus = maturityGoldRules(plan);
+  if (goldBonus) return maturityGoldLabel(goldBonus);
   const benefit = plan?.benefit;
   if (!benefit?.type) return "";
   if (benefit.displayLabel) return benefit.displayLabel;

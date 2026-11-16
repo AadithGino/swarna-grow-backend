@@ -1,3 +1,4 @@
+import { maturityGoldRules } from "./maturity-gold-benefit.js";
 import { PaymentPattern } from "../constants/enums.js";
 import {
   flexibleContributionCycleCount,
@@ -12,7 +13,10 @@ const SETTLED_INSTALLMENT_STATUSES = new Set(["PAID", "WAIVED"]);
 export function isCalendarMaturityReached(scheme, asOfYmd) {
   const maturityDate = scheme?.maturityDate;
   if (!maturityDate || !asOfYmd) return false;
-  return maturityDate < asOfYmd;
+  const maturityRule = scheme.collectionFrequency && scheme.planSnapshot?.collectionRules?.maturityRule;
+  return maturityRule && maturityRule !== "CALENDAR_MONTH_END"
+    ? maturityDate <= asOfYmd
+    : maturityDate < asOfYmd;
 }
 
 /**
@@ -42,6 +46,10 @@ function assessFixedMaturityContributions(scheme) {
       reason: "INSTALLMENTS_INCOMPLETE",
       message: "Required instalments are not complete.",
     };
+  }
+  if (maturityGoldRules(scheme.planSnapshot)?.requireAllCollections === false) {
+    const funded = installments.some((row) => row.paidPaise > 0);
+    return { paymentEligible: funded, contributionEligible: funded, reason: funded ? null : "INSTALLMENTS_INCOMPLETE" };
   }
   const incomplete = installments.filter(
     (row) => !SETTLED_INSTALLMENT_STATUSES.has(row.status),
@@ -97,9 +105,16 @@ function assessFlexibleMaturityContributions(scheme) {
 export function assessNormalMaturityTransitionEligibility(scheme, asOfYmd) {
   const calendarEligible = isCalendarMaturityReached(scheme, asOfYmd);
   const contribution = assessMaturityContributionEligibility(scheme);
+  const pattern = scheme.paymentPattern ?? scheme.planSnapshot?.paymentPattern;
+  const allowsIncompleteFixedSchedule = pattern === PaymentPattern.FIXED &&
+    maturityGoldRules(scheme.planSnapshot)?.requireAllCollections === false;
+  const gracePending = Boolean(scheme.collectionFrequency || allowsIncompleteFixedSchedule) && (scheme.installments ?? []).some(
+    (row) => !SETTLED_INSTALLMENT_STATUSES.has(row.status) && row.graceEndsAt && asOfYmd <= row.graceEndsAt,
+  );
   return {
     calendarEligible,
     ...contribution,
-    eligible: calendarEligible && contribution.paymentEligible,
+    ...(gracePending ? { gracePending } : {}),
+    eligible: calendarEligible && contribution.paymentEligible && !gracePending,
   };
 }

@@ -1,3 +1,5 @@
+import { getScheme } from "../src/services/scheme.service.js";
+import { mapCustomerSchemeDetail } from "../src/lib/customer-scheme-detail-dto.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -27,6 +29,7 @@ import {
 } from "../src/services/finalize-gateway-success.service.js";
 import { processPhonePeRefundWebhook } from "../src/services/phonepe-refund.service.js";
 import { today } from "../src/lib/date.js";
+import { runMaturityTransitionBatch } from "../src/services/scheme-maintenance.service.js";
 import { setGoldRate } from "../src/services/tenant.service.js";
 import { resetTestDb, seedTenantUser, startTestDb, stopTestDb } from "./helpers/db.js";
 
@@ -42,6 +45,7 @@ async function seedPaidGatewayPayment({
   amountPaise = 100_000,
   weightMg = 1000,
   valueBasis = "CASH",
+  goldBonus,
 } = {}) {
   const { tenant, branch, user } = await seedTenantUser();
   const customerId = createId("customer");
@@ -66,6 +70,7 @@ async function seedPaidGatewayPayment({
     enrollmentNumber: `ENR-${Date.now()}`,
     planSnapshot: {
       paymentPattern: "FIXED",
+      ...(goldBonus ? { benefit: { type: "MATURITY_GOLD_CREDIT", goldBonus } } : {}),
       paymentRules: { partialPaymentAllowed: true, advancePaymentAllowed: false, maxAdvanceInstallments: 0, minPaymentPaise: 1000 },
     },
     valueBasis,
@@ -302,3 +307,41 @@ test("refund transaction rollback leaves no partial ledger state", async () => {
   assert.equal(await PaymentRefund.countDocuments({ paymentId, status: GatewayRefundStatus.COMPLETED }), 0);
   assert.equal(await Alert.countDocuments({ tenantId: tenant._id, type: "GATEWAY_REFUND_INVALID" }), 0);
 });
+
+
+for (const requireAllCollections of [true, false]) {
+  test(`matured monthly gold adjusts once per gateway refund (all payments required: ${requireAllCollections})`, async () => {
+    const { tenant, schemeId, intentId, paymentId } = await seedPaidGatewayPayment({
+      amountPaise: 5_000_000, valueBasis: "GOLD_WEIGHT",
+      goldBonus: { bonusBasis: "NET_GOLD_WEIGHT", bonusPercent: 7, requireAllCollections },
+    });
+    assert.equal((await runMaturityTransitionBatch({ today: "2026-12-02" })).processed, 1);
+    assert.equal((await Scheme.findById(schemeId)).collectionBonus.weightMg, 700);
+    const event = {
+      tenantId: tenant._id, type: "PG_REFUND_COMPLETED", providerEventId: "pe-mature-gold-partial",
+      payload: { originalMerchantOrderId: intentId, refundId: "ref_gold_partial", amount: 1_250_000 },
+    };
+    assert.equal((await processPhonePeRefundWebhook(event)).outcome, "COMPLETED");
+    await processPhonePeRefundWebhook(event);
+    const afterPartial = (await Scheme.findById(schemeId)).collectionBonus;
+    assert.equal(afterPartial.weightMg, requireAllCollections ? 0 : 525);
+    assert.equal(afterPartial.status, requireAllCollections ? "INELIGIBLE" : "CREDITED");
+    assert.equal(await LedgerEntry.countDocuments({ schemeId, type: "MATURITY_GOLD_ADJUSTMENT" }), 1);
+    const final = await processPhonePeRefundWebhook({
+      ...event, providerEventId: "pe-mature-gold-final",
+      payload: { ...event.payload, refundId: "ref_gold_final", amount: 3_750_000 },
+    });
+    assert.equal(final.outcome, "COMPLETED");
+    const afterFull = await Scheme.findById(schemeId);
+    assert.equal(afterFull.collectionBonus.weightMg, 0);
+    assert.equal(afterFull.collectionBonus.status, "INELIGIBLE");
+    const detail = await getScheme({
+      params: { schemeId }, scope: { tenantId: tenant._id }, auth: { type: "TENANT_USER", tenantId: tenant._id },
+    });
+    assert.equal(detail.actions.canRedeem, false);
+    assert.equal(mapCustomerSchemeDetail(detail).redemption.blocker, "No gold remains to redeem");
+    assert.equal((await Payment.findById(paymentId)).status, "REVERSED");
+    assert.equal(await LedgerEntry.countDocuments({ schemeId, type: "MATURITY_GOLD_CREDIT" }), 1);
+    assert.equal(await LedgerEntry.countDocuments({ schemeId, type: "MATURITY_GOLD_ADJUSTMENT" }), requireAllCollections ? 1 : 2);
+  });
+}

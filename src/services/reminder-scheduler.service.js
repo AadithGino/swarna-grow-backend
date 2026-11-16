@@ -1,3 +1,4 @@
+import { paymentReminderTargets, REMINDABLE_PAYMENT_STATUSES } from "../lib/reminder-payment-target.js";
 import dayjs from "dayjs";
 import { MessageType, SchemeStatus } from "../constants/enums.js";
 import { env } from "../config/env.js";
@@ -156,11 +157,11 @@ async function latestPaymentsByScheme(tenantId, schemeIds) {
 
 
 
-async function queueFixedOffsetReminder({
+async function queuePaymentOffsetReminder({
   config,
   scheme,
   customer,
-  installment,
+  target,
   offset,
   today,
   pushCountToday,
@@ -168,8 +169,7 @@ async function queueFixedOffsetReminder({
   whatsAppCounts,
 }) {
   if (offset.schemePattern && offset.schemePattern !== "FIXED") return 0;
-  if (["PAID", "WAIVED"].includes(installment.status)) return 0;
-  if (ymdAddDays(installment.dueDate, offset.days) !== today) return 0;
+  if (ymdAddDays(target.dueDate, offset.days) !== today) return 0;
 
   const type =
     offset.messageType
@@ -188,6 +188,9 @@ async function queueFixedOffsetReminder({
     mobile: customer.mobile,
     enrollmentNumber: scheme.enrollmentNumber,
     pushKind: offset.key,
+    dueDate: target.dueDate,
+    ...(target.firstPayment ? { firstPayment: true } : {}),
+    ...(target.cycleKey ? { cycleKey: target.cycleKey } : {}),
   };
   let queued = 0;
   const claimBase = {
@@ -198,7 +201,7 @@ async function queueFixedOffsetReminder({
     type,
     offsetKey: offset.key,
     reminderDate: today,
-    installmentNumber: installment.number,
+    installmentNumber: target.installmentNumber,
     templateParams: baseParams,
   };
 
@@ -217,7 +220,7 @@ async function queueFixedOffsetReminder({
   return queued;
 }
 
-async function runFixedReminders({ tenant, config, today, lease, budget, onBatch }) {
+async function runScheduledPaymentReminders({ tenant, config, today, lease, budget, onBatch }) {
   const enabledOffsets = config.offsets.filter(
     (row) => row.enabled !== false
       && row.schemePattern !== "FLEXIBLE"
@@ -228,9 +231,6 @@ async function runFixedReminders({ tenant, config, today, lease, budget, onBatch
   if (!enabledOffsets.length) return emptyTenantReminderStats();
 
   const dueDates = [...new Set(enabledOffsets.map((row) => ymdAddDays(today, -row.days)))];
-  const statusFilter = {
-    $in: [SchemeStatus.ACTIVE, SchemeStatus.DEFAULTED, SchemeStatus.LOCKED],
-  };
   const windowKey = sendWindowKey(config);
 
   return runBoundedSchemeStream({
@@ -243,18 +243,21 @@ async function runFixedReminders({ tenant, config, today, lease, budget, onBatch
     fetchBatch: async (cursor, limit) => {
       const query = {
         tenantId: tenant._id,
-        paymentPattern: "FIXED",
-        status: statusFilter,
-        installments: {
-          $elemMatch: {
-            dueDate: { $in: dueDates },
-            status: { $nin: ["PAID", "WAIVED"] },
-          },
-        },
+        status: { $in: REMINDABLE_PAYMENT_STATUSES },
+        $or: [
+          { paymentPattern: "FIXED", installments: { $elemMatch: {
+            dueDate: { $in: dueDates }, status: { $nin: ["PAID", "WAIVED"] },
+          } } },
+          { paymentPattern: "FLEXIBLE", status: SchemeStatus.PENDING_PAYMENT, startDate: { $in: dueDates } },
+          { paymentPattern: "FLEXIBLE", flexiblePhase: "CAPPED", cycles: { $elemMatch: {
+            cycle: today.slice(0, 7), expiresAt: { $in: dueDates, $gte: today },
+            status: { $in: ["UPCOMING", "PARTIALLY_PAID"] }, capPaise: { $gt: 0 },
+          } } },
+        ],
       };
       if (cursor) query._id = { $gt: cursor };
       return Scheme.find(query)
-        .select("_id customerId branchId enrollmentNumber installments")
+        .select("_id tenantId customerId branchId enrollmentNumber paymentPattern status startDate installments flexiblePhase cycles")
         .sort({ _id: 1 })
         .limit(limit)
         .lean();
@@ -286,13 +289,13 @@ async function runFixedReminders({ tenant, config, today, lease, budget, onBatch
           continue;
         }
         const pushCountToday = pushCounts.get(scheme.customerId) ?? 0;
-        for (const installment of scheme.installments ?? []) {
+        for (const target of paymentReminderTargets(scheme, today)) {
           for (const offset of enabledOffsets) {
-            queued += await queueFixedOffsetReminder({
+            queued += await queuePaymentOffsetReminder({
               config,
               scheme,
               customer,
-              installment,
+              target,
               offset,
               today,
               pushCountToday,
@@ -329,7 +332,7 @@ async function runFlexibleNudges({ tenant, config, today, lease, budget }) {
       };
       if (cursor) query._id = { $gt: cursor };
       return Scheme.find(query)
-        .select("_id customerId branchId enrollmentNumber startDate")
+        .select("_id tenantId customerId branchId enrollmentNumber startDate")
         .sort({ _id: 1 })
         .limit(limit)
         .lean();
@@ -425,7 +428,7 @@ async function runMaturityReminders({ tenant, config, today, lease, budget }) {
       if (cursor) query._id = { $gt: cursor };
       return Scheme.find(query)
         .select(
-          "_id customerId branchId enrollmentNumber maturityDate paymentPattern planSnapshot installments cycles",
+          "_id tenantId customerId branchId enrollmentNumber maturityDate paymentPattern planSnapshot installments cycles",
         )
         .sort({ _id: 1 })
         .limit(limit)
@@ -445,6 +448,7 @@ async function runMaturityReminders({ tenant, config, today, lease, budget }) {
         }),
       ]);
       const { assessMaturityContributionEligibility } = await import("../lib/maturity-eligibility.js");
+      const { maturityGoldRules } = await import("../lib/maturity-gold-benefit.js");
       for (const scheme of schemes) {
         const customer = customersById.get(scheme.customerId);
         if (!customer) {
@@ -458,6 +462,8 @@ async function runMaturityReminders({ tenant, config, today, lease, budget }) {
         const pushCountToday = pushCounts.get(scheme.customerId) ?? 0;
         for (const offset of offsets) {
           if (ymdAddDays(scheme.maturityDate, offset.days) !== today) continue;
+          // The maturity transition sends the completed notice after the credit is committed.
+          if (offset.days >= 0 && maturityGoldRules(scheme.planSnapshot)) continue;
           const { push } = evaluateReminderChannels({
             config,
             customer,
@@ -521,7 +527,7 @@ async function runFlexibleLockReminders({ tenant, config, today, lease, budget }
       };
       if (cursor) query._id = { $gt: cursor };
       return Scheme.find(query)
-        .select("_id customerId branchId enrollmentNumber startDate planSnapshot")
+        .select("_id tenantId customerId branchId enrollmentNumber startDate planSnapshot")
         .sort({ _id: 1 })
         .limit(limit)
         .lean();
@@ -618,7 +624,7 @@ async function runTenantReminders({ tenant, now, hooks = {} }) {
   const agg = emptyTenantReminderStats();
   try {
     const streams = [
-      () => runFixedReminders({
+      () => runScheduledPaymentReminders({
         tenant,
         config,
         today,

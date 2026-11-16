@@ -1,3 +1,5 @@
+import { isPaymentReminderCurrent, isScheduledPaymentReminder } from "../lib/reminder-payment-target.js";
+import { calendarDayYmd } from "../lib/reminder-timezone.js";
 import fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { once } from "node:events";
@@ -36,7 +38,7 @@ const TERMINAL_MESSAGE_STATUSES = new Set(["DELIVERED", "SENT", "READ"]);
 
 export async function processMessage(job) {
   const message = await Message.findById(job.data.messageId);
-  if (!message || TERMINAL_MESSAGE_STATUSES.has(message.status)) return;
+  if (!message || TERMINAL_MESSAGE_STATUSES.has(message.status) || message.failureCode === "REMINDER_SUPERSEDED") return;
   try {
     if (message.channel === "PUSH") {
       const { pushProvider } = await import("../integrations/push.provider.js");
@@ -78,6 +80,20 @@ export async function processMessage(job) {
           : null,
         Tenant.findById(message.tenantId).select("name displayName +integrationSecrets").lean(),
       ]);
+      const scheduledPayment = isScheduledPaymentReminder(message);
+      async function suppressSupersededReminder() {
+        await finalizeOrphanPushDeliveries({ tenantId: message.tenantId, messageId: message._id, eligibleRegistrationIds: [] });
+        await Message.updateOne(
+          { _id: message._id, tenantId: message.tenantId, status: { $nin: [...TERMINAL_MESSAGE_STATUSES] } },
+          { $set: { status: "FAILED", failedAt: new Date(), failureCode: "REMINDER_SUPERSEDED", failureMessage: "The scheduled payment reminder is no longer relevant." } },
+        );
+      }
+      if (scheduledPayment && !isPaymentReminderCurrent(message,
+        scheme?.tenantId === message.tenantId && scheme?.customerId === message.customerId ? scheme : null,
+        calendarDayYmd())) {
+        await suppressSupersededReminder();
+        return;
+      }
       const devices = await resolvePushDevicesForCustomer({
         tenantId: message.tenantId,
         customerId: message.customerId,
@@ -166,6 +182,16 @@ export async function processMessage(job) {
 
       let result;
       try {
+        if (scheduledPayment) {
+          const liveScheme = await Scheme.findOne({
+            _id: message.schemeId, tenantId: message.tenantId, customerId: message.customerId,
+          }).lean();
+          if (!isPaymentReminderCurrent(message, liveScheme, calendarDayYmd())) {
+            await releaseDeferredDeliveries({ tenantId: message.tenantId, messageId: message._id, claims: ownedClaims });
+            await suppressSupersededReminder();
+            return;
+          }
+        }
         result = await pushProvider.send({
           tenant,
           tenantId: message.tenantId,

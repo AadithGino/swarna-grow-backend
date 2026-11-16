@@ -215,3 +215,32 @@ test("maturity preview uses ledger totals for settlement", async () => {
   assert.equal(preview.benefitPaise, bonus);
   assert.equal(preview.settlementPaise, paid + bonus);
 });
+
+test("legacy maturity waits for the configured benefit anniversary before settlement", async () => {
+  const { setCalendarDateOverrideForTests, resetCalendarDateOverrideForTests } = await import("../src/lib/date.js");
+  const { scheme, user } = await seedSchemeWithPaid({
+    paid: 300_000,
+    startDate: "2026-01-31",
+    maturityDate: "2026-03-31",
+    benefitDef: {
+      type: "FIXED_BONUS_AMOUNT", bonusBasis: "PERCENT_OF_PAID", bonusValue: 7,
+      eligibility: { requireAllInstallmentsPaid: true, maxAllowedDefaults: 0, minMonthsCompleted: 3 },
+    },
+  });
+  await Scheme.updateOne({ _id: scheme._id }, { $set: {
+    installments: [{ number: 1, dueDate: "2026-01-31", amountPaise: 300_000, paidPaise: 300_000, status: "PAID" }],
+  } });
+  try {
+    setCalendarDateOverrideForTests("2026-04-01");
+    const waiting = await settlementPreview(previewReq(scheme, user), ClosureType.MATURITY_REDEMPTION);
+    assert.equal(waiting.eligible, false);
+    assert.ok(waiting.blockers.some((item) => item.code === "MATURITY_BENEFIT_WAITING_PERIOD" && item.eligibleFrom === "2026-04-30"));
+    setCalendarDateOverrideForTests("2026-04-30");
+    const ready = await settlementPreview(previewReq(scheme, user), ClosureType.MATURITY_REDEMPTION);
+    assert.equal(ready.eligible, true);
+    assert.equal(ready.benefitPaise, 21_000);
+    assert.equal(ready.settlementPaise, 321_000);
+  } finally {
+    resetCalendarDateOverrideForTests();
+  }
+});

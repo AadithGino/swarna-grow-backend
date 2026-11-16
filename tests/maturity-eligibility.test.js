@@ -7,7 +7,7 @@ import {
 } from "../src/lib/maturity-eligibility.js";
 import { SchemeStatus } from "../src/constants/enums.js";
 import { createId } from "../src/lib/ids.js";
-import { Message, Scheme } from "../src/models/index.js";
+import { LedgerEntry, Message, Scheme } from "../src/models/index.js";
 import { runMaturityTransitionBatch } from "../src/services/scheme-maintenance.service.js";
 import { settlementPreview } from "../src/services/redemption.service.js";
 import { ClosureType } from "../src/constants/enums.js";
@@ -67,6 +67,43 @@ test("fully paid fixed scheme matures on calendar end", async () => {
   assert.equal(batch.processed, 1);
   const row = await Scheme.findOne({ enrollmentNumber: "MAT-FIX-OK" }).lean();
   assert.equal(row.status, SchemeStatus.MATURED);
+});
+
+test("flexible gold bonus credits eligible contributions without a selected frequency", async () => {
+  const { tenant, branch } = await seedTenantUser();
+  const scope = { tenantId: tenant._id, branchId: branch._id };
+  const customer = await seedCustomer(scope);
+  const scheme = await Scheme.create({
+    ...scope,
+    customerId: customer._id,
+    planId: createId("schemePlan"),
+    enrollmentNumber: "FLEX-MATURITY-GOLD",
+    startDate: "2026-01-01",
+    maturityDate: "2026-02-28",
+    status: "LOCKED",
+    valueBasis: "GOLD_WEIGHT",
+    paymentPattern: "FLEXIBLE",
+    planSnapshot: {
+      paymentPattern: "FLEXIBLE",
+      durationMonths: 2,
+      flexibleRules: { flexiblePhaseCycles: 1, cappedPhaseCycles: 1 },
+      benefit: { type: "MATURITY_GOLD_CREDIT", goldBonus: {
+        bonusBasis: "NET_GOLD_WEIGHT", bonusPercent: 7, requireAllCollections: true,
+      } },
+    },
+    cycles: [{ cycle: "2026-01", paidPaise: 3_000_000 }, { cycle: "2026-02", paidPaise: 3_000_000, capPaise: 4_000_000 }],
+  });
+  await LedgerEntry.create([{
+    ...scope, schemeId: scheme._id, customerId: customer._id, sequence: 1,
+    type: "FREE_WINDOW_PAYMENT", amountPaise: 3_000_000, weightMg: 5000,
+  }, {
+    ...scope, schemeId: scheme._id, customerId: customer._id, sequence: 2,
+    type: "INSTALLMENT_PAYMENT", amountPaise: 3_000_000, weightMg: 5000,
+  }]);
+  assert.equal((await runMaturityTransitionBatch({ today: "2026-03-01" })).processed, 1);
+  const matured = await Scheme.findById(scheme._id).lean();
+  assert.equal(matured.collectionBonus.weightMg, 700);
+  assert.equal(matured.collectionFrequency, undefined);
 });
 
 test("fixed scheme with unpaid instalment does not mature", async () => {

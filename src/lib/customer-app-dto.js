@@ -1,3 +1,4 @@
+import { maturityGoldRules } from "./maturity-gold-benefit.js";
 import { PaymentPattern, ValueBasis } from "../constants/enums.js";
 import { moneyRef } from "./money.js";
 import { maskMobile } from "./mobile.js";
@@ -545,7 +546,9 @@ function buildFlexibleSummary(plan) {
 function buildPlanHighlights(plan) {
   const highlights = [];
   const benefit = planBenefitLabel(plan);
-  if (plan.paymentPattern === PaymentPattern.FIXED) {
+  if (plan.collectionRules) {
+    highlights.push(`Choose ${plan.collectionRules.frequencies.map((frequency) => frequency.toLowerCase()).join(", ")} collection`);
+  } else if (plan.paymentPattern === PaymentPattern.FIXED) {
     if (plan.durationMonths) highlights.push(`${plan.durationMonths} monthly payments`);
     const rules = plan.amountRules ?? {};
     if (rules.amountMode === "JEWELLER_FIXED") highlights.push("Same instalment every month");
@@ -592,6 +595,7 @@ export function mapCustomerPlanListItem(plan, enrolCheck) {
     plan.amountSummary && typeof plan.amountSummary === "object" && plan.amountSummary.label
       ? plan.amountSummary
       : buildAmountSummary(plan);
+  const goldBonus = maturityGoldRules(plan);
   const benefitLabel = planBenefitLabel(plan);
   const paymentPattern = plan.paymentPattern;
   const rules = plan.amountRules ?? {};
@@ -616,10 +620,13 @@ export function mapCustomerPlanListItem(plan, enrolCheck) {
       multipleOfPaise: rules.multipleOfPaise ?? null,
     },
     scheduleRules: plan.scheduleRules ?? null,
+    ...(plan.collectionRules ? { collectionRules: plan.collectionRules } : {}),
+    ...(plan.oneTimeRules ? { oneTimeRules: plan.oneTimeRules } : {}),
     termsText: plan.termsText ?? null,
     enrol: mapPlanEnrolUi(plan, enrolCheck),
     benefitLabel,
-    benefitType: plan.benefit?.type ?? null,
+    benefitType: goldBonus || plan.oneTimeRules ? "GOLD_BENEFIT" : plan.benefit?.type ?? null,
+    ...(goldBonus ? { maturityGoldBonus: goldBonus } : {}),
     highlights: buildPlanHighlights(plan),
     flexibleSummary: buildFlexibleSummary(plan),
     canEnrol: enrolCheck?.canEnrol ?? true,

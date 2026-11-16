@@ -4538,3 +4538,9 @@ payable write; settlement rejects amounts exceeding the remaining payable.
 Run `scripts/migrate-financial-invariants.js` according to
 `docs/PRODUCTION_REMEDIATION_2026-10-30.md` before starting the new API or workers.
 Production startup fails closed when the required index migration is incomplete.
+
+### Enabling a collection schedule plan
+
+Apply the additive LedgerEntry index on `tenantId`, `schemeId`, and `maturityEventKey` through `scripts/migrate-financial-invariants.js` before starting the updated production backend. Production disables automatic index creation and readiness checks require the index. The partial unique index covers maturity gold entries and their immutable correction events. Current enrollments require no backfill.
+
+Create separate draft fixed gold-weight plans for Swarna (3 months, 3%), Akshaya (6 months, 7%), and Tritiya (12 months, 15%). Enable the Daily, Weekly, and Monthly frequencies in the plan builder. Review source terms for the amount basis, calendar and first payment behavior, eligibility, and maturity gold basis before activating the plans.

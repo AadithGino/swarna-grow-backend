@@ -1,5 +1,5 @@
 /**
- * Aira Gold — demo customers & enrollments across Swarna / Akshaya / Tritiya / upfront plans.
+ * Legacy collection demo helpers used by other tenant seed scripts.
  */
 import dayjs from "dayjs";
 import {
@@ -23,10 +23,6 @@ import {
 import { nextSequence } from "../src/services/sequence.service.js";
 
 const DEFAULT_INSTALLMENT_PAISE = 200_000;
-
-function logStep(label) {
-  console.log(`[aira-gold seed] ${label}…`);
-}
 
 function paymentReq(ctx, schemeId, { amountPaise, mode = "CASH", expectedVersion }) {
   return { ...ctx, body: { schemeId, amountPaise, mode, expectedVersion } };
@@ -435,160 +431,6 @@ export async function seedCollectionPlanHighlights(ctx, { plan, planLabel, branc
     enrollment: s.enrollmentNumber,
     story: `${planLabel} · REDEEMED · maturity completed (webinar highlight)`,
   });
-
-  return summary;
-}
-
-async function seedUpfrontPlanMatrix(ctx, { plan, branchId, customers, installmentAmountPaise = 1_000_000 }) {
-  const summary = [];
-  let i = 0;
-  const nextCustomer = () => customers[i++];
-
-  const pendingCust = nextCustomer();
-  await enrol({
-    ...ctx,
-    body: {
-      customerId: pendingCust._id,
-      planId: plan._id,
-      branchId,
-      startDate: today(),
-      installmentAmountPaise,
-      firstInstallmentMode: "COLLECT_NOW",
-    },
-  });
-  summary.push({ customer: pendingCust.name, story: "UPFRONT · PENDING_PAYMENT (upfront not collected)" });
-
-  const joinedCust = nextCustomer();
-  await enrol({
-    ...ctx,
-    body: {
-      customerId: joinedCust._id,
-      planId: plan._id,
-      branchId,
-      startDate: today(),
-      installmentAmountPaise,
-      firstInstallmentMode: "START_NEXT_CYCLE",
-    },
-  });
-  summary.push({ customer: joinedCust.name, story: "UPFRONT · ACTIVE · enrolled · awaiting upfront payment" });
-
-  const partialCust = nextCustomer();
-  const startP = addMonthsClamped(today(), -2).format("YYYY-MM-DD");
-  let s = await createFixedScheme(ctx, {
-    customer: partialCust,
-    plan,
-    branchId,
-    startDate: startP,
-    installmentAmountPaise,
-  });
-  s = await payInstallments(ctx, s, 1, { backdateFrom: startP, amountPaise: installmentAmountPaise });
-  summary.push({
-    customer: partialCust.name,
-    enrollment: s.enrollmentNumber,
-    story: "UPFRONT · ACTIVE · first tranche paid · monthly credits ongoing",
-  });
-
-  const advanceCust = nextCustomer();
-  s = await createFixedScheme(ctx, {
-    customer: advanceCust,
-    plan,
-    branchId,
-    startDate: startP,
-    installmentAmountPaise,
-  });
-  let doc = await Scheme.findById(s._id);
-  await recordPayment(
-    paymentReq(ctx, doc._id, {
-      amountPaise: installmentAmountPaise * 12,
-      mode: "CASH",
-      expectedVersion: doc.version,
-    }),
-  );
-  await recomputeSchemeStatuses(s._id);
-  s = await Scheme.findById(s._id);
-  summary.push({
-    customer: advanceCust.name,
-    enrollment: s.enrollmentNumber,
-    story: "UPFRONT · ACTIVE · full year paid upfront (advance)",
-  });
-
-  const matureCust = nextCustomer();
-  s = await seedMatureFixedGold(ctx, {
-    customer: matureCust,
-    plan,
-    branchId,
-    startDate: addMonthsClamped(today(), -14).format("YYYY-MM-DD"),
-    installmentAmountPaise,
-  });
-  summary.push({
-    customer: matureCust.name,
-    enrollment: s.enrollmentNumber,
-    story: "UPFRONT · MATURED · ready for closure / credits complete",
-  });
-
-  if (i !== customers.length) {
-    throw new Error(`UPFRONT: expected ${i} customers, pool had ${customers.length}`);
-  }
-
-  return summary;
-}
-
-/**
- * @param {object} ctx
- * @param {{ swarna: object, akshaya: object, tritiya: object, upfront: object, branchId: string, customers: object[] }} deps
- */
-export async function seedAiraGoldDemoMatrix(ctx, { swarna, akshaya, tritiya, upfront, branchId, customers }) {
-  const perPlan = 12;
-  const upfrontCount = 5;
-  const need = perPlan * 3 + upfrontCount;
-  if (customers.length < need) {
-    throw new Error(`Need at least ${need} demo customers, got ${customers.length}`);
-  }
-
-  const summary = [];
-  let offset = 0;
-
-  logStep("Swarna (3m) lifecycle matrix");
-  summary.push(
-    ...(await seedCollectionPlanMatrix(ctx, {
-      plan: swarna,
-      planLabel: "SWARNA",
-      branchId,
-      customers: customers.slice(offset, offset + perPlan),
-    })),
-  );
-  offset += perPlan;
-
-  logStep("Akshaya (6m) lifecycle matrix");
-  summary.push(
-    ...(await seedCollectionPlanMatrix(ctx, {
-      plan: akshaya,
-      planLabel: "AKSHAYA",
-      branchId,
-      customers: customers.slice(offset, offset + perPlan),
-    })),
-  );
-  offset += perPlan;
-
-  logStep("Tritiya (12m) lifecycle matrix");
-  summary.push(
-    ...(await seedCollectionPlanMatrix(ctx, {
-      plan: tritiya,
-      planLabel: "TRITIYA",
-      branchId,
-      customers: customers.slice(offset, offset + perPlan),
-    })),
-  );
-  offset += perPlan;
-
-  logStep("Upfront investment plan matrix");
-  summary.push(
-    ...(await seedUpfrontPlanMatrix(ctx, {
-      plan: upfront,
-      branchId,
-      customers: customers.slice(offset, offset + upfrontCount),
-    })),
-  );
 
   return summary;
 }

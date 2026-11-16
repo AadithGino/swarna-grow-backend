@@ -1,3 +1,4 @@
+import { maturityGoldStatus } from "./maturity-gold-benefit.js";
 import { computeConfiguredBenefitPaise } from "./scheme-benefit.js";
 
 function schemeTotals(scheme) {
@@ -15,7 +16,8 @@ function schemeTotals(scheme) {
 export function buildSchemeMaturityProjection(scheme) {
   const totals = schemeTotals(scheme);
   const benefitDef = scheme.planSnapshot?.benefit;
-  const projectedBenefitPaise = computeConfiguredBenefitPaise(scheme, totals, benefitDef);
+  const collectionBonus = maturityGoldStatus(scheme);
+  const projectedBenefitPaise = collectionBonus ? 0 : computeConfiguredBenefitPaise(scheme, totals, benefitDef);
   const projectedPrincipalPaise = totals.amountPaidPaise;
   return {
     schemeId: scheme._id,
@@ -24,5 +26,6 @@ export function buildSchemeMaturityProjection(scheme) {
     projectedBenefitPaise,
     projectedAmountPaise: projectedPrincipalPaise + projectedBenefitPaise,
     projectedWeightMg: totals.goldWeightMg,
+    ...(collectionBonus ? { collectionBonus } : {}),
   };
 }

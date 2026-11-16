@@ -1,5 +1,7 @@
+import { maturityGoldStatus } from "../lib/maturity-gold-benefit.js";
+import { oneTimeGoldProgress } from "../lib/one-time-gold-schedule.js";
 import { Customer, LedgerEntry, Scheme } from "../models/index.js";
-import { ledgerTotals } from "../services/scheme.service.js";
+import { schemeLedgerTotals } from "../services/scheme.service.js";
 import { branchDto, loadBranchMap } from "../lib/relation-maps.js";
 import { sendList, sendSuccess } from "../lib/response.js";
 import { errors } from "../lib/app-error.js";
@@ -8,6 +10,7 @@ import { paginate } from "../lib/pagination.js";
 import {
   effectiveScope,
   maturityListFilter,
+  collectionListFilters,
   resolveDatePreset,
   searchRegex,
 } from "../lib/query-filters.js";
@@ -71,7 +74,7 @@ export const dueList = (kind) => async (req, res) => {
   const dates = isWorkboard
     ? workboardDates(kind, req.query)
     : resolveDatePreset(req.query.preset, req.query);
-  const filter = dueBaseFilter(kind, req.query, dates, today);
+  const filter = { ...dueBaseFilter(kind, req.query, dates, today), ...collectionListFilters(req.query) };
   const scope = effectiveScope(req);
 
   const pattern = searchRegex(req.query.q);
@@ -149,10 +152,14 @@ export const dueList = (kind) => async (req, res) => {
         (sum, row) => sum + (row.paidPaise ?? 0),
         0,
       );
-      const ledger = ledgerTotals(ledgerByScheme.get(scheme._id) ?? []);
+      const ledger = schemeLedgerTotals(scheme, ledgerByScheme.get(scheme._id) ?? []);
       const amountPaidPaise = ledger.amountPaidPaise || installmentPaidPaise;
+      const collectionBonus = kind === "maturities" ? maturityGoldStatus(scheme, ledger) : undefined;
+      const oneTimeProgress = kind === "maturities" ? oneTimeGoldProgress({ ...scheme, totals: ledger }) : undefined;
       const base = {
         ...scheme,
+        ...(collectionBonus ? { collectionBonus } : {}),
+        ...(oneTimeProgress ? { oneTimeProgress } : {}),
         customer: customer
           ? {
               _id: customer._id,
@@ -259,10 +266,14 @@ async function enrichMaturitySchemeRows(req, schemes) {
       (sum, row) => sum + (row.paidPaise ?? 0),
       0,
     );
-    const ledger = ledgerTotals(ledgerByScheme.get(scheme._id) ?? []);
+    const ledger = schemeLedgerTotals(scheme, ledgerByScheme.get(scheme._id) ?? []);
     const amountPaidPaise = ledger.amountPaidPaise || installmentPaidPaise;
+    const collectionBonus = maturityGoldStatus(scheme, ledger);
+    const oneTimeProgress = oneTimeGoldProgress({ ...scheme, totals: ledger });
     return {
       ...scheme,
+      ...(collectionBonus ? { collectionBonus } : {}),
+      ...(oneTimeProgress ? { oneTimeProgress } : {}),
       customer: customer
         ? {
             _id: customer._id,

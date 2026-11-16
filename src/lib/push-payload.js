@@ -31,15 +31,27 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
       break;
     }
     case MessageType.PAYMENT_DUE:
-      title = message.templateParams?.pushKind === "FLEX_NUDGE"
-        ? "Contribution reminder"
-        : "Instalment due";
-      body = enr
-        ? `Your next instalment for ${label} (${enr}) is due. Pay securely from the app.`
-        : `Your next instalment for ${label} is due. Pay securely from the app.`;
+      if (message.templateParams?.firstPayment) {
+        title = "First payment reminder";
+        body = `Complete your first payment for ${label} to activate your scheme.`;
+      } else if (message.templateParams?.cycleKey) {
+        title = "Contribution deadline";
+        body = `You have an outstanding contribution for ${label}. Pay by ${message.templateParams.dueDate}.`;
+      } else {
+        title = message.templateParams?.pushKind === "FLEX_NUDGE" ? "Contribution reminder" : "Instalment due";
+        body = enr
+          ? `Your next instalment for ${label} (${enr}) is due. Pay securely from the app.`
+          : `Your next instalment for ${label} is due. Pay securely from the app.`;
+      }
       if (scheme?._id) deepLink = `/schemes/${scheme._id}`;
       break;
     case MessageType.PAYMENT_OVERDUE:
+      if (message.templateParams?.firstPayment) {
+        title = "First payment reminder";
+        body = `Complete your first payment for ${label} to activate your scheme.`;
+        if (scheme?._id) deepLink = `/schemes/${scheme._id}`;
+        break;
+      }
       title = "Payment overdue";
       body = enr
         ? `An instalment for ${label} (${enr}) is overdue. Please pay at your earliest convenience.`
@@ -51,6 +63,11 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
       body = enr
         ? `You are enrolled in ${label}. Your scheme number is ${enr}.`
         : `You are enrolled in ${label}.`;
+      break;
+    case MessageType.SCHEME_GOLD_BONUS_CREDITED:
+      title = "Gold bonus credited";
+      body = `A scheduled gold bonus was posted for ${label}.`;
+      if (scheme?._id) deepLink = `/schemes/${scheme._id}`;
       break;
     case MessageType.SCHEME_MATURED:
       title = "Scheme matured";

@@ -13,6 +13,8 @@ import {
 import { computeIncludedBenefitPaiseFromClosure } from "./redemption-benefit-accounting.js";
 import { normalizeSettlementSnapshotForValidation } from "./redemption-benefit-accounting.js";
 import { goldRateForExactDate } from "./gold-rate-lookup.js";
+import { postedCollectionBonusWeight } from "./collection-maturity-bonus.js";
+import { isMaturityGoldResolved, maturityGoldRules } from "./maturity-gold-benefit.js";
 import { computeClosureBenefitPaise } from "./scheme-benefit.js";
 import { computeClosurePenaltyPaise } from "./scheme-closure-penalty.js";
 import {
@@ -229,7 +231,20 @@ export async function computeClosureSettlementCore({
   const penaltyRule = isPremature && !systemPolicyClosure ? rules.prematurePenalty : null;
   const prematureBenefitTreatment = penaltyRule?.benefitTreatment ?? "FORFEIT";
 
-  const benefitPaise = computeClosureBenefitPaise({
+  const oneTime = scheme.planSnapshot?.oneTimeRules;
+  const hasGoldBonus = Boolean(oneTime || maturityGoldRules(scheme.planSnapshot));
+  const goldBonusMaturity = hasGoldBonus && !isPremature && !systemPolicyClosure;
+  const postedWeightMg = (goldBonusMaturity || (oneTime && isPremature && !systemPolicyClosure && prematureBenefitTreatment === "FULL")) ? postedCollectionBonusWeight(ledgerEntries) : 0;
+  if (goldBonusMaturity && !oneTime &&
+    (!isMaturityGoldResolved(scheme.collectionBonus) || postedWeightMg !== scheme.collectionBonus.weightMg)) {
+    blockers.push({ code: "MATURITY_BONUS_UNRESOLVED", message: "The maturity gold award needs to be reconciled before redemption." });
+  }
+  if (oneTime && goldBonusMaturity && (!scheme.oneTimeGold ||
+      scheme.oneTimeGold.periods.some((row) => ["PENDING", "PENDING_RATE"].includes(row.status)) ||
+      scheme.oneTimeGold.periods.reduce((sum, row) => sum + row.weightMg, 0) !== postedWeightMg)) {
+    blockers.push({ code: "MATURITY_BONUS_UNRESOLVED", message: "Resolve the scheduled gold credits before redemption." });
+  }
+  let benefitPaise = hasGoldBonus ? 0 : computeClosureBenefitPaise({
     scheme,
     totals: netTotals,
     benefitDef,
@@ -285,6 +300,7 @@ export async function computeClosureSettlementCore({
       && !paidAmountCashSettlement
       && (
         benefitPaise > 0
+        || postedWeightMg > 0
         || mode === RedemptionMode.CASH
         || mode === RedemptionMode.PURCHASE_ADJUSTMENT
         || penaltyPaise > 0
@@ -306,7 +322,11 @@ export async function computeClosureSettlementCore({
       settlementRatePerGramPaise = exactRate.ratePerGramPaise;
       settlementRateEffectiveDate = exactRate.effectiveDate;
       const { rounding, precisionMg } = resolvePlanGoldRounding(scheme, tenantOps);
-      if (benefitPaise > 0) {
+      if (postedWeightMg > 0) {
+        benefitWeightMg = postedWeightMg;
+        benefitRatePerGramPaise = scheme.collectionBonus?.ratePerGramPaise || exactRate.ratePerGramPaise;
+        benefitPaise = moneyPaiseFromWeightMg(postedWeightMg, exactRate.ratePerGramPaise);
+      } else if (benefitPaise > 0) {
         benefitRatePerGramPaise = exactRate.ratePerGramPaise;
         benefitWeightMg = convertBenefitPaiseToWeightMg(
           benefitPaise,

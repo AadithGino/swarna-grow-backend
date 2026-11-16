@@ -41,6 +41,10 @@ export const KycStatus = makeEnum(
   "REJECTED",
 );
 export const ValueBasis = makeEnum("CASH", "GOLD_WEIGHT");
+export const CollectionFrequency = makeEnum("DAILY", "WEEKLY", "MONTHLY");
+export const CollectionAmountBasis = makeEnum("PER_COLLECTION", "TOTAL_TARGET");
+export const CollectionMaturityRule = makeEnum("ENROLMENT_ANNIVERSARY", "FIRST_PAYMENT_ANNIVERSARY", "CALENDAR_MONTH_END");
+export const CollectionBonusBasis = makeEnum("NET_GOLD_WEIGHT", "NET_PAID_AT_MATURITY_RATE");
 export const PaymentPattern = makeEnum("FIXED", "FLEXIBLE");
 export const AmountMode = makeEnum(
   "JEWELLER_FIXED",
@@ -54,6 +58,7 @@ export const FirstInstallmentAction = makeEnum(
   "CREATE_PAYMENT_LINK",
 );
 export const BenefitType = makeEnum(
+  "MATURITY_GOLD_CREDIT",
   "FIXED_BONUS_AMOUNT",
   "ONE_FREE_INSTALLMENT",
   "TEXT_ONLY",
@@ -140,6 +145,8 @@ export const LedgerEntryType = makeEnum(
   "FREE_WINDOW_PAYMENT",
   "UNALLOCATED_PAYMENT",
   "BENEFIT_CREDIT",
+  "MATURITY_GOLD_CREDIT",
+  "MATURITY_GOLD_ADJUSTMENT",
   "REVERSAL",
   "CLOSURE_PENALTY",
   "REDEMPTION_DEBIT",
@@ -181,6 +188,7 @@ export const MessageType = makeEnum(
   "PAYMENT_SUCCESS",
   "FLEXI_LOCK_APPLIED",
   "SCHEME_MATURED",
+  "SCHEME_GOLD_BONUS_CREDITED",
   "SCHEME_CLOSED",
   "SCHEME_REDEMPTION_HANDOVER_OTP",
   "CUSTOMER_STATEMENT",

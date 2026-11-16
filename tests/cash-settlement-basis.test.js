@@ -1,3 +1,4 @@
+import { withRedemptionHandoverOtp } from "./helpers/maturity-fixtures.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -212,7 +213,7 @@ test("PAID_AMOUNT completion debits full gold weight and pays net cash", async (
   if (initiated.status !== "APPROVED") {
     await transitionRedemption(completeReq, "approve");
   }
-  await transitionRedemption(completeReq, "complete");
+  await transitionRedemption(await withRedemptionHandoverOtp(completeReq, customer._id), "complete");
   const debit = await LedgerEntry.findOne({
     schemeId: scheme._id,
     type: LedgerEntryType.REDEMPTION_DEBIT,
@@ -262,19 +263,17 @@ test("completion rejects stale snapshot when basis tampered", async () => {
     modeDetails: { settlementSnapshot: snapshot },
     version: 1,
   });
+  const completeReq = await withRedemptionHandoverOtp({
+    auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
+    scope: { tenantId: tenant._id, branchId: branch._id },
+    params: { redemptionId: row._id },
+    body: {},
+    query: {},
+    headers: {},
+    ip: "127.0.0.1",
+  }, customer._id);
   await assert.rejects(
-    () => transitionRedemption(
-      {
-        auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
-        scope: { tenantId: tenant._id, branchId: branch._id },
-        params: { redemptionId: row._id },
-        body: {},
-        query: {},
-        headers: {},
-        ip: "127.0.0.1",
-      },
-      "complete",
-    ),
+    () => transitionRedemption(completeReq, "complete"),
     (err) => err.code === "SETTLEMENT_VALUE_CHANGED",
   );
 });
@@ -341,7 +340,7 @@ test("PAID_AMOUNT EXCLUDE does not post BENEFIT_CREDIT at completion", async () 
     ip: "127.0.0.1",
   };
   if (initiated.status !== "APPROVED") await transitionRedemption(completeReq, "approve");
-  await transitionRedemption(completeReq, "complete");
+  await transitionRedemption(await withRedemptionHandoverOtp(completeReq, customer._id), "complete");
   assert.equal(
     await LedgerEntry.countDocuments({ schemeId: scheme._id, type: LedgerEntryType.BENEFIT_CREDIT }),
     0,

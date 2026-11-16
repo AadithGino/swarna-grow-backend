@@ -12,6 +12,7 @@ import {
 import {
   effectiveScope,
   maturityListFilter,
+  collectionListFilters,
   resolveDatePreset,
 } from "../lib/query-filters.js";
 import { getSubscriptionForAdmin } from "./tenant-settings.service.js";
@@ -130,7 +131,7 @@ async function countAndPaidIn(match) {
  * Each count and its rupee value come from the same match, so they always agree.
  */
 export async function maturityBoardSummary(req) {
-  const scope = effectiveScope(req);
+  const scope = { ...effectiveScope(req), ...collectionListFilters(req.query) };
   const periodFilter = maturityListFilter(req.query);
   const today = istTodayYmd();
   const in30 = addDaysYmd(today, 30);
@@ -220,7 +221,7 @@ export async function duesBoardSummary(req, kind) {
   const dates = workboardDates(kind, req.query);
   // Summary covers the whole board (every state), independent of the quick view.
   const filter = workboardSchemeFilter(kind, { kind: "ALL", dates, today });
-  const match = { ...effectiveScope(req), ...filter };
+  const match = { ...effectiveScope(req), ...filter, ...collectionListFilters(req.query) };
   const schemes = await Scheme.find(match)
     .select("customerId status installments")
     .lean();

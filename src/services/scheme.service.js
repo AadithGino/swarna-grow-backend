@@ -1,3 +1,8 @@
+import { buildOneTimeGoldSchedule, oneTimeGoldProgress } from "../lib/one-time-gold-schedule.js";
+import { isMaturityGoldResolved, maturityGoldRules, maturityGoldStatus } from "../lib/maturity-gold-benefit.js";
+import { foldGoldAccrualNet } from "../lib/gold-accrual-netting.js";
+import { currentGoldRate22K } from "../lib/gold-rate-lookup.js";
+import { assertCollectionAmountsAtRate, buildCollectionSchedule, resolveCollectionFrequency } from "../lib/collection-schedule.js";
 import { withDurableEnrolment } from "../lib/enrolment-operation.js";
 import {
   AuditEntityType,
@@ -46,6 +51,7 @@ import {
 import {
   dateMatch,
   calendarDateMatch,
+  collectionListFilters,
   effectiveScope,
   searchRegex,
 } from "../lib/query-filters.js";
@@ -148,7 +154,7 @@ const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.APPROVED,
 ];
 
-async function schemePresentationExtras(scheme) {
+async function schemePresentationExtras(scheme, totals) {
   const [open, completed] = await Promise.all([
     Redemption.findOne({
       tenantId: scheme.tenantId,
@@ -173,18 +179,18 @@ async function schemePresentationExtras(scheme) {
       : null,
   ]);
   const canRecordPayment =
-    !open &&
+    !open && !scheme.oneTimeGold &&
     [
       SchemeStatus.PENDING_PAYMENT,
       SchemeStatus.ACTIVE,
       SchemeStatus.LOCKED,
       SchemeStatus.DEFAULTED,
     ].includes(scheme.status);
-  const maturityContributions = assessMaturityContributionEligibility(scheme);
-  const canRedeem =
-    !open &&
-    scheme.status === SchemeStatus.MATURED &&
-    maturityContributions.paymentEligible;
+  const canRedeem = !open && scheme.status === SchemeStatus.MATURED && (
+    scheme.oneTimeGold ? totals.amountPaidPaise > 0 && totals.goldWeightMg > 0 : maturityGoldRules(scheme.planSnapshot)
+      ? isMaturityGoldResolved(scheme.collectionBonus) && totals.amountPaidPaise > 0 && totals.goldWeightMg > 0
+      : assessMaturityContributionEligibility(scheme).paymentEligible
+  );
   return {
     uiStatus: open ? "REDEMPTION_PENDING" : scheme.status,
     actions: { canRecordPayment, canRedeem },
@@ -599,6 +605,7 @@ export async function validateEnrolment(req) {
     plan,
     branchId,
     installmentAmountPaise: amount,
+    collectionFrequency: resolveCollectionFrequency(plan, req.body.collectionFrequency),
     firstInstallmentMode,
     firstInstallmentRequired:
       firstInstallmentMode === FirstInstallmentMode.COLLECT_NOW,
@@ -613,6 +620,7 @@ export async function validateEnrolmentResponse(req) {
       installmentAmountPaise,
       firstInstallmentMode,
       firstInstallmentRequired,
+      collectionFrequency,
     } = result;
     if (installmentAmountPaise == null) {
       return {
@@ -649,7 +657,14 @@ export async function validateEnrolmentResponse(req) {
         ),
       };
     }
-    const scheduleRows = buildSchedulePreview({
+    const collection = collectionFrequency ? buildCollectionSchedule({
+      plan, startDate, collectionFrequency, collectionAmountPaise: installmentAmountPaise, firstInstallmentMode,
+    }) : null;
+    if (collection) {
+      const rate = await currentGoldRate22K({ tenantId: req.auth.tenantId, branchId: result.branchId }, today());
+      if (rate || firstInstallmentRequired) assertCollectionAmountsAtRate(collection.installments, rate, plan.goldRules);
+    }
+    const scheduleRows = collection?.installments ?? buildSchedulePreview({
       startDate,
       installmentAmountPaise,
       durationMonths: plan.durationMonths,
@@ -657,7 +672,8 @@ export async function validateEnrolmentResponse(req) {
       scheduleRules: plan.scheduleRules ?? {},
       firstInstallmentMode,
     });
-    const maturityDate =
+    const oneTimeSchedule = plan.oneTimeRules ? buildOneTimeGoldSchedule(plan, startDate) : null;
+    const maturityDate = oneTimeSchedule?.at(-1)?.dueDate ?? collection?.maturityDate ??
       resolveFixedSchemeMaturityDate({
         startDate,
         durationMonths: plan.durationMonths,
@@ -673,9 +689,15 @@ export async function validateEnrolmentResponse(req) {
       installmentAmountPaise,
       firstInstallmentRequired,
       preview: {
-        installmentAmount: moneyField(installmentAmountPaise),
-        installmentCount,
-        totalPayable: moneyField(installmentAmountPaise * installmentCount),
+        installmentAmount: moneyField(scheduleRows[0]?.amountPaise ?? installmentAmountPaise),
+        installmentCount: scheduleRows.length,
+        totalPayable: moneyField(collection?.totalPaise ?? installmentAmountPaise * installmentCount),
+        ...(collection ? {
+          collectionFrequency,
+          amountBasis: plan.collectionRules.amountBasis,
+          maturityDateProvisional: plan.collectionRules.maturityRule === "FIRST_PAYMENT_ANNIVERSARY",
+        } : {}),
+        ...(oneTimeSchedule ? { oneTimeSchedule, maturityDateProvisional: true } : {}),
         firstDueDate: scheduleRows[0]?.dueDate ?? startDate,
         maturityDate,
         benefit:
@@ -777,7 +799,9 @@ export async function createEnrolmentInSession(req, validation, session) {
     plan,
     customer,
     branchId,
-    installmentAmountPaise: validation.installmentAmountPaise,
+    installmentAmountPaise: plan.collectionRules
+      ? defaultInstallmentAmountPaise(plan, req.body.installmentAmountPaise)
+      : validation.installmentAmountPaise,
     firstInstallmentMode,
     validateAmount,
     assertPlanAvailableAtBranch,
@@ -806,10 +830,26 @@ export async function createEnrolmentInSession(req, validation, session) {
     scheduleRules: txValidation.plan.scheduleRules ?? {},
     firstInstallmentMode: txValidation.firstInstallmentMode,
   };
+  const collectionFrequency = resolveCollectionFrequency(txValidation.plan, req.body.collectionFrequency);
+  const collection = collectionFrequency ? buildCollectionSchedule({
+    plan: txValidation.plan, startDate, collectionFrequency,
+    collectionAmountPaise: installmentAmountPaise, firstInstallmentMode: txValidation.firstInstallmentMode,
+  }) : null;
+  if (collection) {
+    const rate = await currentGoldRate22K({ tenantId: req.auth.tenantId, branchId: txValidation.branchId }, startDate, session);
+    if (rate || firstInstallmentRequired) assertCollectionAmountsAtRate(collection.installments, rate, txValidation.plan.goldRules);
+  }
+  if (collection && (
+    (req.body.expectedFirstCollectionPaise != null && req.body.expectedFirstCollectionPaise !== collection.installments[0].amountPaise) ||
+    (req.body.expectedMaturityDate != null && req.body.expectedMaturityDate !== collection.maturityDate)
+  )) {
+    throw new AppError("COLLECTION_SCHEDULE_CHANGED", "The dates or payment amount changed. Review the schedule again.", 409);
+  }
   const fixedInstallments = isFlexible
     ? []
-    : buildSchedulePreview(schedulePreviewArgs);
-  let persistedMaturityDate = maturityDate;
+    : collection?.installments ?? buildSchedulePreview(schedulePreviewArgs);
+  let persistedMaturityDate = txValidation.plan.oneTimeRules
+    ? buildOneTimeGoldSchedule(txValidation.plan, startDate).at(-1).dueDate : maturityDate;
   if (isFlexible) {
     persistedMaturityDate =
       maturityDateFromCalendarCycles(
@@ -819,7 +859,9 @@ export async function createEnrolmentInSession(req, validation, session) {
           firstInstallmentMode: txValidation.firstInstallmentMode,
         }),
       ) ?? maturityDate;
-  } else if (fixedInstallments.length) {
+  } else if (collection) {
+    persistedMaturityDate = collection.maturityDate;
+  } else if (fixedInstallments.length && !txValidation.plan.oneTimeRules) {
     persistedMaturityDate =
       resolveFixedSchemeMaturityDate({
         startDate,
@@ -853,7 +895,8 @@ export async function createEnrolmentInSession(req, validation, session) {
           status: initialStatus,
           startDate,
           maturityDate: persistedMaturityDate,
-          installmentAmountPaise,
+          installmentAmountPaise: collection?.installments[0].amountPaise ?? installmentAmountPaise,
+          ...(collection ? { collectionFrequency, collectionAmountPaise: installmentAmountPaise } : {}),
           installments: fixedInstallments,
           cycles: flexibleCycles,
           flexiblePhase: isFlexible ? FlexiblePhase.FLEXIBLE : undefined,
@@ -885,7 +928,7 @@ export async function createEnrolmentInSession(req, validation, session) {
         body: {
           ...req.body.payment,
           schemeId: scheme._id,
-          amountPaise: req.body.payment.amountPaise ?? installmentAmountPaise,
+          amountPaise: req.body.payment.amountPaise ?? scheme.installmentAmountPaise,
           expectedVersion: scheme.version,
         },
       },
@@ -1043,9 +1086,11 @@ export async function getScheme(req) {
     scheme.paymentPattern === PaymentPattern.FIXED
       ? buildFixedPassbook(scheme, payments)
       : null;
-  const presentation = await schemePresentationExtras(scheme);
+  const totals = schemeLedgerTotals(scheme, ledger);
+  const presentation = await schemePresentationExtras(scheme, totals);
   const flexContext = buildFlexibleAdminEnrollmentContext(scheme);
-  const amountPaidPaise = ledgerTotals(ledger).amountPaidPaise;
+  const collectionBonus = maturityGoldStatus(scheme, totals);
+  const amountPaidPaise = totals.amountPaidPaise;
   return {
     ...scheme,
     customer: customer
@@ -1064,7 +1109,9 @@ export async function getScheme(req) {
           code: branch.code,
         }
       : undefined,
-    totals: ledgerTotals(ledger),
+    totals,
+    ...(collectionBonus ? { collectionBonus } : {}),
+    ...(scheme.planSnapshot?.oneTimeRules ? { oneTimeProgress: oneTimeGoldProgress({ ...scheme, totals }) } : {}),
     passbook,
     payments: payments.map((row) => ({
       ...row,
@@ -1107,6 +1154,8 @@ export async function getPassbook(req) {
       },
       rows: scheme.passbook.rows,
       totals: scheme.passbook.totals,
+      ...(scheme.collectionFrequency ? { collectionFrequency: scheme.collectionFrequency } : {}),
+      ...(scheme.collectionBonus ? { collectionBonus: scheme.collectionBonus } : {}),
     };
   }
   const payments = await Payment.find({
@@ -1145,6 +1194,7 @@ export async function getPassbook(req) {
       ),
       paymentCount: contributing.length,
     },
+    ...(scheme.collectionBonus ? { collectionBonus: scheme.collectionBonus } : {}),
   };
 }
 const SCHEME_STATUS_LABELS = {
@@ -1516,7 +1566,7 @@ export async function listSchemes(req) {
     };
   }
   if (req.query.customerId) filters.customerId = req.query.customerId;
-  if (req.query.planId) filters.planId = req.query.planId;
+  Object.assign(filters, collectionListFilters(req.query));
   if (req.query.paymentPattern)
     filters.paymentPattern = req.query.paymentPattern;
   Object.assign(filters, calendarDateMatch("maturityDate", req.query));
@@ -1717,6 +1767,13 @@ export function ledgerTotals(entries) {
   );
 }
 
+/** Collection displays separate contribution gold from the posted award and settlement. */
+export function schemeLedgerTotals(scheme, entries) {
+  if (!scheme.planSnapshot?.oneTimeRules && !maturityGoldRules(scheme.planSnapshot) && !scheme.collectionFrequency) return ledgerTotals(entries);
+  const totals = foldGoldAccrualNet(entries);
+  return { amountPaidPaise: Math.max(0, totals.amountPaise), goldWeightMg: Math.max(0, totals.weightMg) };
+}
+
 /** Staff/agent scheme card: ledger totals + suggested collect amount (aligned with payable-range rules). */
 export function schemeAgentCollectPreview(scheme) {
   const snap = scheme.planSnapshot ?? {};
@@ -1841,7 +1898,7 @@ export async function attachLedgerTotals(tenantId, schemeRows) {
     bySchemeId.set(entry.schemeId, bucket);
   }
   return schemeRows.map((scheme) => {
-    const ledger = ledgerTotals(bySchemeId.get(scheme._id) ?? []);
+    const ledger = schemeLedgerTotals(scheme, bySchemeId.get(scheme._id) ?? []);
     return {
       ...scheme,
       totals: {

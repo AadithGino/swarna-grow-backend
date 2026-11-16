@@ -1,3 +1,4 @@
+import { updateOneTimeGoldPeriods } from "./one-time-gold-benefit.service.js";
 
 import { AuditEntityType, AlertType, GatewayRefundStatus, LedgerEntryType, PaymentStatus, SchemeStatus } from "../constants/enums.js";
 import { callbackTypeKey } from "../integrations/phonepe.provider.js";
@@ -13,6 +14,8 @@ import { writeAudit } from "./audit.service.js";
 import { nextSchemeLedgerSequence } from "./sequence.service.js";
 import { recordPhonePeRefundOutcome } from "../lib/ops-metrics.js";
 import { netAmountPaiseFromDoc } from "../lib/payment-net-aggregation.js";
+import { maturityGoldRules } from "../lib/maturity-gold-benefit.js";
+import { adjustCollectionBonusAfterRefund } from "../lib/collection-maturity-bonus.js";
 import { rebuildSchemeProjection } from "./scheme.service.js";
 import { recordPostSettlementGatewayRefund } from "../lib/post-settlement-gateway-refund.js";
 
@@ -238,7 +241,8 @@ async function applyGatewayRefundCompletion({
     }).session(session);
     if (!scheme) throw errors.notFound("Scheme");
 
-    const schemeIsTerminal = TERMINAL_SCHEME_STATUSES.has(scheme.status);
+    const maturedGoldBonus = Boolean(scheme.oneTimeGold || maturityGoldRules(scheme.planSnapshot)) && scheme.status === SchemeStatus.MATURED;
+    const schemeIsTerminal = !maturedGoldBonus && TERMINAL_SCHEME_STATUSES.has(scheme.status);
 
     if (!schemeIsTerminal) {
       const sequence = await nextSchemeLedgerSequence(
@@ -280,6 +284,13 @@ async function applyGatewayRefundCompletion({
         .session(session)
         .lean();
       rebuildSchemeProjection(scheme, entries);
+      if (scheme.oneTimeGold) {
+        await updateOneTimeGoldPeriods(scheme, { entries, session, adjustmentKey: `ONE_TIME_REFUND:${claimedRefund._id}` });
+        scheme.positionVersion += 1;
+      } else if (maturedGoldBonus) {
+        await adjustCollectionBonusAfterRefund(scheme, entries, `REFUND:${claimedRefund._id}`, session);
+        scheme.positionVersion += 1;
+      }
       scheme.version += 1;
       await scheme.save({ session });
       gatewayTxFaultCheckpoint("refund:scheme-saved");
