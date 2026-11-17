@@ -89,10 +89,11 @@ async function resolveExceptionRefundCase({ tenantId, payload }) {
     if (byId) return byId;
   }
   if (originalMerchantOrderId && isEcommercePaymentMerchantOrderId(originalMerchantOrderId)) {
-    return EcommercePaymentExceptionRefund.findOne({
+    const matches = await EcommercePaymentExceptionRefund.find({
       tenantId,
       merchantOrderId: originalMerchantOrderId,
-    }).lean();
+    }).limit(2).lean();
+    return matches.length === 1 ? matches[0] : null;
   }
   return null;
 }

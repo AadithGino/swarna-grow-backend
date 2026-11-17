@@ -1,3 +1,6 @@
+import { assertLinkedSchemeBacking, settleLinkedOrderHold, updateOrderRedemption } from "./ecommerce-scheme-reservation.service.js";
+import { loadEcommerceOrderForAdmin } from "../lib/ecommerce-admin-order-scope.js";
+import { consumeOrderStockReservationsOnce, releaseOrderReservationsOnce } from "../lib/ecommerce-order-lifecycle.js";
 import { createId } from "../lib/ids.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -59,10 +62,7 @@ export async function transitionAdminOrderFulfilment(req) {
   }
 
   return withTransaction(async (session) => {
-    const order = await EcommerceOrder.findOne({
-      _id: req.params.orderId,
-      tenantId: req.auth.tenantId,
-    }).session(session);
+    const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, { session, lean: false });
     if (!order) throw errors.notFound("Order");
     if (order.paymentExceptionStatus) {
       throw errors.business("FULFILMENT_BLOCKED", "Orders with payment exceptions cannot be fulfilled.");
@@ -72,6 +72,41 @@ export async function transitionAdminOrderFulfilment(req) {
         "FULFILMENT_BLOCKED",
         "Resolve the open cancellation request before updating fulfilment.",
       );
+    }
+    const purchase = order.financialSnapshot?.schemePurchase;
+    if (purchase?.approvalStatus === "PENDING" && order.status === EcommerceOrderStatus.PENDING_PAYMENT &&
+        [EcommerceOrderStatus.PAID, EcommerceOrderStatus.CANCELLED].includes(targetStatus)) {
+      if (expectedVersion !== order.version) throw errors.conflict("VERSION_CONFLICT", "Order changed. Refresh and retry.");
+      if (new Date(order.expiresAt) <= new Date()) throw errors.business("SCHEME_ORDER_EXPIRED", "The scheme purchase window expired.");
+      const approved = targetStatus === EcommerceOrderStatus.PAID;
+      const fullyCovered = approved && order.totalPaise === 0;
+      const key = { tenantId: order.tenantId, orderId: order._id, session };
+      if (!approved) {
+        await settleLinkedOrderHold(order, "RELEASED", session);
+        await releaseOrderReservationsOnce(key);
+      } else {
+        await assertLinkedSchemeBacking(order, session);
+        await updateOrderRedemption(order, "APPROVED", session, req.auth.id);
+        if (fullyCovered) await consumeOrderStockReservationsOnce(key);
+      }
+      const updated = await EcommerceOrder.findOneAndUpdate(
+        { _id: order._id, tenantId: order.tenantId },
+        { $set: {
+          status: approved ? (fullyCovered ? EcommerceOrderStatus.PAID : EcommerceOrderStatus.PENDING_PAYMENT)
+            : EcommerceOrderStatus.CANCELLED,
+          "financialSnapshot.schemePurchase.approvalStatus": approved ? "APPROVED" : "REJECTED",
+          "financialSnapshot.schemePurchase.decidedBy": req.auth.id,
+          "financialSnapshot.schemePurchase.decidedAt": new Date(),
+          ...(fullyCovered ? { paidAt: new Date() } : {}),
+        }, $inc: { version: 1 } },
+        { session, new: true },
+      );
+      await EcommerceOrderEvent.create([{
+        _id: createId("eoev"), tenantId: order.tenantId, orderId: order._id,
+        type: EcommerceOrderEventType.FULFILMENT_UPDATED, actorType: "STAFF", actorId: req.auth.id,
+        payload: { schemeApproval: approved ? "APPROVED" : "REJECTED", from: order.status, to: updated.status },
+      }], { session });
+      return updated.toObject();
     }
     if (targetStatus === EcommerceOrderStatus.CANCELLED) {
       throw errors.business(
@@ -100,6 +135,10 @@ export async function transitionAdminOrderFulfilment(req) {
     assertEcommerceOrderTransition("STAFF", order.status, targetStatus);
     if (targetStatus === EcommerceOrderStatus.DELIVERED) {
       assertFulfilmentHandoverBeforeDelivered(order.toObject());
+      await settleLinkedOrderHold(order, "CONSUMED", session, req.auth.id);
+    }
+    if ([EcommerceOrderStatus.SHIPPED, EcommerceOrderStatus.READY_FOR_PICKUP].includes(targetStatus)) {
+      await assertLinkedSchemeBacking(order, session);
     }
     if (targetStatus === EcommerceOrderStatus.SHIPPED) {
       await assertDeliveryTrackingForShipped({

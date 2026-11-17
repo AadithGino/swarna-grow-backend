@@ -734,7 +734,20 @@ const oneTimeRules = z.object({
   amountPeriod: z.enum(["TERM_TOTAL", "PER_PERIOD"]),
 }).strict();
 
+const schemePurchaseRules = z.object({
+  channel: z.enum(["BRANCH", "ONLINE", "BOTH"]),
+  settlementBases: z.array(z.enum(["CASH_VALUE", "GOLD_WEIGHT"])).min(1).max(2)
+    .refine((values) => new Set(values).size === values.length, "Choose each settlement basis once."),
+  makingChargeWaiver: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("FULL") }).strict(),
+    z.object({ kind: z.literal("PERCENT"), basisPoints: z.number().int().min(1).max(10_000) }).strict(),
+    z.object({ kind: z.literal("FIXED"), amountPaise: positivePaise }).strict(),
+  ]).optional(),
+  waiverCapPaise: positivePaise.optional(),
+}).strict();
+
 const planFields = {
+  schemePurchaseRules: schemePurchaseRules.nullable().optional(),
   oneTimeRules: oneTimeRules.nullable().optional(),
   name: z.string().min(2).max(120),
   code: z.string().regex(/^[A-Z0-9_-]{2,20}$/),
@@ -762,6 +775,18 @@ export const planBody = z
   .superRefine((value, context) => {
     refinePlanCrossFields(value, context, { requireComplete: true });
     const issue = (field, message) => context.addIssue({ code: "custom", path: [field], message });
+    const purchase = value.schemePurchaseRules;
+    if (purchase) {
+      if (!value.redemptionRules.allowedModes.includes(E.RedemptionMode.PURCHASE_ADJUSTMENT)) {
+        issue("schemePurchaseRules", "Enable purchase adjustment before adding purchase rules.");
+      }
+      if (purchase.settlementBases.includes("GOLD_WEIGHT") && value.valueBasis !== E.ValueBasis.GOLD_WEIGHT) {
+        issue("schemePurchaseRules.settlementBases", "Only gold-weight plans can settle by gold weight.");
+      }
+      if (purchase.waiverCapPaise && !purchase.makingChargeWaiver) {
+        issue("schemePurchaseRules.waiverCapPaise", "Configure a making-charge waiver before adding a cap.");
+      }
+    }
     if (value.oneTimeRules) {
       const rule = value.oneTimeRules;
       if (value.valueBasis !== "GOLD_WEIGHT" || value.paymentPattern !== "FIXED" || value.installmentCount !== 1 ||
@@ -856,6 +881,7 @@ export const planPatchBody = z.object({
   paymentPattern: planFields.paymentPattern.optional(),
   durationMonths: planFields.durationMonths.optional(),
   installmentCount: planFields.installmentCount.optional(),
+  schemePurchaseRules: planFields.schemePurchaseRules,
   oneTimeRules: planFields.oneTimeRules,
   collectionRules: planFields.collectionRules,
   amountRules: amountRules.optional(),

@@ -403,3 +403,7 @@ export const recordDeliveryHandover = async (req, res) =>
 
 export const confirmPickupHandover = async (req, res) =>
   sendSuccess(res, await ecommerceOrderHandover.confirmCustomerPickupHandover(req));
+
+export const shopSchemePurchasePreview = async (req, res) => {
+  sendSuccess(res, await ecommerceQuote.getSchemePurchasePreview(req));
+};

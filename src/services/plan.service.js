@@ -743,7 +743,7 @@ export async function updatePlan(req) {
       planId: plan._id,
       status: { $in: ENROLMENT_CAPACITY_STATUSES },
     }).session(session);
-    const immutable = ["valueBasis", "paymentPattern", "durationMonths", "installmentCount", "collectionRules", "oneTimeRules", "amountRules", "scheduleRules", "paymentRules", "flexibleRules", "benefit", "redemptionRules"];
+    const immutable = ["valueBasis", "paymentPattern", "durationMonths", "installmentCount", "collectionRules", "oneTimeRules", "schemePurchaseRules", "amountRules", "scheduleRules", "paymentRules", "flexibleRules", "benefit", "redemptionRules"];
     if (activeCount && immutable.some((key) => req.body[key] !== undefined)) throw new AppError("PLAN_HAS_ACTIVE_ENROLMENTS", "Financial rules cannot be changed while the plan has active enrolments.", 409);
     const before = plan.toObject();
     const patch = { ...req.body };
@@ -801,6 +801,7 @@ function pickPlanDuplicateBody(source) {
     installmentCount: source.installmentCount,
     collectionRules: source.collectionRules,
     oneTimeRules: source.oneTimeRules,
+    schemePurchaseRules: source.schemePurchaseRules,
     amountRules: source.amountRules,
     scheduleRules: source.scheduleRules,
     paymentRules: source.paymentRules,

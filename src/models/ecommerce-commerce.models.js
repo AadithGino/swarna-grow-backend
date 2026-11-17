@@ -460,7 +460,12 @@ const paymentExceptionRefundSchema = new mongoose.Schema(
   },
   baseOptions,
 );
-paymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1, paymentAttemptId: 1 }, { unique: true });
+paymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1, paymentAttemptId: 1 }, {
+  unique: true, name: "ecommerce_capture_refund_without_return_unique", partialFilterExpression: { returnRequestId: null },
+});
+paymentExceptionRefundSchema.index({ tenantId: 1, returnRequestId: 1 }, {
+  unique: true, name: "ecommerce_return_refund_unique", partialFilterExpression: { returnRequestId: { $type: "string" } },
+});
 paymentExceptionRefundSchema.index(
   { tenantId: 1, providerRefundId: 1 },
   {
@@ -533,6 +538,7 @@ const fulfilmentSettingsSchema = new mongoose.Schema(
     maxCartLines: integerField({ min: 1, default: 50 }),
     maxQuantityPerLine: integerField({ min: 1, default: 99 }),
     pendingPaymentWindowMinutes: integerField({ min: 5, max: 120, default: 30 }),
+    schemeCheckoutEnabled: { type: Boolean, default: false },
     codEnabled: { type: Boolean, default: false },
     codPincodes: { type: [String], default: [] },
     codAcceptanceWindowMinutes: integerField({ min: 30, max: 2880, default: 120 }),
@@ -654,6 +660,8 @@ orderCancellationRequestSchema.index(
 
 const orderReturnRequestSchema = new mongoose.Schema(
   {
+    items: { type: [{ _id: false, productId: String, quantity: Number }], default: undefined },
+    refundEntitlementPaise: Number,
     _id: stringId("eret"),
     tenantId: tenantField,
     orderId: { type: String, required: true, index: true },

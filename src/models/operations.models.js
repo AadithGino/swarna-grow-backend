@@ -87,6 +87,7 @@ messageSchema.index(
   },
 );
 messageSchema.index({ tenantId: 1, customerId: 1, channel: 1, createdAt: -1 });
+messageSchema.index({ tenantId: 1, customerId: 1, readAt: 1, createdAt: -1 });
 
 const pushBroadcastSchema = new mongoose.Schema({
   _id: stringId("pbc"),

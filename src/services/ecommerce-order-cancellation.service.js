@@ -1,3 +1,4 @@
+import { settleLinkedOrderHold } from "./ecommerce-scheme-reservation.service.js";
 import { createId } from "../lib/ids.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction, withTransientTransactionRetry } from "../lib/transaction.js";
@@ -388,7 +389,7 @@ async function createOnlineCancellationRefundCase({ tenantId, order, cancellatio
   const refundId = createId("epayref");
   const row = (
     await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
+      { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId: null },
       {
         $setOnInsert: {
           _id: refundId,
@@ -545,6 +546,7 @@ export async function decideAdminCancellationRequest(req) {
       );
     }
 
+    await settleLinkedOrderHold(order, "RELEASED", session);
     if (cancellationNeedsOnlineRefund(order.toObject())) {
       const refundRow = await createOnlineCancellationRefundCase({
         tenantId: req.auth.tenantId,

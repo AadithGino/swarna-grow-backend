@@ -1,3 +1,6 @@
+import { getSchemePurchaseEntitlement } from "./ecommerce-scheme-reservation.service.js";
+import { previewSchemePurchase } from "../lib/ecommerce-scheme-purchase-preview.js";
+import { assertRedemptionKyc, OPEN_REDEMPTION_STATUSES, settlementPreview } from "./redemption.service.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -41,6 +44,8 @@ import {
   EcommercePriceQuote,
   EcommerceProduct,
   EcommerceTaxSettings,
+  Redemption,
+  Scheme,
 } from "../models/index.js";
 import {
   assertQuotePaymentMethodAllowed,
@@ -49,6 +54,8 @@ import {
   resolveQuotePaymentMethod,
 } from "../lib/ecommerce-cod.js";
 import {
+  ClosureType,
+  RedemptionMode,
   EcommerceCheckoutTaxPresentation,
   EcommerceFulfilmentMode,
   EcommercePaymentMethod,
@@ -564,7 +571,11 @@ export async function getCustomerQuote(req) {
     addressSnapshot: row.addressSnapshot,
   });
   const methodOptions = derivePaymentMethodOptions({ capability, codEvaluation });
-  return mapQuote(row, capability, methodOptions);
+  return {
+    ...mapQuote(row, capability, methodOptions),
+    schemePurchasePreviewEnabled: fulfilmentRow?.schemeCheckoutEnabled === true
+      && (row.paymentMethod ?? EcommercePaymentMethod.ONLINE) === EcommercePaymentMethod.ONLINE,
+  };
 }
 
 export async function cancelCustomerQuote(req) {
@@ -588,4 +599,71 @@ export async function cancelCustomerQuote(req) {
     }
     return mapQuote(cancelled.toObject(), capability);
   });
+}
+
+export async function getSchemePurchasePreview(req, { session } = {}) {
+  assertEcommerceOperational(req.tenant);
+  const { tenantId, id: customerId } = req.auth;
+  const { quoteId } = req.params;
+  const { schemeId, basis } = req.query;
+  const read = (query) => session ? query.session(session) : query;
+  const store = await read(EcommerceFulfilmentSettings.findOne({ tenantId }).select("schemeCheckoutEnabled")).lean();
+  const quote = await read(EcommercePriceQuote.findOne({ _id: quoteId, tenantId, customerId })).lean();
+  const scheme = await read(Scheme.findOne({ _id: schemeId, tenantId, customerId })).lean();
+  if (!quote || !scheme) throw errors.notFound("Scheme or checkout quote");
+  if (store?.schemeCheckoutEnabled !== true) throw errors.business("SCHEME_CHECKOUT_DISABLED", "This jeweller has disabled scheme checkout previews.");
+  if (quote.status !== EcommerceQuoteStatus.ACTIVE || new Date(quote.expiresAt) <= new Date()) {
+    throw errors.business("QUOTE_NOT_AVAILABLE", "Refresh the checkout quote before previewing scheme savings.");
+  }
+  if (quote.paymentMethod === EcommercePaymentMethod.COD) {
+    throw errors.business("SCHEME_CHECKOUT_COD", "Scheme checkout requires an online payment quote.");
+  }
+  const rules = scheme.planSnapshot?.schemePurchaseRules;
+  if (!["ONLINE", "BOTH"].includes(rules?.channel) || !rules.settlementBases.includes(basis) ||
+      !scheme.planSnapshot?.redemptionRules?.allowedModes?.includes(RedemptionMode.PURCHASE_ADJUSTMENT)) {
+    throw errors.business("SCHEME_PURCHASE_NOT_ALLOWED", "The enrolled plan does not allow online purchase adjustment on this basis.");
+  }
+  if (quote.pickupBranchId && quote.pickupBranchId !== scheme.branchId &&
+      !scheme.planSnapshot.redemptionRules.redeemAtAnyBranch) {
+    throw errors.business("SCHEME_PICKUP_BRANCH_NOT_ALLOWED", "Select the scheme branch for pickup.");
+  }
+  await assertRedemptionKyc(req, customerId, { session });
+  if (await read(Redemption.exists({ tenantId, schemeId, status: { $in: OPEN_REDEMPTION_STATUSES } }))) {
+    throw errors.business("REDEMPTION_ALREADY_OPEN", "A redemption request is already in progress.");
+  }
+  const settlement = await settlementPreview({
+    ...req, params: { schemeId }, body: { mode: RedemptionMode.PURCHASE_ADJUSTMENT },
+  }, ClosureType.MATURITY_REDEMPTION);
+  if (!settlement.eligible) throw errors.business(
+    settlement.blockers[0]?.code ?? "SCHEME_INELIGIBLE",
+    settlement.blockers[0]?.message ?? "This scheme is not eligible for purchase adjustment.",
+  );
+
+  const products = await read(EcommerceProduct.find({
+    tenantId, _id: { $in: quote.lines.map((line) => line.productId) }, status: EcommerceProductStatus.PUBLISHED,
+  }).select("schemePurchasePolicy categoryId version")).lean();
+  const categories = await read(EcommerceCategory.find({
+    tenantId, _id: { $in: products.flatMap((product) => product.categoryId ?? []) }, active: true,
+  }).select("schemePurchaseAllowed")).lean();
+  const categoryById = new Map(categories.map((category) => [category._id, category]));
+  const versions = new Map(quote.lines.map((line) => [line.productId, line.productVersion]));
+  const eligibleProductIds = new Set(products.filter((product) => {
+    const category = categoryById.get(product.categoryId);
+    if (product.categoryId && !category || (product.version ?? 1) !== versions.get(product._id)) return false;
+    return product.schemePurchasePolicy === "ALLOW" ||
+      (product.schemePurchasePolicy !== "DISALLOW" && category?.schemePurchaseAllowed === true);
+  }).map((product) => product._id));
+  const balance = basis === "GOLD_WEIGHT"
+    ? (settlement.goldWeightMg ?? 0) + (settlement.benefitWeightMg ?? 0)
+    : settlement.settlementPaise;
+  const available = await getSchemePurchaseEntitlement({ tenantId, schemeId, balance, basis,
+    waiverCapPaise: rules.waiverCapPaise, session });
+  return {
+    quoteId, schemeId, expiresAt: quote.expiresAt, schemeVersion: scheme.version, branchId: scheme.branchId, availableBalance: balance, waiverCapPaise: rules.waiverCapPaise,
+    usedBenefitUnits: available.usedBenefitUnits, valuationRateEffectiveDate: settlement.valuationRateEffectiveDate || undefined,
+    benefitPaise: settlement.benefitPaise ?? 0,
+    benefitWeightMg: settlement.benefitWeightMg ?? 0,
+    ...previewSchemePurchase({ quote, eligibleProductIds, basis, balance: available.balance,
+      rules: { ...rules, waiverCapPaise: available.waiverCapPaise } }),
+  };
 }

@@ -1597,20 +1597,22 @@ export async function listSchemes(req) {
     ];
   }
 
-  const result = await paginate(Scheme, {
-    scope,
-    filters,
-    cursor: req.query.cursor,
-    limit: req.query.limit,
-    sort: req.query.sort ?? "createdAt:desc",
-  });
-  if (req.auth.type !== "CUSTOMER") {
-    const { schemePortfolioSummary } =
-      await import("./admin-summary.service.js");
-    result.meta = {
-      ...result.meta,
-      summary: await schemePortfolioSummary(req, filters),
-    };
+  const listSort = req.query.sort ?? "createdAt:desc";
+  const summaryPromise = req.auth.type === "CUSTOMER"
+    ? null
+    : import("./admin-summary.service.js").then(({ schemePortfolioSummary }) => schemePortfolioSummary(req, filters));
+  const [result, summary] = await Promise.all([
+    paginate(Scheme, {
+      scope,
+      filters,
+      cursor: req.query.cursor,
+      limit: req.query.limit,
+      sort: listSort,
+    }),
+    summaryPromise,
+  ]);
+  if (summary) {
+    result.meta = { ...result.meta, summary };
   }
   if (!result.data.length) return result;
   const customerIds = [
@@ -1882,17 +1884,13 @@ export function schemeAgentCollectPreview(scheme) {
   };
 }
 /** Attach ledger-backed totals for customer scheme cards (list/home). */
-export async function attachLedgerTotals(tenantId, schemeRows) {
+export function attachLedgerTotalsFromEntries(schemeRows, entries) {
   if (!schemeRows?.length) return schemeRows ?? [];
-  const schemeIds = schemeRows.map((row) => row._id);
-  const entries = await LedgerEntry.find({
-    tenantId,
-    schemeId: { $in: schemeIds },
-  })
-    .sort({ sequence: 1 })
-    .lean();
+  const ordered = [...(entries ?? [])].sort(
+    (left, right) => (left.sequence ?? 0) - (right.sequence ?? 0) || String(left._id).localeCompare(String(right._id)),
+  );
   const bySchemeId = new Map();
-  for (const entry of entries) {
+  for (const entry of ordered) {
     const bucket = bySchemeId.get(entry.schemeId) ?? [];
     bucket.push(entry);
     bySchemeId.set(entry.schemeId, bucket);
@@ -1909,6 +1907,18 @@ export async function attachLedgerTotals(tenantId, schemeRows) {
       },
     };
   });
+}
+
+export async function attachLedgerTotals(tenantId, schemeRows) {
+  if (!schemeRows?.length) return schemeRows ?? [];
+  const schemeIds = schemeRows.map((row) => row._id);
+  const entries = await LedgerEntry.find({
+    tenantId,
+    schemeId: { $in: schemeIds },
+  })
+    .sort({ sequence: 1 })
+    .lean();
+  return attachLedgerTotalsFromEntries(schemeRows, entries);
 }
 export function rebuildSchemeProjection(scheme, entries) {
   const businessEntries = entries.filter((entry) =>

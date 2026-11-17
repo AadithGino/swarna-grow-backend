@@ -1,4 +1,6 @@
+import { EcommerceSchemeReservation } from "../models/index.js";
 import { claimManualRefund } from "../lib/ecommerce-manual-refund.js";
+import { quoteSchemeOrderReturn, restoreSchemeOrderReturn } from "./ecommerce-scheme-reservation.service.js";
 import { createId } from "../lib/ids.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -39,6 +41,8 @@ function mapReturn(row) {
     orderId: row.orderId,
     kind: row.kind,
     status: row.status,
+    items: row.items,
+    refundEntitlementPaise: row.refundEntitlementPaise,
     reason: row.reason,
     evidenceNote: row.evidenceNote ?? null,
     decisionReason: row.decisionReason ?? null,
@@ -135,7 +139,7 @@ async function validateReplacementOrderLink({
   }
 }
 
-async function createOnlineReturnRefundCase({ tenantId, order, returnRequestId, session }) {
+async function createOnlineReturnRefundCase({ tenantId, order, returnRequestId, session, amountPaise = order.totalPaise }) {
   const attemptId = order.successfulPaymentAttemptId;
   if (!attemptId) {
     throw errors.business("REFUND_NOT_APPLICABLE", "No successful online payment on this order.");
@@ -145,14 +149,14 @@ async function createOnlineReturnRefundCase({ tenantId, order, returnRequestId, 
   const refundId = createId("epayref");
   try {
     const row = await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
+      { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId },
       {
         $setOnInsert: {
           _id: refundId,
           tenantId,
           orderId: order._id,
           paymentAttemptId: attempt._id,
-          amountPaise: order.totalPaise,
+          amountPaise,
           currency: attempt.currency ?? "INR",
           providerPaymentId: attempt.providerPaymentId,
           merchantOrderId: attempt.merchantOrderId ?? attempt._id,
@@ -216,7 +220,14 @@ export async function createCustomerReturnRequest(req) {
       }
     }
     const priorResolved = await EcommerceOrderReturnRequest.findOne({ tenantId: req.auth.tenantId, orderId: order._id, status: "RESOLVED" }).session(session).lean();
-    if (priorResolved) throw errors.business("RETURN_ALREADY_RESOLVED", "The original order has already been returned or exchanged.");
+    if (priorResolved && !order.financialSnapshot?.schemePurchase) throw errors.business("RETURN_ALREADY_RESOLVED", "The original order has already been returned or exchanged.");
+    const purchase = order.financialSnapshot?.schemePurchase;
+    if ((req.body.items && !purchase) || (purchase && kind !== EcommerceOrderReturnKind.RETURN)) {
+      throw errors.business("RETURN_SELECTION_UNSUPPORTED", "Use a return request for a scheme-funded order.");
+    }
+    const items = purchase ? req.body.items ??
+      await remainingReturnItems(order, session) : undefined;
+    const allocation = items ? await quoteSchemeOrderReturn({ order, items, session }) : null;
     const now = new Date();
     const row = (
       await EcommerceOrderReturnRequest.create(
@@ -227,6 +238,7 @@ export async function createCustomerReturnRequest(req) {
             orderId: order._id,
             customerId: req.auth.id,
             kind,
+            ...(allocation ? { items, refundEntitlementPaise: allocation.refundedCashPaise } : {}),
             status: EcommerceOrderReturnRequestStatus.PENDING_REVIEW,
             reason,
             evidenceNote: String(req.body?.evidenceNote ?? "").trim().slice(0, 1000) || undefined,
@@ -376,6 +388,7 @@ export async function recordAdminReturnInspection(req) {
               tenantId: req.auth.tenantId,
               orderId: row.orderId,
               returnRequestId: row._id,
+              items: row.items,
               actorUserId: req.auth.id,
               session,
               at,
@@ -445,10 +458,18 @@ export async function resolveAdminReturnRequest(req) {
         session,
       });
     }
-    if (row.kind === EcommerceOrderReturnKind.RETURN && !row.manualRefundRecordedAt) {
+    if (row.kind === EcommerceOrderReturnKind.RETURN &&
+        (row.refundEntitlementPaise ?? order.totalPaise) > 0 && !row.manualRefundRecordedAt) {
       const refund = row.onlineRefundId ? await EcommercePaymentExceptionRefund.findOne({ _id: row.onlineRefundId, tenantId: req.auth.tenantId, orderId: row.orderId }).session(session).lean() : null;
       if (!refund || !["SUCCEEDED", "MANUAL_RECORDED"].includes(refund.status)) {
         throw errors.business("RETURN_REFUND_INCOMPLETE", "Record completed repayment before resolving this return.");
+      }
+    }
+    if (order.financialSnapshot?.schemePurchase) {
+      const restored = await restoreSchemeOrderReturn({ tenantId: order.tenantId, orderId: order._id,
+        reference: row._id, items: row.items, session });
+      if (restored.refundedCashPaise !== row.refundEntitlementPaise) {
+        throw errors.conflict("RETURN_ENTITLEMENT_CHANGED", "The saved refund amount no longer matches this return.");
       }
     }
     row.status = EcommerceOrderReturnRequestStatus.RESOLVED;
@@ -496,10 +517,14 @@ export async function createAdminReturnRefundCase(req) {
     if (order.paymentMethod === EcommercePaymentMethod.COD) {
       throw errors.business("USE_MANUAL_RETURN_REFUND", "Use manual return refund recording for COD orders.");
     }
+    if (row.refundEntitlementPaise === 0) {
+      throw errors.business("REFUND_NOT_APPLICABLE", "This return has no cash refund. Resolve it to restore the scheme balance.");
+    }
     const refundRow = await createOnlineReturnRefundCase({
       tenantId: req.auth.tenantId,
       order,
       returnRequestId: row._id,
+      amountPaise: row.refundEntitlementPaise ?? order.totalPaise,
       session,
     });
     row.onlineRefundId = refundRow._id;
@@ -547,7 +572,7 @@ export async function recordAdminReturnManualRefund(req) {
       .session(session)
       .lean();
     if (!order) throw errors.notFound("Order");
-    if (amountPaise !== Number(order.totalPaise)) {
+    if (amountPaise !== Number(row.refundEntitlementPaise ?? order.totalPaise)) {
       throw errors.validation([
         { field: "amountPaise", message: "Refund amount must match the order total for this return." },
       ]);
@@ -556,7 +581,7 @@ export async function recordAdminReturnManualRefund(req) {
     if (order.paymentMethod === EcommercePaymentMethod.ONLINE) {
       const refundCase = onlineRefundId
         ? await EcommercePaymentExceptionRefund.findOne({ _id: onlineRefundId, tenantId: req.auth.tenantId, orderId: order._id }).session(session)
-        : await createOnlineReturnRefundCase({ tenantId: req.auth.tenantId, order, returnRequestId: row._id, session });
+        : await createOnlineReturnRefundCase({ tenantId: req.auth.tenantId, order, returnRequestId: row._id, session, amountPaise: row.refundEntitlementPaise ?? order.totalPaise });
       if (!refundCase) throw errors.notFound("Refund case");
       if (Number(refundCase.amountPaise) !== amountPaise) throw errors.business("REFUND_AMOUNT_MISMATCH", "Refund entitlement differs from manual repayment.");
       await claimManualRefund(session, { tenantId: req.auth.tenantId, orderId: order._id, refundId: refundCase._id, reference, userId: req.auth.id });
@@ -593,6 +618,17 @@ export async function recordAdminReturnManualRefund(req) {
   });
 }
 
+async function remainingReturnItems(order, session) {
+  const query = EcommerceSchemeReservation.findOne({
+    _id: order.financialSnapshot?.schemePurchase?.reservationId,
+    tenantId: order.tenantId, orderId: order._id, status: "CONSUMED",
+  }).lean();
+  const row = await (session ? query.session(session) : query);
+  return (row?.lines ?? []).map((line) => ({
+    productId: line.productId, quantity: line.quantity - (line.returnedQuantity ?? 0),
+  })).filter((line) => line.quantity > 0);
+}
+
 export async function getCustomerOrderReturn(req) {
   const row = await EcommerceOrderReturnRequest.findOne({
     tenantId: req.auth.tenantId,
@@ -601,5 +637,12 @@ export async function getCustomerOrderReturn(req) {
   })
     .sort({ createdAt: -1 })
     .lean();
-  return { request: mapReturn(row) };
+  const order = await EcommerceOrder.findOne({
+    _id: req.params.orderId, tenantId: req.auth.tenantId, customerId: req.auth.id,
+  }).lean();
+  if (!order) throw errors.notFound("Order");
+  const settings = await EcommerceFulfilmentSettings.findOne({ tenantId: order.tenantId }).lean();
+  const eligibility = returnEligible(order, settings);
+  return { request: mapReturn(row), returnEligibility: eligibility, ...(order.financialSnapshot?.schemePurchase
+    ? { returnableItems: eligibility.allowed ? await remainingReturnItems(order) : [] } : {}) };
 }

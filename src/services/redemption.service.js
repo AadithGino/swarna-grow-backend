@@ -13,6 +13,7 @@ import {
 import {
   Branch,
   Customer,
+  EcommerceSchemeReservation,
   LedgerEntry,
   OutboxEvent,
   Redemption,
@@ -70,13 +71,25 @@ import {
 export const REDEMPTION_HANDOVER_OTP_TTL_MS = 30 * 60 * 1000;
 export const REDEMPTION_HANDOVER_OTP_MAX_ATTEMPTS = PICKUP_CODE_MAX_ATTEMPTS;
 
-const OPEN_REDEMPTION_STATUSES = [
+export const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.REQUESTED,
   RedemptionStatus.PENDING_APPROVAL,
   RedemptionStatus.APPROVED,
 ];
 
-async function assertRedemptionKyc(req, customerId, { session } = {}) {
+async function assertStandaloneSchemeFundsAvailable(scheme, session) {
+  if (!scheme.planSnapshot?.schemePurchaseRules) return;
+  await Scheme.collection.updateOne({ _id: scheme._id, tenantId: scheme.tenantId },
+    { $set: { ecommerceRedemptionFence: createId("fence") } }, { session });
+  if (await EcommerceSchemeReservation.exists({
+    tenantId: scheme.tenantId, schemeId: scheme._id, status: { $in: ["HELD", "CONSUMED"] },
+    $expr: { $gt: ["$units", { $ifNull: ["$restoredUnits", 0] }] },
+  }).session(session)) {
+    throw errors.business("SCHEME_FUNDS_USED_ONLINE", "The scheme has an ecommerce allocation. Use the available remainder at online checkout.");
+  }
+}
+
+export async function assertRedemptionKyc(req, customerId, { session } = {}) {
   let query = Tenant.findById(req.auth.tenantId).select("settings operations");
   if (session) query = query.session(session);
   const tenant = await query.lean();
@@ -281,7 +294,7 @@ function assertRedemptionBranchAllowed(scheme, req) {
   }
 }
 
-export async function settlementPreview(req, closureType) {
+export async function settlementPreview(req, closureType, { valuationDateYmd = today() } = {}) {
   sanitizeSettlementClassificationFromRequest(req);
   const accessScope =
     req.auth.type === "CUSTOMER"
@@ -455,7 +468,7 @@ export async function settlementPreview(req, closureType) {
     ledgerEntries: entries,
     excludedPaymentIds,
     closureType,
-    valuationDateYmd: today(),
+    valuationDateYmd,
     mode: settlementMode,
     tenantOps: tenant,
     systemPolicyClosure,
@@ -792,6 +805,7 @@ export async function requestCustomerRedemption(req) {
       throw new AppError("VERSION_CONFLICT", "This scheme changed. Refresh and try again.", 409);
     }
     await assertRedemptionKyc(req, scheme.customerId, { session });
+    await assertStandaloneSchemeFundsAvailable(scheme, session);
     const existingOpen = await Redemption.findOne({
       tenantId: req.auth.tenantId,
       schemeId: scheme._id,
@@ -974,6 +988,7 @@ export async function initiateRedemption(
       _id: preview.schemeId,
       tenantId: req.auth.tenantId,
     }).session(session);
+    await assertStandaloneSchemeFundsAvailable(scheme, session);
     const existingOpen = await Redemption.findOne({
       tenantId: req.auth.tenantId,
       schemeId: preview.schemeId,
@@ -1055,6 +1070,9 @@ export async function transitionRedemption(req, action) {
       ...req.scope,
     }).session(session);
     if (!row) throw errors.notFound("Redemption");
+    if (row.modeDetails?.ecommerceOrderId) {
+      throw errors.business("MANAGE_REDEMPTION_FROM_ORDER", "Manage the scheme purchase from its ecommerce order.");
+    }
     const before = row.toObject();
     const allowed = {
       approve: [RedemptionStatus.PENDING_APPROVAL, RedemptionStatus.REQUESTED],
@@ -1502,6 +1520,9 @@ export async function releaseHandoverOtp(req) {
     ...req.scope,
   });
   if (!row) throw errors.notFound("Redemption");
+  if (row.modeDetails?.ecommerceOrderId) {
+    throw errors.business("MANAGE_REDEMPTION_FROM_ORDER", "Use the order's pickup or delivery confirmation.");
+  }
   if (row.status !== RedemptionStatus.APPROVED) {
     throw errors.business(
       "REDEMPTION_STATUS_INVALID",

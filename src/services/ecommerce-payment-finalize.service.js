@@ -6,6 +6,7 @@ import {
   EcommerceOrderEventType,
   EcommerceOrderPaymentExceptionStatus,
   EcommerceOrderStatus,
+  EcommerceStockReleaseReason,
   EcommercePaymentAttemptOperationalStatus,
   EcommercePaymentAttemptStatus,
 } from "../constants/enums.js";
@@ -24,7 +25,8 @@ import { EcommercePaymentExceptionRefundStatus } from "../constants/enums.js";
 import { upsertOperationalAlert } from "../lib/operational-alert.js";
 import { AlertType } from "../constants/enums.js";
 import { validatePhonePeCompletedIdentifiers } from "../lib/phonepe-completed-identifiers.js";
-import { consumeOrderStockReservationsOnce } from "../lib/ecommerce-order-lifecycle.js";
+import { assertLinkedSchemeBacking } from "./ecommerce-scheme-reservation.service.js";
+import { cancelPendingPaymentOrderRow, consumeOrderStockReservationsOnce } from "../lib/ecommerce-order-lifecycle.js";
 
 async function recordAttemptEvent({
   tenantId,
@@ -186,7 +188,7 @@ export async function finalizeEcommercePaymentSuccess({
         session,
       });
       await EcommercePaymentExceptionRefund.findOneAndUpdate(
-        { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
+        { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId: null },
         {
           $setOnInsert: {
             paymentAttemptId: attempt._id,
@@ -231,12 +233,26 @@ export async function finalizeEcommercePaymentSuccess({
       return { outcome: "DUPLICATE_PAYMENT_EXCEPTION", orderId: order._id };
     }
 
+    let lateCaptureReason;
+    if (order.status === EcommerceOrderStatus.PENDING_PAYMENT && order.financialSnapshot?.schemePurchase) {
+      try {
+        await assertLinkedSchemeBacking(order, session);
+      } catch (err) {
+        if (!["SCHEME_BACKING_CHANGED", "KYC_REQUIRED"].includes(err?.code)) throw err;
+        const cancelled = await cancelPendingPaymentOrderRow({
+          orderId: order._id, tenantId, customerId: order.customerId, session,
+          stockReleaseReason: EcommerceStockReleaseReason.SCHEME_BACKING_CHANGED,
+        });
+        if (cancelled.kind !== "OK") throw err;
+        lateCaptureReason = err.code;
+      }
+    }
     const terminalWithoutStock = [
       EcommerceOrderStatus.PAYMENT_EXPIRED,
       EcommerceOrderStatus.CANCELLED,
     ].includes(order.status);
 
-    if (terminalWithoutStock) {
+    if (terminalWithoutStock || lateCaptureReason) {
       await EcommercePaymentAttempt.updateOne(
         { _id: attempt._id },
         {
@@ -259,6 +275,7 @@ export async function finalizeEcommercePaymentSuccess({
               transactionId,
               amountPaise,
               priorStatus: order.status,
+              ...(lateCaptureReason ? { reason: lateCaptureReason } : {}),
               at: new Date().toISOString(),
             },
           },
@@ -286,12 +303,12 @@ export async function finalizeEcommercePaymentSuccess({
         webhookEventId,
         direction: "INBOUND",
         outcome: "LATE_SUCCESS_EXCEPTION",
-        reason: `Order was ${order.status} when payment succeeded`,
+        reason: lateCaptureReason ?? `Order was ${order.status} when payment succeeded`,
         payload: providerPayload,
         session,
       });
       await EcommercePaymentExceptionRefund.updateOne(
-        { tenantId, orderId: order._id, paymentAttemptId: attempt._id },
+        { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId: null },
         {
           $setOnInsert: {
             _id: createId("epayref"),
@@ -324,8 +341,9 @@ export async function finalizeEcommercePaymentSuccess({
         type: AlertType.GATEWAY_WEBHOOK_UNMATCHED,
         entityId: order._id,
         title: "Ecommerce late payment success",
-        message:
-          "Payment succeeded after order expired or was cancelled; refund review required. Order was not marked paid.",
+        message: lateCaptureReason
+          ? "Top-up was captured after scheme backing became invalid. The order was cancelled and needs refund review."
+          : "Payment succeeded after order expired or was cancelled; refund review required. Order was not marked paid.",
         metadata: { orderId: order._id, paymentAttemptId: attempt._id, transactionId },
       });
       return { outcome: "LATE_SUCCESS_EXCEPTION", orderId: order._id };

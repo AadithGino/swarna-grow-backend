@@ -147,6 +147,7 @@ export async function applyReturnReceiptRestockOnce({
   tenantId,
   orderId,
   returnRequestId,
+  items,
   actorUserId,
   session,
   at = new Date(),
@@ -155,17 +156,22 @@ export async function applyReturnReceiptRestockOnce({
   if (!order) throw new AppError("NOT_FOUND", "Order not found.", 404);
 
   const previous = await EcommerceOrderReturnRequest.findOne({ tenantId, orderId, _id: { $ne: returnRequestId }, stockRestockedAt: { $ne: null } }).session(session).lean();
+  const partial = Array.isArray(items) && !!order.financialSnapshot?.schemePurchase;
   const priorRequestId = order.returnStockRestockedRequestId ?? previous?._id;
   if (priorRequestId) {
     if (String(priorRequestId) === String(returnRequestId)) return { restockLineCount: 0, at: order.returnStockRestockedAt ?? previous.stockRestockedAt, idempotent: true };
-    throw new AppError("ORDER_ALREADY_RESTOCKED", "Original goods were already restocked by another return.", 409);
+    if (!partial) throw new AppError("ORDER_ALREADY_RESTOCKED", "Original goods were already restocked by another return.", 409);
   }
-  const claimed = await EcommerceOrder.updateOne({ _id: orderId, tenantId, version: order.version, returnStockRestockedAt: null },
+  const claimed = await EcommerceOrder.updateOne({ _id: orderId, tenantId, version: order.version, ...(partial ? {} : { returnStockRestockedAt: null }) },
     { $set: { returnStockRestockedAt: at, returnStockRestockedRequestId: returnRequestId }, $inc: { version: 1 } }, { session });
   if (claimed.modifiedCount !== 1) throwInventoryVersionWriteConflict(orderId);
 
   const consumption = await resolveOrderStockConsumptionEvidence(order.toObject(), session);
-  const restockLines = restockLinesFromEvidence(consumption);
+  const evidenceLines = restockLinesFromEvidence(consumption);
+  const quantities = items && new Map(items.map(({ productId, quantity }) => [productId, quantity]));
+  const restockLines = quantities ? evidenceLines.map((line) => ({
+    ...line, quantityDeducted: Math.min(line.quantityDeducted, quantities.get(line.productId) ?? 0),
+  })) : evidenceLines;
   if (consumption.uncertain && !restockLines.length) {
     throw new AppError(
       "STOCK_RESTOCK_UNCERTAIN",

@@ -13,7 +13,15 @@ const definitions = [
   { model: DigitalMetalRedemptionOrder, key: { tenantId: 1, quoteId: 1 } },
   { model: DigitalMetalPayout, key: { tenantId: 1, payableId: 1 }, partial: { status: { $in: active } } },
   { model: DigitalMetalPaymentExceptionRefund, key: { tenantId: 1, orderId: 1, paymentAttemptId: 1 }, legacyOrderIndex: true },
-  { model: EcommercePaymentExceptionRefund, key: { tenantId: 1, orderId: 1, paymentAttemptId: 1 }, legacyOrderIndex: true },
+  {
+    model: EcommercePaymentExceptionRefund, key: { tenantId: 1, orderId: 1, paymentAttemptId: 1 },
+    partial: { returnRequestId: null }, name: "ecommerce_capture_refund_without_return_unique",
+    legacyOrderIndex: true, legacyNames: ["tenantId_1_orderId_1_paymentAttemptId_1"],
+  },
+  {
+    model: EcommercePaymentExceptionRefund, key: { tenantId: 1, returnRequestId: 1 },
+    partial: { returnRequestId: { $type: "string" } }, name: "ecommerce_return_refund_unique",
+  },
 ];
 const sameKey = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const indexName = key => Object.entries(key).map(([field, direction]) => `${field}_${direction}`).join("_");
@@ -33,9 +41,10 @@ export async function inspectFinancialIndexes({ scanData = true } = {}) {
     catch (error) { if (error.code !== 26) throw error; indexes = []; }
     const required = indexes.find(index => sameKey(index.key, key) && index.unique === true
       && (!partial || sameKey(index.partialFilterExpression, partial)));
-    const legacy = legacyOrderIndex ? indexes.filter(index => index.unique === true
-      && sameKey(index.key, { tenantId: 1, orderId: 1 })).map(index => index.name) : [];
-    results.push({ model: model.modelName, requiredIndex: indexName(key), ready: Boolean(required) && legacy.length === 0,
+    const legacy = indexes.filter(index => definition.legacyNames?.includes(index.name) ||
+      (legacyOrderIndex && index.unique === true && sameKey(index.key, { tenantId: 1, orderId: 1 })))
+      .map(index => index.name);
+    results.push({ model: model.modelName, requiredIndex: definition.name ?? indexName(key), ready: Boolean(required) && legacy.length === 0,
       legacyIndexes: legacy, duplicates });
   }
   return results;
@@ -54,8 +63,8 @@ export async function applyFinancialIndexRollout({ writesPaused = false } = {}) 
   const report = await inspectFinancialIndexes();
   if (report.some(row => row.duplicates.length)) throw new Error("DUPLICATE_FINANCIAL_OBLIGATIONS: review and repair existing data before index rollout.");
   // Create replacement constraints before removing the obsolete order-only constraint.
-  for (const { model, key, partial } of definitions) {
-    await model.collection.createIndex(key, { unique: true, name: indexName(key),
+  for (const { model, key, partial, name } of definitions) {
+    await model.collection.createIndex(key, { unique: true, name: name ?? indexName(key),
       ...(partial ? { partialFilterExpression: partial } : {}) });
   }
   for (const row of report) {

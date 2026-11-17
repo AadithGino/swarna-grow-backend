@@ -179,11 +179,14 @@ export async function buildHome(auth, tenant, query = {}) {
       .limit(5)
       .lean(),
     Message.find({ tenantId: auth.tenantId, customerId: auth.id, readAt: null })
+      .select("type schemeId channel readAt createdAt reminderDedupeKey templateParams")
       .sort({ createdAt: -1 })
       .limit(200)
       .lean(),
     currentGoldRate({ tenantId: auth.tenantId, branchId: auth.branchId }, today()),
-    LedgerEntry.find({ tenantId: auth.tenantId, customerId: auth.id }).lean(),
+    LedgerEntry.find({ tenantId: auth.tenantId, customerId: auth.id })
+      .select("schemeId type sequence amountPaise weightMg")
+      .lean(),
     Scheme.find({
       tenantId: auth.tenantId,
       customerId: auth.id,
@@ -193,7 +196,7 @@ export async function buildHome(auth, tenant, query = {}) {
       .lean(),
   ]);
   const unreadCount = countUnreadDedupedNotifications(unreadRows);
-  const activeSchemes = await schemes.attachLedgerTotals(auth.tenantId, activeSchemesRaw);
+  const activeSchemes = schemes.attachLedgerTotalsFromEntries(activeSchemesRaw, ledgers);
   const hasGoldAccumulationScheme = goldWeightSchemes.length > 0;
   const totalPaidPaise = lifetimePaidPaiseFromLedgerEntries(ledgers);
   const goldSchemeIds = new Set(goldWeightSchemes.map((row) => String(row._id)));
@@ -209,15 +212,17 @@ export async function buildHome(auth, tenant, query = {}) {
     hour < 12 ? `Good morning, ${firstName}` : hour < 17 ? `Good afternoon, ${firstName}` : `Good evening, ${firstName}`;
   const actionCard = pickActionCard(activeSchemes);
   const passbookNumber = customer?.passbookNumber ?? null;
-  const activeSchemeCards = await mapActiveSchemeCardsForCustomer(
-    auth.tenantId,
-    auth.id,
-    passbookNumber,
-    activeSchemes.slice(0, 6),
-  );
-  const [recentPayments, recentActivity] = await Promise.all([
+  const [activeSchemeCards, recentPayments, recentActivity, contributionTrendRows, goldTrendRows] = await Promise.all([
+    mapActiveSchemeCardsForCustomer(
+      auth.tenantId,
+      auth.id,
+      passbookNumber,
+      activeSchemes.slice(0, 6),
+    ),
     recentPaymentsForHome(auth, 8),
     buildRecentActivityForHome(auth, 8),
+    includeTrends ? contributionTrend(auth, trendMonths) : undefined,
+    hasGoldAccumulationScheme && includeTrends ? goldTrend(auth, trendMonths) : undefined,
   ]);
   return {
     tenant: tenantBrandingDto(tenant),
@@ -268,9 +273,8 @@ export async function buildHome(auth, tenant, query = {}) {
       { key: "PASSBOOK", label: "Passbook", enabled: activeSchemes.length > 0 },
     ],
     unreadNotificationCount: unreadCount,
-    contributionTrend: includeTrends ? await contributionTrend(auth, trendMonths) : undefined,
-    goldAccumulationTrend:
-      hasGoldAccumulationScheme && includeTrends ? await goldTrend(auth, trendMonths) : undefined,
+    contributionTrend: contributionTrendRows,
+    goldAccumulationTrend: goldTrendRows,
     emptyState: activeSchemes.length === 0 ? { message: "No active schemes yet.", cta: "Browse plans" } : null,
     cacheTtlSeconds: 60,
   };

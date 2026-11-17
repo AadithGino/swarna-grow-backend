@@ -84,6 +84,7 @@ paymentSchema.index(
   },
 );
 paymentSchema.index({ tenantId: 1, branchId: 1, paidAt: -1 });
+paymentSchema.index({ tenantId: 1, customerId: 1, paidAt: -1 });
 
 const paymentLinkSchema = new mongoose.Schema(
   {

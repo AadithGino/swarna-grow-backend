@@ -85,7 +85,7 @@ async function seedDeliveredReturnOrder({ paymentMethod = EcommercePaymentMethod
     statusHistory: [],
   });
   const admin = (extra) => ({
-    auth: { tenantId: tenant._id, id: user._id },
+    auth: { tenantId: tenant._id, id: user._id, type: "TENANT_USER", role: "TENANT_OWNER" },
     params: { returnRequestId: returnId, orderId },
     body: {},
     headers: {},

@@ -17,3 +17,4 @@ export * from "./assistant.models.js";
 
 export * from "./enrolment-operation.model.js";
 export * from "./demo.models.js";
+export * from "./ecommerce-scheme-reservation.model.js";

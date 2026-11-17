@@ -172,6 +172,220 @@ async function postCompletedWebhook({ tenantId, merchantOrderId, amountPaise, tr
   return eventId;
 }
 
+for (const scenario of ["top-up", "fully covered", "rejected", "invalidated", "replay after backing loss", "harmless projection rebuild", "capture after backing loss", "scheme shipping", "scheme shipping without backing"]) {
+  const full = ["fully covered", "rejected"].includes(scenario);
+  test(`matured scheme checkout handles ${scenario} orders`, async () => {
+    const { tenant, user, branch } = await seedTenantUser({});
+    const customer = await seedCustomer({ tenantId: tenant._id, branchId: branch._id });
+    const { product, adminHeaders } = await seedReady({ tenant, user, branch });
+    const { EcommerceProduct, EcommerceFulfilmentSettings, Scheme, LedgerEntry, EcommerceSchemeReservation, Redemption } =
+      await import("../src/models/index.js");
+    await EcommerceProduct.updateOne({ _id: product.id }, { $set: { schemePurchasePolicy: "ALLOW" } });
+    await EcommerceFulfilmentSettings.updateOne({ tenantId: tenant._id }, { $set: { schemeCheckoutEnabled: true, "storePolicies.returnEligibilityDays": 7 } });
+    const amount = full ? 400_000 : 75_000;
+    const scheme = await Scheme.create({
+      tenantId: tenant._id, branchId: branch._id, customerId: customer._id,
+      planId: createId("plan"), enrollmentNumber: createId("enroll"),
+      planSnapshot: {
+        name: "Matured checkout scheme", paymentPattern: "FIXED",
+        benefit: { type: "FIXED_BONUS_AMOUNT", bonusBasis: "FLAT", bonusValue: 25_000 },
+        redemptionRules: { allowedModes: ["PURCHASE_ADJUSTMENT"] },
+        schemePurchaseRules: { channel: "ONLINE", settlementBases: ["CASH_VALUE"] },
+      },
+      valueBasis: "CASH", paymentPattern: "FIXED", status: "MATURED",
+      startDate: "2025-01-01", maturityDate: "2025-02-01", installmentAmountPaise: amount,
+      installments: [{ number: 1, dueDate: "2025-01-01", amountPaise: amount, paidPaise: amount, status: "PAID" }],
+      createdBy: user._id,
+    });
+    await LedgerEntry.create({
+      tenantId: tenant._id, branchId: branch._id, customerId: customer._id, schemeId: scheme._id,
+      type: "INSTALLMENT_PAYMENT", sequence: 1, amountPaise: amount, actorType: "USER", actorId: user._id,
+    });
+    const token = await customerToken({ tenant, branch, customer });
+    const headers = { authorization: `Bearer ${token}` };
+    const cart = await request(app).put("/api/v1/app/shop/cart").set(headers).set("x-idempotency-key", createId("c"))
+      .send({ lines: [{ productId: product.id, quantity: 2 }] });
+    assert.equal(cart.status, 200, JSON.stringify(cart.body));
+    const shipping = scenario.startsWith("scheme shipping");
+    let q;
+    if (shipping) {
+      await EcommerceFulfilmentSettings.updateOne({ tenantId: tenant._id }, { $set: {
+        deliveryEnabled: true, serviceablePincodes: ["686692"], deliveryChargePaise: 0,
+      } });
+      const addr = await request(app).post("/api/v1/app/shop/addresses").set(headers).set("x-idempotency-key", createId("addr"))
+        .send({ line1: "Home", city: "Kottayam", state: "Kerala", pincode: "686692" });
+      assert.equal(addr.status, 201, JSON.stringify(addr.body));
+      q = await request(app).post("/api/v1/app/shop/quotes").set(headers).set("x-idempotency-key", createId("q"))
+        .send({ fulfilmentMode: "DELIVERY", addressId: addr.body.data.id });
+      assert.equal(q.status, 201, JSON.stringify(q.body));
+    } else {
+      q = await request(app).post("/api/v1/app/shop/quotes").set(headers).set("x-idempotency-key", createId("q"))
+        .send({ fulfilmentMode: "BRANCH_PICKUP", pickupBranchId: branch._id });
+      assert.equal(q.status, 201, JSON.stringify(q.body));
+    }
+    const quoteId = q.body.data.id;
+    const selection = { schemeId: scheme._id, basis: "CASH_VALUE" };
+    const preview = await request(app).get(`/api/v1/app/shop/quotes/${quoteId}/scheme-preview`).set(headers).query(selection);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    const { applied, topUpPaise, makingChargeWaivedPaise } = preview.body.data;
+    assert.equal(topUpPaise, full ? 0 : 106_000);
+    const orderRequest = { quoteId, schemePurchase: { ...selection, applied, topUpPaise, makingChargeWaivedPaise } };
+    const placed = await request(app).post("/api/v1/app/shop/orders").set(headers).set("x-idempotency-key", createId("o"))
+      .send(orderRequest);
+    assert.equal(placed.status, 201, JSON.stringify(placed.body));
+    const order = placed.body.data;
+    assert.equal(order.totalPaise, topUpPaise);
+    assert.equal(order.paymentAllowed, false);
+    const purchase = order.financialSnapshot.schemePurchase;
+    const requestedRedemption = await Redemption.findById(purchase.redemptionId).lean();
+    assert.equal(requestedRedemption.status, "REQUESTED");
+    assert.equal(requestedRedemption.benefitPaise, 25_000);
+    assert.equal(requestedRedemption.principalPaise + requestedRedemption.benefitPaise, applied);
+    if (scenario === "rejected") {
+      const rejected = await request(app).post(`/api/v1/admin/ecommerce/orders/${order.id}/fulfilment-transition`)
+        .set(adminHeaders).send({ expectedVersion: order.version, targetStatus: "CANCELLED" });
+      assert.equal(rejected.status, 200, JSON.stringify(rejected.body));
+      assert.equal(rejected.body.data.status, "CANCELLED");
+      assert.equal((await Redemption.findById(purchase.redemptionId).lean()).status, "REJECTED");
+      assert.equal((await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean()).status, "RELEASED");
+      return;
+    }
+    const approve = await request(app).post(`/api/v1/admin/ecommerce/orders/${order.id}/fulfilment-transition`)
+      .set(adminHeaders).send({ expectedVersion: order.version, targetStatus: "PAID" });
+    assert.equal(approve.status, 200, JSON.stringify(approve.body));
+    if (full) {
+      assert.equal(approve.body.data.status, "PAID");
+    } else {
+      const paymentKey = createId("pay");
+      const intent = await request(app).post(`/api/v1/app/shop/orders/${order.id}/payment-intents`)
+        .set(headers).set("x-idempotency-key", paymentKey).send({ redirectUrl: "https://example.com/return" });
+      assert.ok([200, 201].includes(intent.status), JSON.stringify(intent.body));
+      const attempt = await EcommercePaymentAttempt.findOne({ orderId: order.id }).lean();
+      assert.equal(attempt.amountPaise, topUpPaise);
+      if (scenario === "replay after backing loss") {
+        await Scheme.updateOne({ _id: scheme._id }, { $set: { status: "CLOSED_PREMATURE" }, $inc: { version: 1 } });
+        const fresh = await request(app).post(`/api/v1/app/shop/orders/${order.id}/payment-intents`)
+          .set(headers).set("x-idempotency-key", createId("pay")).send({ redirectUrl: "https://example.com/return" });
+        assert.equal(fresh.status, 409, JSON.stringify(fresh.body));
+        assert.equal(fresh.body.error.code, "SCHEME_BACKING_CHANGED");
+        const replay = await request(app).post(`/api/v1/app/shop/orders/${order.id}/payment-intents`)
+          .set(headers).set("x-idempotency-key", paymentKey).send({ redirectUrl: "https://example.com/return" });
+        assert.equal(replay.status, 409, JSON.stringify(replay.body));
+        assert.equal(replay.body.error.code, "SCHEME_BACKING_CHANGED");
+        const poll = await request(app).get(`/api/v1/app/shop/orders/${order.id}/payment-intents/${attempt._id}`).set(headers);
+        assert.equal(poll.status, 409, JSON.stringify(poll.body));
+        assert.equal(poll.body.error.code, "SCHEME_BACKING_CHANGED");
+        return;
+      }
+      if (scenario === "capture after backing loss") {
+        await Scheme.updateOne({ _id: scheme._id }, { $set: { status: "CLOSED_PREMATURE" }, $inc: { version: 1 } });
+        const callback = { tenantId: tenant._id, merchantOrderId: attempt.merchantOrderId ?? attempt._id, amountPaise: topUpPaise };
+        await postCompletedWebhook(callback);
+        const captured = await EcommerceOrder.findById(order.id).lean();
+        assert.equal(captured.status, "CANCELLED");
+        assert.equal(captured.paymentExceptionPayload.reason, "SCHEME_BACKING_CHANGED");
+        const { EcommercePaymentExceptionRefund, EcommerceStockReservation } = await import("../src/models/index.js");
+        const refund = await EcommercePaymentExceptionRefund.findOne({ orderId: order.id }).lean();
+        assert.equal(refund.amountPaise, topUpPaise);
+        assert.equal(refund.status, "ASSIGNED");
+        assert.equal(await EcommerceStockReservation.countDocuments({ orderId: order.id, releasedAt: null }), 0);
+        assert.equal((await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean()).status, "RELEASED");
+        assert.equal((await Redemption.findById(purchase.redemptionId).lean()).status, "REJECTED");
+        return;
+      }
+      const payment = await request(app).post(`/api/v1/app/shop/orders/${order.id}/test-harness/complete-payment`)
+        .set(headers).set("x-idempotency-key", createId("pay")).send({ outcome: "COMPLETED", paymentAttemptId: attempt._id });
+      assert.equal(payment.status, 200, JSON.stringify(payment.body));
+    }
+    assert.equal((await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean()).status, "HELD");
+    const paid = await EcommerceOrder.findById(order.id).lean();
+    assert.equal(paid.status, "PAID");
+    if (shipping) {
+      if (scenario === "scheme shipping without backing") {
+        await Scheme.updateOne({ _id: scheme._id }, { $set: { status: "CLOSED_PREMATURE" }, $inc: { version: 1 } });
+      }
+      const ship = await request(app).post(`/api/v1/admin/ecommerce/orders/${order.id}/ship`)
+        .set(adminHeaders).set("x-idempotency-key", createId("ship"))
+        .send({ expectedVersion: paid.version, carrierName: "BlueDart", trackingNumber: "BD999", trackingUrl: "https://example.com/t/BD999" });
+      if (scenario === "scheme shipping without backing") {
+        assert.equal(ship.status, 409, JSON.stringify(ship.body));
+        assert.equal(ship.body.error.code, "SCHEME_BACKING_CHANGED");
+        assert.equal((await EcommerceOrder.findById(order.id).lean()).status, "PAID");
+        return;
+      }
+      assert.equal(ship.status, 200, JSON.stringify(ship.body));
+      const delivered = await request(app).post(`/api/v1/admin/ecommerce/orders/${order.id}/confirm-delivery`)
+        .set(adminHeaders).set("x-idempotency-key", createId("deliver"))
+        .send({ expectedVersion: ship.body.data.version, proofReference: "POD-12345", recipientName: "Anu Joseph" });
+      assert.equal(delivered.status, 200, JSON.stringify(delivered.body));
+      assert.equal((await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean()).status, "CONSUMED");
+      assert.equal((await Redemption.findById(purchase.redemptionId).lean()).status, "COMPLETED");
+      return;
+    }
+    await EcommerceOrder.updateOne({ _id: order.id }, { $set: {
+      status: "READY_FOR_PICKUP", "fulfilmentHandover.recordedAt": new Date(),
+    } });
+    if (scenario === "invalidated") {
+      await Scheme.updateOne({ _id: scheme._id }, { $set: { status: "CLOSED_PREMATURE" }, $inc: { version: 1 } });
+    }
+    if (scenario === "harmless projection rebuild") {
+      const { recomputeScheme } = await import("../src/services/scheme.service.js");
+      await recomputeScheme({ params: { schemeId: scheme._id }, scope: { tenantId: tenant._id },
+        auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER", role: "TENANT_OWNER" },
+        headers: {}, ip: "127.0.0.1" });
+    }
+    const delivered = await request(app).post(`/api/v1/admin/ecommerce/orders/${order.id}/fulfilment-transition`)
+      .set(adminHeaders).send({ expectedVersion: paid.version, targetStatus: "DELIVERED" });
+    if (scenario === "invalidated") {
+      assert.equal(delivered.status, 409, JSON.stringify(delivered.body));
+      assert.equal(delivered.body.error.code, "SCHEME_BACKING_CHANGED");
+      assert.equal((await EcommerceOrder.findById(order.id).lean()).status, "READY_FOR_PICKUP");
+      assert.equal((await Redemption.findById(purchase.redemptionId).lean()).status, "APPROVED");
+      return;
+    }
+    assert.equal(delivered.status, 200, JSON.stringify(delivered.body));
+    assert.equal((await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean()).status, "CONSUMED");
+    assert.equal((await Redemption.findById(purchase.redemptionId).lean()).status, "COMPLETED");
+
+    for (const returnedCount of [1, 2]) {
+      const returned = await request(app).post(`/api/v1/app/shop/orders/${order.id}/return-requests`)
+        .set(headers).set("x-idempotency-key", createId("return"))
+        .send({ reason: "Return one of the two items", items: [{ productId: product.id, quantity: 1 }] });
+      assert.equal(returned.status, 201, JSON.stringify(returned.body));
+      let row = returned.body.data.request;
+      assert.equal(row.refundEntitlementPaise, topUpPaise / 2);
+      for (const [action, body] of [
+        ["decision", { decision: "APPROVE" }],
+        ["received", {}],
+        ["inspection", { inspectionNote: "Checked at store", inspectionOutcome: "APPROVED_FOR_RESALE", confirmRestockInventory: true }],
+        ...(!full ? [["record-manual-refund", { amountPaise: topUpPaise / 2, recipient: "Customer",
+          method: "UPI", reference: `TEST-REFUND-${returnedCount}`, proofNote: "Refund proof recorded" }]] : []),
+        ["resolve", { resolutionNote: "One returned item settled" }],
+      ]) {
+        const res = await request(app).post(`/api/v1/admin/ecommerce/return-requests/${row.id}/${action}`)
+          .set(adminHeaders).set("x-idempotency-key", createId("return")).send({ expectedVersion: row.version, ...body });
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        row = res.body.data.request;
+      }
+      if (!full) {
+        const detail = await request(app).get(`/api/v1/app/shop/orders/${order.id}`).set(headers);
+        assert.equal(detail.status, 200);
+        assert.equal(detail.body.data.refundStatus, returnedCount === 1 ? "PARTIALLY_REFUNDED" : "REFUNDED");
+        assert.equal(detail.body.data.refundedPaise, topUpPaise * returnedCount / 2);
+      }
+    }
+    const restored = await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean();
+    assert.equal(restored.restoredUnits, applied);
+    if (!full) {
+      const { EcommercePaymentExceptionRefund } = await import("../src/models/index.js");
+      const refunds = await EcommercePaymentExceptionRefund.find({ orderId: order.id }).lean();
+      assert.equal(refunds.length, 2);
+      assert.equal(refunds.reduce((sum, refund) => sum + refund.amountPaise, 0), topUpPaise);
+    }
+    assert.equal((await EcommerceInventory.findOne({ tenantId: tenant._id, productId: product.id }).lean()).quantityOnHand, 5);
+  });
+}
+
 test("payment intent blocked when test harness off", async () => {
   const { tenant, user, branch } = await seedTenantUser({});
   await enableStore(tenant);

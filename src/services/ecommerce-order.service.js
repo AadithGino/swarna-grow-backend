@@ -1,3 +1,7 @@
+import { getSchemePurchasePreview } from "./ecommerce-quote.service.js";
+import { allocateSchemeBenefit } from "../lib/ecommerce-scheme-reservation-accounting.js";
+import { reserveSchemeForOrder } from "./ecommerce-scheme-reservation.service.js";
+import { computeComponentTaxPaise } from "../lib/ecommerce-checkout-tax.js";
 import { createId } from "../lib/ids.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -42,18 +46,46 @@ import {
   EcommerceOrderEvent,
   EcommercePaymentExceptionRefund,
   EcommercePriceQuote,
+  Redemption,
   EcommerceTaxSettings,
 } from "../models/index.js";
 import {
   EcommerceFulfilmentMode,
   EcommerceOrderEventType,
   EcommerceOrderStatus,
+  EcommerceOrderRefundSource,
   EcommercePaymentExceptionRefundStatus,
   EcommercePaymentMethod,
   EcommerceQuoteStatus,
 } from "../constants/enums.js";
 
-function mapRefundPresentation(refundRow) {
+function mapRefundPresentation(order, refunds = []) {
+  const returns = refunds.filter((refund) => refund.refundSource === EcommerceOrderRefundSource.ORDER_RETURN);
+  const cancellation = refunds.find((refund) => refund.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION);
+  if (!cancellation && returns.length) {
+    const settled = returns.filter((refund) => [
+      EcommercePaymentExceptionRefundStatus.SUCCEEDED,
+      EcommercePaymentExceptionRefundStatus.MANUAL_RECORDED,
+    ].includes(refund.status));
+    const refundedPaise = settled.reduce((sum, refund) => sum + refund.amountPaise, 0);
+    if (refundedPaise > 0 && refundedPaise < order.totalPaise) {
+      return {
+        refundStatus: "PARTIALLY_REFUNDED",
+        refundStatusLabel: "Partial refund confirmed",
+        refundProviderReference: settled[0]?.providerRefundId ?? null,
+        refundedPaise,
+      };
+    }
+    if (refundedPaise > 0 && refundedPaise >= order.totalPaise) {
+      return {
+        refundStatus: "REFUNDED",
+        refundStatusLabel: "Refund confirmed",
+        refundProviderReference: settled[0]?.providerRefundId ?? null,
+        refundedPaise,
+      };
+    }
+  }
+  const refundRow = cancellation ?? returns[0] ?? refunds[0];
   if (!refundRow) {
     return {
       refundStatus: "NONE",
@@ -123,13 +155,16 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
     id: row._id,
     orderNumber: row.orderNumber,
     status: row.status,
-    statusLabel,
+    statusLabel: row.status === EcommerceOrderStatus.PENDING_PAYMENT &&
+      row.financialSnapshot?.schemePurchase?.approvalStatus === "PENDING"
+      ? "Awaiting scheme purchase approval" : statusLabel,
     paymentMethod,
     codPincodeSnapshot: row.codPincodeSnapshot ?? null,
     courierCodCollectionStatus: cod ? row.courierCod?.collectionStatus ?? null : null,
     courierCodRemittanceStatus: cod ? row.courierCod?.remittanceStatus ?? null : null,
     codBankRemittanceReconciled: cod ? codBankSettled : null,
-    paymentAllowed: cod ? false : cap.paymentAllowed,
+    paymentAllowed: !cod && cap.paymentAllowed &&
+      (!row.financialSnapshot?.schemePurchase || row.financialSnapshot.schemePurchase.approvalStatus === "APPROVED"),
     orderPlacementAllowed: false,
     paymentCompleted: cod ? codCollected : row.status === EcommerceOrderStatus.PAID,
     checkoutUsable: cap.checkoutUsable,
@@ -156,7 +191,7 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
       || row.status === EcommerceOrderStatus.CANCELLED
         ? row.status
         : null,
-    ...mapRefundPresentation(refundRow),
+    ...mapRefundPresentation(row, refundRow),
     activePaymentAttempt: cod ? null : activePaymentAttempt,
     testPaymentHarness: cod ? null : testPaymentHarnessMetaForClient(),
     invoiceAvailable: isEcommerceOrderInvoiceAvailable(row),
@@ -279,6 +314,9 @@ export async function createCustomerOrder(req, opts = {}) {
           tenantId: req.auth.tenantId,
         }).session(session);
         if (linked) {
+          if (linked.creationBodyHash && linked.creationBodyHash !== bodyHash) {
+            throw errors.conflict("QUOTE_ALREADY_CONSUMED", "This quote was used for a different order selection.");
+          }
           return { order: mapCustomerOrder(linked.toObject(), baseCapability), created: false };
         }
       }
@@ -297,9 +335,11 @@ export async function createCustomerOrder(req, opts = {}) {
         codOrderAllowed: codEvaluation.eligible,
         codBlockers: codEvaluation.blockers,
       };
+      const schemeChoice = req.body.schemePurchase;
+      if (schemeChoice && opts.assisted) throw errors.business("SCHEME_CHECKOUT_ONLINE_ONLY", "Use the customer checkout for a scheme purchase.");
       if (opts.assisted) {
         if (!capability.checkoutTaxReady) assertCustomerOrderCreationAllowed(capability, paymentMethod);
-      } else {
+      } else if (!schemeChoice || schemeChoice.topUpPaise > 0) {
         assertCustomerOrderCreationAllowed(capability, paymentMethod);
       }
 
@@ -343,6 +383,60 @@ export async function createCustomerOrder(req, opts = {}) {
       }
 
       const orderId = createId("eord");
+      let schemePurchase;
+      let lines = quote.lines;
+      let subtotalPaise = quote.subtotalPaise;
+      let taxPaise = quote.taxPaise;
+      let totalPaise = quote.totalPaise;
+      if (schemeChoice) {
+        const priced = await getSchemePurchasePreview({ ...req, params: { quoteId }, query: schemeChoice }, { session });
+        for (const key of ["topUpPaise", "applied", "makingChargeWaivedPaise"]) {
+          if (priced[key] !== schemeChoice[key]) throw errors.conflict("SCHEME_QUOTE_CHANGED", "Calculate the scheme estimate again.");
+        }
+        const eligibleBenefitUnits = priced.basis === "GOLD_WEIGHT" ? priced.benefitWeightMg : priced.benefitPaise;
+        const remainingBenefitUnits = Math.max(0, eligibleBenefitUnits - priced.usedBenefitUnits);
+        const benefitUsed = Math.min(priced.applied, remainingBenefitUnits);
+        const hold = await reserveSchemeForOrder({
+          tenantId: req.auth.tenantId, customerId: req.auth.id, orderId, schemeId: priced.schemeId,
+          schemeVersion: priced.schemeVersion, basis: priced.basis, balance: priced.availableBalance,
+          waiverCapPaise: priced.waiverCapPaise, session,
+          lines: allocateSchemeBenefit(priced.lines.map((line) => ({
+            productId: line.productId, quantity: line.quantity, cashPaise: line.cashPaise,
+            schemeUnits: line.schemeAppliedWeightMg ?? line.schemeAppliedPaise,
+            schemePaise: line.schemeAppliedPaise, waiverPaise: line.makingChargeWaivedPaise,
+          })), benefitUsed),
+        });
+        lines = quote.lines.map((line, index) => ({
+          ...line.toObject(), lineTotalPaise: priced.lines[index].subtotalPaise,
+          pricingSnapshot: {
+            ...line.pricingSnapshot, schemePurchase: priced.lines[index],
+            componentTax: computeComponentTaxPaise(priced.lines[index].subtotalPaise, quote.financialSnapshot.taxComponentLines),
+          },
+        }));
+        subtotalPaise = priced.lines.reduce((sum, line) => sum + line.subtotalPaise, 0);
+        taxPaise = priced.lines.reduce((sum, line) => sum + line.taxPaise, 0);
+        totalPaise = priced.topUpPaise;
+        const benefitPaise = priced.basis === "GOLD_WEIGHT"
+          ? Number(BigInt(priced.appliedPaise) * BigInt(benefitUsed) / BigInt(priced.applied)) : benefitUsed;
+        const [redemption] = await Redemption.create([{
+          tenantId: req.auth.tenantId, customerId: req.auth.id, schemeId: priced.schemeId,
+          branchId: priced.branchId, closureType: "MATURITY_REDEMPTION", mode: "PURCHASE_ADJUSTMENT",
+          status: "REQUESTED", settlementPaise: priced.appliedPaise,
+          principalPaise: priced.appliedPaise - benefitPaise, benefitPaise,
+          includedBenefitPaise: benefitPaise,
+          benefitWeightMg: priced.basis === "GOLD_WEIGHT" ? benefitUsed : 0,
+          weightMg: priced.basis === "GOLD_WEIGHT" ? priced.applied : 0,
+          modeDetails: { ecommerceOrderId: orderId, schemeReservationId: hold._id },
+          requestedBy: req.auth.id, requestedAt: new Date(),
+        }], { session });
+        schemePurchase = {
+          schemeId: priced.schemeId, basis: priced.basis, reservationId: hold._id,
+          valuationRateEffectiveDate: priced.valuationRateEffectiveDate,
+          redemptionId: redemption._id, approvalStatus: "PENDING",
+          grossPaise: priced.totalPaise, appliedPaise: priced.appliedPaise, topUpPaise: priced.topUpPaise,
+          applied: priced.applied, remaining: priced.remaining, makingChargeWaivedPaise: priced.makingChargeWaivedPaise,
+        };
+      }
       const consumed = await consumeActiveQuoteRow({
         quoteId: quote._id,
         tenantId: req.auth.tenantId,
@@ -375,6 +469,7 @@ export async function createCustomerOrder(req, opts = {}) {
         quoteId: quote._id,
         quoteFinancialSnapshot: quote.financialSnapshot,
         quoteLines: quote.lines,
+        ...(schemePurchase ? { schemePurchase, subtotalPaise, taxPaise, totalPaise } : {}),
         consumedAt: new Date().toISOString(),
         paymentMethod,
         codPincodeSnapshot: quote.codPincodeSnapshot ?? null,
@@ -394,14 +489,14 @@ export async function createCustomerOrder(req, opts = {}) {
                 ? EcommerceOrderStatus.COD_PENDING_ACCEPTANCE
                 : EcommerceOrderStatus.PENDING_PAYMENT,
               quoteId: quote._id,
-              lines: quote.lines,
+              lines,
               fulfilmentMode: quote.fulfilmentMode,
               pickupBranchId: quote.pickupBranchId,
               addressSnapshot: quote.addressSnapshot,
-              subtotalPaise: quote.subtotalPaise,
-              taxPaise: quote.taxPaise,
+              subtotalPaise,
+              taxPaise,
               fulfilmentChargePaise: quote.fulfilmentChargePaise,
-              totalPaise: quote.totalPaise,
+              totalPaise,
               taxConfigVersion: quote.taxConfigVersion,
               financialSnapshot,
               paymentMethod,
@@ -473,9 +568,13 @@ async function refundRowsByOrderId(tenantId, orderIds) {
   const refunds = await EcommercePaymentExceptionRefund.find({
     tenantId,
     orderId: { $in: orderIds },
-  }).lean();
+  }).sort({ createdAt: -1, _id: -1 }).lean();
   const map = new Map();
-  for (const row of refunds) map.set(row.orderId, row);
+  for (const row of refunds) {
+    const group = map.get(row.orderId) ?? [];
+    group.push(row);
+    map.set(row.orderId, group);
+  }
   return map;
 }
 
@@ -518,16 +617,13 @@ export async function getCustomerOrder(req) {
       customerId: req.auth.id,
     }).lean());
   if (!row) throw errors.notFound("Order");
-  const refund = await EcommercePaymentExceptionRefund.findOne({
-    tenantId: req.auth.tenantId,
-    orderId: row._id,
-  }).lean();
+  const refunds = await refundRowsByOrderId(req.auth.tenantId, [row._id]);
   const activeAttempt = await findActivePaymentAttempt(req.auth.tenantId, row._id);
   const mapped = mapCustomerOrder(
     row,
     capability,
-    refund,
-    mapCustomerActivePaymentAttempt(activeAttempt),
+    refunds.get(row._id),
+    mapCustomerActivePaymentAttempt(activeAttempt, { includeToken: !row.financialSnapshot?.schemePurchase }),
   );
   const { mapCancellationCapabilities } = await import("./ecommerce-order-cancellation.service.js");
   const { EcommerceOrderCancellationRequest } = await import("../models/index.js");
@@ -561,11 +657,8 @@ export async function listAdminOrders(req) {
 export async function getAdminOrder(req) {
   const { capability } = await loadCheckoutContext(req.auth.tenantId, req.tenant);
   const row = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
-  const refund = await EcommercePaymentExceptionRefund.findOne({
-    tenantId: req.auth.tenantId,
-    orderId: row._id,
-  }).lean();
-  const mapped = mapAdminOrder(row, capability, refund);
+  const refunds = await refundRowsByOrderId(req.auth.tenantId, [row._id]);
+  const mapped = mapAdminOrder(row, capability, refunds.get(row._id));
   const [withCustomer, returnSummary] = await Promise.all([
     attachAdminOrderCustomerDisplay(req.auth.tenantId, [mapped]),
     attachReturnSummaryToAdminOrder(req.auth.tenantId, row._id),

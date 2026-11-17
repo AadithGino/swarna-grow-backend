@@ -351,3 +351,35 @@ test("updatePlan PATCH merge into unsatisfiable plan is rejected", async () => {
     (error) => error instanceof AppError && error.code === "VALIDATION_FAILED",
   );
 });
+
+test("purchase rules validate supported modes and preserve the structured making-charge honour", async () => {
+  const rules = {
+    channel: "BOTH",
+    settlementBases: ["CASH_VALUE"],
+    makingChargeWaiver: { kind: "PERCENT", basisPoints: 7500 },
+    waiverCapPaise: 50_000,
+  };
+  assert.equal(planBody.safeParse({ ...planBase, schemePurchaseRules: rules }).success, false);
+  const body = {
+    ...planBase,
+    code: "SATSCHEMEORD",
+    redemptionRules: { ...planBase.redemptionRules, allowedModes: ["CASH", "PURCHASE_ADJUSTMENT"] },
+    schemePurchaseRules: rules,
+  };
+  assert.equal(planBody.safeParse({
+    ...body, schemePurchaseRules: { ...rules, settlementBases: ["GOLD_WEIGHT"] },
+  }).success, false);
+  assert.equal(planBody.safeParse({
+    ...body, schemePurchaseRules: { ...rules, makingChargeWaiver: undefined },
+  }).success, false);
+
+  const { tenant, user } = await seedTenantUser({ role: TenantRole.TENANT_OWNER });
+  const req = { auth: { id: user._id, tenantId: tenant._id, type: "TENANT_USER" },
+    tenant, headers: { "user-agent": "test" }, ip: "127.0.0.1" };
+  const created = await createPlan({ ...req, body });
+  const saved = await SchemePlan.findById(created._id).lean();
+  assert.deepEqual(saved.schemePurchaseRules, rules);
+  const updated = await updatePlan({ ...req, params: { planId: created._id },
+    body: { expectedVersion: saved.version, schemePurchaseRules: null } });
+  assert.equal(updated.schemePurchaseRules, null);
+});

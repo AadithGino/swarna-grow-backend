@@ -15,6 +15,24 @@ test("financial index rollout replaces obsolete refund uniqueness and is idempot
   await applyFinancialIndexRollout({ writesPaused: true });
   await assertFinancialIndexesReady();
 });
+test("return refund rollout preserves distinct refunds and unique non-return cases", async () => {
+  const collection = EcommercePaymentExceptionRefund.collection;
+  await collection.createIndex({ tenantId: 1, orderId: 1, paymentAttemptId: 1 }, { unique: true });
+  const base = { tenantId: "migration-tenant", orderId: "migration-order", paymentAttemptId: "migration-attempt" };
+  try {
+    await assert.rejects(assertFinancialIndexesReady(), /MIGRATION_REQUIRED/);
+    await applyFinancialIndexRollout({ writesPaused: true });
+    await collection.insertMany([
+      { ...base, _id: "migration-return-a", returnRequestId: "return-a" },
+      { ...base, _id: "migration-return-b", returnRequestId: "return-b" },
+      { ...base, _id: "migration-non-return" },
+    ]);
+    await assert.rejects(collection.insertOne({ ...base, _id: "migration-duplicate-a", returnRequestId: "return-a" }), { code: 11000 });
+    await assert.rejects(collection.insertOne({ ...base, _id: "migration-duplicate-non-return" }), { code: 11000 });
+  } finally {
+    await collection.deleteMany({ tenantId: base.tenantId });
+  }
+});
 test("financial index rollout requires and restores maturity credit uniqueness", async () => {
   const indexName = "tenantId_1_schemeId_1_maturityEventKey_1";
   await LedgerEntry.collection.dropIndex(indexName);

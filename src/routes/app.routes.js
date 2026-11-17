@@ -50,6 +50,7 @@ import {
   ecommerceAddressPatchBody,
   ecommerceCartPutBody,
   ecommerceQuoteCreateBody,
+  ecommerceSchemePurchasePreviewQuery,
   ecommerceOrderCreateBody,
   ecommerceCancellationReasonBody,
   ecommerceReturnRequestCreateBody,
@@ -574,6 +575,10 @@ appRouter.post(
   "/shop/quotes",
   validate({ body: ecommerceQuoteCreateBody }),
   asyncHandler(ecommerce.shopCreateQuote),
+);
+appRouter.get("/shop/quotes/:quoteId/scheme-preview",
+  validate({ query: ecommerceSchemePurchasePreviewQuery }),
+  asyncHandler(ecommerce.shopSchemePurchasePreview),
 );
 appRouter.get("/shop/quotes/:quoteId", asyncHandler(ecommerce.shopGetQuote));
 appRouter.post(

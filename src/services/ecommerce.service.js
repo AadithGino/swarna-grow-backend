@@ -75,6 +75,7 @@ function mapCategory(row) {
     description: row.description ?? "",
     imageUploadId: row.imageUploadId ?? null,
     imageUrl: row.imageUploadId ? uploadViewPath(row.imageUploadId) : null,
+    schemePurchaseAllowed: row.schemePurchaseAllowed === true,
     displayOrder: row.displayOrder ?? 0,
     active: row.active !== false,
     version: row.version ?? 1,
@@ -90,6 +91,7 @@ function mapProduct(row, { includePricing = false, tenant, rateRow, taxSettings 
     sku: row.sku ?? "",
     description: row.description ?? "",
     categoryId: row.categoryId ?? null,
+    schemePurchasePolicy: row.schemePurchasePolicy ?? "INHERIT",
     imageUploadIds: row.imageUploadIds ?? [],
     imageUrls: (row.imageUploadIds ?? []).map((id) => ({
       uploadId: id,
@@ -308,6 +310,7 @@ export async function createCategory(req) {
             name: String(req.body.name).trim(),
             slug,
             description: req.body.description ?? "",
+            schemePurchaseAllowed: req.body.schemePurchaseAllowed === true,
             displayOrder: req.body.displayOrder ?? 0,
             active: req.body.active !== false,
           },
@@ -434,21 +437,19 @@ export async function listProducts(req) {
     cursor: req.query.cursor,
   });
   const taxSettings = await loadTaxSettings(req.auth.tenantId);
-  const items = [];
-  for (const row of result.data) {
-    const rateRow =
-      row.priceMode === EcommercePriceMode.GOLD_RATE_BASED
-        ? await latestRateForPurity(req.auth.tenantId, row.purity)
-        : null;
-    items.push(
-      mapProduct(row, {
-        includePricing: req.query.includePricing === "true",
-        tenant: req.tenant,
-        rateRow,
-        taxSettings,
-      }),
-    );
-  }
+  const purities = [...new Set(
+    result.data
+      .filter((row) => row.priceMode === EcommercePriceMode.GOLD_RATE_BASED && row.purity)
+      .map((row) => row.purity),
+  )];
+  const rates = await Promise.all(purities.map((purity) => latestRateForPurity(req.auth.tenantId, purity)));
+  const rateByPurity = new Map(purities.map((purity, index) => [purity, rates[index]]));
+  const items = result.data.map((row) => mapProduct(row, {
+    includePricing: req.query.includePricing === "true",
+    tenant: req.tenant,
+    rateRow: row.priceMode === EcommercePriceMode.GOLD_RATE_BASED ? rateByPurity.get(row.purity) ?? null : null,
+    taxSettings,
+  }));
   return { items, meta: result.meta };
 }
 
@@ -471,6 +472,7 @@ export async function createProduct(req) {
             sku: req.body.sku ? String(req.body.sku).trim() : "",
             description: req.body.description ?? "",
             categoryId: req.body.categoryId ?? null,
+            schemePurchasePolicy: req.body.schemePurchasePolicy ?? "INHERIT",
             imageUploadIds: [],
             featured: req.body.featured === true,
             status: EcommerceProductStatus.DRAFT,

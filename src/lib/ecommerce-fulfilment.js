@@ -45,6 +45,7 @@ export function mapFulfilmentSettings(row) {
     maxCartLines: row?.maxCartLines ?? 50,
     maxQuantityPerLine: row?.maxQuantityPerLine ?? 99,
     checkoutTaxConfig: row?.checkoutTaxConfig ?? {},
+    schemeCheckoutEnabled: row?.schemeCheckoutEnabled === true,
     codEnabled: row?.codEnabled === true,
     codPincodes: normalizePincodes(row?.codPincodes ?? []),
     codAcceptanceWindowMinutes: row?.codAcceptanceWindowMinutes ?? null,

@@ -15,6 +15,7 @@ const PLAN_CONFIG_KEYS = [
   "installmentCount",
   "collectionRules",
   "oneTimeRules",
+  "schemePurchaseRules",
   "amountRules",
   "scheduleRules",
   "paymentRules",

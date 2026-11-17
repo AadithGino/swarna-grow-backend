@@ -9,6 +9,7 @@ import {
 } from "../lib/ecommerce-checkout-capability.js";
 import { findActivePaymentAttempt } from "../lib/ecommerce-payment-in-flight.js";
 import { orderUsesCod } from "../lib/ecommerce-cod.js";
+import { assertLinkedSchemeBacking } from "./ecommerce-scheme-reservation.service.js";
 import { assertOrderPaymentBoundary } from "../lib/ecommerce-order-payment-boundary.js";
 import { EcommercePaymentAttemptOperationalStatus } from "../constants/enums.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
@@ -59,7 +60,7 @@ export function mapPaymentIntent(row, order) {
   };
 }
 
-export function mapCustomerActivePaymentAttempt(row) {
+export function mapCustomerActivePaymentAttempt(row, { includeToken = true } = {}) {
   if (!row) return null;
   return {
     id: row._id,
@@ -67,7 +68,7 @@ export function mapCustomerActivePaymentAttempt(row) {
     amountPaise: row.amountPaise,
     currency: row.currency ?? "INR",
     merchantOrderId: row.merchantOrderId ?? row._id,
-    token: row.sdkToken ?? null,
+    token: includeToken ? (row.sdkToken ?? null) : null,
     redirectUrl: row.redirectUrl ?? null,
     failureReason: row.failureReason ?? null,
     operationalStatus: row.operationalStatus ?? null,
@@ -253,6 +254,12 @@ async function initiateProviderForAttempt(
   }
 }
 
+function paymentAttemptInProgress(attempt) {
+  return errors.business("PAYMENT_ATTEMPT_IN_PROGRESS", "Resume the existing payment session.", {
+    paymentAttemptId: attempt._id,
+  });
+}
+
 export async function createEcommercePaymentIntent(req) {
   assertEcommerceOperational(req.tenant);
   const capability = await loadPaymentCapability(req.auth.tenantId, req.tenant);
@@ -341,17 +348,7 @@ export async function createEcommercePaymentIntent(req) {
 
       const active = await findActivePaymentAttempt(req.auth.tenantId, order._id, session);
       if (active && active.idempotencyKey !== idempotencyKey) {
-        await EcommercePaymentAttempt.updateOne(
-          { _id: active._id, status: { $in: [EcommercePaymentAttemptStatus.PENDING, EcommercePaymentAttemptStatus.INITIATED] } },
-          {
-            $set: {
-              status: EcommercePaymentAttemptStatus.FAILED,
-              failureReason: "SUPERSEDED_BY_RETRY",
-            },
-            $inc: { version: 1 },
-          },
-          { session },
-        );
+        throw paymentAttemptInProgress(active);
       }
       if (active?.idempotencyKey === idempotencyKey) {
         return { kind: "REPLAY", attempt: active, order: order.toObject() };
@@ -429,7 +426,11 @@ export async function createEcommercePaymentIntent(req) {
         if (order) {
           reserved = { kind: "REPLAY", attempt: row, order };
         }
-      } else throw err;
+      } else {
+        const active = await findActivePaymentAttempt(req.auth.tenantId, orderId);
+        if (active?.customerId === req.auth.id) throw paymentAttemptInProgress(active);
+        throw err;
+      }
     } else throw err;
   }
 
@@ -444,6 +445,10 @@ export async function createEcommercePaymentIntent(req) {
   });
   if (!payable) {
     throw errors.business("ORDER_NOT_PAYABLE", "Order is no longer awaiting payment.");
+  }
+
+  if (reserved.kind === "REPLAY" && reserved.order.financialSnapshot?.schemePurchase) {
+    await withTransaction((session) => assertLinkedSchemeBacking(reserved.order, session));
   }
 
   const clientPlatform = String(req.headers["x-platform"] ?? req.headers["X-Platform"] ?? "").trim();
@@ -477,6 +482,9 @@ export async function getEcommercePaymentIntent(req) {
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
   }).lean();
+  if (order?.financialSnapshot?.schemePurchase && order.status === EcommerceOrderStatus.PENDING_PAYMENT) {
+    await withTransaction((session) => assertLinkedSchemeBacking(order, session));
+  }
   return mapPaymentIntent(row, order);
 }
 

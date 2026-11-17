@@ -92,6 +92,7 @@ export function cancellationNeedsOnlineRefund(order) {
   return (
     (order.paymentMethod ?? EcommercePaymentMethod.ONLINE) === EcommercePaymentMethod.ONLINE
     && order.status !== EcommerceOrderStatus.COD_PENDING_ACCEPTANCE
+    && (!order.financialSnapshot?.schemePurchase || order.totalPaise > 0)
     && Boolean(order.paidAt || order.successfulPaymentAttemptId)
   );
 }

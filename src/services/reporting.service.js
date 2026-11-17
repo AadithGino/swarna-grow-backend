@@ -21,6 +21,7 @@ import { getQueue } from "../queues/index.js";
 import { AppError } from "../lib/app-error.js";
 import { listAuditEvents } from "./audit.service.js";
 import { SchemeStatus } from "../constants/enums.js";
+import { schemeStatusCounts } from "./admin-summary.service.js";
 import {
   enrollmentStatusBreakdown,
   openEnrollmentKpi,
@@ -147,13 +148,7 @@ export async function dashboard(req) {
   ]);
   const [
     activeCustomers,
-    activePayingSchemes,
-    planCappedSchemes,
-    defaultedSchemes,
-    pendingFirstPaymentSchemes,
-    maturedSchemes,
-    redeemedSchemes,
-    closedPrematureSchemes,
+    schemeStatuses,
     overdue,
     handovers,
     grievances,
@@ -161,13 +156,7 @@ export async function dashboard(req) {
     redemptions,
   ] = await Promise.all([
     Customer.countDocuments({ ...scope, status: "ACTIVE" }),
-    Scheme.countDocuments({ ...scope, status: SchemeStatus.ACTIVE }),
-    Scheme.countDocuments({ ...scope, status: SchemeStatus.LOCKED }),
-    Scheme.countDocuments({ ...scope, status: SchemeStatus.DEFAULTED }),
-    Scheme.countDocuments({ ...scope, status: SchemeStatus.PENDING_PAYMENT }),
-    Scheme.countDocuments({ ...scope, status: SchemeStatus.MATURED }),
-    Scheme.countDocuments({ ...scope, status: SchemeStatus.REDEEMED }),
-    Scheme.countDocuments({ ...scope, status: SchemeStatus.CLOSED_PREMATURE }),
+    schemeStatusCounts(scope),
     // Matches the Dues → Overdue workboard (open, non-defaulted enrollments past grace).
     Scheme.countDocuments({
       ...scope,
@@ -184,6 +173,13 @@ export async function dashboard(req) {
     }),
     redemptionPeriodSummary(scope, periodRange),
   ]);
+  const activePayingSchemes = schemeStatuses.active;
+  const planCappedSchemes = schemeStatuses.locked;
+  const defaultedSchemes = schemeStatuses.defaulted;
+  const pendingFirstPaymentSchemes = schemeStatuses.pendingFirstPayment;
+  const maturedSchemes = schemeStatuses.matured;
+  const redeemedSchemes = schemeStatuses.redeemed;
+  const closedPrematureSchemes = schemeStatuses.closedPremature;
   const activeAndLockedSchemes = activePayingSchemes + planCappedSchemes;
   const completedSchemes = redeemedSchemes + closedPrematureSchemes;
   const statusBreakdown = enrollmentStatusBreakdown({

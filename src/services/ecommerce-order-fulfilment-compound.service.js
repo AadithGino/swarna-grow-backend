@@ -1,3 +1,4 @@
+import { assertLinkedSchemeBacking, settleLinkedOrderHold } from "./ecommerce-scheme-reservation.service.js";
 import { createId } from "../lib/ids.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -160,6 +161,7 @@ export async function shipAdminOrder(req) {
       throw errors.conflict("VERSION_CONFLICT", "Order changed elsewhere. Refresh and retry.");
     }
 
+    await assertLinkedSchemeBacking(order, session);
     const settings = await EcommerceFulfilmentSettings.findOne({ tenantId: req.auth.tenantId })
       .session(session)
       .lean();
@@ -332,6 +334,7 @@ export async function confirmAdminOrderDelivery(req) {
       actorId: req.auth.id,
       payload: { from: EcommerceOrderStatus.SHIPPED, to: EcommerceOrderStatus.DELIVERED },
     });
+    await settleLinkedOrderHold(order, "CONSUMED", session, req.auth.id);
     await enqueueFulfilmentMilestone(session, req.auth.tenantId, order.toObject(), EcommerceOrderStatus.DELIVERED);
     return updated.toObject();
   });
@@ -366,6 +369,7 @@ export async function markAdminOrderReadyForPickup(req) {
       throw errors.conflict("VERSION_CONFLICT", "Order changed elsewhere. Refresh and retry.");
     }
 
+    await assertLinkedSchemeBacking(order, session);
     const customerCode = generatePickupCode();
     const pickupExpiresAt = new Date(Date.now() + PICKUP_CODE_TTL_MS);
     const challengeBinding = {
@@ -545,6 +549,7 @@ export async function confirmAdminPickupCollection(req) {
       actorId: req.auth.id,
       payload: { from: EcommerceOrderStatus.READY_FOR_PICKUP, to: EcommerceOrderStatus.DELIVERED },
     });
+    await settleLinkedOrderHold(order, "CONSUMED", session, req.auth.id);
     await enqueueFulfilmentMilestone(session, req.auth.tenantId, order.toObject(), EcommerceOrderStatus.DELIVERED);
     return updated.toObject();
   });

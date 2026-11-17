@@ -48,6 +48,7 @@ export const ecommerceCategoryCreateBody = z
     slug: z.string().trim().max(120).optional(),
     description: z.string().max(4000).optional(),
     imageUploadId: z.string().optional(),
+    schemePurchaseAllowed: z.boolean().optional(),
     displayOrder: z.number().int().optional(),
     active: z.boolean().optional(),
   })
@@ -64,6 +65,7 @@ export const ecommerceProductCreateBody = z
     sku: z.string().trim().max(64).optional(),
     description: z.string().max(8000).optional(),
     categoryId: z.string().optional().nullable(),
+    schemePurchasePolicy: z.enum(["INHERIT", "ALLOW", "DISALLOW"]).optional(),
     imageUploadIds: z.array(z.string()).max(12).optional(),
     featured: z.boolean().optional(),
     purity: enumSchema(E.EcommerceGoldPurity).optional(),
@@ -280,6 +282,7 @@ export const ecommerceFulfilmentSettingsPutBody = z
     maxCartLines: z.number().int().min(1).max(100).optional(),
     maxQuantityPerLine: z.number().int().min(1).max(99).optional(),
     pendingPaymentWindowMinutes: z.number().int().min(5).max(120).optional(),
+    schemeCheckoutEnabled: z.boolean().optional(),
     codEnabled: z.boolean().optional(),
     codPincodes: z.array(z.string().trim().min(4).max(12)).max(5000).optional(),
     codAcceptanceWindowMinutes: z.number().int().min(30).max(2880).optional(),
@@ -382,6 +385,13 @@ export const ecommerceRecordCourierMoneyReceivedBody = z
 
 export const ecommerceOrderCreateBody = z
   .object({
+    schemePurchase: z.object({
+      schemeId: z.string().min(4).max(80),
+      basis: z.enum(["CASH_VALUE", "GOLD_WEIGHT"]),
+      applied: z.number().int().positive().safe(),
+      topUpPaise: z.number().int().nonnegative().safe(),
+      makingChargeWaivedPaise: z.number().int().nonnegative().safe(),
+    }).strict().optional(),
     quoteId: z.string().trim().min(4).max(80),
   })
   .strict();
@@ -475,6 +485,9 @@ export const ecommerceOrderDeliveryTrackingPatchBody = z
 
 export const ecommerceReturnRequestCreateBody = z
   .object({
+    items: z.array(z.object({
+      productId: z.string().trim().min(1).max(80), quantity: z.number().int().positive().max(99),
+    }).strict()).min(1).max(100).optional(),
     reason: z.string().trim().min(8).max(2000),
     kind: enumSchema(E.EcommerceOrderReturnKind).optional(),
     evidenceNote: z.string().trim().max(1000).optional(),
@@ -668,3 +681,8 @@ export const ecommerceCounterOrderBody = z
     customerConsent: z.literal(true),
   })
   .strict();
+
+export const ecommerceSchemePurchasePreviewQuery = z.object({
+  schemeId: z.string().trim().min(4).max(80),
+  basis: z.enum(["CASH_VALUE", "GOLD_WEIGHT"]),
+}).strict();

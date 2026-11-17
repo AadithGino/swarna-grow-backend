@@ -1,3 +1,4 @@
+import { settleLinkedOrderHold } from "../services/ecommerce-scheme-reservation.service.js";
 import {
   EcommerceOrderStatus,
   EcommerceStockPolicy,
@@ -132,6 +133,7 @@ export async function expirePendingPaymentOrderRow({
   );
   if (!updated) return null;
   await releaseOrderReservationsOnce({ tenantId, orderId, session, at });
+  await settleLinkedOrderHold(updated, "RELEASED", session);
   return updated;
 }
 
@@ -212,6 +214,7 @@ export async function cancelPendingPaymentOrderRow({
   customerId,
   session,
   at = new Date(),
+  stockReleaseReason = EcommerceStockReleaseReason.CUSTOMER_CANCEL,
 }) {
   const row = await EcommerceOrder.findOne({
     _id: orderId,
@@ -237,7 +240,7 @@ export async function cancelPendingPaymentOrderRow({
     {
       $set: {
         status: EcommerceOrderStatus.CANCELLED,
-        stockReleaseReason: EcommerceStockReleaseReason.CUSTOMER_CANCEL,
+        stockReleaseReason,
         stockReleasedAt: at,
       },
       $inc: { version: 1 },
@@ -246,5 +249,6 @@ export async function cancelPendingPaymentOrderRow({
   );
   if (!updated) return { kind: "RACE" };
   await releaseOrderReservationsOnce({ tenantId, orderId, session, at });
+  await settleLinkedOrderHold(updated, "RELEASED", session);
   return { kind: "OK", order: updated };
 }

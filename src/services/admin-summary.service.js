@@ -32,30 +32,36 @@ function addDaysYmd(ymd, days) {
 }
 
 /** Enrollment KPI counts for the current list filters + branch scope. */
+export async function schemeStatusCounts(match) {
+  const rows = await Scheme.aggregate([
+    { $match: match },
+    { $group: { _id: "$status", n: { $sum: 1 } } },
+  ]);
+  const counts = new Map(rows.map((row) => [row._id, row.n]));
+  const pick = (status) => counts.get(status) ?? 0;
+  return {
+    active: pick(SchemeStatus.ACTIVE),
+    locked: pick(SchemeStatus.LOCKED),
+    defaulted: pick(SchemeStatus.DEFAULTED),
+    pendingFirstPayment: pick(SchemeStatus.PENDING_PAYMENT),
+    matured: pick(SchemeStatus.MATURED),
+    redeemed: pick(SchemeStatus.REDEEMED),
+    closedPremature: pick(SchemeStatus.CLOSED_PREMATURE),
+  };
+}
+
 export async function schemePortfolioSummary(req, listFilters = {}) {
   const match = { ...effectiveScope(req), ...listFilters };
-  const count = (status) =>
-    typeof status === "object"
-      ? Scheme.countDocuments({ ...match, status })
-      : Scheme.countDocuments({ ...match, status });
-
-  const [
-    activeOnly,
+  delete match.status;
+  const {
+    active: activeOnly,
     locked,
     defaulted,
     pendingFirstPayment,
     matured,
     redeemed,
     closedPremature,
-  ] = await Promise.all([
-    count(SchemeStatus.ACTIVE),
-    count(SchemeStatus.LOCKED),
-    count(SchemeStatus.DEFAULTED),
-    count(SchemeStatus.PENDING_PAYMENT),
-    count(SchemeStatus.MATURED),
-    count(SchemeStatus.REDEEMED),
-    count(SchemeStatus.CLOSED_PREMATURE),
-  ]);
+  } = await schemeStatusCounts(match);
 
   const activeAndLocked = activeOnly + locked;
   const open = openEnrollmentKpi({

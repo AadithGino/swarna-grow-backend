@@ -48,6 +48,7 @@ function paymentStatusLabel(order) {
     }
     return "Cash on delivery — payment pending";
   }
+  if (order.financialSnapshot?.schemePurchase && order.totalPaise === 0) return "Covered by scheme";
   if (order.paidAt) return "Paid online";
   return String(order.status ?? "Confirmed");
 }
@@ -71,6 +72,14 @@ export function streamEcommerceOrderInvoicePdf(res, ctx) {
     order.subtotalPaise ?? 0,
     snap.taxComponentLines ?? [],
   );
+  if (snap.schemePurchase) {
+    for (const tax of taxBreakdown.lines) {
+      tax.taxPaise = (order.lines ?? []).reduce((sum, line) =>
+        sum + (line.pricingSnapshot?.componentTax?.lines ?? [])
+          .filter((entry) => entry.componentKey === tax.componentKey)
+          .reduce((total, entry) => total + entry.taxPaise, 0), 0);
+    }
+  }
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader(
@@ -120,7 +129,7 @@ export function streamEcommerceOrderInvoicePdf(res, ctx) {
   doc.text("Item", 48, tableTop, { width: 220 });
   doc.text("Qty", 272, tableTop, { width: 36, align: "right" });
   doc.text("Unit", 312, tableTop, { width: 72, align: "right" });
-  doc.text("Amount", 48 + pageWidth - 72, tableTop, { width: 72, align: "right" });
+  doc.text(snap.schemePurchase ? "Net amount" : "Amount", 48 + pageWidth - 72, tableTop, { width: 72, align: "right" });
   doc
     .moveTo(48, tableTop + 14)
     .lineTo(48 + pageWidth, tableTop + 14)
@@ -170,7 +179,14 @@ export function streamEcommerceOrderInvoicePdf(res, ctx) {
     });
   }
   doc.font("Helvetica-Bold").fontSize(12);
-  doc.text(`Grand total: ${formatInr(order.totalPaise ?? 0)}`, {
+  const purchase = order.financialSnapshot?.schemePurchase;
+  if (purchase) {
+    doc.text(`Making charges waived: ${formatInr(purchase.makingChargeWaivedPaise)}`, { width: pageWidth, align: "right" });
+    doc.text(`Scheme contribution: ${formatInr(purchase.appliedPaise)}`, { width: pageWidth, align: "right" });
+    doc.text(`Scheme balance after purchase: ${purchase.basis === "GOLD_WEIGHT" ? `${(purchase.remaining / 1000).toFixed(3)} g` : formatInr(purchase.remaining)}`, { width: pageWidth, align: "right" });
+    doc.text(`Cash paid: ${formatInr(order.totalPaise ?? 0)}`, { width: pageWidth, align: "right" });
+  }
+  doc.text(`Grand total: ${formatInr(purchase?.grossPaise ?? order.totalPaise ?? 0)}`, {
     width: pageWidth,
     align: "right",
   });

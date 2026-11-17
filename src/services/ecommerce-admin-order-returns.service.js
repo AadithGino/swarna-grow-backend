@@ -9,6 +9,8 @@ function mapReturnSummary(row) {
     kind: row.kind,
     status: row.status,
     reason: row.reason,
+    items: row.items,
+    refundEntitlementPaise: row.refundEntitlementPaise,
     version: row.version ?? 1,
     onlineRefundId: row.onlineRefundId ?? null,
     manualRefundRecordedAt: row.manualRefundRecordedAt ?? null,

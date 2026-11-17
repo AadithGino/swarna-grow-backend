@@ -3,6 +3,7 @@ import {
   EcommerceQuoteStatus,
   EcommerceStockPolicy,
 } from "../constants/enums.js";
+import { assertLinkedSchemeBacking } from "../services/ecommerce-scheme-reservation.service.js";
 import { evaluateCheckoutTaxReadiness } from "./ecommerce-checkout-tax.js";
 import { revalidateQuoteForOrder } from "./ecommerce-quote-revalidation.js";
 import {
@@ -31,6 +32,9 @@ export async function assertOrderPaymentBoundary({
   if (order.paymentExceptionStatus) {
     return { ok: false, code: "PAYMENT_EXCEPTION", status: order.paymentExceptionStatus };
   }
+  if (order.financialSnapshot?.schemePurchase && order.financialSnapshot.schemePurchase.approvalStatus !== "APPROVED") {
+    return { ok: false, code: "SCHEME_PURCHASE_AWAITING_APPROVAL" };
+  }
   if (order.status !== EcommerceOrderStatus.PENDING_PAYMENT) {
     return { ok: false, code: "ORDER_NOT_PAYABLE", status: order.status };
   }
@@ -44,6 +48,7 @@ export async function assertOrderPaymentBoundary({
     return { ok: false, code: "ORDER_CURRENCY_UNSUPPORTED" };
   }
 
+  await assertLinkedSchemeBacking(order, session);
   const fulfilmentRow = await EcommerceFulfilmentSettings.findOne({ tenantId: order.tenantId })
     .session(session)
     .lean();

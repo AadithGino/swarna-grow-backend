@@ -81,6 +81,7 @@ const schemePlanSchema = new mongoose.Schema(
     paymentPattern: enumField(PaymentPattern, { required: true }),
     durationMonths: integerField({ required: true, min: 1 }),
     installmentCount: integerField({ required: true, min: 1 }),
+    schemePurchaseRules: { type: mongoose.Schema.Types.Mixed, default: undefined },
     oneTimeRules: { type: mongoose.Schema.Types.Mixed, default: undefined },
     collectionRules: { type: collectionRulesSchema, default: undefined },
     amountRules: {
@@ -253,6 +254,7 @@ const schemeSchema = new mongoose.Schema(
 schemeSchema.index({ tenantId: 1, enrollmentNumber: 1 }, { unique: true });
 schemeSchema.index({ tenantId: 1, branchId: 1, status: 1, maturityDate: 1 });
 schemeSchema.index({ tenantId: 1, branchId: 1, createdAt: -1 });
+schemeSchema.index({ tenantId: 1, createdAt: -1, _id: -1 });
 schemeSchema.index({ tenantId: 1, paymentPattern: 1, status: 1, _id: 1 });
 schemeSchema.index({
   tenantId: 1,
@@ -302,6 +304,7 @@ ledgerEntrySchema.index(
   { tenantId: 1, schemeId: 1, sequence: 1 },
   { unique: true },
 );
+ledgerEntrySchema.index({ tenantId: 1, customerId: 1, schemeId: 1 });
 ledgerEntrySchema.index({ paymentId: 1, type: 1 }, { sparse: true });
 ledgerEntrySchema.index(
   { tenantId: 1, schemeId: 1, maturityEventKey: 1 },

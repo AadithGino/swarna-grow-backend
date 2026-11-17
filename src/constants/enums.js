@@ -434,6 +434,7 @@ export const EcommerceCodRefundFundingSource = makeEnum(
 );
 export const EcommerceStockReleaseReason = makeEnum(
   "CUSTOMER_CANCEL",
+  "SCHEME_BACKING_CHANGED",
   "PAYMENT_WINDOW_EXPIRED",
   "COD_ACCEPTANCE_EXPIRED",
   "COD_REJECTED",

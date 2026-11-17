@@ -47,7 +47,7 @@ async function connectAndVerify() {
   if (mongoose.connection.readyState !== 1) await mongoose.connect(env.MONGODB_URI, {
     maxPoolSize: maxPool,
     // Keep pool empty between invocations on Vercel; spin up on demand.
-    minPoolSize: isServerless ? 0 : env.NODE_ENV === "production" ? 5 : 0,
+    minPoolSize: isServerless ? 0 : env.NODE_ENV === "production" ? 5 : 2,
     serverSelectionTimeoutMS: isServerless ? 5_000 : 10_000,
     socketTimeoutMS: isServerless ? 20_000 : 45_000,
     maxIdleTimeMS: isServerless ? 10_000 : undefined,

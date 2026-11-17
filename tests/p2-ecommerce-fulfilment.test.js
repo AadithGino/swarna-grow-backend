@@ -513,8 +513,13 @@ test("admin reissue pickup code after expiry resets attempts and invalidates pri
     .set(adminHeaders(user))
     .send({ expectedVersion: ready.body.data.order.version });
   assert.equal(reissue.status, 200);
-  assert.ok(reissue.body.data.pickupCode);
-  assert.notEqual(reissue.body.data.pickupCode, oldCode);
+  assert.equal(reissue.body.data.pickupCode, undefined);
+  const customerGet = await request(app).get(`/api/v1/app/shop/orders/${orderId}`)
+    .set("authorization", `Bearer ${await customerToken({ tenant, branch, customer })}`);
+  assert.equal(customerGet.status, 200);
+  const newCode = customerGet.body.data.pickupCode;
+  assert.match(newCode, /^\d{6}$/);
+  assert.notEqual(newCode, oldCode);
   const row = await EcommerceOrder.findById(orderId).lean();
   assert.equal(row.fulfilmentHandover.pickupCodeFailedAttempts, 0);
   assert.ok(new Date(row.fulfilmentHandover.pickupCodeExpiresAt).getTime() > Date.now());
@@ -523,7 +528,7 @@ test("admin reissue pickup code after expiry resets attempts and invalidates pri
     .set(adminHeaders(user))
     .send({
       expectedVersion: reissue.body.data.version,
-      pickupCode: reissue.body.data.pickupCode,
+      pickupCode: newCode,
       staffHandoverConfirmed: true,
       recipientName: "Test",
     });
