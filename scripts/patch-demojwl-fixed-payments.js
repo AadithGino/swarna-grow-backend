@@ -301,11 +301,32 @@ async function patchTenantFlags(tenant) {
   await Tenant.findByIdAndUpdate(tenant._id, {
     $set: {
       featureFlags,
+      "subscription.tier": "GROWTH",
       "operations.customerAppPaymentsEnabled": true,
       "operations.customerAppWriteEnabled": true,
       "operations.customerSelfEnrolEnabled": true,
     },
   });
+}
+
+/** Force-remove FIXED leftovers (e.g. after an earlier FIXED patch run on another environment). */
+async function hardEnforceFlexibleShape(tenantId) {
+  const planCodes = Object.keys(PLAN_PATCH);
+  await SchemePlan.updateMany(
+    { tenantId, code: { $in: planCodes } },
+    { $set: { paymentPattern: PaymentPattern.FLEXIBLE, "amountRules.amountMode": "CUSTOMER_CHOSEN" } },
+  );
+  const schemeRes = await Scheme.updateMany(
+    { tenantId },
+    {
+      $set: {
+        paymentPattern: PaymentPattern.FLEXIBLE,
+        flexiblePhase: FlexiblePhase.FLEXIBLE,
+      },
+      $unset: { installments: "" },
+    },
+  );
+  return { schemesTouched: schemeRes.modifiedCount };
 }
 
 async function main() {
@@ -326,6 +347,8 @@ async function main() {
   console.log("Checkout cleanup:", checkout);
 
   await patchTenantFlags(tenant);
+  const hard = await hardEnforceFlexibleShape(tenant._id);
+  console.log("Hard FLEXIBLE enforce:", hard);
 
   const plansById = new Map(
     (await SchemePlan.find({ tenantId: tenant._id })).map((p) => [String(p._id), p]),
