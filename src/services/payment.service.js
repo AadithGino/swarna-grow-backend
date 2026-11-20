@@ -335,7 +335,10 @@ function readExpectedPositionVersion(body = {}) {
 
 function assertExpectedPositionVersion(scheme, quote, body) {
   if (scheme.paymentPattern !== "FLEXIBLE") return;
-  const expected = readExpectedPositionVersion(body);
+  let expected = readExpectedPositionVersion(body);
+  if (expected === undefined && quote?.positionVersion !== undefined) {
+    expected = quote.positionVersion;
+  }
   if (expected === undefined)
     throw errors.validation([
       {

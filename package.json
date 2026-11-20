@@ -52,6 +52,7 @@
     "seed:ritu-gold": "node --env-file=.env scripts/seed-ritu-gold-demo.js",
     "seed:noble-jewellery": "node --env-file=.env scripts/seed-noble-jewellery.js",
     "patch:ritu-gold-customer-app": "node --env-file=.env scripts/patch-ritu-gold-customer-app.js",
+    "patch:demojwl-payments": "node --env-file=.env scripts/patch-demojwl-fixed-payments.js",
     "seed:coverage": "node --env-file=.env scripts/seed-platform-coverage.js",
     "seed:collection-agent": "node --env-file=.env scripts/seed-collection-agent.js",
     "seed:pending-handover": "node --env-file=.env scripts/seed-pending-handover-kairali.js",
