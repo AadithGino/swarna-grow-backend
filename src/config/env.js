@@ -247,6 +247,9 @@ export function parseEnv(source = process.env) {
     DEMO_PURGE_RETENTION_DAYS: boundedInt(1, 90, 7),
     /** Platform-wide ceiling on concurrently READY demo instances; provisioning is refused above this. */
     DEMO_MAX_ACTIVE_INSTANCES: boundedInt(1, 10_000, 200),
+    /** Source tenant code for auto-provisioned landing demo requests (default KAIRALI). */
+    LANDING_DEMO_TEMPLATE_TENANT_CODE: z.string().default("KAIRALI"),
+    LANDING_DEMO_AUTO_PROVISION: z.string().default("true").transform((value) => value === "true"),
   }).superRefine((_value, context) => {
     const nodeEnv = normalized.NODE_ENV ?? "development";
     if (nodeEnv !== "production") return;

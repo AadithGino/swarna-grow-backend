@@ -16,6 +16,7 @@ import { platformCreatePlanBody, platformCreateTenantBody, platformDeprecatePlan
 import { loginRateLimit } from "../middlewares/security.middleware.js";
 import { z } from "zod";
 import * as demoController from "../controllers/demo.controller.js";
+import * as landingDemoController from "../controllers/landing-demo-request.controller.js";
 import {
   demoCreateInstanceBody,
   demoInstanceIdParam as demoInstanceIdParamSchema,
@@ -25,6 +26,11 @@ import {
   demoTemplateIdParam as demoTemplateIdParamSchema,
   demoUpdateInstanceBody,
 } from "../validators/demo.validators.js";
+import {
+  landingDemoListQuery,
+  landingDemoPatchBody,
+  landingDemoRequestIdParam as landingDemoRequestIdParamSchema,
+} from "../validators/landing-demo.validators.js";
 
 const tenantIdParam = validate({ params: z.object({ tenantId: z.string().min(4).max(80) }) });
 const planIdParam = validate({ params: z.object({ planId: z.string().min(4).max(80) }) });
@@ -33,6 +39,7 @@ const invoiceIdParam = validate({ params: z.object({ invoiceId: z.string().min(4
 const webhookRetryParams = validate({ params: z.object({ id: z.string().min(4).max(80) }) });
 const demoTemplateIdParam = validate({ params: demoTemplateIdParamSchema });
 const demoInstanceIdParam = validate({ params: demoInstanceIdParamSchema });
+const landingDemoRequestIdParam = validate({ params: landingDemoRequestIdParamSchema });
 
 export const platformRouter = Router();
 platformRouter.post("/auth/login", loginRateLimit, validate({ body: platformLoginBody }), asyncHandler(auth.login(true)));
@@ -140,4 +147,32 @@ platformRouter.post(
   validate({ params: z.object({ uploadId: z.string().min(4).max(80) }) }),
   idempotent,
   asyncHandler(demoController.completeDemoLogo),
+);
+platformRouter.get(
+  "/landing-demo-requests",
+  validate({ query: landingDemoListQuery }),
+  asyncHandler(landingDemoController.listForPlatform),
+);
+platformRouter.get(
+  "/landing-demo-requests/:requestId",
+  landingDemoRequestIdParam,
+  asyncHandler(landingDemoController.getForPlatform),
+);
+platformRouter.patch(
+  "/landing-demo-requests/:requestId",
+  landingDemoRequestIdParam,
+  validate({ body: landingDemoPatchBody }),
+  idempotent,
+  asyncHandler(landingDemoController.patchForPlatform),
+);
+platformRouter.get(
+  "/landing-demo-requests/:requestId/share-link",
+  landingDemoRequestIdParam,
+  asyncHandler(landingDemoController.shareLinkForPlatform),
+);
+platformRouter.post(
+  "/landing-demo-requests/:requestId/retry-provision",
+  landingDemoRequestIdParam,
+  idempotent,
+  asyncHandler(landingDemoController.retryProvisionForPlatform),
 );

@@ -225,6 +225,38 @@ function sniffContentType(body) {
   return null;
 }
 
+/** Server-side ingest for landing-page logos (no browser PUT). */
+export async function ingestPlatformDemoLogoFromBuffer({ ownerId, buffer, contentType, fileName }) {
+  const rule = RULES[UploadPurpose.TENANT_LOGO];
+  const detected = sniffContentType(buffer) ?? contentType;
+  const resolvedType = rule.types.includes(detected) ? detected : contentType;
+  if (!rule.types.includes(resolvedType) || buffer.length > rule.max) {
+    throw errors.validation([{ field: "logo", message: "Logo type or size is not allowed." }]);
+  }
+  const id = createId("upload");
+  const safeName = path.basename(fileName || "logo.webp").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const objectKey = prefixStorageObjectKey(
+    `${PLATFORM_DEMO_UPLOAD_TENANT_ID}/${UploadPurpose.TENANT_LOGO.toLowerCase()}/${id}/${safeName}`,
+  );
+  await Upload.create({
+    _id: id,
+    tenantId: PLATFORM_DEMO_UPLOAD_TENANT_ID,
+    ownerId,
+    purpose: UploadPurpose.TENANT_LOGO,
+    fileName: safeName,
+    contentType: resolvedType,
+    sizeBytes: buffer.length,
+    objectKey,
+    status: UploadStatus.UPLOADED,
+  });
+  await storageProvider.uploadFile({
+    objectKey,
+    body: buffer,
+    contentType: resolvedType,
+  });
+  return { uploadId: id, viewUrl: uploadViewPath(id) };
+}
+
 async function verifyStoredObject(upload) {
   let body;
   if (env.PROVIDER_MODE === "mock") {

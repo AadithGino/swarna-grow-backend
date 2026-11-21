@@ -748,6 +748,15 @@ export const DemoInstanceStatus = makeEnum(
   "DELETING",
   "DELETED",
 );
+export const LandingDemoRequestStatus = makeEnum("NEW", "CONTACTED", "ARCHIVED");
+export const LandingDemoProvisionStatus = makeEnum(
+  "PENDING",
+  "RUNNING",
+  "READY",
+  "FAILED",
+  "SKIPPED",
+);
+
 export const DemoProvisionJobKind = makeEnum("CREATE", "RESET", "UPGRADE", "PURGE");
 export const DemoProvisionJobStatus = makeEnum(
   "QUEUED",

@@ -12,6 +12,7 @@ const PREFIXES = Object.freeze({
   eprd: "eprd",
   egrt: "egrt",
   etax: "etax",
+  landingDemoRequest: "ldreq",
 });
 
 export function createId(kind) { return `${PREFIXES[kind] ?? kind}_${ulid()}`; }

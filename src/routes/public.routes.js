@@ -20,10 +20,19 @@ import { sendSuccess } from "../lib/response.js";
 import { getAppConfig } from "../services/platform.service.js";
 import { requireSignupToken, requireSignupTokenForStatus } from "../middlewares/signup-auth.middleware.js";
 import * as demoController from "../controllers/demo.controller.js";
+import * as landingDemoController from "../controllers/landing-demo-request.controller.js";
 import { demoExchangeSessionBody, demoPublicIdParam } from "../validators/demo.validators.js";
+import { landingDemoRequestBody } from "../validators/landing-demo.validators.js";
 
 export const publicRouter = Router(); publicRouter.use(publicRateLimit);
 publicRouter.get("/app-config", asyncHandler(async (_req, res) => sendSuccess(res, await getAppConfig())));
+publicRouter.post(
+  "/landing-demo-requests",
+  loginRateLimit,
+  validate({ body: landingDemoRequestBody }),
+  idempotent,
+  asyncHandler(landingDemoController.submitPublic),
+);
 publicRouter.get("/auth/password-policy", (_req, res) => sendSuccess(res, { minLength: 4, maxLength: 128, numericOnly: true, requireUppercase: false, requireLowercase: false, requireNumber: true, requireSymbol: false }));
 publicRouter.post("/auth/otp/request", otpRequestRateLimit, validate({ body: otpRequestBody }), idempotent, asyncHandler(auth.requestOtp));
 publicRouter.post("/auth/otp/verify", otpVerifyRateLimit, validate({ body: otpVerifyBody }), idempotent, asyncHandler(auth.verifyOtp));

@@ -6,6 +6,8 @@ import {
   DemoProvisionJobStatus,
   DemoTemplateStatus,
   DemoTemplateVersionStatus,
+  LandingDemoRequestStatus,
+  LandingDemoProvisionStatus,
 } from "../constants/enums.js";
 import {
   baseOptions,
@@ -242,3 +244,48 @@ export const DemoTemplateSnapshotChunk = mongoose.model(
   demoTemplateSnapshotChunkSchema,
 );
 export const DemoEvent = mongoose.model("DemoEvent", demoEventSchema);
+
+// ---------------------------------------------------------------------------
+// LandingDemoRequest — free-demo form from the public marketing site.
+// ---------------------------------------------------------------------------
+const landingDemoRequestSchema = new mongoose.Schema(
+  {
+    _id: stringId("landingDemoRequest"),
+    status: enumField(LandingDemoRequestStatus, { default: LandingDemoRequestStatus.NEW }),
+    source: { type: String, default: "landing-page-free-demo", trim: true },
+    showroom: { type: String, required: true, trim: true },
+    brandName: { type: String, required: true, trim: true },
+    location: { type: String, default: "", trim: true },
+    phone: { type: String, required: true, trim: true },
+    customers: { type: String, default: "", trim: true },
+    planTag: { type: String, default: "", trim: true },
+    planPrice: { type: String, default: "", trim: true },
+    setupFee: { type: String, default: "", trim: true },
+    logoFileName: { type: String, default: "", trim: true },
+    /** Optional data URL from the browser; may be large — capped at validation time. */
+    logoDataUrl: { type: String, default: "" },
+    pageUrl: { type: String, default: "", trim: true },
+    whatsappOptIn: { type: Boolean, default: true },
+    notes: { type: String, default: "", trim: true },
+    demoSent: { type: Boolean, default: false },
+    demoSentAt: { type: Date, default: null },
+    provisionStatus: enumField(LandingDemoProvisionStatus, {
+      default: LandingDemoProvisionStatus.PENDING,
+    }),
+    provisionError: { type: String, default: null },
+    demoInstanceId: { type: String, default: null, index: true },
+    demoPublicId: { type: String, default: null },
+    demoTemplateId: { type: String, default: null },
+    autoPrimaryColor: { type: String, default: null },
+    autoAccentColor: { type: String, default: null },
+    autoSplashBackgroundColor: { type: String, default: null },
+    logoUploadId: { type: String, default: null },
+    version: versionField,
+  },
+  baseOptions,
+);
+landingDemoRequestSchema.index({ status: 1, createdAt: -1 });
+landingDemoRequestSchema.index({ createdAt: -1 });
+landingDemoRequestSchema.index({ demoSent: 1, provisionStatus: 1 });
+
+export const LandingDemoRequest = mongoose.model("LandingDemoRequest", landingDemoRequestSchema);
