@@ -11,6 +11,7 @@ export async function releaseQuoteReservationsOnce(tenantId, quoteId, session, a
     {
       tenantId,
       quoteId,
+      bookingId: { $in: [null, ""] },
       releasedAt: null,
       $or: UNOWNED_ORDER,
     },

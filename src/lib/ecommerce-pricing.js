@@ -24,6 +24,56 @@ import { addPaise, mulDivHalfUpPaise } from "./ecommerce-exact-money.js";
  * 7. displayTotalPaise = preTaxSubtotal + sum(taxes)
  */
 
+/**
+ * Saved-rate pricing, for an advance booking whose gold rate was locked when the advance was paid.
+ *
+ * The option can only be built here, on the server, from a saved rate and a policy end time. It is
+ * tagged with a module-private symbol, so an object that arrives in a request body (plain JSON,
+ * which cannot carry a symbol) is never honored, even if it is spread into the estimate input.
+ *
+ * It lifts exactly one rule: the age check on the saved rate itself. It does not lift anything
+ * else. The saved rate is used only while the policy is unexpired (`atMs < validUntil`), only for
+ * the purity it was saved for, and once the policy has ended the estimate is blocked rather than
+ * falling back to a live rate. Every live input (tax settings, offers, stone and making charges,
+ * and a live rate passed without this option) still goes through its normal checks.
+ */
+const SAVED_RATE_BRAND = Symbol("ecommerce.savedRateOption");
+
+export function buildSavedRateOption({
+  ratePerGramPaise,
+  purity,
+  rateId = null,
+  rateVersion = null,
+  savedAt = null,
+  validUntil,
+  at = new Date(),
+}) {
+  if (!Number.isInteger(ratePerGramPaise) || ratePerGramPaise <= 0) {
+    throw new AppError("SAVED_RATE_INVALID", "Saved gold rate must be a positive whole number of paise per gram.", 422);
+  }
+  if (!purity) throw new AppError("SAVED_RATE_INVALID", "Saved gold rate needs the purity it was saved for.", 422);
+  const validUntilMs = new Date(validUntil ?? NaN).getTime();
+  if (Number.isNaN(validUntilMs)) {
+    throw new AppError("SAVED_RATE_INVALID", "Saved gold rate needs a policy end time.", 422);
+  }
+  if (validUntilMs <= new Date(at).getTime()) {
+    throw new AppError("SAVED_RATE_EXPIRED", "The booked-rate policy has ended.", 422, { validUntil: new Date(validUntilMs).toISOString() });
+  }
+  return Object.freeze({
+    [SAVED_RATE_BRAND]: true,
+    ratePerGramPaise,
+    purity,
+    rateId,
+    rateVersion,
+    savedAt,
+    validUntilMs,
+  });
+}
+
+function isSavedRateOption(value) {
+  return Boolean(value && value[SAVED_RATE_BRAND] === true);
+}
+
 export function roundHalfUpPaise(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.round(value);
@@ -120,8 +170,11 @@ export function computeProductPriceEstimate({
   taxSettings = null,
   atMs = Date.now(),
   rateMaxAgeMs = ECOMMERCE_GOLD_RATE_MAX_AGE_MS,
+  savedRate = null,
 }) {
   const blockers = [];
+  // Only a server-built option counts; anything else is treated as absent, never as a live rate.
+  const saved = isSavedRateOption(savedRate) ? savedRate : null;
   const priceMode = product.priceMode ?? EcommercePriceMode.FIXED;
   const version = product.version ?? 1;
 
@@ -145,7 +198,25 @@ export function computeProductPriceEstimate({
     if (weightMg <= 0) {
       blockers.push({ code: "WEIGHT_INVALID", message: "Gold weight must be greater than zero." });
     }
-    if (!rateRow?.ratePerGramPaise) {
+    if (saved) {
+      // Saved-rate path: the live rate row is not consulted at all.
+      if (atMs >= saved.validUntilMs) {
+        blockers.push({
+          code: "SAVED_RATE_EXPIRED",
+          message: "The booked-rate policy has ended; the saved rate can no longer be used.",
+          validUntil: new Date(saved.validUntilMs).toISOString(),
+        });
+      } else if (saved.purity !== product.purity) {
+        blockers.push({
+          code: "SAVED_RATE_PURITY_MISMATCH",
+          message: `The saved rate is for ${saved.purity}, not ${product.purity ?? "—"}.`,
+          purity: product.purity ?? null,
+        });
+      } else {
+        rateFreshness = { fresh: true, code: "SAVED_RATE", ageMs: null, maxAgeMs: null, saved: true };
+        goldValuePaise = computeGoldValuePaise(weightMg, saved.ratePerGramPaise);
+      }
+    } else if (!rateRow?.ratePerGramPaise) {
       blockers.push({
         code: "GOLD_RATE_MISSING",
         message: `No ecommerce gold rate for ${product.purity ?? "—"}.`,
@@ -211,6 +282,8 @@ export function computeProductPriceEstimate({
     });
   }
 
+  // The saved rate only applies to gold-rate products; a fixed price has no rate to save.
+  const usedSavedRate = Boolean(saved) && priceMode !== EcommercePriceMode.FIXED;
   const computable = blockers.length === 0;
   const displayTotalPaise = computable ? addPaise(preTaxSubtotalPaise, taxTotalPaise) : null;
 
@@ -230,16 +303,29 @@ export function computeProductPriceEstimate({
       offerPolicyNote:
         priceMode === EcommercePriceMode.GOLD_RATE_BASED ? ECOMMERCE_OFFER_POLICY_NOTE : null,
     },
-    rateFreshness: rateFreshness ?? (rateRow ? goldRateFreshness(rateRow, atMs, rateMaxAgeMs) : null),
-    gold: {
-      weightMg: product.goldWeightMg ?? 0,
-      purity: product.purity ?? null,
-      ratePerGramPaise: rateRow?.ratePerGramPaise ?? null,
-      rateId: rateRow?._id ?? rateRow?.id ?? null,
-      rateVersion: rateRow?.version ?? null,
-      effectiveAt: rateRow?.effectiveAt ?? rateRow?.createdAt ?? null,
-      goldValuePaise,
-    },
+    rateFreshness: rateFreshness
+      ?? (!usedSavedRate && rateRow ? goldRateFreshness(rateRow, atMs, rateMaxAgeMs) : null),
+    gold: usedSavedRate
+      ? {
+          weightMg: product.goldWeightMg ?? 0,
+          purity: product.purity ?? null,
+          ratePerGramPaise: saved.ratePerGramPaise,
+          rateId: saved.rateId,
+          rateVersion: saved.rateVersion,
+          effectiveAt: saved.savedAt,
+          rateSource: "SAVED",
+          savedRateValidUntil: new Date(saved.validUntilMs).toISOString(),
+          goldValuePaise,
+        }
+      : {
+          weightMg: product.goldWeightMg ?? 0,
+          purity: product.purity ?? null,
+          ratePerGramPaise: rateRow?.ratePerGramPaise ?? null,
+          rateId: rateRow?._id ?? rateRow?.id ?? null,
+          rateVersion: rateRow?.version ?? null,
+          effectiveAt: rateRow?.effectiveAt ?? rateRow?.createdAt ?? null,
+          goldValuePaise,
+        },
     making: {
       mode: product.makingChargeMode ?? null,
       beforeOfferPaise: makingPaise,

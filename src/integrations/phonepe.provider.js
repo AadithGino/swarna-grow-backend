@@ -434,6 +434,11 @@ export const phonePeProvider = {
   },
 };
 
+/** True when PhonePe answered that it has no order with this merchant order id (SDK ResourceNotFound). */
+export function isPhonePeOrderNotFound(error) {
+  return error instanceof ResourceNotFound;
+}
+
 export function callbackTypeKey(type) {
   if (typeof type === "string") return type;
   return CallbackType[type] ?? String(type);

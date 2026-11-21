@@ -34,3 +34,16 @@ test("pickPhonePeTransactionId prefers completed attempt", () => {
     "b",
   );
 });
+
+test("only a documented pending state counts as recognized pending", async () => {
+  const { isRecognizedPendingState } = await import("../src/lib/phonepe-order-status.js");
+  assert.equal(isRecognizedPendingState("PENDING"), true);
+  assert.equal(isRecognizedPendingState("pending"), true);
+  for (const unknown of ["", undefined, null, "UNKNOWN", "SOMETHING_NEW"]) {
+    assert.equal(isRecognizedPendingState(unknown), false, String(unknown));
+  }
+  // The shared normalizer still files unrecognized states under PENDING so other flows keep polling.
+  const { normalizePhonePeOrderStatus } = await import("../src/lib/phonepe-order-status.js");
+  assert.equal(normalizePhonePeOrderStatus({}).kind, "PENDING");
+  assert.equal(normalizePhonePeOrderStatus({}).state, "UNKNOWN");
+});

@@ -5,6 +5,7 @@ import * as upload from "../controllers/upload.controller.js";
 import * as payment from "../controllers/payment.controller.js";
 import * as operations from "../controllers/operations.controller.js";
 import * as ecommerce from "../controllers/ecommerce.controller.js";
+import * as booking from "../controllers/ecommerce-booking.controller.js";
 import * as digitalMetals from "../controllers/digital-metals.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
@@ -57,6 +58,11 @@ import {
   ecommerceTestHarnessPaymentBody,
   ecommercePaymentIntentBody,
   ecommercePickupConfirmBody,
+  bookingCreateBody,
+  bookingCustomerCancelBody,
+  bookingPaymentIntentBody,
+  bookingPreviewQuery,
+  bookingAvailabilityQuery,
 } from "../validators/ecommerce.validators.js";
 import { enrolPaymentResponse, paymentIntentAppDto, paymentLinkDto } from "../lib/customer-app-dto.js";
 import { ClosureType, DevicePrincipalType } from "../constants/enums.js";
@@ -596,6 +602,21 @@ appRouter.get(
   validate({ query: cursorQuery }),
   asyncHandler(ecommerce.shopListOrders),
 );
+// Advance ornament booking. Create and pay are refused unless ECOMMERCE_BOOKING_PAYMENTS_ENABLED is on.
+appRouter.get("/shop/bookings/preview", validate({ query: bookingPreviewQuery }), asyncHandler(booking.shopPreviewBooking));
+appRouter.get("/shop/bookings/availability", validate({ query: bookingAvailabilityQuery }), asyncHandler(booking.shopBookingAvailability));
+appRouter.post("/shop/bookings", idempotent, validate({ body: bookingCreateBody }), asyncHandler(booking.shopCreateBooking));
+appRouter.get("/shop/bookings", validate({ query: cursorQuery }), asyncHandler(booking.shopListBookings));
+appRouter.get("/shop/bookings/:bookingId", asyncHandler(booking.shopGetBooking));
+appRouter.post("/shop/bookings/:bookingId/cancel", idempotent, validate({ body: bookingCustomerCancelBody }), asyncHandler(booking.shopCancelBooking));
+appRouter.post(
+  "/shop/bookings/:bookingId/payment-intents",
+  idempotent,
+  validate({ body: bookingPaymentIntentBody }),
+  asyncHandler(booking.shopCreateBookingPaymentIntent),
+);
+appRouter.get("/shop/bookings/:bookingId/payment-intents/:paymentAttemptId", asyncHandler(booking.shopGetBookingPaymentIntent));
+appRouter.get("/shop/bookings/:bookingId/refunds", asyncHandler(booking.shopGetBookingRefunds));
 appRouter.get("/shop/orders/:orderId", asyncHandler(ecommerce.shopGetOrder));
 appRouter.post(
   "/shop/orders/:orderId/confirm-pickup",

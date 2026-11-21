@@ -387,6 +387,7 @@ export async function reconcileGatewayPayment(payment, {
       tenantId: payment.tenantId,
       workerLabel: leaseWorkerLabel,
       now: new Date(),
+      allowExhausted: reconcileBypassesExhaustedGate(source),
     });
     if (!claimed) return { outcome: "LEASE_BUSY" };
     working = claimed;
@@ -626,7 +627,7 @@ async function reconcileGatewayPaymentCore(payment, {
   return { outcome: "STILL_PENDING", providerState: normalized.state, attempts: progress.attempts };
 }
 
-export async function claimPaymentForReconcile({ paymentId, tenantId, workerLabel, now }) {
+export async function claimPaymentForReconcile({ paymentId, tenantId, workerLabel, now, allowExhausted = false }) {
   const leaseToken = buildReconcileLeaseToken(workerLabel, paymentId);
   return Payment.findOneAndUpdate(
     {
@@ -634,7 +635,7 @@ export async function claimPaymentForReconcile({ paymentId, tenantId, workerLabe
       tenantId,
       status: PaymentStatus.PENDING,
       mode: PaymentMode.ONLINE_GATEWAY,
-      reviewReason: { $ne: "GATEWAY_RECONCILE_EXHAUSTED" },
+      ...(allowExhausted ? {} : { reviewReason: { $ne: "GATEWAY_RECONCILE_EXHAUSTED" } }),
       $or: [
         { gatewayReconcileLeaseExpiresAt: { $exists: false } },
         { gatewayReconcileLeaseExpiresAt: { $lte: now } },

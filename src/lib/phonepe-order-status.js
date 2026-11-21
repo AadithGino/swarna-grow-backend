@@ -9,6 +9,14 @@ export const PhonePeOrderStatusKind = Object.freeze({
 
 const TERMINAL_FAIL_STATES = new Set(["FAILED", "EXPIRED", "CANCELLED", "DECLINED"]);
 const COMPLETED_STATES = new Set(["COMPLETED", "SUCCESS", "PAID"]);
+/**
+ * States PhonePe documents as "payment still open". normalizePhonePeOrderStatus files every state it
+ * does not recognize (including an empty response) under PENDING so existing flows keep polling, but
+ * a caller that is about to give up on a payment must not treat "unrecognized" as "pending".
+ */
+const KNOWN_PENDING_STATES = new Set(["PENDING"]);
+
+export const isRecognizedPendingState = (state) => KNOWN_PENDING_STATES.has(String(state ?? "").toUpperCase());
 
 export function pickPhonePeTransactionId(paymentDetails = []) {
   const rows = Array.isArray(paymentDetails) ? paymentDetails : [];

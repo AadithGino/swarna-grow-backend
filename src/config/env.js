@@ -81,6 +81,8 @@ export function parseEnv(source = process.env) {
     CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:5173,http://localhost:5174"), LOG_LEVEL: z.string().default("info"),
     TRUST_PROXY: z.coerce.number().int().min(0).default(1), PROVIDER_MODE: z.enum(["mock", "live"]).default("mock"),
     ECOMMERCE_PAYMENTS_ROLLOUT_ENABLED: booleanString,
+    /** Customer advance-booking create/renew/pay. Off until the lifecycle is verified end to end. */
+    ECOMMERCE_BOOKING_PAYMENTS_ENABLED: booleanString,
     ECOMMERCE_PAYMENT_RECONCILE_GRACE_MS: boundedInt(60_000, 900_000, 300_000),
     ECOMMERCE_PAYMENT_RECONCILE_BATCH_SIZE: boundedInt(10, 500, 50),
     ECOMMERCE_PAYMENT_RECONCILE_LEASE_MS: boundedInt(30_000, 600_000, 120_000),
@@ -128,6 +130,8 @@ export function parseEnv(source = process.env) {
     MSG91_SMS_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
     S3_REGION: z.string().default("ap-south-1"), S3_BUCKET: z.string().default(""), S3_ENDPOINT: z.string().default(""),
     S3_KEY_PREFIX: z.string().default(""),
+    S3_PUBLIC_BASE_URL: z.string().default(""),
+    S3_PUBLIC_OBJECT_URLS: booleanString,
     S3_ACCESS_KEY_ID: z.string().default(""), S3_SECRET_ACCESS_KEY: z.string().default(""),     FCM_PROJECT_ID: z.string().default(""),
     FCM_SERVICE_ACCOUNT_JSON: z.string().default(""),
     FCM_SHARED_PROJECT_ENABLED: booleanString,

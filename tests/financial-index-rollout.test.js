@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import mongoose from "mongoose";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DigitalMetalRedemptionOrder, EcommercePaymentExceptionRefund, LedgerEntry } from "../src/models/index.js";
+import { DigitalMetalRedemptionOrder, EcommercePaymentAttempt, EcommercePaymentExceptionRefund, LedgerEntry } from "../src/models/index.js";
 import { assertFinancialIndexesReady, applyFinancialIndexRollout } from "../src/lib/financial-index-rollout.js";
 import { resetTestDb } from "./helpers/db.js";
 
@@ -15,22 +15,65 @@ test("financial index rollout replaces obsolete refund uniqueness and is idempot
   await applyFinancialIndexRollout({ writesPaused: true });
   await assertFinancialIndexesReady();
 });
-test("return refund rollout preserves distinct refunds and unique non-return cases", async () => {
+test("refund rollout backfills operation ids, then allows several operations per capture and one capture per operation", async () => {
   const collection = EcommercePaymentExceptionRefund.collection;
+  const tenantId = "migration-tenant";
+  // The retired order+capture unique index, as v17 had it, with one legacy row of each kind.
+  await collection.dropIndexes();
   await collection.createIndex({ tenantId: 1, orderId: 1, paymentAttemptId: 1 }, { unique: true });
-  const base = { tenantId: "migration-tenant", orderId: "migration-order", paymentAttemptId: "migration-attempt" };
+  await collection.insertMany([
+    { _id: "legacy-return", tenantId, orderId: "o1", paymentAttemptId: "a1", returnRequestId: "r1" },
+    { _id: "legacy-cancel", tenantId, orderId: "o1", paymentAttemptId: "a2", cancellationRequestId: "c1" },
+    { _id: "legacy-exception", tenantId, orderId: "o1", paymentAttemptId: "a3" },
+  ]);
   try {
     await assert.rejects(assertFinancialIndexesReady(), /MIGRATION_REQUIRED/);
     await applyFinancialIndexRollout({ writesPaused: true });
+    await applyFinancialIndexRollout({ writesPaused: true }); // idempotent
+    await assertFinancialIndexesReady();
+
+    const ids = Object.fromEntries((await collection.find({ tenantId }).toArray()).map((row) => [row._id, row.refundOperationId]));
+    assert.deepEqual(ids, {
+      "legacy-return": "return:r1",
+      "legacy-cancel": "cancel:c1",
+      "legacy-exception": "exception:a3",
+    });
+
+    const indexNames = (await collection.indexes()).map((index) => index.name);
+    assert.ok(indexNames.includes("ecommerce_refund_operation_capture_unique"));
+    for (const retired of ["tenantId_1_orderId_1_paymentAttemptId_1", "ecommerce_capture_refund_without_return_unique", "ecommerce_return_refund_unique"]) {
+      assert.ok(!indexNames.includes(retired), `${retired} should be retired`);
+    }
+
+    // Two different operations on one capture are now fine (this is the excess-advance-then-cancel case).
     await collection.insertMany([
-      { ...base, _id: "migration-return-a", returnRequestId: "return-a" },
-      { ...base, _id: "migration-return-b", returnRequestId: "return-b" },
-      { ...base, _id: "migration-non-return" },
+      { _id: "n1", tenantId, orderId: "o2", paymentAttemptId: "adv", refundOperationId: "excess:bk1" },
+      { _id: "n2", tenantId, orderId: "o2", paymentAttemptId: "adv", refundOperationId: "cancel:c9" },
+      { _id: "n3", tenantId, orderId: "o2", paymentAttemptId: "bal", refundOperationId: "cancel:c9" }, // one operation, two captures
     ]);
-    await assert.rejects(collection.insertOne({ ...base, _id: "migration-duplicate-a", returnRequestId: "return-a" }), { code: 11000 });
-    await assert.rejects(collection.insertOne({ ...base, _id: "migration-duplicate-non-return" }), { code: 11000 });
+    // The same operation on the same capture is a duplicate.
+    await assert.rejects(collection.insertOne({ _id: "n4", tenantId, orderId: "o2", paymentAttemptId: "adv", refundOperationId: "cancel:c9" }), { code: 11000 });
   } finally {
-    await collection.deleteMany({ tenantId: base.tenantId });
+    await collection.deleteMany({ tenantId });
+    await EcommercePaymentExceptionRefund.syncIndexes();
+  }
+});
+test("attempt index rollout replaces the order-only active index and adds the booking one", async () => {
+  const collection = EcommercePaymentAttempt.collection;
+  await collection.dropIndex("ecommerce_attempt_active_order_unique");
+  await collection.dropIndex("ecommerce_attempt_active_booking_purpose_unique");
+  await collection.createIndex({ tenantId: 1, orderId: 1 }, { unique: true, name: "tenantId_1_orderId_1",
+    partialFilterExpression: { status: { $in: ["PENDING", "INITIATED"] } } });
+  try {
+    await assert.rejects(assertFinancialIndexesReady(), /MIGRATION_REQUIRED/);
+    await applyFinancialIndexRollout({ writesPaused: true });
+    await assertFinancialIndexesReady();
+    const names = (await collection.indexes()).map((index) => index.name);
+    assert.ok(!names.includes("tenantId_1_orderId_1"));
+    assert.ok(names.includes("ecommerce_attempt_active_order_unique"));
+    assert.ok(names.includes("ecommerce_attempt_active_booking_purpose_unique"));
+  } finally {
+    await EcommercePaymentAttempt.syncIndexes();
   }
 });
 test("financial index rollout requires and restores maturity credit uniqueness", async () => {

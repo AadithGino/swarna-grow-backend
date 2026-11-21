@@ -1,3 +1,4 @@
+import { orderOwnsPaymentAttempt } from "./ecommerce-payment-allocations.js";
 import {
   EcommerceOrderCancellationRequestStatus,
   EcommerceOrderStatus,
@@ -43,14 +44,15 @@ async function notificationAlreadySent({ tenantId, inboxEventKey }) {
   });
 }
 
-async function queueEcommerceCustomerNotice({
+export async function queueEcommerceCustomerNotice({
   tenantId,
   branchId,
   customerId,
   type,
   inboxEventKey,
   outboxEventId,
-  order,
+  order = null,
+  booking = null,
   title,
   body,
   deepLink,
@@ -75,8 +77,8 @@ async function queueEcommerceCustomerNotice({
     templateParams: {
       inboxEventKey,
       outboxEventId,
-      orderId: order._id,
-      orderNumber: order.orderNumber,
+      ...(order ? { orderId: order._id, orderNumber: order.orderNumber } : {}),
+      ...(booking ? { bookingId: booking._id, bookingNumber: booking.bookingNumber } : {}),
       title,
       body,
       deepLink,
@@ -101,7 +103,7 @@ async function handlePaymentSucceeded(event, ctx) {
     return { handled: true, outcome: "ORDER_NOT_PAID" };
   }
   const attemptId = event.payload?.paymentAttemptId;
-  if (attemptId && order.successfulPaymentAttemptId !== attemptId) {
+  if (attemptId && !orderOwnsPaymentAttempt(order, attemptId)) {
     return { handled: true, outcome: "PAYMENT_ATTEMPT_MISMATCH" };
   }
   if (attemptId) {

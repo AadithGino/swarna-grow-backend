@@ -1064,6 +1064,14 @@ export async function processMaintenance(job) {
     const { runEcommerceCodAcceptanceExpiry } = await import("../services/ecommerce-cod-acceptance-expiry.service.js");
     await runEcommerceCodAcceptanceExpiry(now);
   }
+  if (job.name === "ecommerce-booking-expiry") {
+    const { runEcommerceBookingExpiry } = await import("../services/ecommerce-booking-expiry.service.js");
+    await runEcommerceBookingExpiry(now);
+  }
+  if (job.name === "ecommerce-booking-reminder") {
+    const { runEcommerceBookingReminders } = await import("../services/ecommerce-booking-reminder.service.js");
+    await runEcommerceBookingReminders(now);
+  }
   if (job.name === "ecommerce-promotion-deliver") {
     const { deliverPromotionCampaign } = await import("../services/ecommerce-promotion.service.js");
     await deliverPromotionCampaign(job.data.campaignId, job.data.tenantId);

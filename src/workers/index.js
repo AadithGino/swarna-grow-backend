@@ -14,7 +14,7 @@ import {
   processWebhook,
 } from "./processors.js";
 
-await connectDatabase(); const ready = await connectRedis(); if (!ready) throw new Error("Redis is required for workers");
+await connectDatabase(); (await import("../services/ecommerce-booking.service.js")).installBookingPaymentHandlers(); const ready = await connectRedis(); if (!ready) throw new Error("Redis is required for workers");
 startWorkerHeartbeat();
 const connection = getRedis();
 const workerOpts = { connection, prefix: "swarnagrow" };

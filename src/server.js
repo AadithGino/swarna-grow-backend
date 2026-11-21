@@ -13,6 +13,7 @@ import { assertFcmQuotaConfiguration } from "./lib/fcm-quota-chunk.js";
 assertOtpProviderReady();
 assertFcmQuotaConfiguration();
 await connectDatabase();
+(await import("./services/ecommerce-booking.service.js")).installBookingPaymentHandlers();
 await assertProductionTenantPhonePe();
 const queueAvailable = await connectRedis(); if (queueAvailable) startDispatcher();
 const server = createServer(createApp()); server.keepAliveTimeout = 65_000; server.headersTimeout = 66_000; server.requestTimeout = 30_000;

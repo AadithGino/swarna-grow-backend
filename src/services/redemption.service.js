@@ -13,7 +13,6 @@ import {
 import {
   Branch,
   Customer,
-  EcommerceSchemeReservation,
   LedgerEntry,
   OutboxEvent,
   Redemption,
@@ -61,6 +60,7 @@ import {
   pickupCodeMatches,
   PICKUP_CODE_MAX_ATTEMPTS,
 } from "../lib/ecommerce-pickup-code.js";
+import { schemeHasOnlineAllocation } from "../lib/ecommerce-scheme-online-use.js";
 import { seal, unseal } from "../lib/crypto.js";
 import {
   notifyHandoverCodeReleased,
@@ -81,10 +81,7 @@ async function assertStandaloneSchemeFundsAvailable(scheme, session) {
   if (!scheme.planSnapshot?.schemePurchaseRules) return;
   await Scheme.collection.updateOne({ _id: scheme._id, tenantId: scheme.tenantId },
     { $set: { ecommerceRedemptionFence: createId("fence") } }, { session });
-  if (await EcommerceSchemeReservation.exists({
-    tenantId: scheme.tenantId, schemeId: scheme._id, status: { $in: ["HELD", "CONSUMED"] },
-    $expr: { $gt: ["$units", { $ifNull: ["$restoredUnits", 0] }] },
-  }).session(session)) {
+  if (await schemeHasOnlineAllocation({ tenantId: scheme.tenantId, schemeId: scheme._id, session })) {
     throw errors.business("SCHEME_FUNDS_USED_ONLINE", "The scheme has an ecommerce allocation. Use the available remainder at online checkout.");
   }
 }

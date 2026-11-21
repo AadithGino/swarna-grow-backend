@@ -20,6 +20,19 @@ export function prefixStorageObjectKey(relativeKey) {
   return `${prefix}/${relativeKey}`;
 }
 
+/** Stable HTTPS URL for objects when the bucket (or CDN base) is publicly readable. */
+export function storagePublicObjectUrl(objectKey) {
+  if (!objectKey) return null;
+  const custom = String(env.S3_PUBLIC_BASE_URL ?? "").trim().replace(/\/$/, "");
+  if (custom) return `${custom}/${objectKey}`;
+  const bucket = String(env.S3_BUCKET ?? "").trim();
+  if (!bucket) return null;
+  const endpoint = String(env.S3_ENDPOINT ?? "").trim().replace(/\/$/, "");
+  if (endpoint) return `${endpoint}/${bucket}/${objectKey}`;
+  const region = String(env.S3_REGION ?? "ap-south-1").trim();
+  return `https://${bucket}.s3.${region}.amazonaws.com/${encodeURI(objectKey)}`;
+}
+
 function assertLiveStorageConfigured() {
   if (env.PROVIDER_MODE === "mock") return;
   if (!String(env.S3_BUCKET ?? "").trim()) {

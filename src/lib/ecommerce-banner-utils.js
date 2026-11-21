@@ -52,3 +52,10 @@ export async function isBannerTargetAvailable(tenantId, row) {
   }
   return true;
 }
+
+/** Remove idempotent seed markers from customer-facing banner copy (e.g. `[demo-banner-key:x]`). */
+export function stripBannerSeedMarkers(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return "";
+  return raw.replace(/\s*\[[^\]]+\]/g, "").trim();
+}

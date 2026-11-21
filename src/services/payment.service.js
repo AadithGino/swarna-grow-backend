@@ -585,6 +585,14 @@ async function recordPaymentInSession(session, req, override) {
       "The payable position changed. Refresh and try again.",
       409,
     );
+  if (
+    override.gateway &&
+    quote?.positionVersion !== undefined &&
+    scheme.paymentPattern === "FLEXIBLE"
+  ) {
+    // PhonePe already captured this checkout. A later intent may have moved the quote version.
+    req.body.expectedPositionVersion = quote.positionVersion;
+  }
   if (!gatewayLateSuccess && quote)
     assertExpectedPositionVersion(scheme, quote, req.body);
   if (!gatewayLateSuccess && quote && scheme.paymentPattern === "FLEXIBLE")
@@ -598,16 +606,24 @@ async function recordPaymentInSession(session, req, override) {
   let weightMg = 0;
   if (scheme.valueBasis === ValueBasis.GOLD_WEIGHT) {
     const goldRules = scheme.planSnapshot?.goldRules ?? {};
-    const reservedRate = (scheme.collectionFrequency || scheduledGoldFunding) && override.gateway
-      ? override.fixedReservationIntent?.collectionRatePerGramPaise : undefined;
-    rate = reservedRate ? { ratePerGramPaise: reservedRate } : await currentGoldRate(
-      {
-        tenantId: scheme.tenantId,
-        branchId: paymentBranchId ?? scheme.branchId,
-      },
-      today(),
-    );
-    if (!rate && (!(scheme.collectionFrequency || scheduledGoldFunding) || !override.gateway)) {
+    const reservedRate =
+      (scheme.collectionFrequency || scheduledGoldFunding) && override.gateway
+        ? override.fixedReservationIntent?.collectionRatePerGramPaise
+        : undefined;
+    rate = reservedRate
+      ? { ratePerGramPaise: reservedRate }
+      : await currentGoldRate(
+          {
+            tenantId: scheme.tenantId,
+            branchId: paymentBranchId ?? scheme.branchId,
+          },
+          today(),
+        );
+    if (
+      !rate &&
+      (!(scheme.collectionFrequency || scheduledGoldFunding) ||
+        !override.gateway)
+    ) {
       throw errors.business(
         "GOLD_RATE_NOT_SET",
         "Today's 22K gold rate must be set before accepting this payment.",
@@ -619,9 +635,20 @@ async function recordPaymentInSession(session, req, override) {
         "Only 22K gold rates can be used for payments.",
       );
     }
-    if (rate) weightMg = collectionPaymentWeightMg(req.body.amountPaise, rate.ratePerGramPaise, goldRules);
-    if (!(weightMg > 0) && (scheme.collectionFrequency || scheduledGoldFunding) && override.gateway) {
-      override._forceUnallocatedFixedGateway ??= { reason: rate ? "GOLD_WEIGHT_ROUNDS_TO_ZERO" : "GOLD_RATE_NOT_SET" };
+    if (rate)
+      weightMg = collectionPaymentWeightMg(
+        req.body.amountPaise,
+        rate.ratePerGramPaise,
+        goldRules,
+      );
+    if (
+      !(weightMg > 0) &&
+      (scheme.collectionFrequency || scheduledGoldFunding) &&
+      override.gateway
+    ) {
+      override._forceUnallocatedFixedGateway ??= {
+        reason: rate ? "GOLD_WEIGHT_ROUNDS_TO_ZERO" : "GOLD_RATE_NOT_SET",
+      };
       quote = null;
     } else if (!(weightMg > 0)) {
       throw errors.business(
@@ -672,11 +699,19 @@ async function recordPaymentInSession(session, req, override) {
         )
       : 0;
     payment.requiresReview = !quote;
-    payment.reviewReason = !quote ? (scheme.collectionFrequency ? override._forceUnallocatedFixedGateway?.reason : undefined) ?? "NO_PAYABLE_POSITION_AVAILABLE" : undefined;
+    payment.reviewReason = !quote
+      ? ((scheme.collectionFrequency
+          ? override._forceUnallocatedFixedGateway?.reason
+          : undefined) ?? "NO_PAYABLE_POSITION_AVAILABLE")
+      : undefined;
     await payment.save({ session });
     gatewayTxFaultCheckpoint("recordPayment:payment-saved");
   } else {
-    const unallocatedCollection = Boolean((scheme.collectionFrequency || scheduledGoldFunding) && override.gateway && !quote);
+    const unallocatedCollection = Boolean(
+      (scheme.collectionFrequency || scheduledGoldFunding) &&
+      override.gateway &&
+      !quote,
+    );
     const paymentDoc = {
       _id: createId("payment"),
       tenantId: scheme.tenantId,
@@ -689,8 +724,17 @@ async function recordPaymentInSession(session, req, override) {
       weightMg,
       ratePerGramPaise: rate?.ratePerGramPaise ?? 0,
       mode: override.gateway ? PaymentMode.ONLINE_GATEWAY : req.body.mode,
-      status: unallocatedCollection ? PaymentStatus.UNALLOCATED_PENDING_REVIEW : PaymentStatus.SUCCESS,
-      ...(unallocatedCollection ? { requiresReview: true, reviewReason: override._forceUnallocatedFixedGateway?.reason ?? "NO_PAYABLE_POSITION_AVAILABLE" } : {}),
+      status: unallocatedCollection
+        ? PaymentStatus.UNALLOCATED_PENDING_REVIEW
+        : PaymentStatus.SUCCESS,
+      ...(unallocatedCollection
+        ? {
+            requiresReview: true,
+            reviewReason:
+              override._forceUnallocatedFixedGateway?.reason ??
+              "NO_PAYABLE_POSITION_AVAILABLE",
+          }
+        : {}),
       source: override.source ?? sourceFor(req),
       reference: req.body.reference ?? undefined,
       remarks: req.body.remarks ?? undefined,
@@ -1045,7 +1089,9 @@ export async function reversePayment(req) {
     if (
       scheme.status === SchemeStatus.REDEEMED ||
       scheme.status === SchemeStatus.CLOSED_PREMATURE ||
-      (scheme.status === SchemeStatus.MATURED && !scheme.oneTimeGold && !maturityGoldRules(scheme.planSnapshot))
+      (scheme.status === SchemeStatus.MATURED &&
+        !scheme.oneTimeGold &&
+        !maturityGoldRules(scheme.planSnapshot))
     ) {
       throw errors.business(
         "REVERSAL_SCHEME_TERMINAL",
@@ -1121,10 +1167,22 @@ export async function reversePayment(req) {
       .lean();
     rebuildSchemeProjection(scheme, entries);
     if (scheme.oneTimeGold) {
-      await updateOneTimeGoldPeriods(scheme, { entries, session, adjustmentKey: `ONE_TIME_REVERSAL:${payment._id}` });
+      await updateOneTimeGoldPeriods(scheme, {
+        entries,
+        session,
+        adjustmentKey: `ONE_TIME_REVERSAL:${payment._id}`,
+      });
       scheme.positionVersion += 1;
-    } else if (maturityGoldRules(scheme.planSnapshot) && scheme.status === SchemeStatus.MATURED) {
-      await adjustCollectionBonusAfterRefund(scheme, entries, `REVERSAL:${payment._id}`, session);
+    } else if (
+      maturityGoldRules(scheme.planSnapshot) &&
+      scheme.status === SchemeStatus.MATURED
+    ) {
+      await adjustCollectionBonusAfterRefund(
+        scheme,
+        entries,
+        `REVERSAL:${payment._id}`,
+        session,
+      );
       scheme.positionVersion += 1;
     }
     scheme.version += 1;
@@ -1359,13 +1417,13 @@ export async function createStaffPaymentQrSession(req) {
   const link = await createPaymentLink(req);
   const origin = resolveStaffQrOrigin(req);
   const redirectUrl =
-    req.body.redirectUrl
-    ?? (origin ? `${origin}/pay/${link.token}` : null);
+    req.body.redirectUrl ?? (origin ? `${origin}/pay/${link.token}` : null);
   if (!redirectUrl) {
     throw errors.validation([
       {
         field: "redirectUrl",
-        message: "redirectUrl is required when the request origin is not allowlisted.",
+        message:
+          "redirectUrl is required when the request origin is not allowlisted.",
       },
     ]);
   }
@@ -1380,14 +1438,12 @@ export async function createStaffPaymentQrSession(req) {
     },
   });
   const gatewayUrl =
-    initiated.checkoutRedirectUrl
-    ?? initiated.redirectUrl
-    ?? initiated.paymentUrl
-    ?? initiated.gatewayUrl
-    ?? null;
-  const payPageUrl = origin
-    ? `${origin}/pay/${link.token}`
-    : link.url;
+    initiated.checkoutRedirectUrl ??
+    initiated.redirectUrl ??
+    initiated.paymentUrl ??
+    initiated.gatewayUrl ??
+    null;
+  const payPageUrl = origin ? `${origin}/pay/${link.token}` : link.url;
   const qrPayload = gatewayUrl || payPageUrl;
   if (!qrPayload) {
     throw errors.dependency(
@@ -1516,7 +1572,9 @@ export async function reservePaymentIntentInSession(session, req) {
           schemeId: scheme._id,
           customerId: scheme.customerId,
           receiptNumber: `PENDING-${intent._id}`,
-          gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(intent._id),
+          gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(
+            intent._id,
+          ),
           amountPaise: intent.amountPaise,
           targetCycle,
           mode: PaymentMode.ONLINE_GATEWAY,
@@ -1553,7 +1611,9 @@ export async function initiateProviderForReservedIntent(req, reserved) {
     clientPlatform: readClientPlatform(req.headers),
     checkoutChannel: readCheckoutChannel(req.headers),
   });
-  const paymentRow = await Payment.findById(reserved.paymentId).select("gatewayMerchantOrderId").lean();
+  const paymentRow = await Payment.findById(reserved.paymentId)
+    .select("gatewayMerchantOrderId")
+    .lean();
   await Promise.all([
     PaymentIntent.updateOne(
       { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
@@ -1569,7 +1629,11 @@ export async function initiateProviderForReservedIntent(req, reserved) {
       },
     ),
   ]);
-  if (provider.providerOrderId || provider.token || provider.checkoutRedirectUrl) {
+  if (
+    provider.providerOrderId ||
+    provider.token ||
+    provider.checkoutRedirectUrl
+  ) {
     await Payment.updateOne(
       { _id: reserved.paymentId, status: PaymentStatus.PENDING },
       {
@@ -1719,8 +1783,16 @@ export async function initiatePublicPayment(req) {
       const staffCollectorId = link.createdBy || req.auth?.id || null;
       if (staffCollectorId && existing && !existing.collectedBy) {
         await Payment.updateOne(
-          { _id: existing._id, $or: [{ collectedBy: null }, { collectedBy: { $exists: false } }] },
-          { $set: { collectedBy: staffCollectorId, source: PaymentSource.STAFF_APP } },
+          {
+            _id: existing._id,
+            $or: [{ collectedBy: null }, { collectedBy: { $exists: false } }],
+          },
+          {
+            $set: {
+              collectedBy: staffCollectorId,
+              source: PaymentSource.STAFF_APP,
+            },
+          },
         );
       }
       return {
@@ -1928,7 +2000,9 @@ export async function createSdkPaymentIntent(req) {
             schemeId: scheme._id,
             customerId: scheme.customerId,
             receiptNumber: `PENDING-${intent._id}`,
-            gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(intent._id),
+            gatewayMerchantOrderId: gatewayMerchantOrderIdForInitiation(
+              intent._id,
+            ),
             amountPaise: intent.amountPaise,
             targetCycle,
             mode: PaymentMode.ONLINE_GATEWAY,
@@ -1962,7 +2036,9 @@ export async function createSdkPaymentIntent(req) {
       tenantId: reserved.tenantId,
       checkoutChannel: "sdk",
     });
-    const paymentRow = await Payment.findById(reserved.paymentId).select("gatewayMerchantOrderId").lean();
+    const paymentRow = await Payment.findById(reserved.paymentId)
+      .select("gatewayMerchantOrderId")
+      .lean();
     await Promise.all([
       PaymentIntent.updateOne(
         { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
@@ -1973,7 +2049,10 @@ export async function createSdkPaymentIntent(req) {
         {
           $set: {
             providerTransactionId: provider.providerOrderId,
-            ...gatewayMerchantOrderIdWritePatch(paymentRow, reserved.intent._id),
+            ...gatewayMerchantOrderIdWritePatch(
+              paymentRow,
+              reserved.intent._id,
+            ),
           },
         },
       ),
@@ -2048,7 +2127,11 @@ export async function createFixedSdkPayment(req) {
       throw errors.business(
         "PAYMENT_LINK_BUSY",
         "A payment attempt is already in progress for this scheme.",
-        { paymentLinkId: link._id, paymentId: existing?._id, status: existing?.status },
+        {
+          paymentLinkId: link._id,
+          paymentId: existing?._id,
+          status: existing?.status,
+        },
       );
     }
   }

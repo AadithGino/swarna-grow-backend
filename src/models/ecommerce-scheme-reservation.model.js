@@ -40,5 +40,6 @@ const reservationSchema = new mongoose.Schema({
 
 reservationSchema.index({ tenantId: 1, orderId: 1 }, { unique: true });
 reservationSchema.index({ tenantId: 1, schemeId: 1, status: 1 });
+reservationSchema.index({ tenantId: 1, customerId: 1, status: 1 });
 
 export const EcommerceSchemeReservation = mongoose.model("EcommerceSchemeReservation", reservationSchema);

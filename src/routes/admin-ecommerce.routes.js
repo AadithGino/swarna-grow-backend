@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as controller from "../controllers/ecommerce.controller.js";
+import * as bookingController from "../controllers/ecommerce-booking.controller.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { sendSuccess } from "../lib/response.js";
 import { idempotent } from "../middlewares/idempotency.middleware.js";
@@ -51,6 +52,12 @@ import {
   ecommerceConfirmOrderDeliveryBody,
   ecommerceReadyForPickupBody,
   ecommerceConfirmPickupCollectionBody,
+  bookingAdminListQuery,
+  bookingManualRefundBody,
+  bookingPolicyAssignmentBody,
+  bookingPolicyDraftBody,
+  bookingRequoteBody,
+  bookingStaffCancelBody,
 } from "../validators/ecommerce.validators.js";
 import { cursorQuery, uploadBody } from "../validators/common.validators.js";
 import { uploadCompleteBody } from "../validators/admin-mutation.validators.js";
@@ -700,4 +707,59 @@ adminEcommerceRouter.post(
     validate({ body: ecommerceDeliveryHandoverBody }),
     asyncHandler(controller.recordDeliveryHandover),
   ),
+);
+
+// ---- Advance ornament booking ----
+adminEcommerceRouter.get(
+  "/ecommerce/bookings",
+  ...guarded(Permission.ECOMMERCE_BOOKING_OPERATE, validate({ query: bookingAdminListQuery }), asyncHandler(bookingController.listBookings)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/bookings/:bookingId",
+  ...guarded(Permission.ECOMMERCE_BOOKING_OPERATE, asyncHandler(bookingController.getBooking)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/bookings/:bookingId/bill",
+  ...guarded(Permission.ECOMMERCE_BOOKING_OPERATE, idempotent, asyncHandler(bookingController.billBooking)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/bookings/:bookingId/requote",
+  ...guarded(Permission.ECOMMERCE_BOOKING_OPERATE, validate({ body: bookingRequoteBody }), idempotent, asyncHandler(bookingController.requoteBooking)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/bookings/:bookingId/cancel",
+  ...guarded(Permission.ECOMMERCE_BOOKING_OPERATE, validate({ body: bookingStaffCancelBody }), idempotent, asyncHandler(bookingController.staffCancelBooking)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/bookings/:bookingId/refunds/:refundId/manual",
+  ...guarded(
+    Permission.ECOMMERCE_REFUND_OPERATE,
+    validate({ body: bookingManualRefundBody }),
+    idempotent,
+    asyncHandler(bookingController.recordBookingManualRefund),
+  ),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/bookings/:bookingId/refunds/:refundId/retry",
+  ...guarded(Permission.ECOMMERCE_REFUND_OPERATE, idempotent, asyncHandler(bookingController.retryBookingRefund)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/booking-policies",
+  ...guarded(Permission.ECOMMERCE_BOOKING_OPERATE, asyncHandler(bookingController.listBookingPolicies)),
+);
+adminEcommerceRouter.get(
+  "/ecommerce/booking-policy-assignments",
+  ...guarded(Permission.ECOMMERCE_BOOKING_OPERATE, asyncHandler(bookingController.listBookingPolicyAssignments)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/booking-policies",
+  ...guarded(Permission.ECOMMERCE_BOOKING_POLICY_PUBLISH, validate({ body: bookingPolicyDraftBody }), idempotent, asyncHandler(bookingController.createBookingPolicyDraft)),
+);
+adminEcommerceRouter.post(
+  "/ecommerce/booking-policies/:policyVersionId/publish",
+  ...guarded(Permission.ECOMMERCE_BOOKING_POLICY_PUBLISH, idempotent, asyncHandler(bookingController.publishBookingPolicy)),
+);
+adminEcommerceRouter.put(
+  "/ecommerce/booking-policy-assignments",
+  ...guarded(Permission.ECOMMERCE_BOOKING_POLICY_PUBLISH, validate({ body: bookingPolicyAssignmentBody }), idempotent, asyncHandler(bookingController.setBookingPolicyAssignment)),
 );

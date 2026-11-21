@@ -61,7 +61,16 @@ import {
 
 function mapRefundPresentation(order, refunds = []) {
   const returns = refunds.filter((refund) => refund.refundSource === EcommerceOrderRefundSource.ORDER_RETURN);
-  const cancellation = refunds.find((refund) => refund.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION);
+  // A cancellation can hold one refund row per original capture. Present the row that still needs
+  // attention (failed first, then pending); only when all have settled does it read as refunded.
+  const settledStatuses = [
+    EcommercePaymentExceptionRefundStatus.SUCCEEDED,
+    EcommercePaymentExceptionRefundStatus.MANUAL_RECORDED,
+  ];
+  const cancellationRows = refunds.filter((refund) => refund.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION);
+  const cancellation = cancellationRows.find((refund) => refund.status === EcommercePaymentExceptionRefundStatus.FAILED)
+    ?? cancellationRows.find((refund) => !settledStatuses.includes(refund.status))
+    ?? cancellationRows[0];
   if (!cancellation && returns.length) {
     const settled = returns.filter((refund) => [
       EcommercePaymentExceptionRefundStatus.SUCCEEDED,

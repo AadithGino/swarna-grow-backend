@@ -10,7 +10,7 @@ import {
   UserStatus,
   UserType,
 } from "../constants/enums.js";
-import { ROLE_PERMISSIONS } from "../constants/permissions.js";
+import { OWNER_GRANTED_PERMISSIONS, ROLE_PERMISSIONS } from "../constants/permissions.js";
 import { revokeSessionsForUser } from "./auth.service.js";
 import { bumpSecurityVersion } from "../lib/security-version.js";
 import {
@@ -1611,6 +1611,22 @@ export async function setBranchActive(req, active) {
   if (!row) throw errors.notFound("Branch");
   return getBranchDetailForAdmin(req);
 }
+/**
+ * Permissions such as the booking fee waiver may only be handed out by a tenant owner, so an admin
+ * cannot give the authority to themselves or to a colleague. Adding one is refused for any other
+ * caller; removing one, or leaving an existing grant in place, is always allowed.
+ */
+async function assertOwnerGrantsOnly(req, patch) {
+  if (!Array.isArray(patch.permissions) || req.auth?.role === "TENANT_OWNER") return;
+  const requested = patch.permissions.filter((p) => OWNER_GRANTED_PERMISSIONS.includes(p));
+  if (!requested.length) return;
+  const current = await User.findOne({ _id: req.params.staffId, tenantId: req.auth.tenantId }).select("permissions").lean();
+  const held = new Set(current?.permissions ?? []);
+  if (requested.some((p) => !held.has(p))) {
+    throw errors.forbidden("Only a tenant owner can grant this permission.");
+  }
+}
+
 const STAFF_UPDATE_FIELDS = new Set([
   "name",
   "email",
@@ -1631,6 +1647,7 @@ function pickStaffUpdateFields(body) {
 
 export async function updateStaff(req) {
   const patch = pickStaffUpdateFields(req.body);
+  await assertOwnerGrantsOnly(req, patch);
   const filter = {
     _id: req.params.staffId,
     tenantId: req.auth.tenantId,

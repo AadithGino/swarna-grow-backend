@@ -7,6 +7,7 @@ import {
 } from "../src/constants/enums.js";
 import {
   applyMakingChargeOffer,
+  buildSavedRateOption,
   computeGoldValuePaise,
   computeMakingChargePaise,
   computeProductPriceEstimate,
@@ -179,4 +180,113 @@ test("missing rate blocks dynamic estimate", () => {
   });
   assert.equal(estimate.computable, false);
   assert.ok(estimate.blockers.some((b) => b.code === "GOLD_RATE_MISSING"));
+});
+
+// ---------- saved-rate pricing (advance bookings) ----------
+
+const DAY = 86_400_000;
+const T0 = new Date("2026-06-01T00:00:00Z").getTime();
+const goldProduct = {
+  priceMode: EcommercePriceMode.GOLD_RATE_BASED,
+  purity: "22K",
+  goldWeightMg: 5000,
+  makingChargeMode: EcommerceMakingChargeMode.FIXED_PAISE,
+  makingCharge: { fixedPaise: 2000 },
+  taxClassification: "GST_3",
+};
+const taxSettings = { version: 1, rates: [{ code: "GST_3", label: "GST 3%", rateBps: 300, active: true }] };
+const savedOption = (overrides = {}) => buildSavedRateOption({
+  ratePerGramPaise: 600_000, purity: "22K", rateId: "egrt_saved", rateVersion: 4,
+  savedAt: new Date(T0), validUntil: new Date(T0 + 30 * DAY), at: new Date(T0), ...overrides,
+});
+const estimateAt = (atMs, extra = {}) => computeProductPriceEstimate({ product: goldProduct, taxSettings, atMs, ...extra });
+
+test("saved rate prices an old booking even though the saved rate is far past the freshness window", () => {
+  const atMs = T0 + 20 * DAY; // 20 days old: stale for a live rate, still inside the 30-day policy
+  const live = estimateAt(atMs, { rateRow: { _id: "egrt_saved", ratePerGramPaise: 600_000, effectiveAt: new Date(T0) } });
+  assert.equal(live.computable, false);
+  assert.ok(live.blockers.some((b) => b.code === "GOLD_RATE_STALE"));
+
+  const saved = estimateAt(atMs, { savedRate: savedOption() });
+  assert.equal(saved.computable, true);
+  assert.equal(saved.gold.goldValuePaise, 3_000_000);
+  assert.equal(saved.gold.ratePerGramPaise, 600_000);
+  assert.equal(saved.gold.rateSource, "SAVED");
+  assert.equal(saved.gold.rateId, "egrt_saved");
+  assert.equal(saved.rateFreshness.code, "SAVED_RATE");
+  assert.equal(saved.preTaxSubtotalPaise, 3_002_000);
+  assert.equal(saved.tax.totalPaise, 90_060);
+});
+
+test("the saved rate wins over a live rate row: a booking never reprices to today's rate", () => {
+  const estimate = estimateAt(T0 + DAY, {
+    savedRate: savedOption(),
+    rateRow: { _id: "egrt_today", ratePerGramPaise: 900_000, effectiveAt: new Date(T0 + DAY) },
+  });
+  assert.equal(estimate.gold.ratePerGramPaise, 600_000);
+  assert.equal(estimate.gold.goldValuePaise, 3_000_000);
+});
+
+test("once the policy has ended the estimate is blocked and does not fall back to a live rate", () => {
+  const option = savedOption();
+  const after = estimateAt(T0 + 31 * DAY, {
+    savedRate: option,
+    rateRow: { _id: "egrt_today", ratePerGramPaise: 900_000, effectiveAt: new Date(T0 + 31 * DAY) },
+  });
+  assert.equal(after.computable, false);
+  assert.ok(after.blockers.some((b) => b.code === "SAVED_RATE_EXPIRED"));
+  assert.equal(after.displayTotalPaise, null);
+  assert.equal(after.gold.goldValuePaise, 0);
+  // The boundary instant itself is already expired.
+  assert.ok(estimateAt(T0 + 30 * DAY, { savedRate: option }).blockers.some((b) => b.code === "SAVED_RATE_EXPIRED"));
+  assert.equal(estimateAt(T0 + 30 * DAY - 1, { savedRate: option }).computable, true);
+});
+
+test("a saved rate cannot be built for an already-ended or malformed policy", () => {
+  assert.throws(() => savedOption({ validUntil: new Date(T0 - 1) }), { code: "SAVED_RATE_EXPIRED" });
+  assert.throws(() => savedOption({ validUntil: undefined }), { code: "SAVED_RATE_INVALID" });
+  assert.throws(() => savedOption({ ratePerGramPaise: 0 }), { code: "SAVED_RATE_INVALID" });
+  assert.throws(() => savedOption({ ratePerGramPaise: 600_000.5 }), { code: "SAVED_RATE_INVALID" });
+  assert.throws(() => savedOption({ purity: "" }), { code: "SAVED_RATE_INVALID" });
+});
+
+test("a saved rate is only valid for the purity it was saved for", () => {
+  const estimate = estimateAt(T0 + DAY, { savedRate: savedOption({ purity: "18K" }) });
+  assert.equal(estimate.computable, false);
+  assert.ok(estimate.blockers.some((b) => b.code === "SAVED_RATE_PURITY_MISMATCH"));
+});
+
+test("an object that merely looks like a saved rate is ignored: only the server-built option counts", () => {
+  const forged = { ratePerGramPaise: 1, purity: "22K", validUntilMs: T0 + 365 * DAY, saved: true };
+  const stale = { _id: "egrt_old", ratePerGramPaise: 600_000, effectiveAt: new Date(T0 - 8 * DAY) };
+  const viaForgery = estimateAt(T0, { savedRate: forged, rateRow: stale });
+  assert.equal(viaForgery.computable, false);
+  assert.ok(viaForgery.blockers.some((b) => b.code === "GOLD_RATE_STALE"), "the live freshness check still runs");
+  // A body parsed from JSON cannot carry the brand either.
+  const fromJson = JSON.parse(JSON.stringify(savedOption()));
+  const viaJson = estimateAt(T0, { savedRate: fromJson, rateRow: stale });
+  assert.ok(viaJson.blockers.some((b) => b.code === "GOLD_RATE_STALE"));
+  assert.equal(viaJson.gold.rateSource, undefined);
+});
+
+test("live inputs still go through their checks when a saved rate is used", () => {
+  const noTax = computeProductPriceEstimate({
+    product: goldProduct, taxSettings: { version: 1, rates: [] }, atMs: T0 + DAY, savedRate: savedOption(),
+  });
+  assert.equal(noTax.computable, false);
+  assert.ok(noTax.blockers.some((b) => b.code === "TAX_CLASSIFICATION_UNKNOWN"));
+  const noWeight = computeProductPriceEstimate({
+    product: { ...goldProduct, goldWeightMg: 0 }, taxSettings, atMs: T0 + DAY, savedRate: savedOption(),
+  });
+  assert.ok(noWeight.blockers.some((b) => b.code === "WEIGHT_INVALID"));
+});
+
+test("a saved rate does not change fixed-price products or the shape of ordinary estimates", () => {
+  const fixed = { priceMode: EcommercePriceMode.FIXED, basePricePaise: 100_000, taxClassification: "GST_3" };
+  const withSaved = computeProductPriceEstimate({ product: fixed, taxSettings, atMs: T0, savedRate: savedOption() });
+  const without = computeProductPriceEstimate({ product: fixed, taxSettings, atMs: T0 });
+  assert.deepEqual(withSaved, without);
+  const ordinary = estimateAt(T0 + DAY, { rateRow: { _id: "egrt_1", ratePerGramPaise: 600_000, effectiveAt: new Date(T0) } });
+  assert.equal("rateSource" in ordinary.gold, false);
+  assert.equal("savedRateValidUntil" in ordinary.gold, false);
 });

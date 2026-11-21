@@ -44,6 +44,27 @@ async function resolveExistingIdempotencyRecord({ tenantId, actorId, endpoint, k
 
 async function handleExistingIdempotencyRecord(record, { tenantId, actorId, endpoint, key, bodyHash, leaseOwner, leaseExpiresAt }) {
   if (record.bodyHash !== bodyHash) {
+    if (record.state === "COMPLETED" && record.responseStatus >= 400 && record.responseStatus < 500) {
+      const removed = await IdempotencyRecord.deleteOne({
+        _id: record._id,
+        state: "COMPLETED",
+        responseStatus: { $gte: 400, $lt: 500 },
+      });
+      if (removed.deletedCount) {
+        const replaced = await IdempotencyRecord.create({
+          tenantId,
+          actorId,
+          endpoint,
+          key,
+          bodyHash,
+          leaseOwner,
+          leaseExpiresAt,
+          heartbeatAt: new Date(),
+          expiresAt: new Date(Date.now() + 86_400_000),
+        });
+        return { record: replaced, replay: false };
+      }
+    }
     throw new AppError("IDEMPOTENCY_KEY_REUSED", "This idempotency key was already used with a different request.", 409);
   }
   if (record.state === "PROCESSING") {

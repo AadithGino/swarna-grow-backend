@@ -37,7 +37,12 @@ import { paginate } from "../lib/pagination.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { writeAudit } from "./audit.service.js";
-import { uploadViewPath, validateUploadReferences } from "./upload.service.js";
+import {
+  catalogMediaViewUrl,
+  uploadMapForIds,
+  uploadViewPath,
+  validateUploadReferences,
+} from "./upload.service.js";
 
 function enforceVersion(doc, expectedVersion) {
   if (expectedVersion == null) return;
@@ -67,14 +72,17 @@ async function latestRateForPurity(tenantId, purity, at = new Date()) {
     .lean();
 }
 
-function mapCategory(row) {
+function mapCategory(row, uploadById = null) {
+  const imageUploadId = row.imageUploadId ?? null;
   return {
     id: row._id,
     name: row.name,
     slug: row.slug,
     description: row.description ?? "",
-    imageUploadId: row.imageUploadId ?? null,
-    imageUrl: row.imageUploadId ? uploadViewPath(row.imageUploadId) : null,
+    imageUploadId,
+    imageUrl: imageUploadId
+      ? catalogMediaViewUrl(uploadById?.get(String(imageUploadId)), imageUploadId)
+      : null,
     schemePurchaseAllowed: row.schemePurchaseAllowed === true,
     displayOrder: row.displayOrder ?? 0,
     active: row.active !== false,
@@ -83,7 +91,7 @@ function mapCategory(row) {
   };
 }
 
-function mapProduct(row, { includePricing = false, tenant, rateRow, taxSettings } = {}) {
+function mapProduct(row, { includePricing = false, tenant, rateRow, taxSettings, uploadById = null } = {}) {
   const base = {
     id: row._id,
     name: row.name,
@@ -95,7 +103,7 @@ function mapProduct(row, { includePricing = false, tenant, rateRow, taxSettings 
     imageUploadIds: row.imageUploadIds ?? [],
     imageUrls: (row.imageUploadIds ?? []).map((id) => ({
       uploadId: id,
-      viewUrl: uploadViewPath(id),
+      viewUrl: catalogMediaViewUrl(uploadById?.get(String(id)), id),
     })),
     featured: row.featured === true,
     status: row.status,
@@ -280,10 +288,18 @@ export async function getStoreStatus(req) {
   };
 }
 
+function catalogueNameSearch(q) {
+  const text = String(q ?? "").trim().slice(0, 80);
+  if (!text) return null;
+  return { $regex: text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
+}
+
 export async function listCategories(req) {
   const activeOnly = req.query.activeOnly === "true";
   const filter = {};
   if (activeOnly) filter.active = true;
+  const name = catalogueNameSearch(req.query.q);
+  if (name) filter.name = name;
   const result = await paginate(EcommerceCategory, {
     scope: { tenantId: req.auth.tenantId },
     filters: filter,
@@ -429,6 +445,8 @@ export async function listProducts(req) {
   if (req.query.status) filter.status = req.query.status;
   if (req.query.categoryId) filter.categoryId = req.query.categoryId;
   if (req.query.featured === "true") filter.featured = true;
+  const name = catalogueNameSearch(req.query.q);
+  if (name) filter.$or = [{ name }, { sku: name }, { slug: name }];
   const result = await paginate(EcommerceProduct, {
     scope: { tenantId: req.auth.tenantId },
     filters: filter,
@@ -444,11 +462,15 @@ export async function listProducts(req) {
   )];
   const rates = await Promise.all(purities.map((purity) => latestRateForPurity(req.auth.tenantId, purity)));
   const rateByPurity = new Map(purities.map((purity, index) => [purity, rates[index]]));
+  const uploadById = await uploadMapForIds(
+    result.data.flatMap((row) => row.imageUploadIds ?? []),
+  );
   const items = result.data.map((row) => mapProduct(row, {
     includePricing: req.query.includePricing === "true",
     tenant: req.tenant,
     rateRow: row.priceMode === EcommercePriceMode.GOLD_RATE_BASED ? rateByPurity.get(row.purity) ?? null : null,
     taxSettings,
+    uploadById,
   }));
   return { items, meta: result.meta };
 }
@@ -987,7 +1009,8 @@ export async function shopListCategories(req) {
   })
     .sort({ displayOrder: 1, name: 1 })
     .lean();
-  return { items: rows.map(mapCategory) };
+  const uploadById = await uploadMapForIds(rows.map((row) => row.imageUploadId));
+  return { items: rows.map((row) => mapCategory(row, uploadById)) };
 }
 
 export async function shopListProducts(req) {
@@ -1028,6 +1051,9 @@ export async function shopListProducts(req) {
     cursor: req.query.cursor,
   });
   const taxSettings = await loadTaxSettings(req.auth.tenantId);
+  const uploadById = await uploadMapForIds(
+    result.data.flatMap((row) => row.imageUploadIds ?? []),
+  );
   const items = [];
   for (const row of result.data) {
     const rateRow =
@@ -1039,6 +1065,7 @@ export async function shopListProducts(req) {
       tenant: req.tenant,
       rateRow,
       taxSettings,
+      uploadById,
     });
     const availability = await loadInventoryAvailability(req.auth.tenantId, row._id);
     items.push({
@@ -1066,11 +1093,13 @@ export async function shopGetProduct(req) {
     row.priceMode === EcommercePriceMode.GOLD_RATE_BASED
       ? await latestRateForPurity(req.auth.tenantId, row.purity)
       : null;
+  const uploadById = await uploadMapForIds(row.imageUploadIds ?? []);
   const mapped = mapProduct(row, {
     includePricing: true,
     tenant: req.tenant,
     rateRow,
     taxSettings,
+    uploadById,
   });
   const availability = await loadInventoryAvailability(req.auth.tenantId, row._id);
   return {

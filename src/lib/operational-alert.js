@@ -23,13 +23,15 @@ export async function upsertOperationalAlert({
   severity = AlertSeverity.CRITICAL,
   entityType = "WEBHOOK",
   metadata,
+  branchId = null,
   session = null,
 }) {
   if (!isEnumValue(AlertType, type)) {
     throw new TypeError(`Unknown AlertType: ${type}`);
   }
   const base = { tenantId, type, entityId };
-  const fields = { severity, title, message, entityType, metadata };
+  // branchId routes the alert to that branch's staff (alert lists are branch-scoped for branch roles).
+  const fields = { severity, title, message, entityType, metadata, ...(branchId ? { branchId } : {}) };
   try {
     await Alert.findOneAndUpdate(
       { ...base, status: AlertStatus.OPEN },

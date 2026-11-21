@@ -17,6 +17,8 @@ import { buildSchedulePreview } from "../src/services/schedule.service.js";
 import { enrol, rebuildSchemeProjection } from "../src/services/scheme.service.js";
 import {
   initiateRedemption,
+  releaseHandoverOtp,
+  revealCustomerHandoverOtp,
   settlementPreview,
   transitionRedemption,
 } from "../src/services/redemption.service.js";
@@ -121,6 +123,17 @@ async function markMatured(schemeId) {
 
 function redemptionCtx(ctx, schemeId, body = {}) {
   return { ...ctx, params: { schemeId }, body };
+}
+
+async function completeRedemptionWithHandoverOtp(ctx, redemptionId, customerId) {
+  const base = { ...ctx, params: { redemptionId }, body: {} };
+  await releaseHandoverOtp(base);
+  const { handoverOtp } = await revealCustomerHandoverOtp({
+    ...ctx,
+    params: { redemptionId },
+    auth: { id: customerId, tenantId: ctx.auth.tenantId, type: "CUSTOMER" },
+  });
+  return transitionRedemption({ ...base, body: { handoverOtp } }, "complete");
 }
 
 async function openRedemption(ctx, schemeId, closureType, mode) {
@@ -328,7 +341,7 @@ export async function seedCollectionPlanMatrix(ctx, { plan, planLabel, branchId,
     redemptionModeForPlan(plan, { preferGoldHandover: true }),
   );
   await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "approve");
-  await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "complete");
+  await completeRedemptionWithHandoverOtp(ctx, redC._id, s.customerId);
   summary.push({
     customer: redeemedCust.name,
     enrollment: s.enrollmentNumber,
@@ -348,7 +361,7 @@ export async function seedCollectionPlanMatrix(ctx, { plan, planLabel, branchId,
   s = await Scheme.findById(s._id);
   const preRed = await openRedemption(ctx, s._id, ClosureType.PREMATURE_CLOSURE, RedemptionMode.PURCHASE_ADJUSTMENT);
   await transitionRedemption({ ...ctx, params: { redemptionId: preRed._id }, body: {} }, "approve");
-  await transitionRedemption({ ...ctx, params: { redemptionId: preRed._id }, body: {} }, "complete");
+  await completeRedemptionWithHandoverOtp(ctx, preRed._id, s.customerId);
   summary.push({
     customer: preCloseCust.name,
     enrollment: s.enrollmentNumber,
@@ -425,7 +438,7 @@ export async function seedCollectionPlanHighlights(ctx, { plan, planLabel, branc
     redemptionModeForPlan(plan, { preferGoldHandover: true }),
   );
   await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "approve");
-  await transitionRedemption({ ...ctx, params: { redemptionId: redC._id }, body: {} }, "complete");
+  await completeRedemptionWithHandoverOtp(ctx, redC._id, s.customerId);
   summary.push({
     customer: redeemedCust.name,
     enrollment: s.enrollmentNumber,

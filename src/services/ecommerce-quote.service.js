@@ -1,3 +1,4 @@
+import { customerHasOnlineSchemeAllocation, schemeHasOnlineAllocation } from "../lib/ecommerce-scheme-online-use.js";
 import { getSchemePurchaseEntitlement } from "./ecommerce-scheme-reservation.service.js";
 import { previewSchemePurchase } from "../lib/ecommerce-scheme-purchase-preview.js";
 import { assertRedemptionKyc, OPEN_REDEMPTION_STATUSES, settlementPreview } from "./redemption.service.js";
@@ -573,8 +574,9 @@ export async function getCustomerQuote(req) {
   const methodOptions = derivePaymentMethodOptions({ capability, codEvaluation });
   return {
     ...mapQuote(row, capability, methodOptions),
-    schemePurchasePreviewEnabled: fulfilmentRow?.schemeCheckoutEnabled === true
-      && (row.paymentMethod ?? EcommercePaymentMethod.ONLINE) === EcommercePaymentMethod.ONLINE,
+    schemePurchasePreviewEnabled: (row.paymentMethod ?? EcommercePaymentMethod.ONLINE) === EcommercePaymentMethod.ONLINE
+      && (fulfilmentRow?.schemeCheckoutEnabled === true
+        || Boolean(await customerHasOnlineSchemeAllocation({ tenantId: req.auth.tenantId, customerId: req.auth.id }))),
   };
 }
 
@@ -611,7 +613,12 @@ export async function getSchemePurchasePreview(req, { session } = {}) {
   const quote = await read(EcommercePriceQuote.findOne({ _id: quoteId, tenantId, customerId })).lean();
   const scheme = await read(Scheme.findOne({ _id: schemeId, tenantId, customerId })).lean();
   if (!quote || !scheme) throw errors.notFound("Scheme or checkout quote");
-  if (store?.schemeCheckoutEnabled !== true) throw errors.business("SCHEME_CHECKOUT_DISABLED", "This jeweller has disabled scheme checkout previews.");
+  // The switch decides which schemes may START being used online. A scheme whose value is already
+  // allocated to online orders can only be spent online, so it stays spendable here.
+  if (store?.schemeCheckoutEnabled !== true
+    && !(await schemeHasOnlineAllocation({ tenantId, schemeId, session }))) {
+    throw errors.business("SCHEME_CHECKOUT_DISABLED", "This jeweller has disabled scheme checkout previews.");
+  }
   if (quote.status !== EcommerceQuoteStatus.ACTIVE || new Date(quote.expiresAt) <= new Date()) {
     throw errors.business("QUOTE_NOT_AVAILABLE", "Refresh the checkout quote before previewing scheme savings.");
   }

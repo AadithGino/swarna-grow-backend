@@ -23,7 +23,15 @@ export async function sumActiveReservations(tenantId, productId, session) {
         tenantId,
         productId,
         releasedAt: null,
-        expiresAt: { $gt: now },
+        // A booking hold keeps counting until its booking releases or converts it, even past
+        // expiresAt; every other reservation counts only while its time window is open.
+        $or: [
+          { expiresAt: { $gt: now } },
+          {
+            bookingId: { $type: "string", $gt: "" },
+            $or: [{ orderId: null }, { orderId: { $exists: false } }, { orderId: "" }],
+          },
+        ],
       },
     },
     { $group: { _id: null, total: { $sum: "$quantity" } } },

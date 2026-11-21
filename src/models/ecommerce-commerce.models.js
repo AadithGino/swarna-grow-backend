@@ -12,6 +12,7 @@ import {
   EcommercePaymentAttemptOperationalStatus,
   EcommercePaymentExceptionRefundStatus,
   EcommerceOrderRefundSource,
+  EcommercePaymentPurpose,
   EcommerceOrderCancellationRequestStatus,
   EcommerceOrderCancellationKind,
   EcommerceCancellationStockDisposition,
@@ -193,6 +194,21 @@ const orderLineSnapshotSchema = new mongoose.Schema(
   { _id: false },
 );
 
+/**
+ * One verified capture applied to an order. Booking orders carry two (advance + balance);
+ * legacy orders carry none and resolve a single allocation from successfulPaymentAttemptId
+ * (lib/ecommerce-payment-allocations.js). Allocations, not the compatibility field, are the
+ * source for refund allocation.
+ */
+const orderPaymentAllocationSchema = new mongoose.Schema(
+  {
+    paymentAttemptId: { type: String, required: true },
+    purpose: enumField(EcommercePaymentPurpose, { required: true }),
+    appliedPaise: integerField({ min: 1 }),
+  },
+  { _id: false },
+);
+
 const orderSchema = new mongoose.Schema(
   {
     _id: stringId("eord"),
@@ -203,6 +219,8 @@ const orderSchema = new mongoose.Schema(
       default: EcommerceOrderStatus.PENDING_PAYMENT,
     }),
     quoteId: String,
+    /** Set on an order created by converting an advance booking; at most one order per booking. */
+    bookingId: { type: String, trim: true, maxlength: 80 },
     lines: { type: [orderLineSnapshotSchema], default: [] },
     fulfilmentMode: enumField(EcommerceFulfilmentMode),
     addressSnapshot: mongoose.Schema.Types.Mixed,
@@ -226,7 +244,13 @@ const orderSchema = new mongoose.Schema(
     stockExceptionRecordedAt: Date,
     stockRestockIdempotencyKey: { type: String, trim: true, maxlength: 80 },
     paidAt: Date,
+    /**
+     * Compatibility field: names ONE capture (the balance capture on a booking order, or the
+     * advance capture when the balance is zero). It must never be used as the total paid;
+     * use paymentAllocations / resolveOrderPaymentAllocations for that.
+     */
     successfulPaymentAttemptId: String,
+    paymentAllocations: { type: [orderPaymentAllocationSchema], default: [] },
     paymentExceptionStatus: enumField(EcommerceOrderPaymentExceptionStatus),
     paymentExceptionPayload: mongoose.Schema.Types.Mixed,
     paymentMethod: enumField(EcommercePaymentMethod, {
@@ -333,6 +357,29 @@ orderSchema.index(
   },
 );
 
+orderSchema.index(
+  { tenantId: 1, bookingId: 1 },
+  {
+    unique: true,
+    name: "ecommerce_order_booking_unique",
+    partialFilterExpression: { bookingId: { $type: "string" } },
+  },
+);
+
+orderSchema.pre("validate", function validatePaymentAllocations(next) {
+  const allocations = this.paymentAllocations ?? [];
+  if (!allocations.length) return next();
+  const ids = new Set(allocations.map((entry) => entry.paymentAttemptId));
+  if (ids.size !== allocations.length) {
+    return next(new Error("paymentAllocations must be unique by paymentAttemptId."));
+  }
+  const applied = allocations.reduce((sum, entry) => sum + entry.appliedPaise, 0);
+  if (applied !== this.totalPaise) {
+    return next(new Error("paymentAllocations must sum to the order total."));
+  }
+  return next();
+});
+
 const orderEventSchema = new mongoose.Schema(
   {
     _id: stringId("eoev"),
@@ -348,11 +395,26 @@ const orderEventSchema = new mongoose.Schema(
 );
 orderEventSchema.index({ tenantId: 1, orderId: 1, at: 1 });
 
+/** A payment row is owned by an order (ordinary checkout) or a booking, never neither. */
+function requirePaymentOwner(next) {
+  if (!this.orderId && !this.bookingId) {
+    return next(new Error("A payment record needs an orderId or a bookingId."));
+  }
+  return next();
+}
+
 const paymentAttemptSchema = new mongoose.Schema(
   {
     _id: stringId("epay"),
     tenantId: tenantField,
-    orderId: { type: String, required: true, index: true },
+    /** Absent while a booking payment has no order yet; set at conversion. */
+    orderId: { type: String, index: true },
+    /** Booking identity is kept after conversion so refunds can trace the original capture. */
+    bookingId: { type: String, trim: true, maxlength: 80 },
+    /** Rows written before bookings have no purpose and mean ORDER_CHECKOUT. */
+    purpose: enumField(EcommercePaymentPurpose, { default: EcommercePaymentPurpose.ORDER_CHECKOUT }),
+    /** Bumped inside refund-allocation transactions so concurrent refunds on one capture conflict. */
+    refundCapacityLockSeq: { type: Number, default: 0 },
     customerId: { type: String, required: true },
     status: enumField(EcommercePaymentAttemptStatus, {
       default: EcommercePaymentAttemptStatus.PENDING,
@@ -370,6 +432,12 @@ const paymentAttemptSchema = new mongoose.Schema(
     providerPayload: mongoose.Schema.Types.Mixed,
     initiationClaimToken: { type: String, trim: true, maxlength: 64 },
     initiationClaimExpiresAt: Date,
+    /**
+     * Set when a provider initiation call may have reached PhonePe without its outcome being recorded.
+     * Evidence, not workflow state: reconciliation progress and operator acknowledgements rewrite
+     * operationalStatus, but nothing clears this until the attempt is terminal.
+     */
+    initiationUncertainAt: Date,
     idempotencyKey: { type: String, trim: true, maxlength: 80 },
     expiresAt: Date,
     operationalStatus: enumField(EcommercePaymentAttemptOperationalStatus, {
@@ -386,7 +454,17 @@ const paymentAttemptSchema = new mongoose.Schema(
   },
   baseOptions,
 );
+paymentAttemptSchema.pre("validate", requirePaymentOwner);
+paymentAttemptSchema.pre("validate", function bookingAttemptOrderLinkOnlyWhenSettled(next) {
+  // An active booking attempt must not carry an orderId: the active-order unique index below
+  // would otherwise start constraining it. The orderId is attached at conversion, after capture.
+  if (this.bookingId && this.orderId && ["PENDING", "INITIATED"].includes(this.status)) {
+    return next(new Error("An active booking payment attempt cannot have an orderId."));
+  }
+  return next();
+});
 paymentAttemptSchema.index({ tenantId: 1, orderId: 1, createdAt: -1 });
+paymentAttemptSchema.index({ tenantId: 1, bookingId: 1, purpose: 1, createdAt: -1 });
 paymentAttemptSchema.index({
   status: 1,
   operationalStatus: 1,
@@ -400,12 +478,28 @@ paymentAttemptSchema.index(
     partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
   },
 );
+// One active attempt per ordinary order. Replaces the order-only index named
+// tenantId_1_orderId_1, which would collide for booking attempts that have no orderId.
 paymentAttemptSchema.index(
   { tenantId: 1, orderId: 1 },
   {
     unique: true,
+    name: "ecommerce_attempt_active_order_unique",
     partialFilterExpression: {
       status: { $in: ["PENDING", "INITIATED"] },
+      orderId: { $type: "string" },
+    },
+  },
+);
+// One active attempt per booking and purpose (advance, balance).
+paymentAttemptSchema.index(
+  { tenantId: 1, bookingId: 1, purpose: 1 },
+  {
+    unique: true,
+    name: "ecommerce_attempt_active_booking_purpose_unique",
+    partialFilterExpression: {
+      status: { $in: ["PENDING", "INITIATED"] },
+      bookingId: { $type: "string" },
     },
   },
 );
@@ -421,7 +515,9 @@ const paymentAttemptEventSchema = new mongoose.Schema(
   {
     _id: stringId("epayev"),
     tenantId: tenantField,
-    orderId: { type: String, required: true, index: true },
+    orderId: { type: String, index: true },
+    bookingId: { type: String, trim: true, maxlength: 80 },
+    purpose: enumField(EcommercePaymentPurpose, { default: EcommercePaymentPurpose.ORDER_CHECKOUT }),
     paymentAttemptId: { type: String, required: true, index: true },
     webhookEventId: String,
     direction: { type: String, trim: true, maxlength: 16 },
@@ -432,13 +528,23 @@ const paymentAttemptEventSchema = new mongoose.Schema(
   },
   baseOptions,
 );
+paymentAttemptEventSchema.pre("validate", requirePaymentOwner);
 paymentAttemptEventSchema.index({ tenantId: 1, paymentAttemptId: 1, at: 1 });
 
 const paymentExceptionRefundSchema = new mongoose.Schema(
   {
     _id: stringId("epayref"),
     tenantId: tenantField,
-    orderId: { type: String, required: true, index: true },
+    /** Empty for a booking refund raised before an order exists; set on post-conversion refunds. */
+    orderId: { type: String, index: true },
+    bookingId: { type: String, trim: true, maxlength: 80 },
+    /** Purpose of the capture being refunded. Legacy rows have none (ORDER_CHECKOUT). */
+    purpose: enumField(EcommercePaymentPurpose, { default: EcommercePaymentPurpose.ORDER_CHECKOUT }),
+    /**
+     * Stable identity of the refund operation, e.g. return:<id>, cancel:<id>, exception:<attemptId>,
+     * booking-expiry:<bookingId>, excess:<bookingId>. One row per (operation, capture).
+     */
+    refundOperationId: { type: String, trim: true, maxlength: 160 },
     paymentAttemptId: { type: String, required: true },
     amountPaise: integerField({ min: 1 }),
     currency: { type: String, default: "INR", maxlength: 3 },
@@ -460,12 +566,18 @@ const paymentExceptionRefundSchema = new mongoose.Schema(
   },
   baseOptions,
 );
-paymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1, paymentAttemptId: 1 }, {
-  unique: true, name: "ecommerce_capture_refund_without_return_unique", partialFilterExpression: { returnRequestId: null },
+paymentExceptionRefundSchema.pre("validate", requirePaymentOwner);
+// A capture can be refunded by several distinct operations (excess advance, then a cancellation),
+// and one operation spans several captures. The old order+capture and return-only unique indexes
+// forbade both; this replaces them.
+paymentExceptionRefundSchema.index({ tenantId: 1, refundOperationId: 1, paymentAttemptId: 1 }, {
+  unique: true, name: "ecommerce_refund_operation_capture_unique",
+  partialFilterExpression: { refundOperationId: { $type: "string" } },
 });
-paymentExceptionRefundSchema.index({ tenantId: 1, returnRequestId: 1 }, {
-  unique: true, name: "ecommerce_return_refund_unique", partialFilterExpression: { returnRequestId: { $type: "string" } },
-});
+paymentExceptionRefundSchema.index({ tenantId: 1, orderId: 1, paymentAttemptId: 1 });
+paymentExceptionRefundSchema.index({ tenantId: 1, paymentAttemptId: 1, status: 1 });
+paymentExceptionRefundSchema.index({ tenantId: 1, returnRequestId: 1 });
+paymentExceptionRefundSchema.index({ tenantId: 1, bookingId: 1 });
 paymentExceptionRefundSchema.index(
   { tenantId: 1, providerRefundId: 1 },
   {
@@ -481,6 +593,11 @@ const stockReservationSchema = new mongoose.Schema(
     productId: { type: String, required: true },
     orderId: String,
     quoteId: String,
+    /**
+     * Third owner. A booking hold has a bookingId and no quoteId; at conversion it also gets the
+     * orderId. It is not released by time (see ecommerce-booking-stock.js).
+     */
+    bookingId: { type: String, trim: true, maxlength: 80 },
     quantity: integerField({ min: 1 }),
     expiresAt: { type: Date, required: true },
     releasedAt: Date,
@@ -488,7 +605,14 @@ const stockReservationSchema = new mongoose.Schema(
   },
   baseOptions,
 );
+stockReservationSchema.pre("validate", function oneStockOwnerKind(next) {
+  if (this.quoteId && this.bookingId) {
+    return next(new Error("A stock reservation belongs to a quote or a booking, not both."));
+  }
+  return next();
+});
 stockReservationSchema.index({ tenantId: 1, productId: 1, releasedAt: 1, expiresAt: 1 });
+stockReservationSchema.index({ tenantId: 1, bookingId: 1, releasedAt: 1 });
 
 const checkoutTaxComponentLineSchema = new mongoose.Schema(
   {
@@ -522,6 +646,8 @@ const checkoutTaxConfigSchema = new mongoose.Schema(
     componentLines: { type: [checkoutTaxComponentLineSchema], default: [] },
     componentRules: { type: [checkoutTaxComponentRuleSchema], default: [] },
     supportedDestinationStates: { type: [String], default: [] },
+    /** Demo / broad delivery: accept any valid 6-digit pincode (no serviceablePincodes list required). */
+    deliveryAllPincodes: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -625,6 +751,10 @@ const orderCancellationRequestSchema = new mongoose.Schema(
     stockDispositionByUserId: String,
     stockDispositionIdempotencyKey: { type: String, trim: true, maxlength: 80 },
     onlineRefundId: String,
+    /** Every refund row (one per capture) opened for this request; onlineRefundId is the first. */
+    onlineRefundIds: { type: [String], default: [] },
+    /** Bumped by the completion check so concurrent refund settlements serialize on this request. */
+    refundCompletionLockSeq: { type: Number, default: 0 },
     codManualRefund: codManualRefundSchema,
     codRefundContext: codRefundContextSchema,
     idempotencyKey: { type: String, trim: true, maxlength: 80 },
@@ -677,9 +807,12 @@ const orderReturnRequestSchema = new mongoose.Schema(
     inspectionNote: { type: String, trim: true, maxlength: 2000 },
     inspectionOutcome: { type: String, trim: true, maxlength: 64 },
     onlineRefundId: String,
+    /** Every refund row (one per capture) opened for this request; onlineRefundId is the first. */
+    onlineRefundIds: { type: [String], default: [] },
     manualRefundRecordedAt: Date,
     manualRefundProof: {
       refundCaseId: String,
+      refundCaseIds: { type: [String], default: undefined },
       amountPaise: Number,
       recipient: String,
       method: String,

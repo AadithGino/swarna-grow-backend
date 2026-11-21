@@ -32,6 +32,7 @@ function uiTypeForMessageType(type) {
     case "ECOMMERCE_PICKUP_CODE_RELEASED":
     case "ECOMMERCE_CANCELLATION_UPDATE":
     case "ECOMMERCE_COD_UPDATE":
+    case "ECOMMERCE_BOOKING_UPDATE":
     case "ECOMMERCE_PRODUCT_PROMOTION":
     case "ECOMMERCE_CATEGORY_PROMOTION":
     case "ECOMMERCE_NEW_ARRIVAL":
@@ -91,6 +92,7 @@ function titleForRow(row) {
     case "ECOMMERCE_PICKUP_CODE_RELEASED":
     case "ECOMMERCE_CANCELLATION_UPDATE":
     case "ECOMMERCE_COD_UPDATE":
+    case "ECOMMERCE_BOOKING_UPDATE":
       if (row.templateParams?.title) return String(row.templateParams.title);
       return "Shop order update";
     case "DIGITAL_METAL_PURCHASE_CREDITED":
@@ -169,6 +171,7 @@ function bodyForRow(row, ctx) {
     case "ECOMMERCE_PICKUP_CODE_RELEASED":
     case "ECOMMERCE_CANCELLATION_UPDATE":
     case "ECOMMERCE_COD_UPDATE":
+    case "ECOMMERCE_BOOKING_UPDATE":
       if (row.templateParams?.body) return String(row.templateParams.body);
       return "Open the shop order page for details.";
     case "DIGITAL_METAL_PURCHASE_CREDITED":

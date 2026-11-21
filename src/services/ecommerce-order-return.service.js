@@ -2,6 +2,7 @@ import { EcommerceSchemeReservation } from "../models/index.js";
 import { claimManualRefund } from "../lib/ecommerce-manual-refund.js";
 import { quoteSchemeOrderReturn, restoreSchemeOrderReturn } from "./ecommerce-scheme-reservation.service.js";
 import { createId } from "../lib/ids.js";
+import { reserveOrderRefunds } from "../lib/ecommerce-refund-allocator.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction } from "../lib/transaction.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
@@ -14,14 +15,12 @@ import {
   EcommerceOrderReturnKind,
   EcommerceOrderReturnRequestStatus,
   EcommerceOrderStatus,
-  EcommercePaymentExceptionRefundStatus,
   EcommercePaymentMethod,
 } from "../constants/enums.js";
 import {
   EcommerceFulfilmentSettings,
   EcommerceOrder,
   EcommerceOrderReturnRequest,
-  EcommercePaymentAttempt,
   EcommercePaymentExceptionRefund,
 } from "../models/index.js";
 import {
@@ -139,41 +138,37 @@ async function validateReplacementOrderLink({
   }
 }
 
-async function createOnlineReturnRefundCase({ tenantId, order, returnRequestId, session, amountPaise = order.totalPaise }) {
-  const attemptId = order.successfulPaymentAttemptId;
-  if (!attemptId) {
-    throw errors.business("REFUND_NOT_APPLICABLE", "No successful online payment on this order.");
-  }
-  const attempt = await EcommercePaymentAttempt.findOne({ _id: attemptId, tenantId }).session(session).lean();
-  if (!attempt) throw errors.notFound("Payment attempt");
-  const refundId = createId("epayref");
+/**
+ * Opens the refund rows for a return: one row per original capture, balance first (see
+ * lib/ecommerce-refund-allocator.js). A replay returns the rows it already opened.
+ */
+async function createOnlineReturnRefundCases({ tenantId, order, returnRequestId, session, amountPaise = order.totalPaise }) {
   try {
-    const row = await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId },
-      {
-        $setOnInsert: {
-          _id: refundId,
-          tenantId,
-          orderId: order._id,
-          paymentAttemptId: attempt._id,
-          amountPaise,
-          currency: attempt.currency ?? "INR",
-          providerPaymentId: attempt.providerPaymentId,
-          merchantOrderId: attempt.merchantOrderId ?? attempt._id,
-          status: EcommercePaymentExceptionRefundStatus.ASSIGNED,
-          refundSource: EcommerceOrderRefundSource.ORDER_RETURN,
-          returnRequestId,
-        },
-      },
-      { session, upsert: true, new: true },
-    );
-    return row;
+    const { rows } = await reserveOrderRefunds({
+      tenantId,
+      order,
+      amountPaise,
+      operationId: `return:${returnRequestId}`,
+      refundSource: EcommerceOrderRefundSource.ORDER_RETURN,
+      extra: { returnRequestId },
+      legacyLookup: { orderId: order._id, returnRequestId },
+      notApplicableMessage: "No successful online payment on this order.",
+      session,
+    });
+    return rows;
   } catch (err) {
     if (err?.code === 11000) {
       throw errors.conflict("REFUND_CASE_EXISTS", "A refund case already exists for this order.");
     }
     throw err;
   }
+}
+
+/** Every refund row opened for a return, falling back to the single legacy id. */
+function returnRefundIds(row) {
+  const ids = row.onlineRefundIds?.length ? row.onlineRefundIds : [];
+  if (row.onlineRefundId && !ids.includes(row.onlineRefundId)) return [row.onlineRefundId, ...ids];
+  return ids;
 }
 
 export async function createCustomerReturnRequest(req) {
@@ -460,8 +455,13 @@ export async function resolveAdminReturnRequest(req) {
     }
     if (row.kind === EcommerceOrderReturnKind.RETURN &&
         (row.refundEntitlementPaise ?? order.totalPaise) > 0 && !row.manualRefundRecordedAt) {
-      const refund = row.onlineRefundId ? await EcommercePaymentExceptionRefund.findOne({ _id: row.onlineRefundId, tenantId: req.auth.tenantId, orderId: row.orderId }).session(session).lean() : null;
-      if (!refund || !["SUCCEEDED", "MANUAL_RECORDED"].includes(refund.status)) {
+      const refundIds = returnRefundIds(row);
+      const refunds = refundIds.length
+        ? await EcommercePaymentExceptionRefund.find({ _id: { $in: refundIds }, tenantId: req.auth.tenantId, orderId: row.orderId }).session(session).lean()
+        : [];
+      // Resolve only once every capture's refund row has settled.
+      if (!refunds.length || refunds.length !== refundIds.length
+        || refunds.some((refund) => !["SUCCEEDED", "MANUAL_RECORDED"].includes(refund.status))) {
         throw errors.business("RETURN_REFUND_INCOMPLETE", "Record completed repayment before resolving this return.");
       }
     }
@@ -494,13 +494,15 @@ export async function createAdminReturnRefundCase(req) {
   return withTransaction(async (session) => {
     const row = await loadReturnForAdmin(req, session);
     if (row.onlineRefundId) {
-      const existing = await EcommercePaymentExceptionRefund.findOne({
-        _id: row.onlineRefundId,
+      const existingRows = await EcommercePaymentExceptionRefund.find({
+        _id: { $in: returnRefundIds(row) },
         tenantId: req.auth.tenantId,
       })
         .session(session)
+        .sort({ _id: 1 })
         .lean();
-      return { request: mapReturn(row.toObject()), refund: existing, created: false };
+      const existing = existingRows.find((refund) => refund._id === row.onlineRefundId) ?? existingRows[0] ?? null;
+      return { request: mapReturn(row.toObject()), refund: existing, refunds: existingRows, created: false };
     }
     assertExpectedVersion(row, expectedVersion);
     if (row.manualRefundRecordedAt) throw errors.business("REFUND_ALREADY_RECORDED", "Manual repayment was already recorded.");
@@ -520,17 +522,19 @@ export async function createAdminReturnRefundCase(req) {
     if (row.refundEntitlementPaise === 0) {
       throw errors.business("REFUND_NOT_APPLICABLE", "This return has no cash refund. Resolve it to restore the scheme balance.");
     }
-    const refundRow = await createOnlineReturnRefundCase({
+    const refundRows = await createOnlineReturnRefundCases({
       tenantId: req.auth.tenantId,
       order,
       returnRequestId: row._id,
       amountPaise: row.refundEntitlementPaise ?? order.totalPaise,
       session,
     });
+    const refundRow = refundRows[0];
     row.onlineRefundId = refundRow._id;
+    row.onlineRefundIds = refundRows.map((refund) => refund._id);
     row.version += 1;
     await row.save({ session });
-    return { request: mapReturn(row.toObject()), refund: refundRow.toObject(), created: true };
+    return { request: mapReturn(row.toObject()), refund: refundRow, refunds: refundRows, created: true };
   });
 }
 
@@ -578,14 +582,19 @@ export async function recordAdminReturnManualRefund(req) {
       ]);
     }
     let onlineRefundId = row.onlineRefundId;
+    let onlineRefundIds = returnRefundIds(row);
     if (order.paymentMethod === EcommercePaymentMethod.ONLINE) {
-      const refundCase = onlineRefundId
-        ? await EcommercePaymentExceptionRefund.findOne({ _id: onlineRefundId, tenantId: req.auth.tenantId, orderId: order._id }).session(session)
-        : await createOnlineReturnRefundCase({ tenantId: req.auth.tenantId, order, returnRequestId: row._id, session, amountPaise: row.refundEntitlementPaise ?? order.totalPaise });
-      if (!refundCase) throw errors.notFound("Refund case");
-      if (Number(refundCase.amountPaise) !== amountPaise) throw errors.business("REFUND_AMOUNT_MISMATCH", "Refund entitlement differs from manual repayment.");
-      await claimManualRefund(session, { tenantId: req.auth.tenantId, orderId: order._id, refundId: refundCase._id, reference, userId: req.auth.id });
-      onlineRefundId = refundCase._id;
+      const refundCases = onlineRefundIds.length
+        ? await EcommercePaymentExceptionRefund.find({ _id: { $in: onlineRefundIds }, tenantId: req.auth.tenantId, orderId: order._id }).session(session).sort({ _id: 1 }).lean()
+        : await createOnlineReturnRefundCases({ tenantId: req.auth.tenantId, order, returnRequestId: row._id, session, amountPaise: row.refundEntitlementPaise ?? order.totalPaise });
+      if (!refundCases.length || (onlineRefundIds.length && refundCases.length !== onlineRefundIds.length)) throw errors.notFound("Refund case");
+      const refundedPaise = refundCases.reduce((sum, refund) => sum + Number(refund.amountPaise), 0);
+      if (refundedPaise !== amountPaise) throw errors.business("REFUND_AMOUNT_MISMATCH", "Refund entitlement differs from manual repayment.");
+      for (const refundCase of refundCases) {
+        await claimManualRefund(session, { tenantId: req.auth.tenantId, orderId: order._id, refundId: refundCase._id, reference, userId: req.auth.id });
+      }
+      onlineRefundId = refundCases[0]._id;
+      onlineRefundIds = refundCases.map((refund) => refund._id);
     }
     const updated = await EcommerceOrderReturnRequest.findOneAndUpdate(
       {
@@ -596,10 +605,10 @@ export async function recordAdminReturnManualRefund(req) {
       },
       {
         $set: {
-          ...(onlineRefundId ? { onlineRefundId } : {}),
+          ...(onlineRefundId ? { onlineRefundId, onlineRefundIds } : {}),
           manualRefundRecordedAt: new Date(),
           manualRefundProof: {
-            ...(onlineRefundId ? { refundCaseId: onlineRefundId } : {}),
+            ...(onlineRefundId ? { refundCaseId: onlineRefundId, refundCaseIds: onlineRefundIds } : {}),
             amountPaise,
             recipient,
             method,

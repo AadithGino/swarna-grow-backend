@@ -238,6 +238,7 @@ async function initiateProviderForAttempt(
       {
         $set: {
           operationalStatus: EcommercePaymentAttemptOperationalStatus.INITIATION_UNCERTAIN,
+          initiationUncertainAt: new Date(),
           failureReason: "PROVIDER_INITIATION_UNCERTAIN",
           gatewayReconcileNextAt: new Date(),
         },

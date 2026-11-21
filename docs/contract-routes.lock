@@ -77,6 +77,10 @@ GET /admin/dues
 GET /admin/dues/count
 GET /admin/ecommerce/banners
 GET /admin/ecommerce/banners/:bannerId
+GET /admin/ecommerce/booking-policies
+GET /admin/ecommerce/booking-policy-assignments
+GET /admin/ecommerce/bookings
+GET /admin/ecommerce/bookings/:bookingId
 GET /admin/ecommerce/categories
 GET /admin/ecommerce/categories/:categoryId
 GET /admin/ecommerce/courier-cod/orders
@@ -188,6 +192,12 @@ GET /app/schemes/:schemeId/payable-range
 GET /app/schemes/:schemeId/settlement-preview
 GET /app/shop/availability
 GET /app/shop/banners
+GET /app/shop/bookings
+GET /app/shop/bookings/:bookingId
+GET /app/shop/bookings/:bookingId/payment-intents/:paymentAttemptId
+GET /app/shop/bookings/:bookingId/refunds
+GET /app/shop/bookings/availability
+GET /app/shop/bookings/preview
 GET /app/shop/categories
 GET /app/shop/orders/:orderId/return
 GET /app/shop/products
@@ -329,6 +339,13 @@ POST /admin/ecommerce/banners
 POST /admin/ecommerce/banners/:bannerId/archive
 POST /admin/ecommerce/banners/:bannerId/publish
 POST /admin/ecommerce/banners/:bannerId/unpublish
+POST /admin/ecommerce/booking-policies
+POST /admin/ecommerce/booking-policies/:policyVersionId/publish
+POST /admin/ecommerce/bookings/:bookingId/bill
+POST /admin/ecommerce/bookings/:bookingId/cancel
+POST /admin/ecommerce/bookings/:bookingId/refunds/:refundId/manual
+POST /admin/ecommerce/bookings/:bookingId/refunds/:refundId/retry
+POST /admin/ecommerce/bookings/:bookingId/requote
 POST /admin/ecommerce/categories
 POST /admin/ecommerce/categories/:categoryId/archive
 POST /admin/ecommerce/categories/:categoryId/notifications
@@ -416,6 +433,9 @@ POST /app/schemes/:schemeId/payment-intents
 POST /app/schemes/:schemeId/redemption-request
 POST /app/schemes/enrol
 POST /app/schemes/enrol/validate
+POST /app/shop/bookings
+POST /app/shop/bookings/:bookingId/cancel
+POST /app/shop/bookings/:bookingId/payment-intents
 POST /auth/change-password
 POST /auth/forgot-password
 POST /auth/login
@@ -462,6 +482,7 @@ POST /staff/schemes/enrol/validate
 POST /webhooks/phonepe/:tenantId
 PUT /admin/customers/:customerId/kyc
 PUT /admin/customers/:customerId/nominee
+PUT /admin/ecommerce/booking-policy-assignments
 PUT /admin/ecommerce/tax-settings
 PUT /app/profile/kyc
 PUT /platform/tenants/:tenantId/flags

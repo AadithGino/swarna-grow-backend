@@ -14,6 +14,8 @@ export async function releaseExpiredStockReservations(tenantId, session, at = ne
       tenantId,
       releasedAt: null,
       expiresAt: { $lte: at },
+      // Booking holds are released by the booking lifecycle, never by this time-based sweep.
+      bookingId: { $in: [null, ""] },
       $or: [{ orderId: null }, { orderId: { $exists: false } }, { orderId: "" }],
     },
     { $set: { releasedAt: at } },

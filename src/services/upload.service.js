@@ -5,7 +5,11 @@ import { EcommerceProductStatus, UploadPurpose, UploadStatus } from "../constant
 import { isEcommerceOperational } from "../lib/ecommerce-access.js";
 import { createId } from "../lib/ids.js";
 import { AppError, errors } from "../lib/app-error.js";
-import { prefixStorageObjectKey, storageProvider } from "../integrations/storage.provider.js";
+import {
+  prefixStorageObjectKey,
+  storageProvider,
+  storagePublicObjectUrl,
+} from "../integrations/storage.provider.js";
 import { env } from "../config/env.js";
 import { malwareScanProvider } from "../integrations/malware-scan.provider.js";
 
@@ -31,6 +35,40 @@ export const PLATFORM_DEMO_UPLOAD_TENANT_ID = "platform";
 
 export function uploadViewPath(uploadId) {
   return `/uploads/${uploadId}`;
+}
+
+export function usePublicS3CatalogUrls() {
+  return (
+    env.PROVIDER_MODE !== "mock"
+    && Boolean(String(env.S3_BUCKET ?? "").trim())
+    && env.S3_PUBLIC_OBJECT_URLS === true
+  );
+}
+
+export function catalogMediaViewUrl(upload, uploadId) {
+  if (usePublicS3CatalogUrls() && upload?.objectKey) {
+    const url = storagePublicObjectUrl(upload.objectKey);
+    if (url) return url;
+  }
+  return uploadViewPath(uploadId);
+}
+
+export async function uploadMapForIds(uploadIds) {
+  const ids = [...new Set((uploadIds ?? []).filter(Boolean))];
+  if (!ids.length) return new Map();
+  const rows = await Upload.find({ _id: { $in: ids } }).select("_id objectKey status").lean();
+  return new Map(rows.map((row) => [String(row._id), row]));
+}
+
+async function resolveUploadDownloadUrl(upload) {
+  if (usePublicS3CatalogUrls() && upload.objectKey) {
+    const downloadUrl = storagePublicObjectUrl(upload.objectKey);
+    if (downloadUrl) return { downloadUrl, expiresInSeconds: null };
+  }
+  return {
+    downloadUrl: await storageProvider.presignDownload(upload.objectKey),
+    expiresInSeconds: 900,
+  };
 }
 
 export async function presignUpload(req) {
@@ -343,13 +381,13 @@ export async function getUploadDownload(req) {
   if (upload.status === UploadStatus.EXPIRED) {
     throw errors.business("UPLOAD_EXPIRED", "This upload reservation has expired.", { uploadId: upload._id });
   }
-  const downloadUrl = await storageProvider.presignDownload(upload.objectKey);
+  const { downloadUrl, expiresInSeconds } = await resolveUploadDownloadUrl(upload);
   return {
     uploadId: upload._id,
     downloadUrl,
     fileName: upload.fileName ?? null,
     contentType: upload.contentType ?? null,
-    expiresInSeconds: 900,
+    expiresInSeconds,
   };
 }
 

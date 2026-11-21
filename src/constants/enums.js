@@ -201,6 +201,7 @@ export const MessageType = makeEnum(
   "ECOMMERCE_PICKUP_CODE_RELEASED",
   "ECOMMERCE_CANCELLATION_UPDATE",
   "ECOMMERCE_COD_UPDATE",
+  "ECOMMERCE_BOOKING_UPDATE",
   "ECOMMERCE_PRODUCT_PROMOTION",
   "ECOMMERCE_CATEGORY_PROMOTION",
   "ECOMMERCE_NEW_ARRIVAL",
@@ -300,6 +301,7 @@ export const AuditEntityType = makeEnum(
   "ECOMMERCE_TAX_SETTINGS",
   "ECOMMERCE_INVENTORY",
   "ECOMMERCE_FULFILMENT_SETTINGS",
+  "ECOMMERCE_BOOKING",
 );
 export const EcommerceProductStatus = makeEnum(
   "DRAFT",
@@ -541,7 +543,46 @@ export const EcommerceOrderRefundSource = makeEnum(
   "PAYMENT_EXCEPTION",
   "ORDER_CANCELLATION",
   "ORDER_RETURN",
+  "BOOKING_CANCELLATION",
+  "BOOKING_EXPIRY",
+  "BOOKING_EXCESS_ADVANCE",
 );
+/**
+ * Why a gateway capture was taken. Rows written before bookings existed have no purpose and
+ * always mean ORDER_CHECKOUT (see lib/ecommerce-payment-allocations.js resolvePaymentPurpose).
+ */
+export const EcommercePaymentPurpose = makeEnum(
+  "ORDER_CHECKOUT",
+  "BOOKING_ADVANCE",
+  "BOOKING_BALANCE",
+);
+/**
+ * Booking lifecycle. Advance and balance payment, and refunds, are tracked beside it, not inside it.
+ *  PENDING_ADVANCE  stock held, advance not captured yet
+ *  CONFIRMED        advance captured; balance not quoted yet
+ *  BALANCE_PENDING  final invoice frozen; waiting for the balance capture
+ *  CONVERTED        one paid order exists (terminal)
+ *  CANCELLED / EXPIRED  hold released; any captured advance is refunded (terminal)
+ */
+export const EcommerceBookingStatus = makeEnum(
+  "PENDING_ADVANCE",
+  "CONFIRMED",
+  "BALANCE_PENDING",
+  "CONVERTED",
+  "CANCELLED",
+  "EXPIRED",
+);
+export const EcommerceBookingPaymentStatus = makeEnum("UNPAID", "ADVANCE_PAID", "FULLY_PAID");
+export const EcommerceBookingRefundStatus = makeEnum("NONE", "PENDING", "SETTLED", "FAILED");
+export const EcommerceBookingPolicyStatus = makeEnum("DRAFT", "PUBLISHED", "RETIRED");
+export const EcommerceBookingAdvanceMode = makeEnum("PERCENT", "FIXED");
+/** What the final invoice may use for gold, relative to the rate booked with the advance. */
+export const EcommerceBookingRateRule = makeEnum(
+  "BOOKED_RATE",
+  "BILLING_DAY",
+  "LOWER_OF_BOOKED_AND_BILLING_DAY",
+);
+export const EcommerceBookingPolicyScope = makeEnum("BRANCH", "CATEGORY", "PRODUCT");
 export const EcommerceOrderReturnInspectionOutcome = makeEnum(
   "APPROVED_FOR_RESALE",
   "REJECTED_NOT_RESALABLE",

@@ -1,5 +1,6 @@
 import { settleLinkedOrderHold } from "./ecommerce-scheme-reservation.service.js";
 import { createId } from "../lib/ids.js";
+import { reserveOrderRefunds } from "../lib/ecommerce-refund-allocator.js";
 import { errors } from "../lib/app-error.js";
 import { withTransaction, withTransientTransactionRetry } from "../lib/transaction.js";
 import { hashIdempotencyBody } from "./idempotency.service.js";
@@ -37,7 +38,6 @@ import {
   EcommerceOrder,
   EcommerceOrderCancellationRequest,
   EcommerceOrderEvent,
-  EcommercePaymentAttempt,
   EcommercePaymentExceptionRefund,
 } from "../models/index.js";
 import {
@@ -381,34 +381,23 @@ export async function getAdminOrderCancellation(req) {
   };
 }
 
-async function createOnlineCancellationRefundCase({ tenantId, order, cancellationRequestId, session }) {
-  const attemptId = order.successfulPaymentAttemptId;
-  if (!attemptId) throw errors.business("REFUND_NOT_APPLICABLE", "No successful payment on order.");
-  const attempt = await EcommercePaymentAttempt.findOne({ _id: attemptId, tenantId }).session(session).lean();
-  if (!attempt) throw errors.notFound("Payment attempt");
-  const refundId = createId("epayref");
-  const row = (
-    await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId: null },
-      {
-        $setOnInsert: {
-          _id: refundId,
-          tenantId,
-          orderId: order._id,
-          paymentAttemptId: attempt._id,
-          amountPaise: order.totalPaise,
-          currency: attempt.currency ?? "INR",
-          providerPaymentId: attempt.providerPaymentId,
-          merchantOrderId: attempt.merchantOrderId ?? attempt._id,
-          status: EcommercePaymentExceptionRefundStatus.ASSIGNED,
-          refundSource: EcommerceOrderRefundSource.ORDER_CANCELLATION,
-          cancellationRequestId,
-        },
-      },
-      { session, upsert: true, new: true },
-    )
-  );
-  return row;
+/**
+ * Opens the refund rows for an approved cancellation: one row per original capture, balance
+ * first (lib/ecommerce-refund-allocator.js). A replay returns the rows it already opened.
+ */
+async function createOnlineCancellationRefundCases({ tenantId, order, cancellationRequestId, session }) {
+  const { rows } = await reserveOrderRefunds({
+    tenantId,
+    order,
+    amountPaise: order.totalPaise,
+    operationId: `cancel:${cancellationRequestId}`,
+    refundSource: EcommerceOrderRefundSource.ORDER_CANCELLATION,
+    extra: { cancellationRequestId },
+    legacyLookup: { orderId: order._id, refundSource: EcommerceOrderRefundSource.ORDER_CANCELLATION, returnRequestId: null },
+    notApplicableMessage: "No successful payment on order.",
+    session,
+  });
+  return rows;
 }
 
 export async function decideAdminCancellationRequest(req) {
@@ -548,15 +537,16 @@ export async function decideAdminCancellationRequest(req) {
 
     await settleLinkedOrderHold(order, "RELEASED", session);
     if (cancellationNeedsOnlineRefund(order.toObject())) {
-      const refundRow = await createOnlineCancellationRefundCase({
+      const refundRows = await createOnlineCancellationRefundCases({
         tenantId: req.auth.tenantId,
         order: order.toObject(),
         cancellationRequestId: request._id,
         session,
       });
+      const refundRow = refundRows[0];
       await EcommerceOrderCancellationRequest.updateOne(
         { _id: request._id },
-        { $set: { onlineRefundId: refundRow._id } },
+        { $set: { onlineRefundId: refundRow._id, onlineRefundIds: refundRows.map((refund) => refund._id) } },
         { session },
       );
       await EcommerceOrder.findOneAndUpdate(
@@ -809,15 +799,33 @@ export async function completeOnlineCancellationAfterRefund({
   refundId,
   session,
 }) {
-  const request = await EcommerceOrderCancellationRequest.findOne({
-    tenantId,
-    orderId,
-    onlineRefundId: refundId,
-    status: EcommerceOrderCancellationRequestStatus.APPROVED_PROCESSING,
-  })
-    .session(session)
-    .lean();
+  // Writing the request first makes concurrent settlements of different captures conflict on this
+  // one document. Under snapshot isolation each transaction would otherwise count only its own
+  // newly settled row and neither would complete the cancellation. The loser retries (transient
+  // transaction error), sees the winner's committed row, and completes; if the request is already
+  // COMPLETED the status filter ends the retry with no work.
+  const request = await EcommerceOrderCancellationRequest.findOneAndUpdate(
+    {
+      tenantId,
+      orderId,
+      $or: [{ onlineRefundId: refundId }, { onlineRefundIds: refundId }],
+      status: EcommerceOrderCancellationRequestStatus.APPROVED_PROCESSING,
+    },
+    { $inc: { refundCompletionLockSeq: 1 } },
+    { session, new: true },
+  ).lean();
   if (!request) return;
+  // A cancellation that refunded several captures completes only after every row has settled.
+  const refundIds = [...new Set([request.onlineRefundId, ...(request.onlineRefundIds ?? [])].filter(Boolean))];
+  const settledCount = await EcommercePaymentExceptionRefund.countDocuments({
+    tenantId,
+    _id: { $in: refundIds },
+    status: { $in: [
+      EcommercePaymentExceptionRefundStatus.SUCCEEDED,
+      EcommercePaymentExceptionRefundStatus.MANUAL_RECORDED,
+    ] },
+  }).session(session);
+  if (settledCount < refundIds.length) return;
   await EcommerceOrder.findOneAndUpdate(
     { _id: orderId, tenantId },
     {

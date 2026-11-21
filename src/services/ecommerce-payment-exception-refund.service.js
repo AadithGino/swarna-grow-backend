@@ -1,3 +1,5 @@
+import { reserveCapacityForRefundRetry } from "../lib/ecommerce-refund-allocator.js";
+import { getBookingPaymentHandlers } from "../lib/ecommerce-booking-payment-handlers.js";
 import { claimManualRefund } from "../lib/ecommerce-manual-refund.js";
 import { selectOrderRefund } from "../lib/order-refund-selection.js";
 import { createId } from "../lib/ids.js";
@@ -15,6 +17,7 @@ import {
   EcommerceOrder,
   EcommerceOrderEvent,
   EcommercePaymentAttempt,
+  EcommercePaymentAttemptEvent,
   EcommercePaymentExceptionRefund,
   Tenant,
 } from "../models/index.js";
@@ -136,6 +139,68 @@ const REFUND_APPLICABLE_EXCEPTIONS = new Set([
   EcommerceOrderPaymentExceptionStatus.DUPLICATE_PAYMENT_REFUND_REQUIRED,
 ]);
 
+/**
+ * Sends a claimed (INITIATED) refund to the provider and records the outcome. Shared by the staff
+ * path and the system path for order-less booking refunds. A provider error whose outcome is
+ * unknown leaves the row PROVIDER_PENDING, never FAILED, so its capacity stays held.
+ */
+async function callProviderForRefund({ tenantId, refundRow, claimed }) {
+  const merchantRefundId = refundRow._id;
+  const tenant = await Tenant.findById(tenantId).select("+integrationSecrets").lean();
+  const credentials = resolvePhonePeCredentials(tenant);
+  try {
+    const provider = await phonePeProvider.initiateRefund({
+      merchantRefundId,
+      originalMerchantOrderId: claimed.refund.merchantOrderId,
+      amountPaise: claimed.refund.amountPaise,
+      credentials,
+      tenantId,
+    });
+    const updated = await EcommercePaymentExceptionRefund.findOneAndUpdate(
+      {
+        _id: refundRow._id,
+        tenantId,
+        status: EcommercePaymentExceptionRefundStatus.INITIATED,
+      },
+      {
+        $set: {
+          status: EcommercePaymentExceptionRefundStatus.PROVIDER_PENDING,
+          providerRefundId: provider.refundId ?? merchantRefundId,
+          providerPayload: provider,
+        },
+        $inc: { version: 1 },
+      },
+      { new: true },
+    );
+    if (!updated) {
+      const current = await EcommercePaymentExceptionRefund.findById(refundRow._id).lean();
+      return { refund: current ?? claimed.refund, initiated: false, inFlight: true };
+    }
+    return { refund: updated.toObject(), initiated: true };
+  } catch (error) {
+    await EcommercePaymentExceptionRefund.updateOne(
+      {
+        _id: refundRow._id,
+        tenantId,
+        status: EcommercePaymentExceptionRefundStatus.INITIATED,
+      },
+      {
+        $set: {
+          status: EcommercePaymentExceptionRefundStatus.PROVIDER_PENDING,
+          failureReason: "PROVIDER_INITIATION_UNCERTAIN",
+        },
+        $inc: { version: 1 },
+      },
+    );
+    if (error instanceof AppError) throw error;
+    throw errors.business(
+      "REFUND_INITIATION_UNCERTAIN",
+      "Refund may have started at the provider. Reconcile or retry with the same merchant refund id.",
+      { refundId: refundRow._id, merchantRefundId },
+    );
+  }
+}
+
 export async function initiateAdminPaymentExceptionRefund(req) {
   const { loadEcommerceOrderForAdmin } = await import("../lib/ecommerce-admin-order-scope.js");
   const order = await loadEcommerceOrderForAdmin(req, req.params.orderId, { lean: true });
@@ -172,6 +237,14 @@ export async function initiateAdminPaymentExceptionRefund(req) {
   let claimed;
   try {
     claimed = await withTransaction(async (session) => {
+      const before = await EcommercePaymentExceptionRefund.findOne({
+        _id: refundRow._id,
+        tenantId: req.auth.tenantId,
+      }).session(session).lean();
+      // Retrying a failed refund reuses the row and takes its capacity again atomically.
+      if (before?.status === EcommercePaymentExceptionRefundStatus.FAILED) {
+        await reserveCapacityForRefundRetry({ tenantId: req.auth.tenantId, refundRow: before, session });
+      }
       const updated = await EcommercePaymentExceptionRefund.findOneAndUpdate(
         {
           _id: refundRow._id,
@@ -242,59 +315,7 @@ export async function initiateAdminPaymentExceptionRefund(req) {
     return { refund: claimed.refund, initiated: false, inFlight: true };
   }
 
-  const tenant = await Tenant.findById(req.auth.tenantId).select("+integrationSecrets").lean();
-  const credentials = resolvePhonePeCredentials(tenant);
-  try {
-    const provider = await phonePeProvider.initiateRefund({
-      merchantRefundId,
-      originalMerchantOrderId: claimed.refund.merchantOrderId,
-      amountPaise: claimed.refund.amountPaise,
-      credentials,
-      tenantId: req.auth.tenantId,
-    });
-    const updated = await EcommercePaymentExceptionRefund.findOneAndUpdate(
-      {
-        _id: refundRow._id,
-        tenantId: req.auth.tenantId,
-        status: EcommercePaymentExceptionRefundStatus.INITIATED,
-      },
-      {
-        $set: {
-          status: EcommercePaymentExceptionRefundStatus.PROVIDER_PENDING,
-          providerRefundId: provider.refundId ?? merchantRefundId,
-          providerPayload: provider,
-        },
-        $inc: { version: 1 },
-      },
-      { new: true },
-    );
-    if (!updated) {
-      const current = await EcommercePaymentExceptionRefund.findById(refundRow._id).lean();
-      return { refund: current ?? claimed.refund, initiated: false, inFlight: true };
-    }
-    return { refund: updated.toObject(), initiated: true };
-  } catch (error) {
-    await EcommercePaymentExceptionRefund.updateOne(
-      {
-        _id: refundRow._id,
-        tenantId: req.auth.tenantId,
-        status: EcommercePaymentExceptionRefundStatus.INITIATED,
-      },
-      {
-        $set: {
-          status: EcommercePaymentExceptionRefundStatus.PROVIDER_PENDING,
-          failureReason: "PROVIDER_INITIATION_UNCERTAIN",
-        },
-        $inc: { version: 1 },
-      },
-    );
-    if (error instanceof AppError) throw error;
-    throw errors.business(
-      "REFUND_INITIATION_UNCERTAIN",
-      "Refund may have started at the provider. Reconcile or retry with the same merchant refund id.",
-      { refundId: refundRow._id, merchantRefundId },
-    );
-  }
+  return callProviderForRefund({ tenantId: req.auth.tenantId, refundRow, claimed });
 }
 
 export async function recordAdminPaymentExceptionRefundManual(req) {
@@ -369,6 +390,20 @@ export async function recordAdminPaymentExceptionRefundManual(req) {
   });
 }
 
+async function recordBookingRefundEvent({ refund, outcome, reason, session }) {
+  await EcommercePaymentAttemptEvent.create([{
+    _id: createId("epayev"),
+    tenantId: refund.tenantId,
+    bookingId: refund.bookingId,
+    purpose: refund.purpose,
+    paymentAttemptId: refund.paymentAttemptId,
+    direction: "INBOUND",
+    outcome,
+    reason: reason ?? "",
+    payload: { refundId: refund._id, providerRefundId: refund.providerRefundId },
+  }], { session });
+}
+
 export async function confirmPaymentExceptionRefundFromProvider({
   tenantId,
   orderId,
@@ -379,9 +414,11 @@ export async function confirmPaymentExceptionRefundFromProvider({
   providerPayload,
   session,
 }) {
+  // Refunds of a booking capture that has no order yet are owned by the booking: orderId is empty.
+  const ownerFilter = orderId ? { orderId } : { orderId: { $in: [null, ""] }, bookingId: { $type: "string" } };
   const existing = await EcommercePaymentExceptionRefund.findOne({
     tenantId,
-    orderId,
+    ...ownerFilter,
     _id: refundCaseId,
   })
     .session(session)
@@ -409,7 +446,7 @@ export async function confirmPaymentExceptionRefundFromProvider({
     {
       _id: refundCaseId,
       tenantId,
-      orderId,
+      ...ownerFilter,
       status: {
         $in: [
           EcommercePaymentExceptionRefundStatus.PROVIDER_PENDING,
@@ -439,6 +476,11 @@ export async function confirmPaymentExceptionRefundFromProvider({
     if (replay) return { outcome: "ALREADY_CLOSED", refund: replay };
     return { outcome: "STATE_RACE" };
   }
+  if (!orderId) {
+    await recordBookingRefundEvent({ refund: updated, outcome: "REFUND_CONFIRMED", reason: "PROVIDER", session });
+    await getBookingPaymentHandlers().onRefundSettled({ refund: updated.toObject(), session });
+    return { outcome: "SUCCEEDED", refund: updated.toObject() };
+  }
   await EcommerceOrderEvent.create(
     [
       {
@@ -460,6 +502,11 @@ export async function confirmPaymentExceptionRefundFromProvider({
     session,
   });
   await clearResolvedPaymentException(tenantId, orderId, session);
+  // A refund of a booking capture that was opened against the converted order (the excess advance)
+  // still belongs to the booking: let it clear refundStatus.
+  if (updated.bookingId) {
+    await getBookingPaymentHandlers().onRefundSettled({ refund: updated.toObject(), session });
+  }
   if (updated.refundSource === EcommerceOrderRefundSource.ORDER_CANCELLATION) {
     const { completeOnlineCancellationAfterRefund } = await import(
       "./ecommerce-order-cancellation.service.js"
@@ -508,6 +555,22 @@ async function recordVerifiedRefundFailure({
     { session, new: true },
   );
   if (!updated) return { outcome: "STATE_RACE" };
+  if (!refundCase.orderId) {
+    await recordBookingRefundEvent({
+      refund: updated, outcome: "REFUND_FAILED", reason: String(failureReason ?? "PROVIDER_REFUND_FAILED"), session,
+    });
+    await upsertOperationalAlert({
+      tenantId,
+      type: AlertType.PAYMENT_REVIEW,
+      entityId: refundCase.bookingId ?? refundCase._id,
+      title: "Booking refund failed at provider",
+      message: "Provider reported refund failure. Retry initiation or record manual resolution with evidence.",
+      metadata: { bookingId: refundCase.bookingId, refundCaseId: refundCase._id, providerRefundId: updated.providerRefundId },
+      session,
+    });
+    await getBookingPaymentHandlers().onRefundFailed({ refund: updated.toObject(), session });
+    return { outcome: "FAILED", refund: updated.toObject() };
+  }
   await EcommerceOrderEvent.create(
     [
       {
@@ -524,7 +587,7 @@ async function recordVerifiedRefundFailure({
   await upsertOperationalAlert({
     tenantId,
     type: AlertType.PAYMENT_REVIEW,
-    entityId: refundCase.orderId,
+    entityId: refundCase.orderId ?? refundCase.bookingId,
     title: "Ecommerce exception refund failed at provider",
     message: "Provider reported refund failure. Retry initiation or record manual resolution with evidence.",
     metadata: {
@@ -533,6 +596,9 @@ async function recordVerifiedRefundFailure({
       providerRefundId: updated.providerRefundId,
     },
   });
+  if (updated.bookingId) {
+    await getBookingPaymentHandlers().onRefundFailed({ refund: updated.toObject(), session });
+  }
   return { outcome: "FAILED", refund: updated.toObject() };
 }
 
@@ -563,7 +629,7 @@ export async function processEcommercePhonePeRefundWebhook({
     await upsertOperationalAlert({
       tenantId,
       type: AlertType.PAYMENT_REVIEW,
-      entityId: refundCase.orderId,
+      entityId: refundCase.orderId ?? refundCase.bookingId,
       title: "Ecommerce refund reference mismatch",
       message: `Refund callback failed validation (${referenceCheck.code}).`,
       metadata: { orderId: refundCase.orderId, refundCaseId: refundCase._id, payload },
@@ -614,7 +680,7 @@ export async function processEcommercePhonePeRefundWebhook({
       await upsertOperationalAlert({
         tenantId,
         type: AlertType.PAYMENT_REVIEW,
-        entityId: refundCase.orderId,
+        entityId: refundCase.orderId ?? refundCase.bookingId,
         title: "Invalid ecommerce refund amount",
         message: "Refund completed callback missing a valid amount.",
         metadata: { refundCaseId: refundCase._id, providerRefundId },
@@ -746,4 +812,42 @@ export async function listAdminPaymentExceptions(req) {
   });
 
   return { items: items.slice(0, limit) };
+}
+
+/**
+ * Starts the provider refund for a booking-owned refund row (no order). Same claim, capacity and
+ * uncertainty rules as the staff path: only ASSIGNED or FAILED rows start, a FAILED retry takes its
+ * capacity back first, and an unknown provider outcome leaves the row PROVIDER_PENDING.
+ */
+export async function initiateBookingCaptureRefund({ tenantId, refundId }) {
+  const claimed = await withTransaction(async (session) => {
+    const before = await EcommercePaymentExceptionRefund.findOne({ _id: refundId, tenantId }).session(session).lean();
+    if (!before) throw errors.notFound("Booking refund");
+    if (before.orderId) {
+      throw errors.business("REFUND_ORDER_OWNED", "This refund belongs to an order; use the order refund flow.");
+    }
+    if (TERMINAL_REFUND_STATUSES.has(before.status)) return { kind: "DONE", refund: before };
+    if (
+      before.status === EcommercePaymentExceptionRefundStatus.PROVIDER_PENDING
+      || before.status === EcommercePaymentExceptionRefundStatus.INITIATED
+    ) return { kind: "IN_FLIGHT", refund: before };
+    if (before.status === EcommercePaymentExceptionRefundStatus.FAILED) {
+      await reserveCapacityForRefundRetry({ tenantId, refundRow: before, session });
+    }
+    const updated = await EcommercePaymentExceptionRefund.findOneAndUpdate(
+      {
+        _id: refundId,
+        tenantId,
+        status: { $in: [EcommercePaymentExceptionRefundStatus.ASSIGNED, EcommercePaymentExceptionRefundStatus.FAILED] },
+      },
+      { $set: { status: EcommercePaymentExceptionRefundStatus.INITIATED, providerRefundId: refundId }, $inc: { version: 1 } },
+      { session, new: true },
+    );
+    if (!updated) throw errors.conflict("REFUND_STATE_RACE", "Refund case changed elsewhere.");
+    await recordBookingRefundEvent({ refund: updated, outcome: "REFUND_INITIATED", reason: "SYSTEM", session });
+    return { kind: "CALL_PROVIDER", refund: updated.toObject() };
+  });
+  if (claimed.kind === "DONE") return { refund: claimed.refund, initiated: false };
+  if (claimed.kind === "IN_FLIGHT") return { refund: claimed.refund, initiated: false, inFlight: true };
+  return callProviderForRefund({ tenantId, refundRow: claimed.refund, claimed });
 }

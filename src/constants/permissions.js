@@ -13,6 +13,12 @@ export const Permission = Object.freeze({
   ECOMMERCE_PAYMENT_OPERATE: "ecommerce.payment.operate",
   ECOMMERCE_REFUND_OPERATE: "ecommerce.refund.operate",
   ECOMMERCE_FULFILMENT_OPERATE: "ecommerce.fulfilment.operate",
+  /** View, bill, cancel and refund advance bookings. */
+  ECOMMERCE_BOOKING_OPERATE: "ecommerce.booking.operate",
+  /** Publish booking policy versions and set which policy applies where. Changes what customers agree to. */
+  ECOMMERCE_BOOKING_POLICY_PUBLISH: "ecommerce.booking.policy.publish",
+  /** Waive the cancellation fee on a booking. Owner-only by default; an owner can grant it to a named admin. */
+  ECOMMERCE_BOOKING_FEE_WAIVE: "ecommerce.booking.fee.waive",
   /** Place a store order for a customer at the counter (paid in store). */
   ECOMMERCE_ASSISTED_ORDER: "ecommerce.assisted.order",
   DIGITAL_METALS_READ: "digital-metals.read",
@@ -36,6 +42,12 @@ export const Permission = Object.freeze({
 
 const allPermissions = Object.values(Permission);
 
+/**
+ * Permissions no role gets by default. The tenant owner holds them through "*", and an owner can
+ * grant one to a named staff member by adding it to that user's own permissions.
+ */
+export const OWNER_GRANTED_PERMISSIONS = Object.freeze([Permission.ECOMMERCE_BOOKING_FEE_WAIVE]);
+
 export const ROLE_SCOPE = Object.freeze({
   TENANT_OWNER: "TENANT",
   TENANT_ADMIN: "TENANT",
@@ -46,12 +58,14 @@ export const ROLE_SCOPE = Object.freeze({
 
 export const ROLE_PERMISSIONS = Object.freeze({
   TENANT_OWNER: ["*"],
-  TENANT_ADMIN: allPermissions,
+  TENANT_ADMIN: allPermissions.filter((permission) => !OWNER_GRANTED_PERMISSIONS.includes(permission)),
   BRANCH_MANAGER: allPermissions.filter((permission) => ![
     Permission.SETTINGS_WRITE,
     Permission.BRANCH_WRITE,
     Permission.CUSTOMER_BLOCK,
     Permission.ECOMMERCE_WRITE,
+    Permission.ECOMMERCE_BOOKING_POLICY_PUBLISH,
+    Permission.ECOMMERCE_BOOKING_FEE_WAIVE,
     Permission.DIGITAL_METALS_SETTINGS_WRITE,
     Permission.DIGITAL_METALS_RATES_WRITE,
     Permission.DIGITAL_METALS_PROCUREMENT_WRITE,

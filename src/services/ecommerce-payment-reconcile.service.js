@@ -7,9 +7,10 @@ import { logger } from "../config/logger.js";
 import {
   EcommercePaymentAttemptOperationalStatus,
 } from "../constants/enums.js";
-import { phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
+import { isPhonePeOrderNotFound, phonePeProvider, resolvePhonePeCredentials } from "../integrations/phonepe.provider.js";
 import { randomToken } from "../lib/crypto.js";
 import { validatePhonePeCompletedIdentifiers } from "../lib/phonepe-completed-identifiers.js";
+import { IDENTITY_CHANGED, attemptIdentity } from "../lib/ecommerce-payment-identity.js";
 import { PhonePeOrderStatusKind, normalizePhonePeOrderStatus } from "../lib/phonepe-order-status.js";
 import { EcommercePaymentAttempt, Tenant } from "../models/index.js";
 import {
@@ -119,6 +120,8 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
   }
   const credentials = resolvePhonePeCredentials(tenant);
   const merchantOrderId = attemptRow.merchantOrderId ?? attemptRow._id;
+  // The answer below is about this identity; finalizers refuse to apply it to any other.
+  const expectedIdentity = attemptIdentity(attemptRow);
   let statusPayload;
   try {
     statusPayload = await phonePeProvider.getOrderStatus(
@@ -137,7 +140,8 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
       at,
       errorMessage: error?.message,
     });
-    return { outcome: "POLL_FAILED" };
+    // PhonePe's definite "no such order" is kept apart from a transport error or timeout.
+    return { outcome: "POLL_FAILED", ...(isPhonePeOrderNotFound(error) ? { orderNotFound: true } : {}) };
   }
   const normalized = normalizePhonePeOrderStatus(statusPayload);
   if (normalized.kind === PhonePeOrderStatusKind.COMPLETED) {
@@ -161,7 +165,12 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
       providerPayload: statusPayload,
       webhookEventId: null,
       source: "RECONCILE",
+      expectedIdentity,
     });
+    if (result.outcome === IDENTITY_CHANGED) {
+      await releaseReconcileLease(attemptRow._id, leaseOwner);
+      return result;
+    }
     const latest = await EcommercePaymentAttempt.findById(attemptRow._id).select("status").lean();
     if (latest && !["SUCCEEDED", "FAILED"].includes(latest.status)) {
       await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: result.outcome ?? "UNRESOLVED" });
@@ -176,7 +185,12 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
       providerPayload: statusPayload,
       webhookEventId: null,
       reason: "RECONCILE_TERMINAL_FAILURE",
+      expectedIdentity,
     });
+    if (result.outcome === IDENTITY_CHANGED) {
+      await releaseReconcileLease(attemptRow._id, leaseOwner);
+      return result;
+    }
     const latest = await EcommercePaymentAttempt.findById(attemptRow._id).select("status").lean();
     if (latest && !["SUCCEEDED", "FAILED"].includes(latest.status)) {
       await recordReconcileProgress(attemptRow, { leaseOwner, at, outcome: result.outcome ?? "UNRESOLVED" });
@@ -189,7 +203,7 @@ export async function reconcileEcommercePaymentAttempt(attemptRow, { at = new Da
     at,
     providerState: normalized.kind,
   });
-  return { outcome: "STILL_PENDING" };
+  return { outcome: "STILL_PENDING", providerState: normalized.state };
 }
 
 async function releaseReconcileLease(attemptId, leaseOwner) {
@@ -224,6 +238,12 @@ async function recordReconcileProgress(attemptRow, { leaseOwner, outcome, at, er
         gatewayReconcileNextAt: stuck ? null : backoffNextAt(attempts),
         gatewayReconcileLeaseOwner: null,
         gatewayReconcileLeaseExpiresAt: null,
+        // Progress may overwrite operationalStatus below, so first keep the evidence that initiation
+        // may have reached the provider (attempts that were marked before the field existed).
+        ...(attemptRow.operationalStatus === EcommercePaymentAttemptOperationalStatus.INITIATION_UNCERTAIN
+          && !attemptRow.initiationUncertainAt
+          ? { initiationUncertainAt: at }
+          : {}),
         operationalStatus: stuck
           ? EcommercePaymentAttemptOperationalStatus.STUCK_RECONCILE
           : EcommercePaymentAttemptOperationalStatus.AWAITING_PROVIDER,
@@ -237,7 +257,7 @@ async function recordReconcileProgress(attemptRow, { leaseOwner, outcome, at, er
   if (stuck && progressed.modifiedCount === 1) await upsertOperationalAlert({ tenantId: attemptRow.tenantId,
     session, type: AlertType.GATEWAY_RECONCILE_EXHAUSTED, entityId: attemptRow._id,
     title: "Checkout reconciliation exhausted", message: "Provider outcome remains unresolved. Review before permitting another charge.",
-    metadata: { orderId: attemptRow.orderId, paymentAttemptId: attemptRow._id, attempts, outcome } });
+    metadata: { orderId: attemptRow.orderId, bookingId: attemptRow.bookingId, paymentAttemptId: attemptRow._id, attempts, outcome } });
 
   });
 }
@@ -245,6 +265,7 @@ async function recordReconcileProgress(attemptRow, { leaseOwner, outcome, at, er
 export async function runEcommercePaymentReconcile(at = new Date()) {
   const cutoff = new Date(at.getTime() - staleCutoffMs() * 1000);
   const rows = await EcommercePaymentAttempt.find({
+    // Order and booking attempts are scanned together; the finalizer routes each by owner.
     ...checkoutReconcileFilter({ at, cutoff, maxAttempts: maxAttempts() }),
   })
     .sort({ gatewayReconcileNextAt: 1, updatedAt: 1 })

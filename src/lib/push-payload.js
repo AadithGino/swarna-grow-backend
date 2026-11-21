@@ -103,13 +103,16 @@ export function buildPushPayload({ message, scheme, payment, tenant }) {
     case MessageType.ECOMMERCE_PICKUP_CODE_RELEASED:
     case MessageType.ECOMMERCE_CANCELLATION_UPDATE:
     case MessageType.ECOMMERCE_COD_UPDATE:
+    case MessageType.ECOMMERCE_BOOKING_UPDATE:
       title = String(message.templateParams?.title ?? "Shop order update");
       body = String(message.templateParams?.body ?? "Open your order in the shop.");
       deepLink = String(
         message.templateParams?.deepLink
-          ?? (message.templateParams?.orderId
-            ? `/shop/order/${message.templateParams.orderId}`
-            : "/shop/orders"),
+          ?? (message.templateParams?.bookingId
+            ? `/shop/booking/${message.templateParams.bookingId}`
+            : message.templateParams?.orderId
+              ? `/shop/order/${message.templateParams.orderId}`
+              : "/shop/orders"),
       );
       break;
     case MessageType.SCHEME_REDEMPTION_HANDOVER_OTP:

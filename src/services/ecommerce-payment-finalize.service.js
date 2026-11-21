@@ -1,3 +1,9 @@
+import { IDENTITY_CHANGED, identityFilter, sameIdentity } from "../lib/ecommerce-payment-identity.js";
+import { isBookingPayment } from "../lib/ecommerce-payment-allocations.js";
+import {
+  finalizeBookingPaymentSuccess,
+  finalizeBookingPaymentTerminalFailure,
+} from "./ecommerce-booking-payment.service.js";
 import { postAssistedOrderCash } from "../lib/counter-tender.js";
 import { createId } from "../lib/ids.js";
 import { withTransaction } from "../lib/transaction.js";
@@ -66,12 +72,20 @@ export async function finalizeEcommercePaymentSuccess({
   providerPayload,
   webhookEventId,
   source = "WEBHOOK",
+  expectedIdentity,
 }) {
   const attempt = await EcommercePaymentAttempt.findOne({
     tenantId,
     $or: [{ _id: merchantOrderId }, { merchantOrderId }, { providerOrderId: merchantOrderId }],
   }).lean();
   if (!attempt) return { outcome: "NOT_FOUND" };
+  // A booking capture has no order to load or lock: it belongs to the booking payment finalizer.
+  // Never let the order-bound path below treat one as ordinary checkout.
+  if (isBookingPayment(attempt)) {
+    return finalizeBookingPaymentSuccess({
+      attempt, transactionId, amountPaise, currency, providerPayload, webhookEventId, source, expectedIdentity,
+    });
+  }
 
   if (attempt.status === EcommercePaymentAttemptStatus.SUCCEEDED) {
     if (attempt.provider === "COUNTER") await withTransaction(async (session) => {
@@ -117,6 +131,11 @@ export async function finalizeEcommercePaymentSuccess({
     if (!order) return { outcome: "ORDER_NOT_FOUND" };
 
     const currentAttempt = await EcommercePaymentAttempt.findById(attempt._id).session(session).lean();
+    // The attempt document is written later in this transaction, so a concurrent identity change
+    // conflicts and retries; this read therefore decides on the identity that will be written.
+    if (expectedIdentity && currentAttempt && !sameIdentity(expectedIdentity, currentAttempt)) {
+      return { outcome: IDENTITY_CHANGED, orderId: order._id };
+    }
     if (currentAttempt?.status === EcommercePaymentAttemptStatus.SUCCEEDED) {
       return { outcome: "ALREADY_SUCCESS", orderId: order._id };
     }
@@ -188,7 +207,7 @@ export async function finalizeEcommercePaymentSuccess({
         session,
       });
       await EcommercePaymentExceptionRefund.findOneAndUpdate(
-        { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId: null },
+        { tenantId, refundOperationId: `exception:${attempt._id}`, paymentAttemptId: attempt._id },
         {
           $setOnInsert: {
             paymentAttemptId: attempt._id,
@@ -308,7 +327,7 @@ export async function finalizeEcommercePaymentSuccess({
         session,
       });
       await EcommercePaymentExceptionRefund.updateOne(
-        { tenantId, orderId: order._id, paymentAttemptId: attempt._id, returnRequestId: null },
+        { tenantId, refundOperationId: `exception:${attempt._id}`, paymentAttemptId: attempt._id },
         {
           $setOnInsert: {
             _id: createId("epayref"),
@@ -463,12 +482,18 @@ export async function finalizeEcommercePaymentTerminalFailure({
   providerPayload,
   webhookEventId,
   reason,
+  expectedIdentity,
 }) {
   const attempt = await EcommercePaymentAttempt.findOne({
     tenantId,
     $or: [{ _id: merchantOrderId }, { merchantOrderId }, { providerOrderId: merchantOrderId }],
   }).lean();
   if (!attempt) return { outcome: "NOT_FOUND" };
+  if (isBookingPayment(attempt)) {
+    return finalizeBookingPaymentTerminalFailure({
+      attempt, transactionId, providerPayload, webhookEventId, reason, expectedIdentity,
+    });
+  }
   if (attempt.status === EcommercePaymentAttemptStatus.SUCCEEDED) {
     return { outcome: "ALREADY_SUCCESS" };
   }
@@ -479,6 +504,7 @@ export async function finalizeEcommercePaymentTerminalFailure({
         _id: attempt._id,
         tenantId,
         status: { $in: [EcommercePaymentAttemptStatus.PENDING, EcommercePaymentAttemptStatus.INITIATED] },
+        ...identityFilter(expectedIdentity),
       },
       {
         $set: {
@@ -491,7 +517,13 @@ export async function finalizeEcommercePaymentTerminalFailure({
       },
       { session, new: true },
     );
-    if (!updated) return { outcome: "NOOP" };
+    if (!updated) {
+      if (expectedIdentity) {
+        const current = await EcommercePaymentAttempt.findById(attempt._id).session(session).lean();
+        if (current && !sameIdentity(expectedIdentity, current)) return { outcome: IDENTITY_CHANGED };
+      }
+      return { outcome: "NOOP" };
+    }
     await EcommerceOrderEvent.create(
       [
         {

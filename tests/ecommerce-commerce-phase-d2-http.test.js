@@ -367,6 +367,41 @@ for (const scenario of ["top-up", "fully covered", "rejected", "invalidated", "r
         assert.equal(res.status, 200, JSON.stringify(res.body));
         row = res.body.data.request;
       }
+      if (scenario === "top-up" && returnedCount === 1) {
+        // Part of the scheme is still allocated to this online order. Switching scheme checkout off
+        // stops NEW schemes entering online checkout, but must not strand what is already there.
+        const freshQuote = async () => {
+          const c = await request(app).put("/api/v1/app/shop/cart").set(headers).set("x-idempotency-key", createId("c"))
+            .send({ lines: [{ productId: product.id, quantity: 1 }] });
+          assert.equal(c.status, 200, JSON.stringify(c.body));
+          const qq = await request(app).post("/api/v1/app/shop/quotes").set(headers).set("x-idempotency-key", createId("q"))
+            .send({ fulfilmentMode: "BRANCH_PICKUP", pickupBranchId: branch._id });
+          assert.equal(qq.status, 201, JSON.stringify(qq.body));
+          return qq.body.data;
+        };
+        const before = await freshQuote();
+        const on = await request(app).get(`/api/v1/app/shop/quotes/${before.id}/scheme-preview`).set(headers).query(selection);
+        assert.equal(on.status, 200, JSON.stringify(on.body));
+        await EcommerceFulfilmentSettings.updateOne({ tenantId: tenant._id }, { $set: { schemeCheckoutEnabled: false } });
+        const off = await request(app).get(`/api/v1/app/shop/quotes/${before.id}/scheme-preview`).set(headers).query(selection);
+        assert.equal(off.status, 200, `an already-used scheme stays spendable: ${JSON.stringify(off.body)}`);
+        assert.equal(off.body.data.availableBalance, on.body.data.availableBalance);
+        const shown = await request(app).get(`/api/v1/app/shop/quotes/${before.id}`).set(headers);
+        assert.equal(shown.body.data.schemePurchasePreviewEnabled, true, "the storefront still offers it to this customer");
+
+        // A scheme with no online allocation is still blocked while the switch is off.
+        const other = await Scheme.create({
+          tenantId: tenant._id, branchId: branch._id, customerId: customer._id, planId: createId("plan"), enrollmentNumber: createId("enroll"),
+          planSnapshot: scheme.planSnapshot, valueBasis: "CASH", paymentPattern: "FIXED", status: "MATURED",
+          startDate: "2025-01-01", maturityDate: "2025-02-01", installmentAmountPaise: 10_000,
+          installments: [{ number: 1, dueDate: "2025-01-01", amountPaise: 10_000, paidPaise: 10_000, status: "PAID" }], createdBy: user._id,
+        });
+        const blocked = await request(app).get(`/api/v1/app/shop/quotes/${before.id}/scheme-preview`).set(headers)
+          .query({ schemeId: other._id, basis: "CASH_VALUE" });
+        assert.equal(blocked.status, 422, JSON.stringify(blocked.body));
+        assert.equal(blocked.body.error.code, "SCHEME_CHECKOUT_DISABLED");
+        await EcommerceFulfilmentSettings.updateOne({ tenantId: tenant._id }, { $set: { schemeCheckoutEnabled: true } });
+      }
       if (!full) {
         const detail = await request(app).get(`/api/v1/app/shop/orders/${order.id}`).set(headers);
         assert.equal(detail.status, 200);

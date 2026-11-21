@@ -24,6 +24,7 @@ import {
   isBannerTargetAvailable,
   destinationRequiresOperationalStore,
   placementIncludes,
+  stripBannerSeedMarkers,
 } from "../lib/ecommerce-banner-utils.js";
 import { writeAudit } from "./audit.service.js";
 import {
@@ -33,6 +34,8 @@ import {
 } from "../lib/ecommerce-banner-customer-meta.js";
 import {
   assertRetainedTenantUpload,
+  catalogMediaViewUrl,
+  uploadMapForIds,
   uploadViewPath,
   validateUploadReferences,
 } from "./upload.service.js";
@@ -172,13 +175,16 @@ async function validateBannerPublishable(row, tenantId, session) {
   );
 }
 
-function mapBannerAdmin(row) {
+function mapBannerAdmin(row, uploadById = null) {
+  const imageUploadId = row.imageUploadId ?? null;
   return {
     id: row._id,
     title: row.title,
     subtitle: row.subtitle ?? "",
-    imageUploadId: row.imageUploadId ?? null,
-    imageUrl: row.imageUploadId ? uploadViewPath(row.imageUploadId) : null,
+    imageUploadId,
+    imageUrl: imageUploadId
+      ? catalogMediaViewUrl(uploadById?.get(String(imageUploadId)), imageUploadId)
+      : null,
     placement: row.placement,
     displayOrder: row.displayOrder ?? 0,
     status: row.status,
@@ -246,15 +252,18 @@ async function resolveCustomerDestination(row, tenantId, customerId, tenant) {
   return null;
 }
 
-async function mapBannerCustomer(row, tenantId, customerId, tenant) {
+async function mapBannerCustomer(row, tenantId, customerId, tenant, uploadById = null) {
   const destination = await resolveCustomerDestination(row, tenantId, customerId, tenant);
   if (destination == null) return null;
+  const imageUploadId = row.imageUploadId ?? null;
   return {
     id: row._id,
-    title: row.title,
-    subtitle: row.subtitle ?? "",
-    imageUploadId: row.imageUploadId,
-    imageUrl: row.imageUploadId ? uploadViewPath(row.imageUploadId) : null,
+    title: stripBannerSeedMarkers(row.title),
+    subtitle: stripBannerSeedMarkers(row.subtitle),
+    imageUploadId,
+    imageUrl: imageUploadId
+      ? catalogMediaViewUrl(uploadById?.get(String(imageUploadId)), imageUploadId)
+      : null,
     displayOrder: row.displayOrder ?? 0,
     startsAt: row.startsAt ? new Date(row.startsAt).toISOString() : null,
     endsAt: row.endsAt ? new Date(row.endsAt).toISOString() : null,
@@ -492,12 +501,13 @@ async function listVisibleBannersForSurface(req, surface) {
   }
   const rows = await loadPublishedBannersForSurface(req.auth.tenantId, surface);
   const meta = customerBannerListMeta(rows, now);
+  const uploadById = await uploadMapForIds(rows.map((row) => row.imageUploadId));
 
   const items = [];
   for (const row of rows) {
     if (!isBannerInSchedule(row, now)) continue;
     if (!row.imageUploadId) continue;
-    const mapped = await mapBannerCustomer(row, req.auth.tenantId, req.auth.id, req.tenant);
+    const mapped = await mapBannerCustomer(row, req.auth.tenantId, req.auth.id, req.tenant, uploadById);
     if (mapped) items.push(mapped);
   }
   return { items, meta };

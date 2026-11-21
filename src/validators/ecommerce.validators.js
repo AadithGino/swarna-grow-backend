@@ -686,3 +686,81 @@ export const ecommerceSchemePurchasePreviewQuery = z.object({
   schemeId: z.string().trim().min(4).max(80),
   basis: z.enum(["CASH_VALUE", "GOLD_WEIGHT"]),
 }).strict();
+
+// ---- Advance ornament booking ----
+const bookingId = z.string().trim().min(1).max(80);
+const shortReason = z.string().trim().min(8).max(500);
+
+export const bookingPreviewQuery = z.object({
+  productId: bookingId,
+  pickupBranchId: bookingId,
+}).strict();
+
+export const bookingAvailabilityQuery = z.object({
+  productId: bookingId,
+}).strict();
+
+export const bookingCreateBody = z.object({
+  productId: bookingId,
+  pickupBranchId: bookingId,
+  acceptedPolicyVersionId: bookingId,
+  acceptedAdvancePaise: z.number().int().min(0),
+  acceptedEstimateTotalPaise: z.number().int().min(0),
+  acceptedRatePerGramPaise: z.number().int().min(0).nullable(),
+}).strict();
+
+export const bookingPaymentIntentBody = z.object({
+  redirectUrl: z.string().trim().url().max(2000),
+  clientPlatform: z.string().trim().max(40).optional(),
+  checkoutChannel: z.string().trim().max(40).optional(),
+}).strict();
+
+export const bookingCustomerCancelBody = z.object({
+  reason: z.string().trim().max(500).optional(),
+}).strict();
+
+export const bookingStaffCancelBody = z.object({
+  reason: shortReason,
+  waiveFee: z.boolean().default(false),
+}).strict();
+
+export const bookingRequoteBody = z.object({ reason: shortReason }).strict();
+
+export const bookingAdminListQuery = cursorQuery.extend({
+  status: z.enum(Object.values(E.EcommerceBookingStatus)).optional(),
+  refundStatus: z.enum(Object.values(E.EcommerceBookingRefundStatus)).optional(),
+  pickupBranchId: bookingId.optional(),
+  q: z.string().trim().max(80).optional(),
+});
+
+export const bookingManualRefundBody = z.object({
+  providerRefundReference: z.string().trim().min(4).max(120),
+  reason: shortReason,
+  evidenceNote: shortReason,
+}).strict();
+
+export const bookingPolicyDraftBody = z.object({
+  policyKey: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(120),
+  advance: z.object({
+    mode: z.enum(Object.values(E.EcommerceBookingAdvanceMode)),
+    percentBps: z.number().int().min(1).max(10_000).optional(),
+    fixedPaise: z.number().int().min(1).optional(),
+    minPaise: z.number().int().min(0).optional(),
+  }).strict(),
+  rateRule: z.enum(Object.values(E.EcommerceBookingRateRule)),
+  rateProtectionHours: z.number().int().min(0).max(24 * 30).default(0),
+  advanceWindowMinutes: z.number().int().min(5).max(24 * 60).default(30),
+  balanceWindowHours: z.number().int().min(1).max(24 * 90).default(72),
+  eligiblePickupBranchIds: z.array(bookingId).max(200).default([]),
+  reminderHoursBeforeDue: z.array(z.number().int().min(1).max(24 * 30)).max(5).default([]),
+  cancellationFeeBps: z.number().int().min(0).max(10_000).default(0),
+  terms: z.object({ text: z.string().max(20_000) }).strict().default({ text: "" }),
+}).strict();
+
+export const bookingPolicyAssignmentBody = z.object({
+  scopeType: z.enum(Object.values(E.EcommerceBookingPolicyScope)),
+  scopeId: bookingId,
+  bookingEnabled: z.boolean(),
+  policyVersionId: bookingId.nullable().optional(),
+}).strict();
