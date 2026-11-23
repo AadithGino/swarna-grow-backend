@@ -18,7 +18,9 @@ export function buildAmountSummary(plan) {
     paiseOrNull(rules.maxInstallmentPaise) ??
     (mode === "JEWELLER_FIXED" ? fixedPaise : null);
   const multiplePaise = paiseOrNull(rules.multipleOfPaise);
-  const amountUnit = plan.collectionRules?.amountBasis === "TOTAL_TARGET" ? "total target" : "per installment";
+  const amountUnit = plan.oneTimeRules ? "upfront"
+    : plan.collectionRules?.amountBasis === "TOTAL_TARGET" ? "total target"
+    : plan.collectionRules ? "per collection" : "per installment";
   let label = "—";
   if (plan.paymentPattern === PaymentPattern.FLEXIBLE) {
     const flex = plan.flexibleRules ?? {};
@@ -48,6 +50,14 @@ export function buildAmountSummary(plan) {
 }
 
 export function planBenefitLabel(plan) {
+  const oneTime = plan?.oneTimeRules;
+  if (oneTime) {
+    const amount = oneTime.basis === "PRINCIPAL_PERCENT" ? `${oneTime.value}% of principal gold`
+      : oneTime.basis === "FIXED_WEIGHT_MG" ? `${oneTime.value / 1000} g of bonus gold`
+      : `${moneyRef(oneTime.value).amountDisplay} converted to bonus gold`;
+    if (oneTime.timing === "AT_MATURITY") return `${amount} at maturity`;
+    return oneTime.amountPeriod === "PER_PERIOD" ? `${amount} credited monthly` : `${amount} total, credited monthly`;
+  }
   const goldBonus = maturityGoldRules(plan);
   if (goldBonus) return maturityGoldLabel(goldBonus);
   const benefit = plan?.benefit;

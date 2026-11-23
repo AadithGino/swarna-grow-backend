@@ -56,6 +56,7 @@ import {
   searchRegex,
 } from "../lib/query-filters.js";
 import { moneyRef } from "../lib/money.js";
+import { planBenefitLabel } from "../lib/plan-amount-summary.js";
 import { generatedAtIst } from "./report-builders/report-envelope.js";
 import { isFlexibleMaturityOnlyCycleIndex } from "../lib/flexible-plan-duration.js";
 import { assessMaturityContributionEligibility } from "../lib/maturity-eligibility.js";
@@ -701,12 +702,10 @@ export async function validateEnrolmentResponse(req) {
         firstDueDate: scheduleRows[0]?.dueDate ?? startDate,
         maturityDate,
         benefit:
-          benefit.displayLabel || benefit.type
-            ? {
-                type: benefit.type,
-                displayLabel: benefit.displayLabel ?? benefit.type,
-              }
-            : undefined,
+          oneTimeSchedule ? { type: "GOLD_BENEFIT", displayLabel: planBenefitLabel(plan) }
+            : benefit.displayLabel || benefit.type
+              ? { type: benefit.type, displayLabel: benefit.displayLabel ?? benefit.type }
+              : undefined,
         schedulePreview: scheduleRows.slice(0, 12).map((row) => ({
           installmentNumber: row.number,
           dueDate: row.dueDate,

@@ -1,26 +1,47 @@
 # Flutter: Aira collection schemes and one-time gold
 
-**Source:** committed backend on `remediation/phase-1-isolation` (`782b984`). Uncommitted work (advance gold booking and later payment fixes) is not included.
+**Source:** SwarnaGrow backend with Aira upfront catalog (`AIRAUPFRONT`) and customer DTO presentation (`paymentPatternLabel`, `oneTimeProgress`).
 
 **Prefix:** `/api/v1`  
 **Auth:** customer bearer token from the jewellery OTP login in `FLUTTER_CUSTOMER_API_GUIDE.md`.  
 **Money:** integer paise. **Weight:** milligrams on the wire; show `weightDisplay` when the API sends it. **Dates:** `YYYY-MM-DD`.  
 **Gold rate:** the jeweller’s published 22K rate. Flutter displays server weight. It does not multiply rupees by a rate.
 
-There are two new plan shapes in this commit. Aira’s seeded plans are only the first.
+**Live tenant (Aira):** `AIRAGOLD` · tenant id `tnt_01M59TZGCJ5NTAV4ZVAG6PZZB0`. Customer slug `/customer/airagold`. Only **ACTIVE** plans with `availability.visibleInCustomerApp` appear in `GET /app/scheme-plans`. Enrolments already opened keep their **frozen `planSnapshot`**; do not assume every `AIRAUPFRONT` scheme matches the current catalog JSON.
 
-| Shape | How you recognise it | What the customer pays | What the bonus is |
+---
+
+## Flutter implementation plan
+
+| Phase | Work | Done when |
+|---|---|---|
+| 1 — Routing | Branch plan list and enrol on `plan.oneTimeRules` vs `plan.collectionRules` vs other `paymentPattern` | Upfront flow never shows collection frequency; collection flow never shows upfront-only copy |
+| 2 — Enrol UX | Amount step uses `enrol.minInstallment` / `maxInstallment` / `multipleOf`; validate before pay | Below min / above max / bad step returns server warnings; `installmentCount` in preview is **1** for upfront |
+| 3 — Pay once | `payNow: true`, PhonePe link poll, no `collectionFrequency` on upfront | After success, scheme detail has `payButton.enabled: false` |
+| 4 — Scheme detail | Bind bonus UI to `oneTimeProgress.periods` (not `installmentSchedule` for bonus dates) | Progress copy matches `progressLabel` / `nextActionLabel` from API; reload on push `SCHEME_GOLD_BONUS_CREDITED` |
+| 5 — QA | Staging with real gateway + worker | See **Acceptance checks** below; maturity credits require **maintenance worker** (not API-only queue tick) |
+
+---
+
+## Plan shapes on Aira
+
+| Shape | Detect | Customer pays | Bonus |
 |---|---|---|---|
-| Collection gold | Plan has `collectionRules` | Many fixed collections (daily, weekly, or monthly) for the whole lock-in | One percentage of **net gold collected**, credited at maturity |
-| One-time gold | Plan has `oneTimeRules` | **One** payment at enrolment. No later collections | Bonus gold credited on a schedule from that single payment |
+| Collection gold | `collectionRules` | Many collections (daily / weekly / monthly) for the lock-in | **One** % of net gold at maturity (`maturityGoldBonus`) |
+| One-time gold | `oneTimeRules` | **One** payment at enrolment | Gold credited on **`oneTimeSchedule`** dates (server job) |
 
-Aira Gold (`AIRAGOLD`) seeds only collection plans:
+**Aira catalog (four active plans):**
 
 | Code | Name | Lock-in | Bonus |
 |---|---|---|---|
-| `SWARNA` | Swarna | 3 months | 3% of net gold |
-| `AKSHAYA` | Akshaya | 6 months | 7% of net gold |
-| `TRITIYA` | Tritiya | 12 months | 15% of net gold |
+| `SWARNA` | Swarna | 3 months | 3% of net gold (at maturity) |
+| `AKSHAYA` | Akshaya | 6 months | 7% of net gold (at maturity) |
+| `TRITIYA` | Tritiya | 12 months | 15% of net gold (at maturity) |
+| `AIRAUPFRONT` | Aira Upfront Gold Lock-in | 12 months | **2% of principal gold every month** (`PER_PERIOD`, no compounding) |
+
+**`AIRAUPFRONT` limits (demo / staging ceiling):** min **₹1,00,000** (`10000000` paise), max **₹5,00,000** (`50000000` paise), step **₹1** (`multipleOfPaise: 100`). Match `maxInstallmentPaise` and `maxPaymentPerTransactionPaise` to the jeweller’s approved PhonePe ceiling before production.
+
+**Catalog cutover note:** Older enrolments may still reference an inactive plan document (`AIRAUPFRONT_LEGACY`) whose snapshot used **12 instalments** and **manual `TEXT_ONLY` benefit**. Flutter must read **`scheme.planSnapshot` / `oneTimeProgress.rules`** on the scheme, not the current catalog plan, for those members.
 
 ---
 
@@ -86,7 +107,7 @@ GET /api/v1/app/scheme-plans
       "valueBasis": "GOLD_WEIGHT",
       "valueBasisLabel": "Gold savings",
       "paymentPattern": "FIXED",
-      "paymentPatternLabel": "Fixed monthly",
+      "paymentPatternLabel": "Scheduled collections",
       "durationMonths": 3,
       "benefitType": "GOLD_BENEFIT",
       "benefitLabel": "3% additional gold at maturity",
@@ -126,7 +147,7 @@ GET /api/v1/app/scheme-plans
 }
 ```
 
-`paymentPatternLabel` still says “Fixed monthly”. Ignore that label when `collectionRules` exists and use the frequency the customer picked.
+The plan label is “Scheduled collections”. The enrolled scheme shows the selected `collectionFrequency`.
 
 ### 2. Validate (preview before pay)
 
@@ -382,15 +403,28 @@ Handover OTP after staff release is in `FLUTTER_CUSTOMER_HANDOVER_OTP_AND_SUPPOR
 
 ---
 
-## Part B — One-time gold
+## Part B — Aira upfront gold (`AIRAUPFRONT`)
 
-This plan is not in the Aira seed. A jeweller can still publish it. Flutter must branch on `oneTimeRules`, not on the plan name.
+Use this part for the **live Aira** product. Generic one-time shapes for other jewellers or unit tests are in **Part C** at the end of this file.
 
 ### What it does
 
-The customer makes **one** gold purchase at enrolment. That payment buys the principal gold. There is no second, third, or daily collection. `installmentCount` is 1, partial and advance payments are off, and the first payment cannot be skipped.
+The customer makes **one** gold purchase at enrolment (amount between plan min and max). That payment buys **principal gold** (`goldAccumulated`). There are **no** collection frequencies and **no** further customer payments: `installmentCount` is **1**, partial/advance payments are off, first payment is **COLLECT_NOW** and required.
 
-The bonus is separate from the principal. The server credits it later, on the dates in `oneTimeProgress.periods`. The customer does not pay those dates. A background job credits them when the date arrives and, if needed, that day’s 22K rate exists.
+**Bonus gold** is separate. The server posts it on each date in `oneTimeProgress.periods` (12 rows for Aira). The customer never pays those dates. Credits run from the **maintenance worker** (daily batch, Asia/Kolkata — align with ops; Vercel queue-tick alone is **not** sufficient for maturity / one-time credits).
+
+For Aira, `oneTimeRules` is:
+
+```json
+{
+  "timing": "MONTHLY",
+  "basis": "PRINCIPAL_PERCENT",
+  "value": 2,
+  "amountPeriod": "PER_PERIOD"
+}
+```
+
+**Worked example:** Funding **₹1,00,000** at **₹6,000/g** → principal **10,000 mg** (10 g). Each month credits **2%** of principal → **200 mg** per period, **2,400 mg** total over 12 months (HALF_UP rounding per server rules). First credit date is **one calendar month after** `oneTimeGold.fundedOn`; last credit date is **maturity**.
 
 `oneTimeRules`:
 
@@ -406,13 +440,13 @@ The bonus is separate from the principal. The server credits it later, on the da
 
 `AT_MATURITY` is only valid with `amountPeriod: TERM_TOTAL`.
 
-Worked example from the server tests. Funding is ₹60,000 (`6000000` paise) at ₹6,000/g, so principal gold is 10,000 mg (10 g). Rules `{ "timing": "MONTHLY", "basis": "PRINCIPAL_PERCENT", "value": 7, "amountPeriod": "TERM_TOTAL" }` and `durationMonths: 3` mean 7% of 10 g = 700 mg total, split across 3 monthly credits. The dates for a 31 Jan 2028 funding day are 29 Feb, 31 Mar, and 30 Apr 2028. Maturity is 30 Apr 2028. The customer paid once, on 31 Jan.
+Field reference (all one-time plans, including non-Aira):
 
-`RUPEE_PAISE` does not credit until a 22K rate exists for that credit date. Until then the period stays `PENDING_RATE` and the scheme does not mature. `PRINCIPAL_PERCENT` and `FIXED_WEIGHT_MG` do not need a new rate to know the milligrams.
+`RUPEE_PAISE` does not credit until a 22K rate exists for that credit date. Until then the period stays `PENDING_RATE` and the scheme may not mature. `PRINCIPAL_PERCENT` and `FIXED_WEIGHT_MG` do not need a new rate to know the milligrams.
 
 If the funding payment is reversed and nothing of the principal remains, pending credits are cancelled and the scheme closes with reason `ONE_TIME_FUNDING_REVERSED`. Early closure forfeits unpaid bonus.
 
-After the funding payment succeeds, another pay attempt does not open. Do not show a pay button when `oneTimeProgress` exists and `payButton.enabled` is false.
+After the funding payment succeeds, another pay attempt does not open. Use `payButton.visible` and `payButton.enabled`. Both are false after the upfront payment succeeds.
 
 ### Flow
 
@@ -438,42 +472,58 @@ GET  /app/schemes/{id}
         credited bonus is oneTimeProgress.creditedWeightMg
 ```
 
-### 1. Plan
+### 1. Plan list item (`AIRAUPFRONT`)
+
+```http
+GET /api/v1/app/scheme-plans
+```
 
 ```json
 {
-  "id": "spln_onetime",
-  "code": "ONETIME",
-  "displayName": "One-time Gold",
+  "id": "spl_01M837Q9Q7R4CYGEC6DVFF8XD6",
+  "code": "AIRAUPFRONT",
+  "displayName": "Aira Upfront Gold Lock-in",
   "valueBasis": "GOLD_WEIGHT",
+  "valueBasisLabel": "Gold savings",
   "paymentPattern": "FIXED",
-  "durationMonths": 3,
+  "paymentPatternLabel": "One upfront payment",
+  "durationMonths": 12,
+  "installmentCount": 1,
   "benefitType": "GOLD_BENEFIT",
+  "benefitLabel": "2% of principal gold credited monthly",
   "oneTimeRules": {
     "timing": "MONTHLY",
     "basis": "PRINCIPAL_PERCENT",
-    "value": 7,
-    "amountPeriod": "TERM_TOTAL"
+    "value": 2,
+    "amountPeriod": "PER_PERIOD"
+  },
+  "amountRules": {
+    "amountMode": "CUSTOMER_CHOSEN",
+    "minInstallmentPaise": 10000000,
+    "maxInstallmentPaise": 50000000,
+    "multipleOfPaise": 100
   },
   "enrol": {
-    "amountMode": "JEWELLER_FIXED",
-    "fixedAmount": { "amountPaise": 6000000, "amountRupees": 60000, "amountDisplay": "₹60,000" },
+    "amountMode": "CUSTOMER_CHOSEN",
+    "minInstallment": { "amountPaise": 10000000, "amountRupees": 100000, "amountDisplay": "₹1,00,000" },
+    "maxInstallment": { "amountPaise": 50000000, "amountRupees": 500000, "amountDisplay": "₹5,00,000" },
+    "multipleOf": { "amountPaise": 100, "amountRupees": 1, "amountDisplay": "₹1" },
     "firstInstallmentModeDefault": "COLLECT_NOW",
     "firstInstallmentModeEditable": false,
     "firstInstallmentRequired": true
   },
-  "canEnrol": true
+  "highlights": [
+    "One full payment at enrolment",
+    "2% of principal gold credited monthly"
+  ],
+  "canEnrol": true,
+  "blockedReason": null
 }
 ```
 
-Copy on screen:
+**Flutter copy (Aira):** Lead with **“One upfront payment”** (`paymentPatternLabel`). Amount step: **₹1,00,000 – ₹5,00,000** (or whatever the API returns). Benefit line: use `benefitLabel` / highlights — do not invent compounding text.
 
-- `MONTHLY` + `PRINCIPAL_PERCENT` + `TERM_TOTAL`: “Pay once. 7% of the gold you buy is added across the term, one credit a month.”
-- `AT_MATURITY` + `PRINCIPAL_PERCENT`: “Pay once. 7% extra gold is added on the maturity date.”
-- `FIXED_WEIGHT_MG`: “Pay once. A fixed gold bonus of {value} mg is added.” Show grams as `value / 1000`.
-- `RUPEE_PAISE`: “Pay once. A rupee bonus of {value paise} is converted to gold on each credit date at that day’s rate.”
-
-There is no frequency control. Do not send `collectionFrequency`.
+There is **no** frequency control. Do **not** send `collectionFrequency`.
 
 ### 2. Validate
 
@@ -483,13 +533,13 @@ POST /api/v1/app/schemes/enrol/validate
 
 ```json
 {
-  "planId": "spln_onetime",
-  "installmentAmountPaise": 6000000,
+  "planId": "spl_01M837Q9Q7R4CYGEC6DVFF8XD6",
+  "installmentAmountPaise": 10000000,
   "payNow": true
 }
 ```
 
-For `JEWELLER_FIXED`, send `enrol.fixedAmount.amountPaise`. For `CUSTOMER_CHOSEN`, send the amount the customer entered, inside min, max, and multiple.
+Reject amounts below `10000000`, above `maxInstallmentPaise`, or not divisible by `multipleOfPaise` using server `warnings` / `blockers`.
 
 ```json
 {
@@ -497,27 +547,28 @@ For `JEWELLER_FIXED`, send `enrol.fixedAmount.amountPaise`. For `CUSTOMER_CHOSEN
   "data": {
     "canEnrol": true,
     "valid": true,
-    "installmentAmountPaise": 6000000,
+    "installmentAmountPaise": 10000000,
     "firstInstallmentRequired": true,
     "preview": {
-      "installmentAmount": { "amountPaise": 6000000, "amountRupees": 60000, "amountDisplay": "₹60,000" },
+      "installmentAmount": { "amountPaise": 10000000, "amountRupees": 100000, "amountDisplay": "₹1,00,000" },
       "installmentCount": 1,
-      "totalPayable": { "amountPaise": 6000000, "amountRupees": 60000, "amountDisplay": "₹60,000" },
+      "totalPayable": { "amountPaise": 10000000, "amountRupees": 100000, "amountDisplay": "₹1,00,000" },
       "maturityDateProvisional": true,
       "firstDueDate": "2026-11-20",
-      "maturityDate": "2027-02-20",
+      "maturityDate": "2027-11-20",
       "oneTimeSchedule": [
         { "period": 1, "dueDate": "2026-12-20", "status": "PENDING", "weightMg": 0 },
-        { "period": 2, "dueDate": "2027-01-20", "status": "PENDING", "weightMg": 0 },
-        { "period": 3, "dueDate": "2027-02-20", "status": "PENDING", "weightMg": 0 }
+        { "period": 2, "dueDate": "2027-01-20", "status": "PENDING", "weightMg": 0 }
       ],
       "schedulePreview": [
-        { "installmentNumber": 1, "dueDate": "2026-11-20", "amount": { "amountPaise": 6000000, "amountDisplay": "₹60,000" }, "note": "Collected at enrolment" }
+        { "installmentNumber": 1, "dueDate": "2026-11-20", "amount": { "amountPaise": 10000000, "amountDisplay": "₹1,00,000" }, "note": "Collected at enrolment" }
       ]
     }
   }
 }
 ```
+
+(`oneTimeSchedule` has **12** periods in production; the JSON above is truncated.)
 
 Read the two lists differently:
 
@@ -535,54 +586,61 @@ X-Idempotency-Key: <new uuid>
 
 ```json
 {
-  "planId": "spln_onetime",
-  "installmentAmountPaise": 6000000,
+  "planId": "spl_01M837Q9Q7R4CYGEC6DVFF8XD6",
+  "installmentAmountPaise": 10000000,
   "payNow": true,
   "redirectUrl": "https://app.example/payment-return"
 }
 ```
 
-Response shape is the same `FIXED_PAYMENT_LINK` as Swarna. The scheme is `PENDING_PAYMENT` until that one payment is paid, then `ACTIVE`.
+Response shape is the same `FIXED_PAYMENT_LINK` as Swarna. The scheme is `PENDING_PAYMENT` until that one payment is paid, then `ACTIVE`. Gateway max must be ≥ chosen upfront amount.
 
 ### 4. After payment
 
 ```http
-GET /api/v1/app/schemes/sch_onetime
+GET /api/v1/app/schemes/{schemeId}
 ```
 
 ```json
 {
   "success": true,
   "data": {
-    "id": "sch_onetime",
-    "schemeNumber": "ENR-0000010",
+    "id": "sch_01EXAMPLE",
+    "schemeNumber": "ENR-0000100",
+    "planCode": "AIRAUPFRONT",
     "status": "ACTIVE",
     "valueBasis": "GOLD_WEIGHT",
     "displayMode": "FIXED",
-    "maturityDate": "2027-02-20",
+    "maturityDate": "2027-11-20",
     "goldAccumulated": { "weightMg": 10000, "weightGrams": 10, "weightDisplay": "10 g" },
     "oneTimeProgress": {
-      "rules": { "timing": "MONTHLY", "basis": "PRINCIPAL_PERCENT", "value": 7, "amountPeriod": "TERM_TOTAL" },
+      "rules": { "timing": "MONTHLY", "basis": "PRINCIPAL_PERCENT", "value": 2, "amountPeriod": "PER_PERIOD" },
       "fundedOn": "2026-11-20",
-      "maturityDate": "2027-02-20",
+      "maturityDate": "2027-11-20",
       "principalWeightMg": 10000,
       "fundingRatePerGramPaise": 600000,
-      "originalPaidPaise": 6000000,
+      "originalPaidPaise": 10000000,
       "creditedWeightMg": 0,
       "redeemableBonusWeightMg": 0,
       "nextCreditDate": "2026-12-20",
       "periods": [
-        { "period": 1, "dueDate": "2026-12-20", "status": "PENDING", "weightMg": 0 },
-        { "period": 2, "dueDate": "2027-01-20", "status": "PENDING", "weightMg": 0 },
-        { "period": 3, "dueDate": "2027-02-20", "status": "PENDING", "weightMg": 0 }
+        { "period": 1, "dueDate": "2026-12-20", "status": "PENDING", "weightMg": 0 }
       ]
     },
-    "payButton": { "visible": true, "enabled": false, "label": "Payments unavailable" },
-    "maturityBenefit": { "type": "GOLD_BENEFIT", "title": "Scheduled gold bonus", "summary": "Bonus gold is held until maturity." },
+    "progressLabel": "0 of 12 gold credits posted",
+    "nextActionLabel": "Next gold credit · 2026-12-20",
+    "payButton": { "visible": false, "enabled": false, "label": "Payments unavailable" },
+    "maturityBenefit": {
+      "type": "GOLD_BENEFIT",
+      "title": "2% of principal gold credited monthly",
+      "summary": "Posted bonus gold becomes redeemable at maturity."
+    },
     "redemption": { "eligible": false, "blocker": "Available after contractual maturity" }
   }
 }
 ```
+
+(`periods` length is **12**; after each maintenance credit, `creditedWeightMg` increases by ~200 mg for a 10 g principal until maturity.)
 
 Period `status`:
 
@@ -600,17 +658,62 @@ Reload the scheme when the app opens and when a `SCHEME_GOLD_BONUS_CREDITED` pus
 
 ### 5. Redemption
 
-Same settlement-preview and redemption-request endpoints as other schemes. The bonus weight is included in the settlement quote only after the scheme is `MATURED` and every period that needs a rate is `CREDITED`. Offer only `redemption.preferredModes` from the plan. One-time plans reject a cash settlement that pays back only the rupees paid. Cash settlement uses gold value.
+Same settlement-preview and redemption-request endpoints as other schemes. The bonus weight is included in the settlement quote only after the scheme is `MATURED` and every period that needs a rate is `CREDITED`. Offer only `redemption.preferredModes` from the plan (`GOLD_HANDOVER`, `PURCHASE_ADJUSTMENT` for Aira). Premature closure is **not** allowed on the new catalog plan.
+
+### Acceptance checks (Flutter + staging)
+
+| Check | Expected |
+|---|---|
+| Plan catalog | Only one active `AIRAUPFRONT`; `paymentPatternLabel` = “One upfront payment”; no frequency picker |
+| Validate | `schedulePreview.length === 1`, `oneTimeSchedule.length === 12`, `totalPayable` = chosen upfront |
+| After funding | `payButton.enabled === false`; `oneTimeProgress.fundedOn` set; 12 `PENDING` periods |
+| Credits | No bonus before `dueDate`; one ledger credit per period when worker runs; ~200 mg/month for 10 g principal |
+| Maturity | Status `MATURED`; redemption quote includes principal + posted bonus gold |
+| Legacy schemes | UI still works when `planSnapshot` lacks `oneTimeRules` (old TEXT_ONLY catalog) — show staff terms, do not treat as new upfront automation |
+
+---
+
+## Part C — Generic one-time gold (non-Aira / tests)
+
+Other jewellers may publish different `oneTimeRules` (3-month `TERM_TOTAL` 7%, `AT_MATURITY`, `RUPEE_PAISE`, etc.). Flutter logic is the same: branch on `plan.oneTimeRules` / `scheme.oneTimeProgress`.
+
+**Test fixture example** (not Aira catalog): ₹60,000 fixed, 3 months, 7% total split monthly:
+
+```json
+{
+  "code": "ONETIME7",
+  "durationMonths": 3,
+  "installmentCount": 1,
+  "oneTimeRules": {
+    "timing": "MONTHLY",
+    "basis": "PRINCIPAL_PERCENT",
+    "value": 7,
+    "amountPeriod": "TERM_TOTAL"
+  },
+  "amountRules": {
+    "amountMode": "JEWELLER_FIXED",
+    "fixedAmountPaise": 6000000
+  }
+}
+```
+
+Copy helpers for arbitrary rules:
+
+- `MONTHLY` + `PRINCIPAL_PERCENT` + `TERM_TOTAL`: “Pay once. {value}% of the gold you buy is added across the term, one credit a month.”
+- `MONTHLY` + `PRINCIPAL_PERCENT` + `PER_PERIOD` (Aira): “Pay once. {value}% of principal gold credited each month.”
+- `AT_MATURITY` + `PRINCIPAL_PERCENT`: “Pay once. {value}% extra gold on the maturity date.”
+- `FIXED_WEIGHT_MG`: fixed mg bonus per period or at maturity per `amountPeriod`.
+- `RUPEE_PAISE`: rupee bonus converted at each credit day’s 22K rate.
 
 ---
 
 ## How Flutter chooses a screen
 
 ```text
-if plan.oneTimeRules        → one-time screen (one pay, then a bonus calendar)
-else if plan.collectionRules → Aira screen (frequency + per-collection amount + many dues)
+if plan.oneTimeRules        → upfront screen (one pay + bonus calendar; Aira = AIRAUPFRONT)
+else if plan.collectionRules → Aira collection (frequency + per-collection amount + many dues)
 else if paymentPattern FIXED → existing monthly instalment screen
 else                         → existing flexible contribution screen
 ```
 
-On a scheme, the same test uses `oneTimeProgress` and `collectionFrequency`.
+On a **plan** card, use `oneTimeRules` or `collectionRules`. On **scheme** detail, use `oneTimeProgress.periods` for bonus dates and `installmentSchedule` (length 1) for the funding payment — never mix bonus due dates with collection dues.

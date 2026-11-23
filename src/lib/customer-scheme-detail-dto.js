@@ -1,3 +1,4 @@
+import { planBenefitLabel } from "./plan-amount-summary.js";
 import { oneTimeGoldProgress } from "./one-time-gold-schedule.js";
 import { isMaturityGoldResolved, maturityGoldLabel, maturityGoldRules, maturityGoldStatus } from "./maturity-gold-benefit.js";
 import { moneyRef, weightRef } from "./money.js";
@@ -221,8 +222,8 @@ function describePenalty(penalty) {
 
 function buildMaturityBenefit(planSnapshot) {
   if (planSnapshot?.oneTimeRules) return {
-    type: "GOLD_BENEFIT", title: planSnapshot.benefit?.displayLabel ?? "Scheduled gold bonus",
-    summary: "Bonus gold is held until maturity.", details: [], eligibility: [],
+    type: "GOLD_BENEFIT", title: planBenefitLabel(planSnapshot),
+    summary: "Posted bonus gold becomes redeemable at maturity.", details: [], eligibility: [],
   };
   const goldBonus = maturityGoldRules(planSnapshot);
   if (goldBonus) {
@@ -338,7 +339,12 @@ function buildPlanRules(raw, displayMode, payableRange) {
     });
   }
 
-  if (plan.paymentPattern === "FIXED" && plan.paymentRules) {
+  if (plan.oneTimeRules) {
+    sections.push({
+      title: "Upfront payment and gold credits",
+      items: ["One full payment starts the lock-in.", planBenefitLabel(plan)],
+    });
+  } else if (plan.paymentPattern === "FIXED" && plan.paymentRules && !plan.collectionRules) {
     const pr = plan.paymentRules;
     sections.push({
       title: "Fixed instalment rules",
@@ -389,7 +395,8 @@ function buildPlanRules(raw, displayMode, payableRange) {
     items: [
       "Paid contributions never expire and stay in your immutable ledger.",
       `Contractual maturity date: ${raw.maturityDate ?? "—"}.`,
-      "Benefits are finalised only at maturity unless the plan allows earlier redemption.",
+      plan.oneTimeRules ? "Principal and posted bonus gold become redeemable at maturity."
+        : "Benefits are finalised only at maturity unless the plan allows earlier redemption.",
     ],
   });
 
@@ -441,7 +448,10 @@ function buildProgressCard(raw, displayMode, totals) {
   };
 }
 
-function buildHeader(card, displayMode, _raw) {
+function buildHeader(card, displayMode, raw) {
+  if (raw.planSnapshot?.oneTimeRules) {
+    return { eyebrow: "ONE-TIME GOLD", title: card.planName, description: card.nextActionLabel };
+  }
   const eyebrow =
     displayMode === "FIXED"
       ? "FIXED SAVINGS"
@@ -455,8 +465,9 @@ function buildHeader(card, displayMode, _raw) {
     const remaining = (card.progressCard?.installmentsTotal ?? 0) - (card.progressCard?.installmentsPaid ?? 0);
     description =
       remaining > 0
-        ? `${remaining} instalment${remaining === 1 ? "" : "s"} remain before contractual maturity.`
-        : "All instalments are paid. The scheme matures on its contractual date.";
+        ? `${remaining} ${raw.collectionFrequency ? "collection" : "instalment"}${remaining === 1 ? " remains" : "s remain"} before contractual maturity.`
+        : raw.collectionFrequency ? "All collections are paid. The scheme matures on its contractual date."
+          : "All instalments are paid. The scheme matures on its contractual date.";
   } else if (displayMode === "FLEXIBLE_LOCK_WINDOW") {
     title = card.nextActionAmount
       ? `${card.nextActionAmount.amountDisplay} available this cycle`
@@ -471,6 +482,7 @@ export function mapCustomerSchemeDetail(raw) {
   const totals = raw.totals ?? { amountPaidPaise: 0, goldWeightMg: 0 };
   const actions = raw.actions ?? {};
   const card = mapHomeSchemeCard({ ...raw, displayMode, totals });
+  const oneTime = Boolean(raw.planSnapshot?.oneTimeRules);
   const progressCard = buildProgressCard(raw, displayMode, totals);
   const header = buildHeader({ ...card, progressCard }, displayMode, raw);
 
@@ -491,9 +503,9 @@ export function mapCustomerSchemeDetail(raw) {
       caption: "From eligible contributions",
     });
   }
-  if (displayMode === "FIXED" && progressCard.installmentsTotal) {
+  if (displayMode === "FIXED" && progressCard.installmentsTotal && !oneTime) {
     statCards.push({
-      label: "Instalments",
+      label: raw.collectionFrequency ? "Collections" : "Instalments",
       value: `${progressCard.installmentsPaid ?? 0} / ${progressCard.installmentsTotal}`,
       caption: "Paid vs scheduled",
     });
@@ -510,7 +522,7 @@ export function mapCustomerSchemeDetail(raw) {
   const payState = payButtonState(raw, actions, paymentBlock);
   const payAllowed = Boolean(payState.enabled && card.canPay && !paymentBlock);
   const payButton = {
-    visible: !["MATURED", "REDEEMED", "CLOSED_PREMATURE"].includes(raw.status) && actions.canRecordPayment !== false,
+    visible: !(oneTime && !card.canPay) && !["MATURED", "REDEEMED", "CLOSED_PREMATURE"].includes(raw.status) && actions.canRecordPayment !== false,
     enabled: payAllowed,
     label:
       payAllowed && card.nextActionAmount
@@ -665,7 +677,10 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
   let nextActionAmount = null;
   let canPay = ["PENDING_PAYMENT", "ACTIVE", "LOCKED", "DEFAULTED"].includes(scheme.status);
   let cappedProgress;
-  const planMonths = scheme.planSnapshot?.durationMonths ?? scheme.planSnapshot?.installmentCount ?? null;
+  const plan = scheme.planSnapshot;
+  const planMonths = plan?.durationMonths ?? plan?.installmentCount ?? null;
+  const oneTime = plan?.oneTimeRules;
+  const collection = scheme.collectionFrequency?.toLowerCase();
 
   if (displayMode === "FIXED") {
     progressPhase = "FIXED";
@@ -673,8 +688,9 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     const total = fixed.installmentsTotal || 1;
     const paid = fixed.installmentsPaid ?? 0;
     progressPercent = Math.min(100, Math.round((paid / total) * 100));
-    progressLabel = `${paid} of ${total} instalments paid`;
-    progressDetail = planMonths ? `${planMonths}-month fixed plan` : "Fixed monthly instalments";
+    progressLabel = `${paid} of ${total} ${collection ? "collections" : "instalments"} paid`;
+    progressDetail = collection ? `${collection[0].toUpperCase()}${collection.slice(1)} collection`
+      : planMonths ? `${planMonths}-month fixed plan` : "Fixed monthly instalments";
     if (fixed.nextDue) {
       nextActionLabel = `Next payment · ${fixed.nextDue.dueDate}`;
       nextActionAmount = fixed.nextDue.amount;
@@ -682,6 +698,22 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     } else {
       nextActionLabel = "All instalments paid";
       canPay = false;
+    }
+    if (oneTime) {
+      const periods = scheme.oneTimeGold?.periods ?? [];
+      const posted = periods.filter((row) => row.status === "CREDITED").length;
+      progressPercent = periods.length ? Math.round(posted * 100 / periods.length) : 0;
+      progressLabel = periods.length ? `${posted} of ${periods.length} gold credits posted` : "One upfront payment";
+      progressDetail = planBenefitLabel(plan);
+      if (scheme.oneTimeGold?.fundedOn || !canPay) {
+        canPay = false;
+        nextActionAmount = null;
+        nextActionLabel = scheme.oneTimeGold?.nextCreditDate && scheme.status === "ACTIVE"
+          ? `Next gold credit · ${scheme.oneTimeGold.nextCreditDate}`
+          : scheme.oneTimeGold?.fundedOn ? "Upfront payment received" : "Upfront payment unavailable";
+      } else {
+        nextActionLabel = `Upfront payment · ${fixed.nextDue.dueDate}`;
+      }
     }
   } else if (displayMode === "FLEXIBLE_FREE_WINDOW") {
     progressPhase = "FREE_WINDOW";
@@ -724,7 +756,7 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     schemeNumber: scheme.enrollmentNumber,
     passbookNumber: extras.passbookNumber ?? undefined,
     planName,
-    subtitle: subtitleForMode(displayMode),
+    subtitle: oneTime ? "One-time gold" : collection ? "Gold collection" : subtitleForMode(displayMode),
     displayMode,
     valueBasis: scheme.valueBasis ?? scheme.planSnapshot?.valueBasis,
     goldAccumulated,
@@ -737,12 +769,13 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     progressDetail,
     totalPaid: moneyRef(paidPaise),
     maturityDate: scheme.maturityDate,
+    ...(oneTime ? { oneTimeRules: oneTime } : {}),
     ...(scheme.collectionFrequency ? { collectionFrequency: scheme.collectionFrequency } : {}),
     ...(collectionBonus ? { collectionBonus } : {}),
     nextActionLabel,
     nextActionAmount: nextActionAmount ?? undefined,
     canPay,
-    benefitLabel: benefitLabel(scheme.planSnapshot),
+    benefitLabel: oneTime ? planBenefitLabel(plan) : benefitLabel(plan),
     recentPayments: extras.recentPayments ?? undefined,
     ...(cappedProgress
       ? {

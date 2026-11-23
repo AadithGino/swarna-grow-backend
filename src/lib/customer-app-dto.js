@@ -516,8 +516,10 @@ function valueBasisLabel(valueBasis) {
   return "Rupee savings";
 }
 
-function paymentPatternLabel(paymentPattern) {
-  if (paymentPattern === PaymentPattern.FLEXIBLE) return "Pay as you like, then monthly";
+function paymentPatternLabel(plan) {
+  if (plan.oneTimeRules) return "One upfront payment";
+  if (plan.collectionRules) return "Scheduled collections";
+  if (plan.paymentPattern === PaymentPattern.FLEXIBLE) return "Pay as you like, then monthly";
   return "Fixed monthly";
 }
 
@@ -546,10 +548,13 @@ function buildFlexibleSummary(plan) {
 function buildPlanHighlights(plan) {
   const highlights = [];
   const benefit = planBenefitLabel(plan);
-  if (plan.collectionRules) {
+  if (plan.oneTimeRules) {
+    highlights.push("One full payment at enrolment");
+  } else if (plan.collectionRules) {
     highlights.push(`Choose ${plan.collectionRules.frequencies.map((frequency) => frequency.toLowerCase()).join(", ")} collection`);
   } else if (plan.paymentPattern === PaymentPattern.FIXED) {
-    if (plan.durationMonths) highlights.push(`${plan.durationMonths} monthly payments`);
+    const count = plan.installmentCount ?? plan.durationMonths;
+    if (count) highlights.push(`${count} monthly payments`);
     const rules = plan.amountRules ?? {};
     if (rules.amountMode === "JEWELLER_FIXED") highlights.push("Same instalment every month");
     if (rules.amountMode === "CUSTOMER_CHOSEN") highlights.push("You choose your monthly amount within plan limits");
@@ -608,7 +613,8 @@ export function mapCustomerPlanListItem(plan, enrolCheck) {
     valueBasis: plan.valueBasis,
     valueBasisLabel: valueBasisLabel(plan.valueBasis),
     paymentPattern,
-    paymentPatternLabel: paymentPatternLabel(paymentPattern),
+    paymentPatternLabel: paymentPatternLabel(plan),
+    ...(plan.oneTimeRules ? { installmentCount: 1 } : {}),
     durationMonths: plan.durationMonths,
     amountSummary,
     amountRules: {

@@ -114,3 +114,57 @@ export function buildAiraCollectionPlan(definition) {
     ].join("\n"),
   };
 }
+
+export function buildAiraUpfrontPlan({ maximumUpfrontPaise }) {
+  const minimumUpfrontPaise = 10_000_000;
+  return {
+    name: "Aira Upfront Gold Lock-in",
+    displayName: "Aira Upfront Gold Lock-in",
+    code: "AIRAUPFRONT",
+    description: "Pay once upfront. Gold is locked for 12 months and earns a 2% gold credit each month.",
+    valueBasis: "GOLD_WEIGHT",
+    paymentPattern: PaymentPattern.FIXED,
+    durationMonths: 12,
+    installmentCount: 1,
+    oneTimeRules: {
+      timing: "MONTHLY",
+      basis: "PRINCIPAL_PERCENT",
+      value: 2,
+      amountPeriod: "PER_PERIOD",
+    },
+    amountRules: {
+      amountMode: "CUSTOMER_CHOSEN",
+      minInstallmentPaise: minimumUpfrontPaise,
+      maxInstallmentPaise: maximumUpfrontPaise,
+      multipleOfPaise: 100,
+    },
+    scheduleRules: {
+      dueDateRule: "JOIN_ANNIVERSARY",
+      graceDays: 0,
+      firstInstallmentModeDefault: "COLLECT_NOW",
+      firstInstallmentModeEditable: false,
+    },
+    paymentRules: {
+      partialPaymentAllowed: false,
+      advancePaymentAllowed: false,
+      maxAdvanceInstallments: 0,
+      minPaymentPaise: minimumUpfrontPaise,
+      maxPaymentPerTransactionPaise: maximumUpfrontPaise,
+    },
+    goldRules: COLLECTION_GOLD_RULES,
+    redemptionRules: {
+      prematureClosureAllowed: false,
+      lockInMonths: 12,
+      prematurePenalty: { mode: "NONE", value: 0, benefitTreatment: "FORFEIT" },
+      allowedModes: ["GOLD_HANDOVER", "PURCHASE_ADJUSTMENT"],
+      redeemAtAnyBranch: true,
+    },
+    availability: COLLECTION_PLAN_AVAILABILITY,
+    termsText: [
+      "Make one upfront payment of at least ₹1,00,000. The lock-in starts on the verified payment date.",
+      "For 12 months, each monthly credit is 2% of the principal gold weight, calculated without compounding.",
+      "Principal and posted bonus gold become redeemable at maturity through gold handover or purchase adjustment.",
+    ].join("\n"),
+    status: SchemePlanStatus.ACTIVE,
+  };
+}

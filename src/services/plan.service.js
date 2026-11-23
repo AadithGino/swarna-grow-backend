@@ -19,7 +19,7 @@ import {
   buildIllustrativeFreeWindowNetSummary,
   computeFlexibleLockCapDetails,
 } from "../lib/flexible-cap.js";
-import { buildAmountSummary } from "../lib/plan-amount-summary.js";
+import { buildAmountSummary, planBenefitLabel } from "../lib/plan-amount-summary.js";
 import { normalizePlanFinancialRules } from "../lib/plan-amount-normalize.js";
 import { mergePlanPatch, validateCompletePlan } from "../lib/plan-merge.js";
 import {
@@ -557,8 +557,8 @@ function buildFixedPreviewResponse(body, rate) {
         })
         ?? null,
       benefit: {
-        type: benefit.type,
-        displayLabel: maturityGoldRules(body) ? maturityGoldLabel(maturityGoldRules(body)) : benefit.displayLabel,
+        type: oneTimeSchedule ? "GOLD_BENEFIT" : benefit.type,
+        displayLabel: oneTimeSchedule || maturityGoldRules(body) ? planBenefitLabel(body) : benefit.displayLabel,
         ...(benefitPaise ? { estimatedValue: moneyRef(benefitPaise) } : {}),
       },
       ...(oneTimeSchedule ? { oneTimeSchedule, oneTimeRules: body.oneTimeRules } : {}),

@@ -1,7 +1,7 @@
 /**
- * Seed Swarna, Akshaya and Tritiya for the Aira demo tenant.
+ * Seed the three Aira collection plans and the upfront gold plan for the demo tenant.
  * Usage: node --env-file=.env scripts/seed-aira-gold.js
- * Re-run: replaces tenant AIRAGOLD if it already exists.
+ * Demo databases only. Re-running replaces the AIRAGOLD tenant and its data.
  */
 import argon2 from "argon2";
 import { connectDatabase, disconnectDatabase } from "../src/config/database.js";
@@ -20,6 +20,7 @@ import { createId } from "../src/lib/ids.js";
 import { today } from "../src/lib/date.js";
 import {
   buildAiraCollectionPlan,
+  buildAiraUpfrontPlan,
   STANDARD_COLLECTION_PLAN_DEFS,
 } from "./lib/collection-gold-plan-seed.js";
 import { enrol } from "../src/services/scheme.service.js";
@@ -195,7 +196,10 @@ async function main() {
     enteredBy: owner._id,
   });
 
-  const planDefs = STANDARD_COLLECTION_PLAN_DEFS.map((def) => validateCompletePlan(buildAiraCollectionPlan(def)));
+  const planDefs = [
+    ...STANDARD_COLLECTION_PLAN_DEFS.map(buildAiraCollectionPlan),
+    buildAiraUpfrontPlan({ maximumUpfrontPaise: 50_000_000 }),
+  ].map(validateCompletePlan);
 
   const plans = [];
   for (const body of planDefs) {
@@ -210,7 +214,7 @@ async function main() {
     );
   }
 
-  const DEMO_CUSTOMER_COUNT = plans.reduce((count, plan) => count + plan.collectionRules.frequencies.length * 2, 0);
+  const DEMO_CUSTOMER_COUNT = plans.reduce((count, plan) => count + (plan.collectionRules?.frequencies.length ?? 1) * 2, 0);
   const demoCustomers = [];
   for (let n = 1; n <= DEMO_CUSTOMER_COUNT; n += 1) {
     const seq = await nextSequence(tenantId, "customer");
@@ -248,23 +252,24 @@ async function main() {
   console.log("\nSeeding demo customers & enrollments (~1–3 min)…\n");
   const matrixSummary = [];
   let customerIndex = 0;
-  const installmentAmountPaise = 200_000;
   for (const plan of plans) {
-    for (const collectionFrequency of plan.collectionRules.frequencies) {
+    const installmentAmountPaise = plan.oneTimeRules ? plan.amountRules.minInstallmentPaise : 200_000;
+    for (const collectionFrequency of plan.collectionRules?.frequencies ?? [undefined]) {
       for (const paid of [false, true]) {
         const customer = demoCustomers[customerIndex++];
         const scheme = await enrol({
           ...ctx,
           body: {
             customerId: customer._id, planId: plan._id, branchId: branch._id,
-            collectionFrequency, installmentAmountPaise, firstInstallmentMode: "COLLECT_NOW",
+            ...(collectionFrequency ? { collectionFrequency } : {}),
+            installmentAmountPaise, firstInstallmentMode: "COLLECT_NOW",
             ...(paid ? { firstInstallmentAction: "RECORD_MANUAL_PAYMENT", payment: { amountPaise: installmentAmountPaise, mode: "UPI" } } : {}),
           },
         });
         matrixSummary.push({
           customer: customer.name,
           enrollment: scheme.enrollmentNumber,
-          story: `${plan.code} · ${collectionFrequency} · ${scheme.status}`,
+          story: `${plan.code} · ${collectionFrequency ?? "UPFRONT"} · ${scheme.status}`,
         });
       }
     }
@@ -279,7 +284,7 @@ async function main() {
   console.log(`Gold rate:       ₹${(DEMO.goldRatePerGramPaise / 100).toLocaleString("en-IN")}/g 22K for ${today()}\n`);
   console.log("Active scheme plans:");
   for (const p of plans) {
-    const bonus = p.benefit.displayLabel;
+    const bonus = p.oneTimeRules ? "2% principal gold credited each month" : p.benefit.displayLabel;
     console.log(`  · ${p.code} — ${p.displayName ?? p.name} (${p.durationMonths}m lock-in) — ${bonus}`);
   }
   console.log(`Demo customers:  ${demoCustomers.length} (${matrixSummary.length} enrollments / states)\n`);
@@ -289,7 +294,7 @@ async function main() {
     console.log(`  · ${row.customer}${enr} — ${row.story}`);
   }
   console.log(
-    "\nCustomer app OTP login: use demo mobile 9876510001–9876510018 (tenant AIRAGOLD).\n" +
+    "\nCustomer app OTP login: use demo mobile 9876510001–9876510020 (tenant AIRAGOLD).\n" +
       "Daily, Weekly, or Monthly is selected during enrolment.\n",
   );
 
