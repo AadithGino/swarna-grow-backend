@@ -51,6 +51,8 @@
     "ecommerce:payment-test-ui:smoke": "node scripts/run-ecommerce-payment-test-ui.js --smoke",
     "seed:ritu-gold": "node --env-file=.env scripts/seed-ritu-gold-demo.js",
     "seed:my-dream-diamond": "node --env-file=.env scripts/seed-my-dream-diamond.js",
+    "seed:happy-gold": "node --env-file=.env scripts/seed-happy-gold.js",
+    "patch:happygold-integrations-from-evoluxe": "SOURCE_TENANT_CODE=EVOLUXE TARGET_TENANT_CODE=HAPPYGOLD node --env-file=.env scripts/patch-mydream-integrations-from-evoluxe.js",
     "patch:mydream-integrations-from-evoluxe": "node --env-file=.env scripts/patch-mydream-integrations-from-evoluxe.js",
     "seed:mydream-banners": "node --env-file=.env scripts/seed-mydream-banners.js",
     "patch:mydream-s3-catalog-media": "node --env-file=.env scripts/patch-mydream-s3-catalog-media.js",
