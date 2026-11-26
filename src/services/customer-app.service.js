@@ -4,6 +4,7 @@ import {
   LedgerEntry,
   Message,
   Payment,
+  PaymentIntent,
   PaymentLink,
   Redemption,
   Scheme,
@@ -33,7 +34,8 @@ import {
 } from "../lib/customer-app-dto.js";
 import { moneyRef, weightRef, rateRef } from "../lib/money.js";
 import { monthKey, today } from "../lib/date.js";
-import { SchemeStatus, RedemptionStatus, ValueBasis } from "../constants/enums.js";
+import { PaymentIntentStatus, SchemeStatus, RedemptionStatus, ValueBasis } from "../constants/enums.js";
+import { quoteAfterPendingIntentReservation } from "./payment.service.js";
 import * as schemes from "./scheme.service.js";
 import {
   mapCustomerPaymentListItem,
@@ -498,7 +500,26 @@ export async function payableRangeForApp(req) {
     tenantId: req.auth.tenantId,
     customerId: req.auth.id,
   }).lean();
-  return enrichPayableRange(raw, scheme);
+  const targetCycle = raw.targetCycle;
+  const reservations = targetCycle
+    ? await PaymentIntent.aggregate([
+        {
+          $match: {
+            tenantId: req.auth.tenantId,
+            schemeId: req.params.schemeId,
+            targetCycle,
+            status: PaymentIntentStatus.PENDING,
+            reservationExpiresAt: { $gt: new Date() },
+          },
+        },
+        { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
+      ])
+    : [];
+  const adjusted = quoteAfterPendingIntentReservation(
+    raw,
+    reservations[0]?.amountPaise ?? 0,
+  );
+  return enrichPayableRange(adjusted, scheme);
 }
 
 export async function listSchemesForApp(req) {

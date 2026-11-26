@@ -333,6 +333,26 @@ function readExpectedPositionVersion(body = {}) {
   return undefined;
 }
 
+/** Capped phase: pending intents reduce remaining cycle capacity. Free window: per-tx max only. */
+export function quoteAfterPendingIntentReservation(quote, reservedPaise = 0) {
+  const reserved = reservedPaise ?? 0;
+  if (quote.phase === "FLEXIBLE" && quote.model === "FLEXIBLE") {
+    return { ...quote, reservedPaise: reserved };
+  }
+  const maxPayablePaise = Math.max(0, quote.maxPayablePaise - reserved);
+  const remainingPaise =
+    quote.remainingPaise != null
+      ? Math.max(0, quote.remainingPaise - reserved)
+      : maxPayablePaise;
+  return {
+    ...quote,
+    reservedPaise: reserved,
+    maxPayablePaise,
+    remainingPaise,
+    payable: maxPayablePaise > 0 && quote.payable !== false,
+  };
+}
+
 function assertExpectedPositionVersion(scheme, quote, body) {
   if (scheme.paymentPattern !== "FLEXIBLE") return;
   let expected = readExpectedPositionVersion(body);
@@ -1303,13 +1323,10 @@ export async function reservePaymentLinkInSession(
       },
       { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
     ]).session(session);
-    const available = {
-      ...quote,
-      maxPayablePaise: Math.max(
-        0,
-        quote.maxPayablePaise - (reservations[0]?.amountPaise ?? 0),
-      ),
-    };
+    const available = quoteAfterPendingIntentReservation(
+      quote,
+      reservations[0]?.amountPaise ?? 0,
+    );
     checkAmount(available, req.body.amountPaise);
     scheme.positionVersion += 1;
     scheme.version += 1;
@@ -1535,11 +1552,7 @@ export async function reservePaymentIntentInSession(session, req) {
     { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
   ]).session(session);
   const reservedPaise = reservations[0]?.amountPaise ?? 0;
-  const availableQuote = {
-    ...quote,
-    maxPayablePaise: Math.max(0, quote.maxPayablePaise - reservedPaise),
-    reservedPaise,
-  };
+  const availableQuote = quoteAfterPendingIntentReservation(quote, reservedPaise);
   checkAmount(availableQuote, req.body.amountPaise);
   scheme.positionVersion += 1;
   scheme.version += 1;
@@ -1989,11 +2002,7 @@ export async function createSdkPaymentIntent(req) {
       { $group: { _id: null, amountPaise: { $sum: "$amountPaise" } } },
     ]).session(session);
     const reservedPaise = reservations[0]?.amountPaise ?? 0;
-    const availableQuote = {
-      ...quote,
-      maxPayablePaise: Math.max(0, quote.maxPayablePaise - reservedPaise),
-      reservedPaise,
-    };
+    const availableQuote = quoteAfterPendingIntentReservation(quote, reservedPaise);
     checkAmount(availableQuote, req.body.amountPaise);
     scheme.positionVersion += 1;
     scheme.version += 1;
