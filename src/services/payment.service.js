@@ -1929,7 +1929,33 @@ export async function createPaymentIntent(req) {
   await withTransaction(async (session) => {
     reserved = await reservePaymentIntentInSession(session, req);
   });
-  return initiateProviderForReservedIntent(req, reserved);
+  try {
+    return await initiateProviderForReservedIntent(req, reserved);
+  } catch (error) {
+    await withTransaction(async (session) => {
+      await PaymentIntent.updateOne(
+        { _id: reserved.intent._id, status: PaymentIntentStatus.PENDING },
+        { $set: { status: PaymentIntentStatus.FAILED }, $inc: { version: 1 } },
+        { session },
+      );
+      await Payment.updateOne(
+        { _id: reserved.paymentId, status: PaymentStatus.PENDING },
+        {
+          $set: {
+            status: PaymentStatus.FAILED,
+            providerPayload: { initiationError: error.message },
+          },
+        },
+        { session },
+      );
+      await Scheme.updateOne(
+        { _id: reserved.intent.schemeId },
+        { $inc: { positionVersion: 1, version: 1 } },
+        { session },
+      );
+    });
+    throw error;
+  }
 }
 
 export async function createSdkPaymentIntent(req) {

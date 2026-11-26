@@ -136,6 +136,10 @@ const tenantSchema = new mongoose.Schema({
   demoInstanceId: { type: String, default: null },
   demoGenerationId: { type: String, default: null },
   demoTemplateVersionId: { type: String, default: null },
+  /** Demo share link opens this sample customer / scheme when set (platform provisioning). */
+  demoEntryCustomerId: { type: String, default: null },
+  demoEntrySchemeId: { type: String, default: null },
+  demoEntryPlanId: { type: String, default: null },
   /** Prospect's own contact number for Platform Manager display. Never used as a demo customer login identity. */
   prospectContactMobile: { type: String, default: null },
   settings: {

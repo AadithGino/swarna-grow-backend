@@ -42,6 +42,7 @@ import {
 import { ROLE_PERMISSIONS } from "../src/constants/permissions.js";
 import { addMonthsClamped, monthKey, today } from "../src/lib/date.js";
 import { createId } from "../src/lib/ids.js";
+import { buildFlex65FixedCapCashPlan } from "./lib/flex-6-5-fixed-cap-plan.js";
 import {
   Alert,
   AuditEvent,
@@ -411,87 +412,11 @@ async function createDemoTenant() {
 }
 
 function flexiblePlanBody() {
-  return {
+  return buildFlex65FixedCapCashPlan({
     name: "Flexi Save",
     code: "FLEXI11",
-    displayName: "Flexible then capped",
-    description: "Free contribution window, then monthly cap from averaged total",
-    valueBasis: "CASH",
-    paymentPattern: "FLEXIBLE",
-    durationMonths: 12,
-    installmentCount: 12,
-    amountRules: {
-      amountMode: "CUSTOMER_CHOSEN",
-      slabsPaise: [],
-      minInstallmentPaise: 100_000,
-      maxInstallmentPaise: 500_000,
-      multipleOfPaise: 10_000,
-    },
-    scheduleRules: {
-      dueDateRule: "JOIN_ANNIVERSARY",
-      graceDays: 5,
-      firstInstallmentModeDefault: "START_NEXT_CYCLE",
-      firstInstallmentModeEditable: true,
-    },
-    paymentRules: {
-      partialPaymentAllowed: true,
-      advancePaymentAllowed: false,
-      maxAdvanceInstallments: 0,
-      minPaymentPaise: 10_000,
-    },
-    flexibleRules: {
-      phaseMode: "FLEXIBLE_THEN_CAPPED",
-      capMode: "FLEXIBLE_PHASE_AVERAGE",
-      carryForwardMode: "NONE",
-      flexiblePhaseCycles: 3,
-      cappedPhaseCycles: 9,
-      averagingDivisor: 3,
-      frequencyMode: "MULTIPLE",
-      flexiblePhase: {
-        minimumPaymentPaise: 10_000,
-        maximumPaymentPaise: 500_000,
-        paymentIncrementPaise: 10_000,
-        minTotalPaise: 300_000,
-        maxPaymentsPerCycle: null,
-        paymentsRequiredPerCycle: 0,
-      },
-      capComputation: {
-        formula: "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
-        roundingMode: "ROUND_UP",
-        roundToNearestPaise: 10_000,
-        minCycleCapPaise: 50_000,
-        maxCycleCapPaise: 1_000_000,
-        onZeroFlexiblePhaseTotal: "CLOSE_SCHEME",
-        onBelowMinimumTotal: "USE_MINIMUM",
-      },
-      cappedPhase: {
-        minimumPaymentPaise: 10_000,
-        paymentIncrementPaise: 10_000,
-        allowFinalRemainderBelowMinimum: true,
-        allowFutureCyclePayment: false,
-        maxAdvanceCycles: 0,
-      },
-    },
-    benefit: {
-      type: "FIXED_BONUS_AMOUNT",
-      bonusBasis: "PERCENT_OF_PAID",
-      bonusValue: 5,
-      maxBonusPaise: 500_000,
-      displayLabel: "5% bonus on maturity (max ₹5,000)",
-      eligibility: { requireAllInstallmentsPaid: true, maxAllowedDefaults: 0, minMonthsCompleted: 0 },
-    },
-    redemptionRules: {
-      prematureClosureAllowed: true,
-      lockInMonths: 0,
-      prematurePenalty: { mode: "PERCENT_OF_PAID", value: 2, benefitTreatment: "FORFEIT" },
-      allowedModes: ["CASH", "PURCHASE_ADJUSTMENT"],
-      redeemAtAnyBranch: true,
-    },
-    availability: { allBranches: true, branchIds: [], visibleInCustomerApp: true, customerSelfEnrolAllowed: true },
-    termsText:
-      "1. During the free phase you may pay any amount between the plan minimum and maximum per transaction.\n2. After the free phase, each cycle is capped at the average of your free-phase payments (rounded as per plan rules).\n3. Maturity benefit applies only if you complete all capped cycles and meet eligibility rules.\n4. Premature closure may forfeit benefit and attract penalty as per store policy.",
-    status: SchemePlanStatus.ACTIVE,
-  };
+    displayName: "6 months free · 5 months ₹5,000 cap",
+  });
 }
 
 function goldWeightPlanBody() {

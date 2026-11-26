@@ -16,7 +16,21 @@ export function assertV1GoldPurity(purity) {
 }
 
 function branchScope(scope) {
-  return [{ branchId: scope.branchId ?? null }, { branchId: null }];
+  const branchId = scope?.branchId ?? null;
+  if (branchId == null || String(branchId).trim() === "") {
+    return [{ branchId: null }];
+  }
+  return [{ branchId: String(branchId).trim() }, { branchId: null }];
+}
+
+/** List/query filter: branch-specific rows plus tenant-wide (`branchId: null`) rates. */
+export function schemeGoldRateBranchListClause(branchId) {
+  const id =
+    branchId != null && String(branchId).trim() !== "" && String(branchId).trim().toUpperCase() !== "ALL"
+      ? String(branchId).trim()
+      : null;
+  if (!id) return {};
+  return { $or: [{ branchId: id }, { branchId: null }] };
 }
 
 /** Exact calendar-day 22K rate (handover completion). */

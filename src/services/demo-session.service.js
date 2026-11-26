@@ -1,4 +1,8 @@
-import { Customer, DemoEvent, DemoInstance, Tenant } from "../models/index.js";
+import { DemoEvent, DemoInstance, Tenant } from "../models/index.js";
+import {
+  demoEntryPathsFromTenantBranding,
+  resolveDemoLoginCustomer,
+} from "../lib/demo-login-customer.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { sha256, timingSafeEqual } from "../lib/crypto.js";
 import { assertInstancePubliclyAccessible } from "../lib/demo-session-guard.js";
@@ -60,9 +64,7 @@ export async function exchangeSession({ publicId, secret, device, request }) {
     throw new AppError("DEMO_LINK_INVALID", "This demo link is not valid.", 401);
   }
 
-  const customer = await Customer.findOne({ tenantId: instance.activeTenantId, isDemo: true })
-    .sort({ createdAt: 1 })
-    .lean();
+  const customer = await resolveDemoLoginCustomer(instance.activeTenantId);
   if (!customer) {
     // Should not happen — publishTemplateVersion refuses to publish a version with zero
     // customers — but guarded rather than assumed, since this runs with no session context.
@@ -103,10 +105,13 @@ export async function exchangeSession({ publicId, secret, device, request }) {
   });
 
   const tenant = await Tenant.findById(instance.activeTenantId).lean();
+  const entry = demoEntryPathsFromTenantBranding(tenant);
   return {
     ...tokens,
     tenant: { id: instance.activeTenantId, ...publicInstanceDto(instance, tenant) },
     customer: { id: customer._id, name: customer.name, customerNumber: customer.customerNumber },
+    entrySchemeId: entry.entrySchemeId,
+    entryPlanId: entry.entryPlanId,
   };
 }
 

@@ -1,0 +1,110 @@
+import { PaymentPattern, SchemePlanStatus } from "../../src/constants/enums.js";
+
+/** Cash flexible: 6 free months (from ₹100), then 5 months at fixed ₹5,000 cap/cycle. */
+export function buildFlex65FixedCapCashPlan({
+  code = "FLEXI11",
+  name = "Flex 6+5 Save",
+  displayName = "6 months free · 5 months ₹5,000 cap",
+  capPerMonthPaise = 500_000,
+  freeMinPaymentPaise = 10_000,
+  freeMaxPaymentPaise = 2_500_000,
+  paymentIncrementPaise = 100,
+  bonusPercent = 5,
+  maxBonusPaise = 500_000,
+} = {}) {
+  return {
+    name,
+    code,
+    displayName,
+    description:
+      "Six months of flexible savings from ₹100 per payment, then five months with a fixed ₹5,000 monthly cap.",
+    valueBasis: "CASH",
+    paymentPattern: PaymentPattern.FLEXIBLE,
+    durationMonths: 12,
+    installmentCount: 11,
+    amountRules: {
+      amountMode: "CUSTOMER_CHOSEN",
+      slabsPaise: [],
+      minInstallmentPaise: freeMinPaymentPaise,
+      maxInstallmentPaise: freeMaxPaymentPaise,
+      multipleOfPaise: 100,
+    },
+    scheduleRules: {
+      dueDateRule: "JOIN_ANNIVERSARY",
+      graceDays: 5,
+      firstInstallmentModeDefault: "COLLECT_NOW",
+      firstInstallmentModeEditable: true,
+    },
+    paymentRules: {
+      partialPaymentAllowed: true,
+      advancePaymentAllowed: false,
+      maxAdvanceInstallments: 0,
+      minPaymentPaise: freeMinPaymentPaise,
+    },
+    flexibleRules: {
+      phaseMode: "FLEXIBLE_THEN_CAPPED",
+      capMode: "FLEXIBLE_PHASE_AVERAGE",
+      carryForwardMode: "NONE",
+      flexiblePhaseCycles: 6,
+      cappedPhaseCycles: 5,
+      averagingDivisor: 6,
+      frequencyMode: "MULTIPLE",
+      flexiblePhase: {
+        minimumPaymentPaise: freeMinPaymentPaise,
+        maximumPaymentPaise: freeMaxPaymentPaise,
+        paymentIncrementPaise,
+        minTotalPaise: 0,
+        maxPaymentsPerCycle: null,
+        paymentsRequiredPerCycle: 0,
+      },
+      capComputation: {
+        formula: "FLEXIBLE_PHASE_TOTAL_DIV_AVERAGING_DIVISOR",
+        roundingMode: "ROUND_UP",
+        roundToNearestPaise: 100,
+        minCycleCapPaise: capPerMonthPaise,
+        maxCycleCapPaise: capPerMonthPaise,
+        onZeroFlexiblePhaseTotal: "CLOSE_SCHEME",
+        onBelowMinimumTotal: "USE_MINIMUM",
+      },
+      cappedPhase: {
+        minimumPaymentPaise: freeMinPaymentPaise,
+        paymentIncrementPaise,
+        allowFinalRemainderBelowMinimum: true,
+        allowFutureCyclePayment: false,
+        maxAdvanceCycles: 0,
+      },
+    },
+    benefit: {
+      type: "FIXED_BONUS_AMOUNT",
+      bonusBasis: "PERCENT_OF_PAID",
+      bonusValue: bonusPercent,
+      maxBonusPaise,
+      displayLabel: `${bonusPercent}% bonus on maturity (max ₹${maxBonusPaise / 100})`,
+      eligibility: {
+        requireAllInstallmentsPaid: true,
+        maxAllowedDefaults: 0,
+        minMonthsCompleted: 0,
+      },
+    },
+    redemptionRules: {
+      prematureClosureAllowed: true,
+      lockInMonths: 0,
+      prematurePenalty: { mode: "PERCENT_OF_PAID", value: 2, benefitTreatment: "FORFEIT" },
+      allowedModes: ["CASH", "PURCHASE_ADJUSTMENT"],
+      redeemAtAnyBranch: true,
+    },
+    availability: {
+      allBranches: true,
+      branchIds: [],
+      visibleInCustomerApp: true,
+      customerSelfEnrolAllowed: true,
+    },
+    termsText: [
+      "1. Free phase (6 months): pay any amount from ₹100 per transaction, as often as you like each month. No fixed monthly instalment.",
+      "2. After the free phase, the plan locks into capped mode for 5 months at ₹5,000 per month (fixed cap per cycle).",
+      "3. Maturity benefit applies only if you complete all capped cycles and meet eligibility rules.",
+      "4. Premature closure may forfeit benefit and attract penalty as per store policy.",
+    ].join("\n"),
+    status: SchemePlanStatus.ACTIVE,
+  };
+}

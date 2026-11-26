@@ -1458,24 +1458,21 @@ export async function setGoldRate(req) {
 }
 
 export async function listGoldRateHistory(req) {
+  const { schemeGoldRateBranchListClause } = await import("../lib/gold-rate-lookup.js");
   const filters = {};
   const effective = effectiveScope(req);
-  if (effective.branchId) {
-    filters.branchId = effective.branchId;
-  } else if (req.query.branchId === "null") {
+  const scope = { tenantId: req.auth.tenantId };
+
+  if (req.query.branchId === "null") {
     filters.branchId = null;
-  } else if (req.query.branchId && String(req.query.branchId).trim().toUpperCase() !== "ALL") {
-    filters.branchId = String(req.query.branchId).trim();
+  } else if (effective.branchId) {
+    Object.assign(scope, schemeGoldRateBranchListClause(effective.branchId));
   }
   if (req.query.from || req.query.to) {
     const range = {};
     if (req.query.from) range.$gte = String(req.query.from).slice(0, 10);
     if (req.query.to) range.$lte = String(req.query.to).slice(0, 10);
     filters.effectiveDate = range;
-  }
-  const scope = { tenantId: req.auth.tenantId };
-  if (req.scope.branchId) {
-    scope.$or = [{ branchId: req.scope.branchId }, { branchId: null }];
   }
   const result = await paginate(GoldRate, {
     scope,

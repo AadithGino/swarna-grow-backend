@@ -335,7 +335,17 @@ appRouter.get("/gold-rate/current", asyncHandler(async (req, res) => {
 }));
 appRouter.get("/gold-rate/history", asyncHandler(async (req, res) => {
   const { GoldRate } = await import("../models/index.js");
-  sendSuccess(res, await GoldRate.find({ tenantId: req.auth.tenantId }).sort({ effectiveDate: -1 }).limit(100).lean());
+  const { schemeGoldRateBranchListClause, V1_GOLD_PURITY } = await import("../lib/gold-rate-lookup.js");
+  const branchId = req.query.branchId ?? req.auth.branchId ?? null;
+  const query = {
+    tenantId: req.auth.tenantId,
+    purity: V1_GOLD_PURITY,
+    ...schemeGoldRateBranchListClause(branchId),
+  };
+  sendSuccess(
+    res,
+    await GoldRate.find(query).sort({ effectiveDate: -1, createdAt: -1 }).limit(100).lean(),
+  );
 }));
 
 appRouter.get("/digital-metals/capability", asyncHandler(digitalMetals.customerCapability));
