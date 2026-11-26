@@ -90,6 +90,10 @@ const tenantOperationsSchema = new mongoose.Schema(
     ecommerceEnabled: { type: Boolean, default: false },
     /** Tenant opt-in for live ecommerce PhonePe checkout (with platform ECOMMERCE_PAYMENTS_ROLLOUT_ENABLED). */
     ecommercePaymentsRolloutEnabled: { type: Boolean, default: false },
+    /**
+     * Allow fixed Play Store review OTP (123456) on customer login. Cleared on go-live; never for live jewellery apps.
+     */
+    playStoreReviewOtpEnabled: { type: Boolean, default: false },
     digitalMetalsEnabled: { type: Boolean, default: false },
     digitalMetalsPaused: { type: Boolean, default: false },
     digitalMetalsPauseReason: { type: String, default: "" },

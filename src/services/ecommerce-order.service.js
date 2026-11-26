@@ -23,7 +23,10 @@ import { attachAdminOrderCourierPresentation } from "../lib/ecommerce-admin-orde
 import { findActivePaymentAttempt } from "../lib/ecommerce-payment-in-flight.js";
 import { mapCustomerActivePaymentAttempt } from "./ecommerce-payment-intent.service.js";
 import { testPaymentHarnessMetaForClient } from "./ecommerce-test-payment-completion.service.js";
-import { computePendingPaymentExpiresAt } from "../lib/ecommerce-pending-payment-policy.js";
+import {
+  computePendingPaymentExpiresAt,
+  computeSchemePurchaseApprovalExpiresAt,
+} from "../lib/ecommerce-pending-payment-policy.js";
 import { snapshotStorePolicyForOrder } from "../lib/ecommerce-store-policies.js";
 import { isEcommerceOrderInvoiceAvailable } from "../lib/ecommerce-order-invoice-eligibility.js";
 import { plainLanguageEcommerceOrderStatusForOrder } from "../lib/plain-language-labels.js";
@@ -138,6 +141,27 @@ function mapRefundPresentation(order, refunds = []) {
   };
 }
 
+function mapSchemePurchasePresentation(row) {
+  const purchase = row.financialSnapshot?.schemePurchase;
+  if (!purchase) return null;
+  const topUp = purchase.topUpPaise ?? 0;
+  const applied = purchase.appliedPaise ?? 0;
+  return {
+    appliedPaise: applied,
+    topUpPaise: topUp,
+    grossPaise: purchase.grossPaise ?? null,
+    remainingAfterOrder: purchase.remaining ?? null,
+    basis: purchase.basis ?? "CASH_VALUE",
+    approvalStatus: purchase.approvalStatus ?? null,
+    schemeId: purchase.schemeId ?? null,
+    paymentSummary:
+      topUp > 0
+        ? `Scheme ${applied > 0 ? "adjustment" : ""} + ${topUp} top-up`
+        : "Paid with matured scheme",
+    shortLabel: topUp > 0 ? "Scheme + cash" : "Scheme purchase",
+  };
+}
+
 function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = null) {
   const pending = row.status === EcommerceOrderStatus.PENDING_PAYMENT;
   const cod = orderUsesCod(row);
@@ -154,7 +178,14 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
     plainLanguageEcommerceOrderStatusForOrder(row.status, row.fulfilmentMode) ?? String(row.status);
   if (pending) statusLabel = "Awaiting payment — not charged";
   else if (row.status === EcommerceOrderStatus.PAYMENT_EXPIRED) {
-    statusLabel = "Payment window expired — not charged";
+    const scheme = row.financialSnapshot?.schemePurchase;
+    statusLabel = scheme
+      ? scheme.approvalStatus === "PENDING"
+        ? "Scheme checkout expired before approval"
+        : Number(scheme.topUpPaise ?? 0) > 0
+          ? "Customer top-up window expired"
+          : "Scheme checkout expired"
+      : "Payment window expired — not charged";
   } else if (codPending) {
     statusLabel = "Awaiting jeweller acceptance — payment due on delivery";
   } else if (cod && !codCollected) {
@@ -175,7 +206,13 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
     paymentAllowed: !cod && cap.paymentAllowed &&
       (!row.financialSnapshot?.schemePurchase || row.financialSnapshot.schemePurchase.approvalStatus === "APPROVED"),
     orderPlacementAllowed: false,
-    paymentCompleted: cod ? codCollected : row.status === EcommerceOrderStatus.PAID,
+    paymentCompleted: cod
+      ? codCollected
+      : row.status === EcommerceOrderStatus.PAID
+        || (row.financialSnapshot?.schemePurchase
+          && row.financialSnapshot.schemePurchase.approvalStatus === "APPROVED"
+          && Number(row.financialSnapshot.schemePurchase.appliedPaise ?? 0) > 0
+          && Number(row.totalPaise ?? 0) === 0),
     checkoutUsable: cap.checkoutUsable,
     quoteId: row.quoteId ?? null,
     lines: row.lines ?? [],
@@ -187,6 +224,7 @@ function mapCustomerOrder(row, capability, refundRow, activePaymentAttempt = nul
     fulfilmentChargePaise: row.fulfilmentChargePaise ?? 0,
     totalPaise: row.totalPaise ?? 0,
     financialSnapshot: row.financialSnapshot ?? {},
+    schemePurchasePresentation: mapSchemePurchasePresentation(row),
     expiresAt: row.expiresAt ?? null,
     createdAt: row.createdAt ?? null,
     version: row.version ?? 1,
@@ -461,9 +499,12 @@ export async function createCustomerOrder(req, opts = {}) {
 
       const fulfilmentSettingsObj = fulfilmentRow?.toObject?.() ?? fulfilmentRow ?? {};
       const isCod = paymentMethod === EcommercePaymentMethod.COD;
+      const placedAt = new Date();
       const orderExpiresAt = isCod
-        ? computeCodAcceptanceExpiresAt(new Date(), fulfilmentSettingsObj)
-        : computePendingPaymentExpiresAt(new Date(), fulfilmentSettingsObj);
+        ? computeCodAcceptanceExpiresAt(placedAt, fulfilmentSettingsObj)
+        : schemePurchase
+          ? computeSchemePurchaseApprovalExpiresAt(placedAt, fulfilmentSettingsObj)
+          : computePendingPaymentExpiresAt(placedAt, fulfilmentSettingsObj);
       await transferQuoteReservationsToOrder({
         tenantId: req.auth.tenantId,
         quoteId: quote._id,
@@ -482,7 +523,8 @@ export async function createCustomerOrder(req, opts = {}) {
         consumedAt: new Date().toISOString(),
         paymentMethod,
         codPincodeSnapshot: quote.codPincodeSnapshot ?? null,
-        paymentExpiresAt: isCod ? null : orderExpiresAt.toISOString(),
+        paymentExpiresAt: isCod || schemePurchase ? null : orderExpiresAt.toISOString(),
+        schemeApprovalExpiresAt: schemePurchase ? orderExpiresAt.toISOString() : null,
         codAcceptanceExpiresAt: isCod ? orderExpiresAt.toISOString() : null,
       };
 
@@ -673,7 +715,12 @@ export async function getAdminOrder(req) {
     attachReturnSummaryToAdminOrder(req.auth.tenantId, row._id),
   ]);
   const base = { ...withCustomer[0], returnSummary };
-  return attachAdminOrderCourierPresentation(base, row);
+  const { schemeOrderBackingReleaseEligible } = await import("./ecommerce-scheme-stuck-order.service.js");
+  const schemeBackingRelease = await schemeOrderBackingReleaseEligible(req.auth.tenantId, row);
+  return attachAdminOrderCourierPresentation({
+    ...base,
+    schemeBackingRelease,
+  }, row);
 }
 
 export async function listAdminOrderEvents(req) {

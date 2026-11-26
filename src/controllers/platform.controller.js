@@ -37,6 +37,10 @@ export const appConfig = (write = false) => async (req, res) =>
   sendSuccess(res, write ? await platform.updateAppConfig(req.body, req) : await platform.getAppConfig());
 export const digitalMetalsPause = async (req, res) =>
   sendSuccess(res, await platform.setPlatformDigitalMetalsPause(req.params.tenantId, req.body, req));
+export const playStoreReviewOtp = async (req, res) =>
+  sendSuccess(res, await platform.setPlayStoreReviewOtp(req.params.tenantId, req.body, req));
+export const productModules = async (req, res) =>
+  sendSuccess(res, await platform.setPlatformTenantProductModules(req.params.tenantId, req.body, req));
 
 export const digitalMetalsStatus = async (req, res) => {
   const { getPlatformDigitalMetalsStatus } = await import("../services/digital-metals-phase2.service.js");

@@ -116,6 +116,16 @@ export async function runEcommerceBookingReminders(at = new Date(), { limit = 20
       : `Your booking ${b.bookingNumber} expired and the ornament is available again.`,
   }), counts, "expired");
 
+  const refundPending = await EcommerceBooking.find({
+    refundStatus: EcommerceBookingRefundStatus.PENDING,
+    updatedAt: { $gte: since },
+  }).sort({ updatedAt: -1 }).limit(limit).lean();
+  await eachNotice(refundPending, (b) => ({
+    key: "refund-pending",
+    title: "Booking refund on the way",
+    body: `A refund for booking ${b.bookingNumber} (${b.productName}) is being processed. Open the booking for progress.`,
+  }), counts, "refund-pending");
+
   const refunded = await EcommerceBooking.find({
     refundStatus: EcommerceBookingRefundStatus.SETTLED,
     updatedAt: { $gte: since },

@@ -243,6 +243,13 @@ export const decideOrderCancellation = async (req, res) =>
 export const adminInitiateOrderCancellation = async (req, res) =>
   sendSuccess(res, await ecommerceOrderCancellation.adminInitiateCancellation(req));
 
+export const adminReleaseInvalidSchemeBacking = async (req, res) => {
+  const { adminReleaseInvalidSchemeBacking } = await import(
+    "../services/ecommerce-scheme-stuck-order.service.js"
+  );
+  sendSuccess(res, await adminReleaseInvalidSchemeBacking(req));
+};
+
 export const recordOrderCodCancellationManualRefund = async (req, res) =>
   sendSuccess(res, await ecommerceOrderCancellation.recordCodCancellationManualRefund(req));
 

@@ -43,6 +43,43 @@ function parseDataUrl(dataUrl) {
   return { contentType: match[1], buffer: Buffer.from(match[2], "base64") };
 }
 
+function buildPalette(data, info, { includeNeutrals = false } = {}) {
+  const buckets = new Map();
+  let opaque = 0;
+  let darkPixels = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const a = data[i + 3] ?? 255;
+    if (a < 100) continue;
+    opaque += 1;
+    const lum = luminanceRgb(r, g, b);
+    if (lum < 28) darkPixels += 1;
+    if (!includeNeutrals && (lum > 248 || lum < 4)) continue;
+    const key = `${(r >> 4) * 17},${(g >> 4) * 17},${(b >> 4) * 17}`;
+    buckets.set(key, (buckets.get(key) ?? 0) + 1);
+  }
+  const ranked = [...buckets.entries()].sort((a, b) => b[1] - a[1]);
+  const palette = ranked.map((entry) => {
+    const [rs, gs, bs] = entry[0].split(",").map(Number);
+    return {
+      hex: toHex(rs, gs, bs),
+      r: rs,
+      g: gs,
+      b: bs,
+      count: entry[1],
+      lum: luminanceRgb(rs, gs, bs),
+    };
+  });
+  const darkRatio = opaque ? darkPixels / opaque : 0;
+  return { palette, darkRatio };
+}
+
+function isWarmGold(c) {
+  return c.r >= c.g && c.g >= c.b && c.lum >= 90 && c.lum <= 215 && c.r - c.b >= 24;
+}
+
 /** Dominant colours from logo bytes (or data URL) for demo branding. */
 export async function extractBrandColorsFromImageInput(input) {
   let buffer = Buffer.isBuffer(input) ? input : null;
@@ -54,49 +91,49 @@ export async function extractBrandColorsFromImageInput(input) {
 
   try {
     const { data, info } = await sharp(buffer)
-      .flatten({ background: { r: 255, g: 255, b: 255 } })
-      .resize(96, 96, { fit: "cover" })
+      .resize(128, 128, { fit: "cover" })
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    const buckets = new Map();
-    for (let i = 0; i < data.length; i += info.channels) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const a = data[i + 3] ?? 255;
-      if (a < 100) continue;
-      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-      // Skip near-white backgrounds and pure black speckle; keep navy / maroon brand marks.
-      if (lum > 248 || lum < 4) continue;
-      const key = `${(r >> 4) * 17},${(g >> 4) * 17},${(b >> 4) * 17}`;
-      buckets.set(key, (buckets.get(key) ?? 0) + 1);
+    const { palette: rawPalette, darkRatio } = buildPalette(data, info, { includeNeutrals: true });
+    const palette = rawPalette.filter((c) => c.lum <= 245);
+
+    if (darkRatio >= 0.12) {
+      const gold = palette
+        .filter(isWarmGold)
+        .sort((a, b) => b.count - a.count)[0];
+      const dark = palette
+        .filter((c) => c.lum <= 36)
+        .sort((a, b) => b.count - a.count)[0];
+      const primaryColor = gold?.hex ?? palette.find((c) => c.lum <= 220)?.hex ?? DEFAULTS.primaryColor;
+      const accentColor = gold && dark ? "#ffffff" : gold?.hex ?? DEFAULTS.accentColor;
+      const splashBackgroundColor = dark?.hex ?? "#0d0d0d";
+      return { primaryColor, accentColor, splashBackgroundColor };
     }
 
-    const ranked = [...buckets.entries()].sort((a, b) => b[1] - a[1]);
-    const palette = ranked
-      .map((entry) => {
-        const [rs, gs, bs] = entry[0].split(",").map(Number);
-        return { hex: toHex(rs, gs, bs), r: rs, g: gs, b: bs, count: entry[1] };
-      })
-      .filter((c) => luminanceRgb(c.r, c.g, c.b) <= 220);
-
-    const primaryColor = palette[0]?.hex ?? DEFAULTS.primaryColor;
+    const brandPalette = palette.filter((c) => c.lum <= 220);
+    const primaryColor = brandPalette[0]?.hex ?? DEFAULTS.primaryColor;
     const primaryRgb = hexToRgb(primaryColor) ?? hexToRgb(DEFAULTS.primaryColor);
     let accentColor = null;
-    for (let i = 1; i < palette.length; i += 1) {
-      const c = palette[i];
+    for (let i = 1; i < brandPalette.length; i += 1) {
+      const c = brandPalette[i];
       const dr = c.r - primaryRgb[0];
       const dg = c.g - primaryRgb[1];
       const db = c.b - primaryRgb[2];
       if (Math.hypot(dr, dg, db) >= 32) {
-        accentColor = c.hex;
+        accentColor = isWarmGold(c) ? c.hex : c.hex;
         break;
       }
     }
-    accentColor ??= palette.length <= 1 ? mixWithWhite(primaryColor, 0.45) : DEFAULTS.accentColor;
-    const splashBackgroundColor = mixWithWhite(primaryColor, 0.93);
+    if (!accentColor) {
+      const gold = brandPalette.find(isWarmGold);
+      accentColor = gold?.hex ?? (brandPalette.length <= 1 ? mixWithWhite(primaryColor, 0.45) : DEFAULTS.accentColor);
+    }
+    const splashBackgroundColor =
+      primaryColor && luminanceRgb(...primaryRgb) < 80
+        ? mixWithWhite(primaryColor, 0.88)
+        : mixWithWhite(primaryColor, 0.93);
     return { primaryColor, accentColor, splashBackgroundColor };
   } catch {
     return { ...DEFAULTS };

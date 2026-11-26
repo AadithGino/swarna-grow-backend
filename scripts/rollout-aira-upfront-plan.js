@@ -3,6 +3,7 @@
  * Does not wipe schemes; deactivates the old plan and frees the code via AIRAUPFRONT_LEGACY rename.
  *
  *   AIRA_TENANT_ID=tnt_... node --env-file=.env scripts/rollout-aira-upfront-plan.js
+ *   AIRA_TENANT_CODE=AIRA node --env-file=.env scripts/rollout-aira-upfront-plan.js  # resolves tenant id by code
  *   npm run rollout:aira-upfront
  */
 import process from "node:process";
@@ -15,7 +16,7 @@ import { createPlan, setPlanStatus, previewSchedule } from "../src/services/plan
 import { Scheme, SchemePlan, Tenant, User } from "../src/models/index.js";
 import { previewScheduleBody } from "../src/validators/common.validators.js";
 
-const TENANT_ID = (process.env.AIRA_TENANT_ID ?? "tnt_01M59TZGCJ5NTAV4ZVAG6PZZB0").trim();
+const ALLOWED_TENANT_CODES = new Set(["AIRAGOLD", "AIRA"]);
 const EXAMPLE_PLAN_ID = "spl_onetime_aira_example";
 const TARGET_CODE = "AIRAUPFRONT";
 const LEGACY_CODE = "AIRAUPFRONT_LEGACY";
@@ -78,32 +79,45 @@ async function verifyExamplePlan(tenantId) {
   return byId;
 }
 
+async function resolveRolloutTenantId() {
+  const explicit = process.env.AIRA_TENANT_ID?.trim();
+  if (explicit) return explicit;
+  const code = (process.env.AIRA_TENANT_CODE ?? "AIRAGOLD").trim().toUpperCase();
+  const byCode = await Tenant.findOne({ code }).select("_id code").lean();
+  if (!byCode) throw new Error(`Tenant code ${code} not found — set AIRA_TENANT_ID.`);
+  return byCode._id;
+}
+
 async function main() {
   await connectDatabase();
 
-  const tenant = await Tenant.findById(TENANT_ID);
-  if (!tenant || tenant.code !== "AIRAGOLD") {
-    throw new Error(`Tenant ${TENANT_ID} is not AIRAGOLD — stop cutover until identified.`);
+  const tenantId = await resolveRolloutTenantId();
+  const tenant = await Tenant.findById(tenantId);
+  if (!tenant || !ALLOWED_TENANT_CODES.has(tenant.code)) {
+  throw new Error(
+      `Tenant ${tenantId} code ${tenant?.code ?? "?"} is not in ${[...ALLOWED_TENANT_CODES].join(", ")} — stop cutover until identified.`,
+    );
   }
+  console.log(`Rollout tenant: ${tenant.code} (${tenantId})`);
 
   const owner =
-    (await User.findOne({ tenantId: TENANT_ID, role: TenantRole.TENANT_OWNER, status: "ACTIVE" }).lean())
-    ?? (await User.findOne({ tenantId: TENANT_ID, type: UserType.TENANT_USER, status: "ACTIVE" }).lean());
+    (await User.findOne({ tenantId, role: TenantRole.TENANT_OWNER, status: "ACTIVE" }).lean())
+    ?? (await User.findOne({ tenantId, type: UserType.TENANT_USER, status: "ACTIVE" }).lean());
   if (!owner) throw new Error("No tenant admin user for rollout context.");
 
   const req = makeReq(tenant, owner);
 
-  const example = await verifyExamplePlan(TENANT_ID);
+  const example = await verifyExamplePlan(tenantId);
   if (example && example.status === SchemePlanStatus.ACTIVE) {
     req.params = { planId: example._id };
     const deactivated = await setPlanStatus(req, SchemePlanStatus.INACTIVE);
     console.log(`Deactivated example plan ${example._id} → ${deactivated.status}`);
   }
 
-  const existingUpfront = await SchemePlan.findOne({ tenantId: TENANT_ID, code: TARGET_CODE }).lean();
+  const existingUpfront = await SchemePlan.findOne({ tenantId, code: TARGET_CODE }).lean();
   if (existingUpfront && rulesMatchUpfront(existingUpfront)) {
     console.log(`Catalog already has matching ACTIVE ${TARGET_CODE} (${existingUpfront._id}) — no change.`);
-    await printCatalogChecks(TENANT_ID, existingUpfront._id);
+    await printCatalogChecks(tenantId, existingUpfront._id);
     await disconnectDatabase();
     return;
   }
@@ -112,18 +126,18 @@ async function main() {
     console.log(
       `Existing ${TARGET_CODE} ${existingUpfront._id} differs (installmentCount=${existingUpfront.installmentCount}, oneTimeRules=${JSON.stringify(existingUpfront.oneTimeRules ?? null)}).`,
     );
-    const enrolments = await Scheme.countDocuments({ tenantId: TENANT_ID, planId: existingUpfront._id });
+    const enrolments = await Scheme.countDocuments({ tenantId, planId: existingUpfront._id });
     console.log(`Preserving ${enrolments} scheme(s) on snapshots; deactivating catalog plan.`);
 
     req.params = { planId: existingUpfront._id };
     await setPlanStatus(req, SchemePlanStatus.INACTIVE);
 
-    const legacyTaken = await SchemePlan.exists({ tenantId: TENANT_ID, code: LEGACY_CODE });
+    const legacyTaken = await SchemePlan.exists({ tenantId, code: LEGACY_CODE });
     const legacyCode = legacyTaken
       ? `${LEGACY_CODE}_${Date.now().toString(36).slice(-4).toUpperCase()}`
       : LEGACY_CODE;
     await SchemePlan.updateOne(
-      { _id: existingUpfront._id, tenantId: TENANT_ID },
+      { _id: existingUpfront._id, tenantId },
       { $set: { code: legacyCode }, $inc: { version: 1 } },
     );
     console.log(`Renamed inactive plan code → ${legacyCode}`);
@@ -143,7 +157,7 @@ async function main() {
       installmentAmountPaise: 10_000_000,
       firstInstallmentMode: "COLLECT_NOW",
     }),
-    TENANT_ID,
+    tenantId,
   );
   console.log("Preview check:", {
     scheduleRows: preview.schedule.length,
@@ -155,7 +169,7 @@ async function main() {
     throw new Error("Preview schedule failed acceptance checks.");
   }
 
-  await printCatalogChecks(TENANT_ID, planId);
+  await printCatalogChecks(tenantId, planId);
   console.log("\nRollout complete.");
 }
 

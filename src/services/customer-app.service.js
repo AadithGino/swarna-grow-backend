@@ -54,6 +54,10 @@ import {
 } from "../lib/customer-financial-totals.js";
 import { buildCustomerGoldValuation } from "../lib/customer-gold-valuation.js";
 import {
+  aggregateCustomerShopBalanceSummaries,
+  buildSchemeShopBalanceSummaries,
+} from "../lib/ecommerce-scheme-shop-balance-summary.js";
+import {
   buildRecentActivityForHome,
   listCustomerActivityPaginated,
 } from "../lib/customer-home-recent-activity.js";
@@ -212,18 +216,26 @@ export async function buildHome(auth, tenant, query = {}) {
     hour < 12 ? `Good morning, ${firstName}` : hour < 17 ? `Good afternoon, ${firstName}` : `Good evening, ${firstName}`;
   const actionCard = pickActionCard(activeSchemes);
   const passbookNumber = customer?.passbookNumber ?? null;
-  const [activeSchemeCards, recentPayments, recentActivity, contributionTrendRows, goldTrendRows] = await Promise.all([
+  const homeSchemeSlice = activeSchemes.slice(0, 6);
+  const [activeSchemeCards, recentPayments, recentActivity, contributionTrendRows, goldTrendRows] =
+    await Promise.all([
     mapActiveSchemeCardsForCustomer(
       auth.tenantId,
       auth.id,
       passbookNumber,
-      activeSchemes.slice(0, 6),
+      homeSchemeSlice,
     ),
     recentPaymentsForHome(auth, 8),
     buildRecentActivityForHome(auth, 8),
     includeTrends ? contributionTrend(auth, trendMonths) : undefined,
     hasGoldAccumulationScheme && includeTrends ? goldTrend(auth, trendMonths) : undefined,
   ]);
+  const shopSummaryMap = new Map(
+    activeSchemeCards
+      .filter((card) => card.shopBalanceSummary)
+      .map((card) => [String(card.id), card.shopBalanceSummary]),
+  );
+  const shopBalanceOverview = aggregateCustomerShopBalanceSummaries(shopSummaryMap);
   return {
     tenant: tenantBrandingDto(tenant),
     customer: {
@@ -248,6 +260,7 @@ export async function buildHome(auth, tenant, query = {}) {
       currentValuation: valuation.currentValuation,
       valuationAvailable: hasGoldAccumulationScheme ? valuation.valuationAvailable : undefined,
       valuationBlocker: hasGoldAccumulationScheme ? valuation.valuationBlocker : undefined,
+      shopBalance: shopBalanceOverview ?? undefined,
     },
     goldRate:
       hasGoldAccumulationScheme && goldRate
@@ -343,12 +356,15 @@ export async function mapActiveSchemeCardsForCustomer(tenantId, customerId, pass
     }
     recentByScheme.set(key, list);
   }
-  return schemeRows.map((scheme) =>
-    mapHomeSchemeCard(scheme, {
+  const shopSummaries = await buildSchemeShopBalanceSummaries(tenantId, customerId, schemeRows);
+  return schemeRows.map((scheme) => {
+    const schemeId = String(scheme._id);
+    return mapHomeSchemeCard(scheme, {
       passbookNumber,
-      recentPayments: recentByScheme.get(String(scheme._id)) ?? [],
-    }),
-  );
+      recentPayments: recentByScheme.get(schemeId) ?? [],
+      shopBalanceSummary: shopSummaries.get(schemeId) ?? undefined,
+    });
+  });
 }
 
 async function recentPaymentsForHome(auth, limit = 8) {

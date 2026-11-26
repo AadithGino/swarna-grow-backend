@@ -18,10 +18,17 @@ import {
   Customer,
   LedgerEntry,
   Payment,
+  EcommerceOrder,
   Redemption,
   Scheme,
   SchemePlan,
 } from "../models/index.js";
+import {
+  listSchemeEcommerceSpend,
+  listSchemeEcommerceSpendAttempts,
+} from "../lib/ecommerce-scheme-spend-history.js";
+import { buildSchemeShopBalanceSummary } from "../lib/ecommerce-scheme-shop-balance-summary.js";
+import { buildSchemeOnlineEncumbranceSummary } from "../lib/ecommerce-scheme-net-spend.js";
 import { errors, AppError } from "../lib/app-error.js";
 import { createId } from "../lib/ids.js";
 import { paginate } from "../lib/pagination.js";
@@ -155,6 +162,25 @@ const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.APPROVED,
 ];
 
+async function redemptionEcommerceContext(tenantId, modeDetails) {
+  const orderId = modeDetails?.ecommerceOrderId;
+  if (!orderId) return {};
+  const order = await EcommerceOrder.findOne({ _id: orderId, tenantId })
+    .select("orderNumber status financialSnapshot.schemePurchase")
+    .lean();
+  if (!order) return { ecommerceOrderId: orderId };
+  const purchase = order.financialSnapshot?.schemePurchase ?? {};
+  return {
+    ecommerceOrderId: orderId,
+    ecommerceOrderNumber: order.orderNumber ?? null,
+    ecommerceOrderStatus: order.status ?? null,
+    ecommerceSchemeAppliedPaise: purchase.appliedPaise ?? null,
+    ecommerceSchemeRemaining: purchase.remaining ?? null,
+    ecommerceSchemeBasis: purchase.basis ?? null,
+    ecommerceSchemeTopUpPaise: purchase.topUpPaise ?? null,
+  };
+}
+
 async function schemePresentationExtras(scheme, totals) {
   const [open, completed] = await Promise.all([
     Redemption.findOne({
@@ -162,7 +188,7 @@ async function schemePresentationExtras(scheme, totals) {
       schemeId: scheme._id,
       status: { $in: OPEN_REDEMPTION_STATUSES },
     })
-      .select("_id status closureType settlementPaise mode requestedAt")
+      .select("_id status closureType settlementPaise mode requestedAt modeDetails")
       .lean(),
     [SchemeStatus.REDEEMED, SchemeStatus.CLOSED_PREMATURE].includes(
       scheme.status,
@@ -174,10 +200,14 @@ async function schemePresentationExtras(scheme, totals) {
         })
           .sort({ completedAt: -1 })
           .select(
-            "_id status closureType settlementPaise mode completedAt requestedAt",
+            "_id status closureType settlementPaise mode completedAt requestedAt modeDetails",
           )
           .lean()
       : null,
+  ]);
+  const [openShop, completedShop] = await Promise.all([
+    open ? redemptionEcommerceContext(scheme.tenantId, open.modeDetails) : {},
+    completed ? redemptionEcommerceContext(scheme.tenantId, completed.modeDetails) : {},
   ]);
   const canRecordPayment =
     !open && !scheme.oneTimeGold &&
@@ -203,6 +233,7 @@ async function schemePresentationExtras(scheme, totals) {
           settlementPaise: open.settlementPaise,
           mode: open.mode,
           requestedAt: open.requestedAt,
+          ...openShop,
         }
       : null,
     completedRedemption: completed
@@ -214,6 +245,7 @@ async function schemePresentationExtras(scheme, totals) {
           mode: completed.mode,
           completedAt: completed.completedAt,
           requestedAt: completed.requestedAt,
+          ...completedShop,
         }
       : null,
   };
@@ -1087,11 +1119,33 @@ export async function getScheme(req) {
       : null;
   const totals = schemeLedgerTotals(scheme, ledger);
   const presentation = await schemePresentationExtras(scheme, totals);
+  const [schemeSpend, schemeSpendAttempts] = await Promise.all([
+    listSchemeEcommerceSpend(scheme.tenantId, scheme._id),
+    listSchemeEcommerceSpendAttempts(scheme.tenantId, scheme._id),
+  ]);
+  const shopBalanceSummary = await buildSchemeShopBalanceSummary({
+    tenantId: scheme.tenantId,
+    customerId: scheme.customerId,
+    schemeId: scheme._id,
+    scheme,
+    spendRows: schemeSpendAttempts,
+  });
   const flexContext = buildFlexibleAdminEnrollmentContext(scheme);
   const collectionBonus = maturityGoldStatus(scheme, totals);
+  const onlineEncumbrance = await buildSchemeOnlineEncumbranceSummary({
+    tenantId: scheme.tenantId,
+    scheme,
+    settlementPaise: totals.amountPaidPaise,
+    goldWeightMg: totals.goldWeightMg,
+    benefitWeightMg: collectionBonus?.weightMg,
+  });
   const amountPaidPaise = totals.amountPaidPaise;
   return {
     ...scheme,
+    schemeSpend,
+    schemeSpendAttempts,
+    shopBalanceSummary: shopBalanceSummary ?? undefined,
+    onlineEncumbrance: onlineEncumbrance ?? undefined,
     customer: customer
       ? {
           _id: customer._id,
@@ -1144,6 +1198,16 @@ export async function getScheme(req) {
 export async function getPassbook(req) {
   const scheme = await getScheme(req);
   const displayMode = scheme.displayMode;
+  const spendRows = scheme.schemeSpend ?? await listSchemeEcommerceSpend(scheme.tenantId, scheme._id);
+  const spendAttempts = scheme.schemeSpendAttempts
+    ?? await listSchemeEcommerceSpendAttempts(scheme.tenantId, scheme._id);
+  const onlineEncumbrance = await buildSchemeOnlineEncumbranceSummary({
+    tenantId: scheme.tenantId,
+    scheme,
+    settlementPaise: scheme.totals?.amountPaidPaise,
+    goldWeightMg: scheme.totals?.goldWeightMg,
+    benefitWeightMg: scheme.collectionBonus?.weightMg,
+  });
   if (scheme.passbook?.rows) {
     return {
       scheme: {
@@ -1152,6 +1216,10 @@ export async function getPassbook(req) {
         displayMode,
       },
       rows: scheme.passbook.rows,
+      spendRows,
+      spendAttempts,
+      onlineEncumbrance: onlineEncumbrance ?? undefined,
+      shopBalanceSummary: scheme.shopBalanceSummary,
       totals: scheme.passbook.totals,
       ...(scheme.collectionFrequency ? { collectionFrequency: scheme.collectionFrequency } : {}),
       ...(scheme.collectionBonus ? { collectionBonus: scheme.collectionBonus } : {}),
@@ -1171,6 +1239,10 @@ export async function getPassbook(req) {
       schemeNumber: scheme.enrollmentNumber,
       displayMode,
     },
+    spendRows,
+    spendAttempts,
+    onlineEncumbrance: onlineEncumbrance ?? undefined,
+    shopBalanceSummary: scheme.shopBalanceSummary,
     rows: payments.map((pay, index) => ({
       entryNumber: index + 1,
       paidAt: pay.paidAt,

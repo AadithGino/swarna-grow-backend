@@ -77,10 +77,11 @@ export const shopListBookings = async (req, res) => {
   return sendList(res, { data: result.items, meta: result.meta });
 };
 
-export const shopGetBooking = async (req, res) =>
-  sendSuccess(res, await bookingAdmin.getCustomerBooking({
-    tenantId: tenantIdOf(req), customerId: req.auth.id, bookingId: req.params.bookingId,
-  }));
+export const shopGetBooking = async (req, res) => {
+  const ids = { tenantId: tenantIdOf(req), customerId: req.auth.id, bookingId: req.params.bookingId };
+  await bookingPayment.refreshBookingPaymentFromPhonePe(ids);
+  sendSuccess(res, await bookingAdmin.getCustomerBooking(ids));
+};
 
 export const shopCancelBooking = async (req, res) => {
   await booking.cancelBooking({

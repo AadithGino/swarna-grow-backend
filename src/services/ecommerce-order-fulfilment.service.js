@@ -10,7 +10,8 @@ import {
   EcommerceOrderEventType,
   EcommerceOrderStatus,
 } from "../constants/enums.js";
-import { EcommerceOrder, EcommerceOrderEvent } from "../models/index.js";
+import { EcommerceFulfilmentSettings, EcommerceOrder, EcommerceOrderEvent } from "../models/index.js";
+import { computePendingPaymentExpiresAt } from "../lib/ecommerce-pending-payment-policy.js";
 import {
   ECOMMERCE_OUTBOX_TOPICS,
   enqueueEcommerceOutboxEvent,
@@ -89,6 +90,14 @@ export async function transitionAdminOrderFulfilment(req) {
         await updateOrderRedemption(order, "APPROVED", session, req.auth.id);
         if (fullyCovered) await consumeOrderStockReservationsOnce(key);
       }
+      let paymentExpiresAt;
+      if (approved && !fullyCovered) {
+        const settings = await EcommerceFulfilmentSettings.findOne({ tenantId: order.tenantId })
+          .select("pendingPaymentWindowMinutes schemePurchaseApprovalWindowHours")
+          .session(session)
+          .lean();
+        paymentExpiresAt = computePendingPaymentExpiresAt(new Date(), settings ?? {});
+      }
       const updated = await EcommerceOrder.findOneAndUpdate(
         { _id: order._id, tenantId: order.tenantId },
         { $set: {
@@ -98,6 +107,12 @@ export async function transitionAdminOrderFulfilment(req) {
           "financialSnapshot.schemePurchase.decidedBy": req.auth.id,
           "financialSnapshot.schemePurchase.decidedAt": new Date(),
           ...(fullyCovered ? { paidAt: new Date() } : {}),
+          ...(paymentExpiresAt
+            ? {
+              expiresAt: paymentExpiresAt,
+              "financialSnapshot.paymentExpiresAt": paymentExpiresAt.toISOString(),
+            }
+            : {}),
         }, $inc: { version: 1 } },
         { session, new: true },
       );

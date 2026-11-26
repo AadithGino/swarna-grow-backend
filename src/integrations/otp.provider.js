@@ -10,6 +10,10 @@ import {
   messageCentralConfiguredForOtp,
 } from "../lib/message-central-credentials.js";
 import { maskMobile, mobileLookupVariants, canonicalMobile } from "../lib/mobile.js";
+import {
+  isPlayStoreReviewOtpSubmission,
+  playStoreReviewOtpEligibleForTenant,
+} from "../lib/playstore-review-otp.js";
 import { Customer } from "../models/index.js";
 import { sendMessageCentralOtp, validateMessageCentralOtp } from "./message-central.client.js";
 import { sendMsg91Otp } from "./msg91.client.js";
@@ -263,8 +267,35 @@ async function validateOtpMessageCentral(params, deps = {}) {
       : loadPlatformMessageCentralCredentials(deps.env ?? env));
   if (!credentials) return { ok: false };
 
+  const otpValue = String(params.otp ?? "").trim();
   const expectedLength = Number(record.otpLength ?? credentials.otpLength ?? 6);
-  if (!new RegExp(`^\\d{${expectedLength}}$`).test(String(params.otp ?? "").trim())) {
+  if (
+    params.tenantId
+    && await playStoreReviewOtpEligibleForTenant(params.tenantId, deps)
+    && isPlayStoreReviewOtpSubmission(otpValue, record)
+  ) {
+    logger.info(
+      { tenantId: params.tenantId, purpose: params.purpose },
+      "Play Store review OTP accepted (fixed code)",
+    );
+    if (redis) {
+      const done = await finalizeMessageCentralValidated(redis, key, {
+        otpId: record.otpId ? String(record.otpId) : "",
+        verificationId: record.verificationId,
+        claimUntilMs: null,
+        nowMs: Date.now(),
+      });
+      if (done.status !== "ok") return { ok: false };
+      return { ok: true, validatedAt: done.validatedAt };
+    }
+    const va = Date.now();
+    record.validatedAt = va;
+    record.claimUntilMs = undefined;
+    const ttl = Math.max(1, Math.ceil(((record.expiresAt ?? Date.now()) - Date.now()) / 1000));
+    await writeRecordMemory(key, record, ttl);
+    return { ok: true, validatedAt: va };
+  }
+  if (!new RegExp(`^\\d{${expectedLength}}$`).test(otpValue)) {
     if (redis) {
       const inc = await incrementAttemptAtomic(redis, key, {
         otpId: record.otpId ? String(record.otpId) : "",

@@ -61,6 +61,13 @@ import {
   PICKUP_CODE_MAX_ATTEMPTS,
 } from "../lib/ecommerce-pickup-code.js";
 import { schemeHasOnlineAllocation } from "../lib/ecommerce-scheme-online-use.js";
+import { applyEcommerceSchemeToMaturitySettlementPreview } from "../lib/ecommerce-scheme-settlement-preview.js";
+import {
+  aggregateReservationNetSpend,
+  computeSchemeOnlineRemainder,
+  loadSchemeReservations,
+} from "../lib/ecommerce-scheme-net-spend.js";
+import { moneyRef, weightRef } from "../lib/money.js";
 import { seal, unseal } from "../lib/crypto.js";
 import {
   notifyHandoverCodeReleased,
@@ -77,13 +84,58 @@ export const OPEN_REDEMPTION_STATUSES = [
   RedemptionStatus.APPROVED,
 ];
 
-async function assertStandaloneSchemeFundsAvailable(scheme, session) {
+async function assertStandaloneSchemeFundsAvailable(scheme, session, { preferredMode } = {}) {
   if (!scheme.planSnapshot?.schemePurchaseRules) return;
   await Scheme.collection.updateOne({ _id: scheme._id, tenantId: scheme.tenantId },
     { $set: { ecommerceRedemptionFence: createId("fence") } }, { session });
-  if (await schemeHasOnlineAllocation({ tenantId: scheme.tenantId, schemeId: scheme._id, session })) {
-    throw errors.business("SCHEME_FUNDS_USED_ONLINE", "The scheme has an ecommerce allocation. Use the available remainder at online checkout.");
+  if (!(await schemeHasOnlineAllocation({ tenantId: scheme.tenantId, schemeId: scheme._id, session }))) {
+    return;
   }
+  const mode = preferredMode ?? RedemptionMode.CASH;
+  const preview = await settlementPreview(
+    {
+      auth: { tenantId: scheme.tenantId, id: scheme.customerId, type: "CUSTOMER" },
+      params: { schemeId: scheme._id },
+      body: { mode },
+      scope: { tenantId: scheme.tenantId },
+      query: {},
+    },
+    ClosureType.MATURITY_REDEMPTION,
+  );
+  const holdBlocker = preview.blockers?.find((row) => row.code === "ECOMMERCE_SCHEME_HOLD_ACTIVE");
+  if (holdBlocker) {
+    throw errors.business("SCHEME_FUNDS_USED_ONLINE", holdBlocker.message);
+  }
+  const reservations = await loadSchemeReservations(scheme.tenantId, scheme._id, session);
+  const agg = aggregateReservationNetSpend(reservations);
+  const remainder = await computeSchemeOnlineRemainder({
+    tenantId: scheme.tenantId,
+    schemeId: scheme._id,
+    customerId: scheme.customerId,
+    settlementPaise: preview.settlementPaise ?? preview.principalPaise,
+    goldWeightMg: preview.goldWeightMg,
+    benefitWeightMg: preview.benefitWeightMg,
+    planSnapshot: scheme.planSnapshot,
+    session,
+  });
+  const unitLabel = (units) => (
+    agg.basis === "GOLD_WEIGHT"
+      ? weightRef(units).weightDisplay
+      : moneyRef(units).amountDisplay
+  );
+  let message;
+  if (preview.settlementPaise > 0) {
+    message = `${moneyRef(preview.settlementPaise).amountDisplay} remains on this enrolment, but counter redemption is blocked while a shop allocation exists. Spend the remainder in the online shop.`;
+  } else if (remainder?.availableUnits > 0) {
+    message = `${remainder.availableLabel} remains for online shop checkout only. Counter redemption is not available while an online allocation exists.`;
+  } else if (agg.heldUnits > 0) {
+    message = `${unitLabel(agg.heldUnits)} is reserved for shop orders in progress. Wait for delivery or cancellation before requesting counter redemption.`;
+  } else if (preview.ecommerceSchemeNotes?.length) {
+    message = preview.ecommerceSchemeNotes[0];
+  } else {
+    message = "This scheme value is tied to online shop checkout. Use the shop to spend any remaining balance.";
+  }
+  throw errors.business("SCHEME_FUNDS_USED_ONLINE", message);
 }
 
 export async function assertRedemptionKyc(req, customerId, { session } = {}) {
@@ -513,8 +565,30 @@ export async function settlementPreview(req, closureType, { valuationDateYmd = t
     scheme.valueBasis === ValueBasis.GOLD_WEIGHT
     && settlementMode === RedemptionMode.CASH
     && cashSettlementBasis === "PAID_AMOUNT";
-  const totals = { amountPaidPaise: principalPaise, goldWeightMg };
-  const eligible = blockers.length === 0;
+  let effectiveSettlementPaise = settlementPaise;
+  let effectiveGoldWeightMg = goldWeightMg;
+  let effectiveBenefitWeightMg = benefitWeightMg;
+  const ecommerceSettlementAdjust = await applyEcommerceSchemeToMaturitySettlementPreview({
+    tenantId: scheme.tenantId,
+    scheme,
+    closureType,
+    settlementMode,
+    isPremature,
+    systemPolicyClosure,
+    settlementPaise: effectiveSettlementPaise,
+    goldWeightMg: effectiveGoldWeightMg,
+    benefitWeightMg: effectiveBenefitWeightMg,
+    moneyField,
+    ledgerEntries: entries,
+  });
+  if (ecommerceSettlementAdjust) {
+    blockers.push(...ecommerceSettlementAdjust.blockers);
+    effectiveSettlementPaise = ecommerceSettlementAdjust.settlementPaise;
+    effectiveGoldWeightMg = ecommerceSettlementAdjust.goldWeightMg;
+    effectiveBenefitWeightMg = ecommerceSettlementAdjust.benefitWeightMg;
+  }
+  const totals = { amountPaidPaise: principalPaise, goldWeightMg: effectiveGoldWeightMg };
+  let eligible = blockers.length === 0;
   const valuationRatePerGramPaise = settlementRatePerGramPaise ?? 0;
   const valuationRateEffectiveDate = settlementRateEffectiveDate ?? "";
 
@@ -586,6 +660,10 @@ export async function settlementPreview(req, closureType, { valuationDateYmd = t
     sign: "-",
   });
 
+  if (ecommerceSettlementAdjust?.extraLines?.length) {
+    lines.push(...ecommerceSettlementAdjust.extraLines);
+  }
+
   if (
     scheme.valueBasis === ValueBasis.GOLD_WEIGHT
     && valuationRatePerGramPaise > 0
@@ -593,11 +671,11 @@ export async function settlementPreview(req, closureType, { valuationDateYmd = t
   ) {
     alignGoldValuationLines({
       lines,
-      goldWeightMg,
-      benefitWeightMg,
+      goldWeightMg: effectiveGoldWeightMg,
+      benefitWeightMg: effectiveBenefitWeightMg,
       penaltyWeightMg,
       penaltyPaise,
-      settlementPaise,
+      settlementPaise: effectiveSettlementPaise,
       ratePerGramPaise: valuationRatePerGramPaise,
       collectedPaise: totals.amountPaidPaise,
     });
@@ -706,7 +784,7 @@ export async function settlementPreview(req, closureType, { valuationDateYmd = t
       : undefined,
     computation: {
       lines,
-      finalValue: moneyField(settlementPaise),
+      finalValue: moneyField(effectiveSettlementPaise),
       goldWeight: (weightMg || totals.goldWeightMg)
         ? {
           weightMg: weightMg || totals.goldWeightMg,
@@ -755,7 +833,7 @@ export async function settlementPreview(req, closureType, { valuationDateYmd = t
     benefitRatePerGramPaise,
     penaltyPaise,
     penaltyWeightMg,
-    settlementPaise,
+    settlementPaise: effectiveSettlementPaise,
     handoverValuePaise: handoverValuePaise > 0 ? handoverValuePaise : undefined,
     roundingDeltaPaise: roundingDeltaPaise !== 0 ? roundingDeltaPaise : undefined,
     valuationRatePerGramPaise,
@@ -768,6 +846,10 @@ export async function settlementPreview(req, closureType, { valuationDateYmd = t
     systemPolicyClosure,
     closureReason: systemPolicyClosure ? (scheme.closureReason ?? "") : "",
     maxSettlementPaise: systemPolicyClosure ? principalPaise : undefined,
+    ecommerceScheme: ecommerceSettlementAdjust?.ecommerceScheme,
+    ecommerceSchemeNotes: ecommerceSettlementAdjust?.notes?.length
+      ? ecommerceSettlementAdjust.notes
+      : undefined,
   };
 }
 function mapRedemptionDuplicateKeyError(error) {
@@ -802,7 +884,9 @@ export async function requestCustomerRedemption(req) {
       throw new AppError("VERSION_CONFLICT", "This scheme changed. Refresh and try again.", 409);
     }
     await assertRedemptionKyc(req, scheme.customerId, { session });
-    await assertStandaloneSchemeFundsAvailable(scheme, session);
+    await assertStandaloneSchemeFundsAvailable(scheme, session, {
+      preferredMode: req.body.preferredMode ?? req.body.mode,
+    });
     const existingOpen = await Redemption.findOne({
       tenantId: req.auth.tenantId,
       schemeId: scheme._id,
@@ -985,7 +1069,9 @@ export async function initiateRedemption(
       _id: preview.schemeId,
       tenantId: req.auth.tenantId,
     }).session(session);
-    await assertStandaloneSchemeFundsAvailable(scheme, session);
+    await assertStandaloneSchemeFundsAvailable(scheme, session, {
+      preferredMode: req.body.mode,
+    });
     const existingOpen = await Redemption.findOne({
       tenantId: req.auth.tenantId,
       schemeId: preview.schemeId,

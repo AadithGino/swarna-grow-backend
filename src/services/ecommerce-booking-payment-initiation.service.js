@@ -1,4 +1,5 @@
 import { createId } from "../lib/ids.js";
+import { logger } from "../config/logger.js";
 import { AppError, errors } from "../lib/app-error.js";
 import { assertEcommerceOperational } from "../lib/ecommerce-access.js";
 import { tenantForEcommerceCheckout } from "../lib/ecommerce-checkout-tenant.js";
@@ -23,6 +24,7 @@ import { renewBookingPaymentAttempt } from "./ecommerce-booking.service.js";
 
 const CLAIM_MS = 5 * 60_000;
 const INITIATABLE = [EcommercePaymentAttemptStatus.PENDING, EcommercePaymentAttemptStatus.INITIATED];
+const PAYABLE_BOOKING = [EcommerceBookingStatus.PENDING_ADVANCE, EcommerceBookingStatus.BALANCE_PENDING];
 
 export function mapBookingPaymentIntent(row, booking) {
   return {
@@ -178,11 +180,39 @@ export async function startBookingAttemptCheckout({
   }
 }
 
+async function reconcileOpenAttempt(attempt) {
+  const { maybeReconcileLiveEcommercePaymentAttempt } = await import("./ecommerce-payment-reconcile.service.js");
+  try {
+    await maybeReconcileLiveEcommercePaymentAttempt(attempt, { at: new Date() });
+  } catch (error) {
+    // The background reconcile retries; a customer read must still answer.
+    logger.warn({ attemptId: attempt._id, err: error?.message }, "Booking payment reconcile on customer read failed");
+  }
+}
+
+/**
+ * Asks PhonePe about the booking's open payment (throttled per attempt), the same way an order page
+ * does, so a capture whose webhook never arrived is applied as soon as the customer looks.
+ */
+export async function refreshBookingPaymentFromPhonePe({ tenantId, customerId, bookingId }) {
+  const booking = await EcommerceBooking.findOne({ _id: bookingId, tenantId, customerId }).select("status").lean();
+  if (!booking || !PAYABLE_BOOKING.includes(booking.status)) return;
+  const open = await EcommercePaymentAttempt.find({ tenantId, bookingId, status: { $in: INITIATABLE } })
+    .sort({ createdAt: -1 })
+    .lean();
+  for (const attempt of open) await reconcileOpenAttempt(attempt);
+}
+
 /** Customer poll for one payment of their booking. */
 export async function getBookingPaymentIntent({ tenantId, customerId, bookingId, paymentAttemptId }) {
-  const booking = await EcommerceBooking.findOne({ _id: bookingId, tenantId, customerId }).lean();
+  let booking = await EcommerceBooking.findOne({ _id: bookingId, tenantId, customerId }).lean();
   if (!booking) throw errors.notFound("Booking");
-  const attempt = await EcommercePaymentAttempt.findOne({ _id: paymentAttemptId, tenantId, bookingId }).lean();
+  let attempt = await EcommercePaymentAttempt.findOne({ _id: paymentAttemptId, tenantId, bookingId }).lean();
   if (!attempt) throw errors.notFound("Payment attempt");
+  if (INITIATABLE.includes(attempt.status)) {
+    await reconcileOpenAttempt(attempt);
+    attempt = (await EcommercePaymentAttempt.findById(attempt._id).lean()) ?? attempt;
+    booking = (await EcommerceBooking.findOne({ _id: bookingId, tenantId, customerId }).lean()) ?? booking;
+  }
   return mapBookingPaymentIntent(attempt, booking);
 }

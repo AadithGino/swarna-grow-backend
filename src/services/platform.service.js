@@ -31,6 +31,8 @@ import {
   planFeaturesSnapshotFromPlan,
   resolvePlanFeatureBooleans,
 } from "../lib/feature-entitlements.js";
+import { playStoreReviewOtpAllowAfterGoLive } from "../lib/playstore-review-otp.js";
+import { env } from "../config/env.js";
 import {
   assertPlanAllowsBillingCycle,
   normalizeSupportedBillingCycles,
@@ -427,6 +429,9 @@ export async function tenantDetail(id) {
     ownerEmail: owner?.email ?? tenant.email ?? null,
     status: tenant.status,
     goLiveAt: tenant.goLiveAt ?? null,
+    reviewOtpPolicy: {
+      allowAfterGoLive: playStoreReviewOtpAllowAfterGoLive(env),
+    },
     branding: tenant.branding ?? {},
     settings: { ...tenant.settings, ...tenant.operations },
     subscription: {
@@ -511,7 +516,18 @@ export async function tenantAction(id, action, body = {}, req) {
     if (issues.length) {
       throw new AppError("VALIDATION_FAILED", `Tenant cannot go live yet. ${issues.length} setup item(s) are incomplete.`, 422, issues);
     }
-    const updated = await Tenant.findByIdAndUpdate(id, { $set: { status: TenantStatus.ACTIVE, goLiveAt: new Date() }, $inc: { version: 1 } }, { new: true }).lean();
+    const updated = await Tenant.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          status: TenantStatus.ACTIVE,
+          goLiveAt: new Date(),
+          "operations.playStoreReviewOtpEnabled": false,
+        },
+        $inc: { version: 1 },
+      },
+      { new: true },
+    ).lean();
     const response = {
       ok: true,
       checklist: [
@@ -1413,6 +1429,97 @@ export async function updateAppConfig(body, req) {
     });
   }
   return next;
+}
+
+export async function setPlatformTenantProductModules(tenantId, body, req) {
+  const { patchesForProductModules, summarizeProductModules } = await import("../lib/platform-tenant-product-modules.js");
+  const tenant = await Tenant.findById(tenantId);
+  if (!tenant) throw errors.notFound("Tenant");
+  const before = {
+    featureOverrides: tenant.subscription?.featureOverrides ?? {},
+    operations: tenant.operations?.toObject?.() ?? tenant.operations ?? {},
+    featureFlags: Object.fromEntries(tenant.featureFlags ?? []),
+  };
+  const patches = patchesForProductModules(tenant, body);
+  tenant.subscription ??= {};
+  tenant.subscription.featureOverrides = {
+    ...(tenant.subscription.featureOverrides?.toObject?.() ?? tenant.subscription.featureOverrides ?? {}),
+    ...patches.featureOverrides,
+  };
+  tenant.operations = {
+    ...(tenant.operations?.toObject?.() ?? tenant.operations ?? {}),
+    ...patches.operationsPatch,
+  };
+  tenant.featureFlags = patches.featureFlags;
+  tenant.markModified("subscription");
+  tenant.markModified("operations");
+  tenant.markModified("featureFlags");
+  tenant.version += 1;
+  await tenant.save();
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: "PLATFORM_TENANT_PRODUCT_MODULES_UPDATED",
+      entityType: AuditEntityType.TENANT,
+      entityId: tenantId,
+      tenantId,
+      before,
+      after: {
+        featureOverrides: tenant.subscription.featureOverrides,
+        operations: tenant.operations?.toObject?.() ?? tenant.operations,
+        modules: summarizeProductModules(tenant),
+      },
+    });
+  }
+  return {
+    tenantId,
+    modules: summarizeProductModules(tenant),
+    version: tenant.version,
+  };
+}
+
+export async function setPlayStoreReviewOtp(tenantId, body, req) {
+  const tenant = await Tenant.findById(tenantId).select("goLiveAt isDemo version operations").lean();
+  if (!tenant) throw errors.notFound("Tenant");
+  const enabled = body.enabled === true;
+  if (
+    enabled
+    && tenant.goLiveAt
+    && tenant.isDemo !== true
+    && !playStoreReviewOtpAllowAfterGoLive(env)
+  ) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "Play Store review OTP cannot be enabled after go-live on a live jewellery tenant. Set PLAYSTORE_REVIEW_OTP_ALLOW_AFTER_GO_LIVE=true on staging only.",
+      422,
+    );
+  }
+  const before = tenant.operations ?? {};
+  const row = await Tenant.findOneAndUpdate(
+    { _id: tenantId, version: tenant.version },
+    { $set: { "operations.playStoreReviewOtpEnabled": enabled }, $inc: { version: 1 } },
+    { new: true },
+  )
+    .select("version operations.playStoreReviewOtpEnabled goLiveAt isDemo")
+    .lean();
+  if (!row) throw errors.conflict("VERSION_CONFLICT", "This tenant changed. Refresh and try again.");
+  if (req) {
+    await auditPlatformMutation({
+      req,
+      action: enabled ? "PLATFORM_PLAYSTORE_REVIEW_OTP_ENABLED" : "PLATFORM_PLAYSTORE_REVIEW_OTP_DISABLED",
+      entityType: AuditEntityType.TENANT,
+      entityId: tenantId,
+      tenantId,
+      before,
+      after: row.operations ?? {},
+    });
+  }
+  return {
+    tenantId,
+    playStoreReviewOtpEnabled: row.operations?.playStoreReviewOtpEnabled === true,
+    reviewOtpCode: enabled ? "123456" : null,
+    version: row.version,
+  };
 }
 
 export async function setPlatformDigitalMetalsPause(tenantId, body, req) {

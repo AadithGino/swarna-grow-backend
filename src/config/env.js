@@ -94,6 +94,8 @@ export function parseEnv(source = process.env) {
     PHONEPE_UPI_FLOWS: upiFlowsString,
     WHATSAPP_BASE_URL: z.string().default(""), WHATSAPP_ACCESS_TOKEN: z.string().default(""), WHATSAPP_APP_SECRET: z.string().default(""),
     OTP_PROVIDER: z.enum(["mock", "msg91", "message_central"]).default("mock"),
+    /** Allow Play Store review OTP (123456) for go-live jewellers — dev/staging only. */
+    PLAYSTORE_REVIEW_OTP_ALLOW_AFTER_GO_LIVE: booleanString,
     OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     OTP_RESEND_COOLDOWN_SECONDS: boundedInt(5, 600, 30),
     OTP_MAX_ATTEMPTS: boundedInt(1, 20, 5),
@@ -266,6 +268,9 @@ export function parseEnv(source = process.env) {
     if (providerMode !== "live") offending.push("PROVIDER_MODE");
     const otpProvider = normalized.OTP_PROVIDER ?? "mock";
     if (otpProvider === "mock") offending.push("OTP_PROVIDER");
+    if (normalized.PLAYSTORE_REVIEW_OTP_ALLOW_AFTER_GO_LIVE === true) {
+      offending.push("PLAYSTORE_REVIEW_OTP_ALLOW_AFTER_GO_LIVE");
+    }
     if (otpProvider === "msg91") {
       for (const key of ["MSG91_AUTH_KEY", "MSG91_OTP_TEMPLATE_ID", "MSG91_SENDER_ID"]) {
         const raw = normalized[key];

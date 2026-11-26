@@ -9,7 +9,6 @@ import {
 } from "./landing-demo-auto-provision.service.js";
 import { copyLink } from "./demo-instance.service.js";
 import { env } from "../config/env.js";
-
 async function mapRow(row) {
   const demoInstanceStatus = await landingDemoInstanceStatus(row.demoInstanceId);
   return {

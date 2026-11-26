@@ -62,6 +62,10 @@ export function mapAdminCustomerOrderListRow(row, refundRow) {
   const attention = attentionState(row, refundRow);
   const nextAction = computeEcommerceOrderNextAction(row);
   const cc = row.courierCod ?? {};
+  const purchase = row.financialSnapshot?.schemePurchase;
+  const schemePurchaseLabel = purchase
+    ? (purchase.topUpPaise > 0 ? "Scheme + cash" : "Paid with scheme")
+  : null;
   return {
     id: row._id,
     orderNumber: row.orderNumber,
@@ -83,7 +87,12 @@ export function mapAdminCustomerOrderListRow(row, refundRow) {
     codCustomerPaidEvidence: codPaymentEvidence?.evidence ?? null,
     codCourierPaymentLabel: cod ? plainLanguageCodCourierPaymentLabel(cc.remittanceStatus) : null,
     attentionKind: attention.kind,
-    attentionLabel: attention.label,
+    attentionLabel: attention.label ?? schemePurchaseLabel,
+    schemePurchaseLabel,
+    schemeAppliedPaise: purchase?.appliedPaise ?? null,
+    schemeTopUpPaise: purchase?.topUpPaise ?? null,
+    schemePurchaseBasis: purchase?.basis ?? null,
+    schemeRemainingAfterOrder: purchase?.remaining ?? null,
     nextAction,
     detailPath: `/ecommerce/orders/${row._id}`,
   };

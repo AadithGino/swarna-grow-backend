@@ -320,6 +320,13 @@ for (const scenario of ["top-up", "fully covered", "rejected", "invalidated", "r
       assert.equal(delivered.status, 200, JSON.stringify(delivered.body));
       assert.equal((await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean()).status, "CONSUMED");
       assert.equal((await Redemption.findById(purchase.redemptionId).lean()).status, "COMPLETED");
+      const shipDebit = await LedgerEntry.findOne({
+        tenantId: tenant._id,
+        schemeId: scheme._id,
+        type: "REDEMPTION_DEBIT",
+        "metadata.source": "ONLINE_SHOP",
+      }).lean();
+      assert.ok(shipDebit, "expected ONLINE_SHOP REDEMPTION_DEBIT after shipped delivery");
       return;
     }
     await EcommerceOrder.updateOne({ _id: order.id }, { $set: {
@@ -346,6 +353,37 @@ for (const scenario of ["top-up", "fully covered", "rejected", "invalidated", "r
     assert.equal(delivered.status, 200, JSON.stringify(delivered.body));
     assert.equal((await EcommerceSchemeReservation.findOne({ orderId: order.id }).lean()).status, "CONSUMED");
     assert.equal((await Redemption.findById(purchase.redemptionId).lean()).status, "COMPLETED");
+    const onlineDebit = await LedgerEntry.findOne({
+      tenantId: tenant._id,
+      schemeId: scheme._id,
+      type: "REDEMPTION_DEBIT",
+      "metadata.source": "ONLINE_SHOP",
+    }).lean();
+    assert.ok(onlineDebit, "expected ONLINE_SHOP REDEMPTION_DEBIT after delivery");
+    assert.ok(onlineDebit.amountPaise > 0);
+    if (full && scenario === "fully covered") {
+      const schemeAfter = await Scheme.findById(scheme._id).lean();
+      assert.equal(schemeAfter.status, "REDEEMED", "full scheme checkout should mark scheme REDEEMED");
+      const passbook = await request(app)
+        .get(`/api/v1/app/schemes/${scheme._id}/passbook`)
+        .set(headers);
+      assert.equal(passbook.status, 200, JSON.stringify(passbook.body));
+      const pb = passbook.body.data ?? passbook.body;
+      assert.ok(
+        pb.onlineEncumbrance?.summaryLines?.length > 0 || pb.spendAttempts?.length > 0,
+        "passbook should list shop activity after full checkout",
+      );
+      const preview = await request(app)
+        .get(`/api/v1/app/schemes/${scheme._id}/settlement-preview`)
+        .set(headers)
+        .query({ mode: "CASH" });
+      assert.equal(preview.status, 200, JSON.stringify(preview.body));
+      const settlement = preview.body.data ?? preview.body;
+      assert.ok(
+        settlement.blockers?.some((row) => row.code === "SCHEME_SETTLED_VIA_ONLINE_SHOP")
+          || Number(settlement.settlementPaise ?? 0) === 0,
+      );
+    }
 
     for (const returnedCount of [1, 2]) {
       const returned = await request(app).post(`/api/v1/app/shop/orders/${order.id}/return-requests`)

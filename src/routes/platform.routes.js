@@ -12,7 +12,7 @@ import {
   platformDigitalMetalsTaxApproveBody,
   platformDigitalMetalsTermsBody,
 } from "../validators/digital-metals.validators.js";
-import { platformCreatePlanBody, platformCreateTenantBody, platformDeprecatePlanBody, platformDigitalMetalsPauseBody, platformFcmIntegrationBody, platformFlagsBody, platformInvoiceCreateBody, platformMarkInvoicePaidBody, platformLogoutBody, platformOwnerCredentialsBody, platformPhonePeIntegrationBody, platformSubscriptionCancelBody, platformSubscriptionChangeBody, platformSubscriptionExtendBody, platformSubscriptionLimitsBody, platformTenantActionBody, platformTenantListQuery, platformUpdatePlanBody, platformUpdateTenantBody, platformWebhookRetryBody, platformMessageCentralIntegrationBody, platformMessageCentralVerifyBody } from "../validators/platform.validators.js";
+import { platformCreatePlanBody, platformCreateTenantBody, platformDeprecatePlanBody, platformDigitalMetalsPauseBody, platformFcmIntegrationBody, platformFlagsBody, platformInvoiceCreateBody, platformMarkInvoicePaidBody, platformLogoutBody, platformOwnerCredentialsBody, platformPhonePeIntegrationBody, platformPlayStoreReviewOtpBody, platformProductModulesBody, platformSubscriptionCancelBody, platformSubscriptionChangeBody, platformSubscriptionExtendBody, platformSubscriptionLimitsBody, platformTenantActionBody, platformTenantListQuery, platformUpdatePlanBody, platformUpdateTenantBody, platformWebhookRetryBody, platformMessageCentralIntegrationBody, platformMessageCentralVerifyBody } from "../validators/platform.validators.js";
 import { loginRateLimit } from "../middlewares/security.middleware.js";
 import { z } from "zod";
 import * as demoController from "../controllers/demo.controller.js";
@@ -80,6 +80,20 @@ platformRouter.post(
   validate({ body: platformDigitalMetalsPauseBody }),
   idempotent,
   asyncHandler(controller.digitalMetalsPause),
+);
+platformRouter.post(
+  "/tenants/:tenantId/playstore-review-otp",
+  tenantIdParam,
+  validate({ body: platformPlayStoreReviewOtpBody }),
+  idempotent,
+  asyncHandler(controller.playStoreReviewOtp),
+);
+platformRouter.post(
+  "/tenants/:tenantId/product-modules",
+  tenantIdParam,
+  validate({ body: platformProductModulesBody }),
+  idempotent,
+  asyncHandler(controller.productModules),
 );
 platformRouter.post(
   "/tenants/:tenantId/digital-metals/tax-profile/approve",

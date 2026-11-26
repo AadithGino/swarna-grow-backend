@@ -212,7 +212,7 @@ async function main() {
     },
     branding: {
       displayName: DEMO.displayName,
-      primaryColor: "#5C4033",
+      primaryColor: "#B8860B",
       accentColor: "#D4AF37",
     },
     settings: {

@@ -112,6 +112,23 @@ export async function finalizeBookingPaymentSuccess({
     if (decision?.accepted) {
       await recordEvent({ attempt: updated, webhookEventId, outcome: "SUCCESS", reason: source,
         payload: providerPayload, session });
+      const purpose = resolvePaymentPurpose(updated);
+      if (purpose === "BOOKING_ADVANCE") {
+        const { notifyBookingAdvanceConfirmed } = await import("../lib/ecommerce-booking-customer-notice.js");
+        void notifyBookingAdvanceConfirmed(updated.tenantId, updated.bookingId).catch(() => {});
+      }
+      if (purpose === "BOOKING_BALANCE") {
+        const { notifyBookingConverted } = await import("../lib/ecommerce-booking-customer-notice.js");
+        const { EcommerceBooking, EcommerceOrder } = await import("../models/index.js");
+        const { EcommerceBookingStatus } = await import("../constants/enums.js");
+        void EcommerceBooking.findById(updated.bookingId).lean().then(async (booking) => {
+          if (!booking || booking.status !== EcommerceBookingStatus.CONVERTED) return;
+          const order = booking.convertedOrderId
+            ? await EcommerceOrder.findById(booking.convertedOrderId).select("orderNumber").lean()
+            : null;
+          return notifyBookingConverted(booking, order?.orderNumber ?? null);
+        }).catch(() => {});
+      }
       return result("SUCCESS", updated);
     }
 

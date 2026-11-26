@@ -3,6 +3,8 @@ import { errors } from "../lib/app-error.js";
 import { addPaise } from "../lib/ecommerce-exact-money.js";
 import { allocateSchemeBenefit, calculateSchemeReturn, remainingSchemeEntitlement, returnedSchemeBenefitUnits } from "../lib/ecommerce-scheme-reservation-accounting.js";
 import { createId } from "../lib/ids.js";
+import { maybeCloseSchemeAfterOnlineFulfillment } from "../lib/ecommerce-scheme-online-closure.js";
+import { recordOnlineShopRedemptionLedgerDebit } from "../lib/ecommerce-scheme-ledger-debit.js";
 import { OPEN_REDEMPTION_STATUSES, settlementPreview, assertRedemptionKyc } from "./redemption.service.js";
 
 function requireTransaction(session) {
@@ -126,6 +128,15 @@ export async function settleLinkedOrderHold(order, status, session, actorId) {
   await resolveSchemeOrderHold({ tenantId: order.tenantId, orderId: order._id,
     reservationId: purchase.reservationId, status, session });
   await updateOrderRedemption(order, status === "CONSUMED" ? "COMPLETED" : "REJECTED", session, actorId);
+  if (status === "CONSUMED") {
+    await recordOnlineShopRedemptionLedgerDebit({
+      tenantId: order.tenantId,
+      order: order.toObject?.() ?? order,
+      session,
+      actorId,
+    });
+    await maybeCloseSchemeAfterOnlineFulfillment({ order, session, actorId });
+  }
 }
 
 export async function quoteSchemeOrderReturn({ order, items, session }) {

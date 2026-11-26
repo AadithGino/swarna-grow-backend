@@ -103,6 +103,27 @@ export const platformDigitalMetalsPauseBody = z.object({
   reason: z.string().trim().min(3).max(500).optional(),
 }).strict();
 
+export const platformPlayStoreReviewOtpBody = z.object({
+  enabled: z.boolean(),
+}).strict();
+
+export const platformProductModulesBody = z
+  .object({
+    ecommerce: z.boolean().optional(),
+    ecommercePayments: z.boolean().optional(),
+    digitalMetals: z.boolean().optional(),
+    enableAll: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (body) =>
+      body.enableAll === true
+      || body.ecommerce !== undefined
+      || body.ecommercePayments !== undefined
+      || body.digitalMetals !== undefined,
+    { message: "Set at least one module or enableAll." },
+  );
+
 export const platformPhonePeIntegrationBody = z.object({
   clientId: z.string().trim().min(4).max(120),
   clientSecret: z.string().trim().min(8).max(512).optional(),
@@ -224,6 +245,8 @@ export const platformRouteValidators = {
   "POST /tenants/:tenantId/subscription/extend": { params: tenantIdParam, body: platformSubscriptionExtendBody },
   "POST /tenants/:tenantId/subscription/cancel": { params: tenantIdParam, body: platformSubscriptionCancelBody },
   "POST /tenants/:tenantId/digital-metals/pause": { params: tenantIdParam, body: platformDigitalMetalsPauseBody },
+  "POST /tenants/:tenantId/playstore-review-otp": { params: tenantIdParam, body: platformPlayStoreReviewOtpBody },
+  "POST /tenants/:tenantId/product-modules": { params: tenantIdParam, body: platformProductModulesBody },
   "POST /tenants/:tenantId/digital-metals/tax-profile/approve": {
     params: tenantIdParam,
     body: platformDigitalMetalsTaxApproveBody,

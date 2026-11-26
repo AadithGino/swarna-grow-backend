@@ -23,6 +23,10 @@ import {
   lifetimePaidPaiseFromLedgerEntries,
 } from "../lib/customer-financial-totals.js";
 import { loadUserMap, userDto } from "../lib/relation-maps.js";
+import {
+  aggregateCustomerShopBalanceSummaries,
+  buildSchemeShopBalanceSummaries,
+} from "../lib/ecommerce-scheme-shop-balance-summary.js";
 import { normalizeCustomerAddress } from "../lib/customer-profile-completion.js";
 import { assertKycTypeAllowed, pickKycSubmitFields } from "../lib/kyc-policy.js";
 
@@ -821,6 +825,9 @@ export async function listCustomerRelations(req, relation) {
   const query = { tenantId: req.auth.tenantId, customerId: req.params.customerId };
   if (relation === "schemes") {
     const result = await paginate(Scheme, { scope: query, filters: {}, cursor: req.query.cursor, limit: req.query.limit, sort: "createdAt:desc" });
+    const customerId = req.params.customerId;
+    const shopSummaries = await buildSchemeShopBalanceSummaries(req.auth.tenantId, customerId, result.data);
+    const shopBalanceOverview = aggregateCustomerShopBalanceSummaries(shopSummaries);
     result.data = result.data.map((scheme) => ({
       ...scheme,
       plan: scheme.planSnapshot
@@ -839,7 +846,11 @@ export async function listCustomerRelations(req, relation) {
           : scheme.flexiblePhase === "FLEXIBLE"
             ? "FLEXIBLE_FREE_WINDOW"
             : "FLEXIBLE_LOCK_WINDOW",
+      shopBalanceSummary: shopSummaries.get(String(scheme._id)) ?? undefined,
     }));
+    if (shopBalanceOverview && !req.query.cursor) {
+      result.meta = { ...result.meta, shopBalanceOverview };
+    }
     return result;
   }
   if (relation === "payments") {

@@ -447,6 +447,15 @@ adminEcommerceRouter.post(
   ),
 );
 adminEcommerceRouter.post(
+  "/ecommerce/orders/:orderId/scheme/release-backing",
+  ...guarded(
+    Permission.ECOMMERCE_FULFILMENT_OPERATE,
+    idempotent,
+    validate({ body: ecommerceAdminInitiateCancellationBody }),
+    asyncHandler(controller.adminReleaseInvalidSchemeBacking),
+  ),
+);
+adminEcommerceRouter.post(
   "/ecommerce/orders/:orderId/cancellation/cod-manual-refund",
   ...guarded(
     Permission.ECOMMERCE_REFUND_OPERATE,

@@ -593,6 +593,10 @@ export function mapCustomerSchemeDetail(raw) {
     lifecycleActions: ["DOWNLOAD_PASSBOOK", "VIEW_PLAN"],
     payableRange: raw.payableRange,
     payments,
+    schemeSpend: Array.isArray(raw.schemeSpend) ? raw.schemeSpend : [],
+    schemeSpendAttempts: Array.isArray(raw.schemeSpendAttempts) ? raw.schemeSpendAttempts : [],
+    shopBalanceSummary: raw.shopBalanceSummary ?? null,
+    onlineEncumbrance: raw.onlineEncumbrance ?? null,
     installmentSchedule:
       displayMode === "FIXED" && (raw.installments?.length ?? 0) > 0
         ? mapCustomerInstallmentSchedule(raw.installments)
@@ -777,6 +781,7 @@ export function mapHomeSchemeCard(scheme, extras = {}) {
     canPay,
     benefitLabel: oneTime ? planBenefitLabel(plan) : benefitLabel(plan),
     recentPayments: extras.recentPayments ?? undefined,
+    shopBalanceSummary: extras.shopBalanceSummary ?? undefined,
     ...(cappedProgress
       ? {
           cycleCap: cappedProgress.cycleCap,

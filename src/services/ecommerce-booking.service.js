@@ -397,7 +397,7 @@ async function priceFinalBilling({ booking, tenantId, at, session }) {
  * order records; it changes only through requoteBalance, which is refused once a payment may exist.
  */
 export async function createBalanceQuote({ tenantId, bookingId, branchId = null, actorId = null, at = new Date() }) {
-  return withTransaction(async (session) => {
+  const result = await withTransaction(async (session) => {
     const booking = await EcommerceBooking.findOne({ _id: bookingId, tenantId, ...bookingBranchCondition(branchId) }).session(session).lean();
     if (!booking) throw notFound();
     if (booking.status === EcommerceBookingStatus.BALANCE_PENDING || booking.status === EcommerceBookingStatus.CONVERTED) {
@@ -437,6 +437,16 @@ export async function createBalanceQuote({ tenantId, bookingId, branchId = null,
     });
     return { booking: frozen, attempt, created: true };
   });
+  if (result.created) {
+    const { notifyBookingBalanceReady, notifyBookingConverted } = await import("../lib/ecommerce-booking-customer-notice.js");
+    if (result.booking?.status === EcommerceBookingStatus.BALANCE_PENDING) {
+      void notifyBookingBalanceReady(result.booking).catch(() => {});
+    }
+    if (result.booking?.status === EcommerceBookingStatus.CONVERTED && result.order) {
+      void notifyBookingConverted(result.booking, result.order.orderNumber ?? null).catch(() => {});
+    }
+  }
+  return result;
 }
 
 /**

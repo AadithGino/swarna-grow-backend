@@ -309,6 +309,36 @@ test("PUT /tenants/:tenantId/flags valid acceptance", async () => {
   mark("PUT /tenants/:tenantId/flags");
 });
 
+test("POST /tenants/:tenantId/product-modules valid acceptance", async () => {
+  const token = await seedPlatformAdminToken(app);
+  const { tenant } = await seedTenantContext();
+  const res = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/product-modules`, {
+    body: { enableAll: true },
+    idempotencyKey: "valid-product-modules-all",
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.modules.ecommerce.active, true);
+  mark("POST /tenants/:tenantId/product-modules");
+});
+
+test("POST /tenants/:tenantId/playstore-review-otp valid acceptance", async () => {
+  const token = await seedPlatformAdminToken(app);
+  const { tenant } = await seedTenantContext();
+  const on = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/playstore-review-otp`, {
+    body: { enabled: true },
+    idempotencyKey: "valid-playstore-otp-on",
+  });
+  assert.equal(on.status, 200);
+  assert.equal(on.body.data.playStoreReviewOtpEnabled, true);
+  const off = await platformRequest(app, token, "POST", `/api/v1/platform/tenants/${tenant._id}/playstore-review-otp`, {
+    body: { enabled: false },
+    idempotencyKey: "valid-playstore-otp-off",
+  });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.data.playStoreReviewOtpEnabled, false);
+  mark("POST /tenants/:tenantId/playstore-review-otp");
+});
+
 test("POST /tenants/:tenantId/digital-metals/pause valid acceptance", async () => {
   const token = await seedPlatformAdminToken(app);
   const { tenant } = await seedTenantContext();
